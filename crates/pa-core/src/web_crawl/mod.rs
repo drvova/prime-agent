@@ -21,6 +21,7 @@
 
 mod browser;
 mod capture;
+mod extract;
 mod host;
 mod identity;
 mod options;
@@ -37,7 +38,9 @@ use serde_json::{json, Value};
 use spider::fetch_engine::{EngineError, EngineRequest, EngineResponse, HttpFetchEngine};
 use url::Url;
 
-pub(crate) use host::{CaptureObserver, CrawlObserver, CrawlSettings, WebCrawlHost};
+pub(crate) use host::{
+    CaptureObserver, CrawlObserver, CrawlSettings, ExtractObserver, WebCrawlHost,
+};
 pub(crate) use identity::{changes as identity_changes, Identity};
 
 use crate::kernel::spill::{SpillCopy, SpillStore};
@@ -96,6 +99,10 @@ pub(crate) struct CrawlRequest {
     pub(crate) browsing: options::Browsing,
     /// A WARC file every response the crawl received is appended to.
     pub(crate) warc: Option<std::path::PathBuf>,
+    /// Each HTML page's format and the transform before it.
+    pub(crate) shaping: crate::web_read::Shaping,
+    /// What to extract from each HTML page (`extract` on its entry).
+    pub(crate) extract: Option<extract::Selectors>,
 }
 
 /// How pages are loaded.
@@ -122,6 +129,23 @@ pub(crate) struct CrawlOutcome {
     pub(crate) identity: bool,
     /// The crawl wrote a WARC file.
     pub(crate) archived: bool,
+    /// What the crawl did with each page beyond reading it.
+    pub(crate) per_page: PageWork,
+}
+
+/// What a crawl asked done to each page: counts for adoption telemetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct PageWork {
+    /// A `#:format` or a `#:transform`.
+    pub(crate) shaped: bool,
+    /// An `#:extract`.
+    pub(crate) extracted: bool,
+}
+
+/// What adoption telemetry learns of one `web-extract`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExtractOutcome {
+    pub(crate) ok: bool,
 }
 
 /// What adoption telemetry learns of one `web-screenshot` or `web-pdf`.
@@ -446,36 +470,63 @@ impl<'a> Collected<'a> {
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty())
             .or_else(|| (self.request.render != Render::Http).then(|| "text/html".to_string()));
+        let html = matches!(
+            media_type.as_deref(),
+            Some("text/html" | "application/xhtml+xml")
+        );
         let fetched = Fetched {
             final_url,
             media_type,
             body: page.get_html_bytes_u8().to_vec(),
+        };
+        let extracted = match (&self.request.extract, html) {
+            (Some(selectors), true) => {
+                let (selectors, body) = (selectors.clone(), fetched.body.clone());
+                Some(
+                    crate::web_read::on_own_thread("web-extract", move || {
+                        selectors.extract(&String::from_utf8_lossy(&body))
+                    })
+                    .await,
+                )
+            }
+            (Some(_), false) | (None, true | false) => None,
         };
         let read = ReadRequest {
             url,
             max_chars: self.request.max_chars,
             section: None,
             timeout: self.request.timeout,
+            shaping: self.request.shaping.clone(),
         };
-        let rendered = match crate::web_read::render(fetched).await {
+        let rendered = match crate::web_read::render(fetched, &self.request.shaping).await {
             Ok(document) => crate::web_read::finish(&read, document, Duration::ZERO),
             Err(error) => Err(error),
         };
         match rendered {
-            Ok(rendered) => self.keep(&rendered),
+            Ok(rendered) => self.keep(&rendered, extracted),
             Err(error) => self.notes.push(format!("{}: {error:#}", read.url)),
         }
     }
 
-    /// Add `page` to the result, or page it out once the budget is spent.
-    fn keep(&mut self, page: &WebPage) {
+    /// Add `page` to the result, with what was extracted from it, or page
+    /// it out once the budget is spent (the extraction stays).
+    fn keep(&mut self, page: &WebPage, extracted: Option<anyhow::Result<Value>>) {
+        let mut entry = page.to_json();
+        match extracted {
+            None => {}
+            Some(Ok(values)) => entry["extract"] = values,
+            Some(Err(error)) => {
+                if let Some(notes) = entry["notes"].as_array_mut() {
+                    notes.push(json!(format!("nothing extracted: {error:#}")));
+                }
+            }
+        }
         let chars = page.markdown.chars().count();
         if self.chars + chars <= TOTAL_CHARS {
             self.chars += chars;
-            self.pages.push(page.to_json());
+            self.pages.push(entry);
             return;
         }
-        let mut entry = page.to_json();
         let note = match self.store {
             Some(store) => {
                 let handle = store.spill(SpillCopy::of_text(&page.text()));
@@ -751,5 +802,7 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
                     (true, _) | (false, Err(_)) => path,
                 }
             }),
+        shaping: crate::web_read::Shaping::parse(data, "web.crawl")?,
+        extract: extract::Selectors::parse(data, "extract", "web.crawl")?,
     })
 }

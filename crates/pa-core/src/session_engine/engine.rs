@@ -732,6 +732,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             std::sync::Arc::new(move |outcome| counters.note_web_capture(outcome))
                 as crate::web_crawl::CaptureObserver
         }),
+        extract_observer: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |outcome| counters.note_web_extract(outcome))
+                as crate::web_crawl::ExtractObserver
+        }),
         // The user's `web.crawl` identity settings, read afresh per crawl.
         settings: Some({
             let settings = crawl_settings;

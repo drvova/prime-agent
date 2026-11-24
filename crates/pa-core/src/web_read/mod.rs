@@ -21,6 +21,7 @@ mod host;
 mod html;
 mod markdown;
 mod pdf;
+mod shape;
 mod sites;
 #[cfg(test)]
 mod tests;
@@ -35,6 +36,8 @@ use url::Url;
 
 pub(crate) use fetch::{Accept, Fetched, Fetcher, HttpStatusError, RequestIdentity};
 pub(crate) use host::{ReadObserver, WebReadHost};
+pub(crate) use html::to_xml;
+pub(crate) use shape::{check_nesting, on_own_thread, Shaping, MAX_SELECTOR_CHARS};
 
 use markdown::{AnchorStyle, Heading};
 
@@ -64,6 +67,9 @@ pub(crate) enum ReadMethod {
     GithubReadme,
     GithubIssue,
     StackExchange,
+    /// An HTML page in a `#:format` or after a `#:transform`
+    /// (`spider_transformations`).
+    Transformed,
 }
 
 impl ReadMethod {
@@ -80,6 +86,7 @@ impl ReadMethod {
             ReadMethod::GithubReadme => "github-readme",
             ReadMethod::GithubIssue => "github-issue",
             ReadMethod::StackExchange => "stackexchange",
+            ReadMethod::Transformed => "html-transformed",
         }
     }
 
@@ -96,6 +103,7 @@ impl ReadMethod {
             ReadMethod::Html | ReadMethod::Markdown | ReadMethod::Json | ReadMethod::Text => {
                 ReadKind::Page
             }
+            ReadMethod::Transformed => ReadKind::Transformed,
         }
     }
 }
@@ -106,6 +114,8 @@ pub(crate) enum ReadKind {
     Site,
     Pdf,
     Page,
+    /// A page shaped by `#:format` or `#:transform`.
+    Transformed,
 }
 
 /// What adoption telemetry learns of one read: counts only.
@@ -166,6 +176,8 @@ pub(crate) struct ReadRequest {
     pub(crate) max_chars: usize,
     pub(crate) section: Option<String>,
     pub(crate) timeout: Duration,
+    /// An HTML page's format and the transform before it.
+    pub(crate) shaping: Shaping,
 }
 
 /// A finished read.
@@ -271,26 +283,30 @@ impl WebReadEngine {
             timeout: request.timeout,
             identity: None,
         };
-        let document =
-            match tokio::time::timeout(request.timeout, document(&fetcher, &request.url)).await {
-                Ok(Ok(document)) => document,
-                Ok(Err(error)) => {
-                    return Err(ReadError {
-                        message: format!("{error:#}"),
-                        elapsed: started.elapsed(),
-                    })
-                }
-                Err(_) => {
-                    return Err(ReadError {
-                        message: format!(
-                            "reading {} timed out after {}s",
-                            request.url,
-                            request.timeout.as_secs_f64()
-                        ),
-                        elapsed: started.elapsed(),
-                    })
-                }
-            };
+        let document = match tokio::time::timeout(
+            request.timeout,
+            document(&fetcher, &request.url, &request.shaping),
+        )
+        .await
+        {
+            Ok(Ok(document)) => document,
+            Ok(Err(error)) => {
+                return Err(ReadError {
+                    message: format!("{error:#}"),
+                    elapsed: started.elapsed(),
+                })
+            }
+            Err(_) => {
+                return Err(ReadError {
+                    message: format!(
+                        "reading {} timed out after {}s",
+                        request.url,
+                        request.timeout.as_secs_f64()
+                    ),
+                    elapsed: started.elapsed(),
+                })
+            }
+        };
         finish(request, document, started.elapsed()).map_err(|error| ReadError {
             message: format!("{error:#}"),
             elapsed: started.elapsed(),
@@ -298,10 +314,12 @@ impl WebReadEngine {
     }
 }
 
-/// The site route when one matches and succeeds, else the generic read.
-async fn document(fetcher: &Fetcher<'_>, url: &Url) -> anyhow::Result<Document> {
+/// The site route when one matches and succeeds, else the generic read. A
+/// format or transform reads the page itself: a route's document has no HTML
+/// to shape.
+async fn document(fetcher: &Fetcher<'_>, url: &Url, shaping: &Shaping) -> anyhow::Result<Document> {
     let mut notes = Vec::new();
-    if let Some(route) = sites::route(url) {
+    if let Some(route) = sites::route(url).filter(|_| shaping.is_default()) {
         match sites::read(fetcher, &route).await {
             Ok(document) => return Ok(document),
             Err(error) => notes.push(format!(
@@ -316,7 +334,7 @@ async fn document(fetcher: &Fetcher<'_>, url: &Url) -> anyhow::Result<Document> 
         // Both failed: the route's failure says more than the page's.
         Err(error) => return Err(error.context(notes.join("; "))),
     };
-    let mut document = render(reply).await?;
+    let mut document = render(reply, shaping).await?;
     notes.append(&mut document.notes);
     document.notes = notes;
     Ok(document)
@@ -370,15 +388,16 @@ fn sniff(fetched: &Fetched) -> Sniffed {
 }
 
 /// Render a fetched body by its content type (CPU-bound work runs on a
-/// blocking thread).
-pub(crate) async fn render(fetched: Fetched) -> anyhow::Result<Document> {
+/// blocking thread); an HTML page is shaped as `shaping` asks, and any other
+/// kind notes that the format and transform did not apply.
+pub(crate) async fn render(fetched: Fetched, shaping: &Shaping) -> anyhow::Result<Document> {
     let kind = sniff(&fetched);
     let content_type = fetched
         .media_type
         .clone()
         .unwrap_or_else(|| "application/octet-stream".to_string());
     let final_url = fetched.final_url.clone();
-    match kind {
+    let document: anyhow::Result<Document> = match kind {
         Sniffed::Pdf => {
             let bytes = fetched.body;
             let text = pdf::extract(bytes).await?;
@@ -406,7 +425,7 @@ pub(crate) async fn render(fetched: Fetched) -> anyhow::Result<Document> {
                 notes,
             })
         }
-        Sniffed::Html => {
+        Sniffed::Html if shaping.is_default() => {
             let page_url = final_url.clone();
             let rendered = tokio::task::spawn_blocking(move || {
                 html::render_page(&String::from_utf8_lossy(&fetched.body), &page_url)
@@ -423,6 +442,36 @@ pub(crate) async fn render(fetched: Fetched) -> anyhow::Result<Document> {
                     anchors: AnchorStyle::Explicit,
                 },
                 links: rendered.links,
+                notes: Vec::new(),
+            })
+        }
+        Sniffed::Html => {
+            let (page_url, wanted) = (final_url.clone(), shaping.clone());
+            let shaped = on_own_thread("web-shape", move || {
+                shape::shape(&String::from_utf8_lossy(&fetched.body), &page_url, &wanted)
+            })
+            .await?;
+            let body = match shaped.formatted {
+                None => Body::Markdown {
+                    text: shaped.rendered.markdown,
+                    anchors: AnchorStyle::Explicit,
+                },
+                Some((None, text)) => Body::Markdown {
+                    text,
+                    anchors: AnchorStyle::GithubSlugs,
+                },
+                Some((Some(language), text)) => Body::Code {
+                    language: language.to_string(),
+                    text,
+                },
+            };
+            Ok(Document {
+                final_url,
+                title: shaped.rendered.title,
+                content_type,
+                method: ReadMethod::Transformed,
+                body,
+                links: shaped.rendered.links,
                 notes: Vec::new(),
             })
         }
@@ -477,7 +526,15 @@ pub(crate) async fn render(fetched: Fetched) -> anyhow::Result<Document> {
             "{final_url} is {content_type} ({} bytes), which web.read cannot render",
             fetched.body.len()
         ),
+    };
+    let mut document = document?;
+    if !shaping.is_default() && kind != Sniffed::Html {
+        document.notes.push(format!(
+            "#:format and #:transform shape HTML pages; this {} is shown as usual",
+            document.content_type
+        ));
     }
+    Ok(document)
 }
 
 /// Apply the section (or the URL's own fragment) and the truncation.
@@ -684,5 +741,6 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<ReadRequest> {
         max_chars,
         section,
         timeout,
+        shaping: Shaping::parse(data, "web.read")?,
     })
 }

@@ -446,6 +446,112 @@ pub(crate) fn render_fragment(html: &str, page_url: &Url) -> (String, Vec<PageLi
     (markdown, renderer.links)
 }
 
+/// How deeply `html` nests elements as [`parse`] builds its tree. The tree
+/// is taken apart as it is measured, so even a hostile page's depth never
+/// recurses (dropping the tree whole would).
+pub(crate) fn nesting(html: &str) -> usize {
+    let mut deepest = 0;
+    let mut open = vec![(parse(html), 0_usize)];
+    while let Some((mut element, depth)) = open.pop() {
+        deepest = deepest.max(depth);
+        for child in std::mem::take(&mut element.children) {
+            match child {
+                Node::Element(child) => open.push((child, depth + 1)),
+                Node::Text(_) => {}
+            }
+        }
+    }
+    deepest
+}
+
+/// `html` as well-formed XML for an `XPath` query, without recursion: one
+/// root element (the page's `html`, else an `html` around everything),
+/// element and attribute names that XML cannot carry (a namespace prefix,
+/// an odd character) left out with their children kept, the first of a
+/// repeated attribute kept, and text escaped. Script and style content is
+/// not kept ([`parse`] drops it).
+pub(crate) fn to_xml(html: &str) -> String {
+    fn xml_name(name: &str) -> bool {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    }
+    fn escape(text: &str, out: &mut String) {
+        for ch in text.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                // Characters XML 1.0 has no form for.
+                '\u{0}'..='\u{8}'
+                | '\u{b}'
+                | '\u{c}'
+                | '\u{e}'..='\u{1f}'
+                | '\u{fffe}'
+                | '\u{ffff}' => {}
+                other => out.push(other),
+            }
+        }
+    }
+    enum Step<'e> {
+        Node(&'e Node),
+        Close(&'e str),
+    }
+    let root = parse(html);
+    let elements: Vec<&Element> = root
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            Node::Element(element) => Some(element),
+            Node::Text(_) => None,
+        })
+        .collect();
+    let whitespace_only = root.children.iter().all(|child| match child {
+        Node::Element(_) => true,
+        Node::Text(text) => text.trim().is_empty(),
+    });
+    let mut out = String::with_capacity(html.len());
+    let mut steps: Vec<Step> = Vec::new();
+    if !(whitespace_only && matches!(elements.as_slice(), [only] if only.name == "html")) {
+        out.push_str("<html>");
+        steps.push(Step::Close("html"));
+    }
+    steps.extend(root.children.iter().rev().map(Step::Node));
+    while let Some(step) = steps.pop() {
+        match step {
+            Step::Close(name) => {
+                out.push_str("</");
+                out.push_str(name);
+                out.push('>');
+            }
+            Step::Node(Node::Text(text)) => escape(text, &mut out),
+            Step::Node(Node::Element(element)) => {
+                if xml_name(&element.name) {
+                    out.push('<');
+                    out.push_str(&element.name);
+                    let mut seen = std::collections::HashSet::new();
+                    for (key, value) in &element.attrs {
+                        if xml_name(key) && seen.insert(key.as_str()) {
+                            out.push(' ');
+                            out.push_str(key);
+                            out.push_str("=\"");
+                            escape(value, &mut out);
+                            out.push('"');
+                        }
+                    }
+                    out.push('>');
+                    steps.push(Step::Close(&element.name));
+                }
+                steps.extend(element.children.iter().rev().map(Step::Node));
+            }
+        }
+    }
+    out
+}
+
 /// Whether page headers and footers render: kept inside a `main`/`article`
 /// region (an article's own header holds its title), dropped page-wide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

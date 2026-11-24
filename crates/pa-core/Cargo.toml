@@ -50,6 +50,13 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 # `adblock_easylist`, which downloads EasyList at build time) serve a rendered
 # crawl's `#:block` and the `web.crawl.auth` credentials.
 spider = { version = "=2.54.2", default-features = false, features = ["sync", "regex", "headers", "sitemap", "chrome", "chrome_intercept", "adblock", "smart", "warc", "auto_throttle", "ua_generator", "socks"] }
+# `web-extract` and `web-crawl #:extract`: spider's CSS and XPath extraction.
+spider_utils = "=2.54.2"
+# `web-read` / `web-crawl` `#:format` and `#:transform`: spider's HTML to
+# CommonMark, text, HTML and XML, readability and content filters. Without
+# defaults (its `serde` only adds serde to spider); never `document`, `audio`
+# or `screenshot`.
+spider_transformations = { version = "=2.39.13", default-features = false }
 # Checks `web-crawl`'s include and exclude patterns as spider will compile them.
 regex = "1"
 tar = "0.4"

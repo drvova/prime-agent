@@ -121,6 +121,7 @@ fn request(url: &str, section: Option<&str>) -> ReadRequest {
         max_chars: DEFAULT_MAX_CHARS,
         section: section.map(str::to_string),
         timeout: Duration::from_secs(20),
+        shaping: Shaping::default(),
     }
 }
 
@@ -530,6 +531,7 @@ fn the_payload_parses_defaults_and_rejects_bad_options() {
             max_chars: MAX_MAX_CHARS,
             section: Some("setup".to_string()),
             timeout: DEFAULT_TIMEOUT,
+            shaping: Shaping::default(),
         }
     );
     assert!(parse_request(&json!({"url": "ftp://example.com/x"})).is_err());

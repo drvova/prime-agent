@@ -104,6 +104,23 @@ fn drive(counters: &SessionCounters) {
     ] {
         counters.note_web_read(outcome, Duration::from_millis(ms));
     }
+    for (render, pages, shaped, extracted, ms) in [
+        (crate::web_crawl::Render::Http, Some(4), true, true, 80),
+        (crate::web_crawl::Render::Smart, Some(2), false, true, 30),
+        (crate::web_crawl::Render::Browser, None, false, false, 10),
+    ] {
+        counters.note_web_crawl(crate::web_crawl::CrawlOutcome {
+            render,
+            pages,
+            elapsed: Duration::from_millis(ms),
+            identity: false,
+            archived: false,
+            per_page: crate::web_crawl::PageWork { shaped, extracted },
+        });
+    }
+    for ok in [true, true, false] {
+        counters.note_web_extract(crate::web_crawl::ExtractOutcome { ok });
+    }
     for (operation, results, truncated, ms) in [
         (FsOperation::Grep, Some(7), true, 30),
         (FsOperation::Grep, Some(2), false, 12),
@@ -752,7 +769,11 @@ const EXPECTED: &[(&str, &str)] = &[
     ("agent usage reads", r#"{"usage_read_count":3}"#),
     (
         "agent web reads",
-        r#"{"web_read_count":5,"web_read_failed_count":1,"web_read_site_count":1,"web_read_pdf_count":1,"web_read_page_count":2,"web_read_truncated_count":1,"web_read_max_ms":70}"#,
+        r#"{"web_read_count":5,"web_read_failed_count":1,"web_read_site_count":1,"web_read_pdf_count":1,"web_read_page_count":2,"web_read_transformed_count":0,"web_read_truncated_count":1,"web_read_max_ms":70}"#,
+    ),
+    (
+        "agent web crawls",
+        r#"{"web_crawl_count":3,"web_crawl_failed_count":1,"web_crawl_plain_count":1,"web_crawl_rendered_count":1,"web_crawl_smart_count":1,"web_crawl_page_count":6,"web_crawl_identity_count":0,"web_crawl_warc_count":0,"web_crawl_transformed_count":1,"web_crawl_extract_count":2,"web_crawl_max_ms":80,"web_screenshot_count":0,"web_pdf_count":0,"web_capture_failed_count":0,"web_extract_count":3,"web_extract_failed_count":1}"#,
     ),
     (
         "agent worktrees",

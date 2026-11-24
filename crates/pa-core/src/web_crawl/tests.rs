@@ -284,12 +284,16 @@ async fn a_crawled_page_has_web_reads_shape() {
         max_chars: DEFAULT_MAX_CHARS,
         section: None,
         timeout: DEFAULT_TIMEOUT,
+        shaping: crate::web_read::Shaping::default(),
     };
-    let document = crate::web_read::render(Fetched {
-        final_url: url,
-        media_type: Some("text/html".to_string()),
-        body: pages()["/"].1.clone().into_bytes(),
-    })
+    let document = crate::web_read::render(
+        Fetched {
+            final_url: url,
+            media_type: Some("text/html".to_string()),
+            body: pages()["/"].1.clone().into_bytes(),
+        },
+        &crate::web_read::Shaping::default(),
+    )
     .await
     .unwrap();
     let read = crate::web_read::finish(&read, document, Duration::ZERO).unwrap();
@@ -321,7 +325,7 @@ async fn pages_past_the_output_budget_page_out_to_the_store() {
         notes: Vec::new(),
         elapsed: Duration::ZERO,
     };
-    collected.keep(&page);
+    collected.keep(&page, None);
     let handle = collected.pages[0]["handle"].as_str().unwrap().to_string();
     let stored = match store.lookup(handle.trim_start_matches("out:")).await {
         crate::kernel::spill::SpillLookup::Stored(stored) => Some(stored.text),
@@ -470,6 +474,7 @@ async fn a_stopped_cell_stops_its_crawl() {
         store: None,
         observer: None,
         capture_observer: None,
+        extract_observer: None,
         settings: None,
     }
     .register(&mut handlers);
@@ -619,6 +624,7 @@ async fn the_users_settings_change_what_the_next_crawl_presents() {
         store: None,
         observer: None,
         capture_observer: None,
+        extract_observer: None,
         settings: Some({
             let settings = Arc::clone(&settings);
             Arc::new(move || settings.lock().unwrap().clone()) as CrawlSettings
@@ -990,5 +996,50 @@ async fn a_crawl_archives_every_response_to_its_warc_file() {
             paths(&crawl),
             Some((dir.join("archive/site.warc").display().to_string(), 6))
         )
+    );
+}
+
+/// Every HTML page of a crawl is shaped by `#:format` and carries what
+/// `#:extract` found on it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crawl_formats_and_extracts_every_page() {
+    let site = Site::start(false).await;
+    let crawl = WebCrawlEngine::direct()
+        .crawl(
+            &request(
+                &site,
+                &json!({"maxDepth": 1, "maxPages": 3, "format": "text", "extract": {"heading": "h1", "links": "//li/a/@href"}}),
+            ),
+            &Identity::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut pages: Vec<(String, String, serde_json::Value)> = crawl
+        .pages
+        .iter()
+        .map(|page| {
+            (
+                page["method"].as_str().unwrap_or_default().to_string(),
+                page["title"].as_str().unwrap_or_default().to_string(),
+                page["extract"].clone(),
+            )
+        })
+        .collect();
+    pages.sort_by(|left, right| left.1.cmp(&right.1));
+    let page = |title: &str, heading: &str, link: &str| {
+        (
+            "html-transformed".to_string(),
+            title.to_string(),
+            json!({"heading": [heading], "links": [link]}),
+        )
+    };
+    assert_eq!(
+        pages,
+        vec![
+            page("A", "A", "/a/deep"),
+            page("B", "B", "/"),
+            page("Home", "Home", "/a"),
+        ]
     );
 }

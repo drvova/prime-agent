@@ -660,6 +660,7 @@ impl SessionCounters {
                             ReadKind::Site => "web_read_site_count",
                             ReadKind::Pdf => "web_read_pdf_count",
                             ReadKind::Page => "web_read_page_count",
+                            ReadKind::Transformed => "web_read_transformed_count",
                         },
                         1,
                     );
@@ -694,6 +695,14 @@ impl SessionCounters {
             }
             counts.add("web_crawl_identity_count", u64::from(outcome.identity));
             counts.add("web_crawl_warc_count", u64::from(outcome.archived));
+            counts.add(
+                "web_crawl_transformed_count",
+                u64::from(outcome.per_page.shaped),
+            );
+            counts.add(
+                "web_crawl_extract_count",
+                u64::from(outcome.per_page.extracted),
+            );
             counts.raise(
                 "web_crawl_max_ms",
                 u64::try_from(outcome.elapsed.as_millis()).unwrap_or(u64::MAX),
@@ -714,6 +723,15 @@ impl SessionCounters {
                 1,
             );
             counts.add("web_capture_failed_count", u64::from(!outcome.ok));
+        });
+    }
+
+    /// One kernel `web.extract` (counts only: never a URL, a selector, or a value).
+    pub(crate) fn note_web_extract(&self, outcome: crate::web_crawl::ExtractOutcome) {
+        self.with(|values| {
+            let counts = &mut values.capabilities;
+            counts.add("web_extract_count", 1);
+            counts.add("web_extract_failed_count", u64::from(!outcome.ok));
         });
     }
 

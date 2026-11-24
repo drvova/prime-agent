@@ -1922,6 +1922,7 @@ async fn web_reads_ride_their_own_event() {
             "web_read_site_count": 1,
             "web_read_pdf_count": 1,
             "web_read_page_count": 1,
+            "web_read_transformed_count": 0,
             "web_read_truncated_count": 1,
             "web_read_max_ms": 900,
         })

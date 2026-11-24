@@ -8,10 +8,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use serde_json::Value;
+use anyhow::{anyhow, bail};
+use serde_json::{json, Value};
 
 use super::{
-    capture, identity, parse_request, CaptureOutcome, CrawlOutcome, Identity, WebCrawlEngine,
+    capture, extract, identity, parse_request, CaptureOutcome, CrawlOutcome, ExtractOutcome,
+    Identity, WebCrawlEngine,
 };
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
 use crate::kernel::spill::SpillStore;
@@ -23,6 +25,12 @@ pub(crate) type CrawlObserver = Arc<dyn Fn(CrawlOutcome) + Send + Sync>;
 
 /// Observes each finished `web.capture` (counts only, like crawls).
 pub(crate) type CaptureObserver = Arc<dyn Fn(CaptureOutcome) + Send + Sync>;
+
+/// Observes each finished `web.extract`: whether it succeeded, nothing else.
+pub(crate) type ExtractObserver = Arc<dyn Fn(ExtractOutcome) + Send + Sync>;
+
+/// The largest HTML a `web.extract` call may hand over itself.
+const MAX_EXTRACT_HTML: usize = 8 * 1024 * 1024;
 
 /// Reads the user's `web.crawl` settings, fresh for each crawl (so a change
 /// takes effect for the next one).
@@ -36,12 +44,13 @@ pub(crate) struct WebCrawlHost {
     pub(crate) store: Option<SpillStore>,
     pub(crate) observer: Option<CrawlObserver>,
     pub(crate) capture_observer: Option<CaptureObserver>,
+    pub(crate) extract_observer: Option<ExtractObserver>,
     /// The user's settings; `None` crawls with the honest defaults.
     pub(crate) settings: Option<CrawlSettings>,
 }
 
 impl WebCrawlHost {
-    /// Register the `web.crawl` and `web.capture` handlers.
+    /// Register the `web.crawl`, `web.extract` and `web.capture` handlers.
     pub(crate) fn register(self, handlers: &mut HostRequestHandlers) {
         let host = Arc::new(self);
         let crawler = Arc::clone(&host);
@@ -50,6 +59,22 @@ impl WebCrawlHost {
             host_handler(move |payload| {
                 let host = Arc::clone(&crawler);
                 async move { host.handle(&payload.data).await }
+            }),
+        );
+        let extractor = Arc::clone(&host);
+        handlers.register(
+            "web.extract",
+            host_handler(move |payload| {
+                let host = Arc::clone(&extractor);
+                async move {
+                    let extracted = host.extract(&payload.data).await;
+                    if let Some(observer) = &host.extract_observer {
+                        observer(ExtractOutcome {
+                            ok: extracted.is_ok(),
+                        });
+                    }
+                    extracted
+                }
             }),
         );
         handlers.register(
@@ -67,6 +92,49 @@ impl WebCrawlHost {
             .as_ref()
             .map(|read| read())
             .unwrap_or_default()
+    }
+
+    /// `web.extract`: the values `selectors` find in the given `html`, or in
+    /// the page at `url` read as a one-page crawl (robots.txt and the user's
+    /// identity apply; `render` and `mode` load it in the browser).
+    #[tracing::instrument(skip_all)]
+    async fn extract(&self, data: &Value) -> anyhow::Result<Value> {
+        let selectors = extract::Selectors::parse(data, "selectors", "web.extract")?
+            .ok_or_else(|| anyhow!("web.extract requires selectors"))?;
+        if let Some(html) = data.get("html").and_then(Value::as_str) {
+            if html.len() > MAX_EXTRACT_HTML {
+                bail!("web.extract takes at most {MAX_EXTRACT_HTML} bytes of HTML");
+            }
+            let html = html.to_string();
+            return crate::web_read::on_own_thread("web-extract", move || selectors.extract(&html))
+                .await;
+        }
+        let request = parse_request(&json!({
+            "url": data.get("url"),
+            "render": data.get("render"),
+            "mode": data.get("mode"),
+            "timeoutSeconds": data.get("timeoutSeconds"),
+            "maxPages": 1,
+            "extract": data.get("selectors"),
+        }))?;
+        let identity = Identity::from_settings(&self.settings())?;
+        let crawl = self.engine.crawl(&request, &identity, None).await?;
+        match (crawl.pages.first(), crawl.failed.first()) {
+            (Some(page), _) => page.get("extract").cloned().ok_or_else(|| {
+                anyhow!(
+                    "nothing was extracted from {} ({}): {}",
+                    page["finalUrl"].as_str().unwrap_or_default(),
+                    page["contentType"].as_str().unwrap_or_default(),
+                    page["notes"]
+                )
+            }),
+            (None, Some(failed)) => bail!(
+                "web.extract: {} answered HTTP {}",
+                failed["url"].as_str().unwrap_or_default(),
+                failed["status"]
+            ),
+            (None, None) => bail!("web.extract read nothing: {}", crawl.notes.join("; ")),
+        }
     }
 
     #[tracing::instrument(skip_all)]
@@ -103,6 +171,10 @@ impl WebCrawlHost {
                 elapsed: started.elapsed(),
                 identity: !identity::changes(&settings).is_empty(),
                 archived: crawled.as_ref().is_ok_and(|crawl| crawl.warc.is_some()),
+                per_page: super::PageWork {
+                    shaped: !request.shaping.is_default(),
+                    extracted: request.extract.is_some(),
+                },
             });
         }
         crawled.map(|crawl| crawl.to_json())

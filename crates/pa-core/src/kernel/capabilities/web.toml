@@ -6,6 +6,7 @@ properties = [
   "web_read_site_count",
   "web_read_pdf_count",
   "web_read_page_count",
+  "web_read_transformed_count",
   "web_read_truncated_count",
   "web_read_max_ms",
 ]
@@ -21,8 +22,12 @@ properties = [
   "web_crawl_page_count",
   "web_crawl_identity_count",
   "web_crawl_warc_count",
+  "web_crawl_transformed_count",
+  "web_crawl_extract_count",
   "web_crawl_max_ms",
   "web_screenshot_count",
   "web_pdf_count",
   "web_capture_failed_count",
+  "web_extract_count",
+  "web_extract_failed_count",
 ]

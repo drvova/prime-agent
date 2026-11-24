@@ -39,7 +39,16 @@
 ;; long page is cut at #:max-chars (default 20000) with a note: read one span
 ;; with #:section (an outline anchor, a heading's text, or "L10-L40" for a
 ;; code view). #:timeout is the whole read's deadline in seconds (default 30).
-(define (web-read source #:max-chars [max-chars #f] #:section [section #f] #:timeout [timeout #f])
+;; #:format is 'markdown (the default), 'commonmark, 'text, 'html2text, 'html
+;; or 'xml for an HTML page; #:transform is a hash of 'readability,
+;; 'main-content, 'filter-images, 'filter-svg, 'clean-html (#t) and 'root,
+;; 'exclude (CSS selectors) run on the page first.
+(define (web-read source
+                  #:max-chars [max-chars #f]
+                  #:section [section #f]
+                  #:timeout [timeout #f]
+                  #:format [format #f]
+                  #:transform [transform #f])
   (%host-call "web.read"
               (%options (hash 'url
                               (cond
@@ -49,7 +58,22 @@
                                 [else (error "web-read: the source must be a URL or carry one under 'url")]))
                         'maxChars (and max-chars (%integer "web-read" "#:max-chars" max-chars))
                         'section section
-                        'timeoutSeconds (and timeout (%seconds "web-read" timeout)))))
+                        'timeoutSeconds (and timeout (%seconds "web-read" timeout))
+                        'format (and format (%format "web-read" format))
+                        'transform (and transform (%transform "web-read" transform)))))
+
+;; #:format as a format name string.
+(define (%format who value)
+  (cond
+    [(symbol? value) (symbol->string value)]
+    [(string? value) value]
+    [else (error (string-append who ": #:format is 'markdown, 'commonmark, 'text, 'html2text, 'html or 'xml"))]))
+
+;; #:transform as a hash of options.
+(define (%transform who value)
+  (if (hash? value)
+      value
+      (error (string-append who ": #:transform is a hash such as (hash 'main-content #t 'root \"article\")"))))
 
 ;; `value` as a list of regex strings: one string, or a list of them.
 (define (%patterns who name value)
@@ -111,7 +135,10 @@
                    #:block [block #f]
                    #:init-script [init-script #f]
                    #:locale [locale #f]
-                   #:timezone [timezone #f])
+                   #:timezone [timezone #f]
+                   #:format [format #f]
+                   #:transform [transform #f]
+                   #:extract [extract #f])
   (%host-call "web.crawl"
               (%options (hash 'url
                               (cond
@@ -158,7 +185,43 @@
                         'block (and block (%block "web-crawl" block))
                         'initScript init-script
                         'locale locale
-                        'timezone timezone)))
+                        'timezone timezone
+                        'format (and format (%format "web-crawl" format))
+                        'transform (and transform (%transform "web-crawl" transform))
+                        'extract (and extract (%selectors "web-crawl" "#:extract" extract)))))
+
+;; A selectors map: names to a CSS selector or XPath expression, or a list of them.
+(define (%selectors who name value)
+  (if (hash? value)
+      value
+      (error (string-append who ": " name " is a hash of names to CSS selectors or XPath expressions"))))
+
+;; The values `selectors` (a hash of names to a CSS selector or an XPath
+;; expression, or a list of them) find on a page: a hash of each name to the
+;; list of what its selectors found. `source` is a URL, anything carrying one
+;; under 'url, or HTML text (starting with "<"). A URL is read as a one-page
+;; crawl (robots.txt and the user's web.crawl identity apply); #:render #t or
+;; #:mode 'render / 'smart loads it in the browser; #:timeout in seconds.
+(define (web-extract source selectors
+                     #:render [render #f]
+                     #:mode [mode #f]
+                     #:timeout [timeout #f])
+  (let ([text (cond
+                [(string? source) (trim source)]
+                [(and (hash? source) (string? (hash-try-get source 'url))) (trim (hash-ref source 'url))]
+                [else (error "web-extract: the source must be a URL, carry one under 'url, or be HTML")])])
+    (%host-call "web.extract"
+                (%options (if (and (> (string-length text) 0) (equal? (string-ref text 0) #\<))
+                              (hash 'html text)
+                              (hash 'url text))
+                          'selectors (%selectors "web-extract" "the selectors" selectors)
+                          'render render
+                          'mode (cond
+                                  [(not mode) #f]
+                                  [(symbol? mode) (symbol->string mode)]
+                                  [(string? mode) mode]
+                                  [else (error "web-extract: #:mode is 'http, 'render or 'smart")])
+                          'timeoutSeconds (and timeout (%seconds "web-extract" timeout))))))
 
 ;; #:block as a list of strings: a kind symbol or a URL pattern, or a list
 ;; of them.
