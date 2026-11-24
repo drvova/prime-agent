@@ -673,6 +673,30 @@ impl SessionCounters {
         });
     }
 
+    /// One kernel `web.crawl` (counts only: never a URL, a pattern, or content).
+    pub(crate) fn note_web_crawl(&self, outcome: crate::web_crawl::CrawlOutcome) {
+        use crate::web_crawl::Render;
+        self.with(|values| {
+            let counts = &mut values.capabilities;
+            counts.add("web_crawl_count", 1);
+            counts.add(
+                match outcome.render {
+                    Render::Http => "web_crawl_plain_count",
+                    Render::Browser => "web_crawl_rendered_count",
+                },
+                1,
+            );
+            match outcome.pages {
+                Some(pages) => counts.add("web_crawl_page_count", pages as u64),
+                None => counts.add("web_crawl_failed_count", 1),
+            }
+            counts.raise(
+                "web_crawl_max_ms",
+                u64::try_from(outcome.elapsed.as_millis()).unwrap_or(u64::MAX),
+            );
+        });
+    }
+
     /// One kernel `fs.grep`/`fs.glob`/`fs.find` (counts only: never a pattern or a path).
     pub(crate) fn note_fs_search(&self, fact: crate::fs_search::SearchFact) {
         use crate::fs_search::FsOperation;

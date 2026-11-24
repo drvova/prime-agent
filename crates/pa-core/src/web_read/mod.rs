@@ -33,9 +33,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use url::Url;
 
+pub(crate) use fetch::{Accept, Fetched, Fetcher, HttpStatusError};
 pub(crate) use host::{ReadObserver, WebReadHost};
 
-use fetch::{Accept, Fetched, Fetcher};
 use markdown::{AnchorStyle, Heading};
 
 /// Default whole-read deadline.
@@ -45,7 +45,7 @@ const MAX_TIMEOUT: Duration = Duration::from_mins(2);
 /// Default characters of markdown returned.
 const DEFAULT_MAX_CHARS: usize = 20_000;
 /// Upper bound on a caller-supplied `max_chars`.
-const MAX_MAX_CHARS: usize = 200_000;
+pub(crate) const MAX_MAX_CHARS: usize = 200_000;
 /// Links and outline entries returned at most.
 const MAX_LINKS: usize = 200;
 const MAX_OUTLINE: usize = 200;
@@ -220,12 +220,22 @@ impl WebReadEngine {
     /// server), bypassing any proxy.
     #[cfg(test)]
     pub(crate) fn for_test_server(base: &str) -> Self {
+        WebReadEngine {
+            base_override: Some(base.to_string()),
+            ..Self::direct()
+        }
+    }
+
+    /// An engine that reads URLs as given, bypassing any proxy (tests read
+    /// loopback sites with it).
+    #[cfg(test)]
+    pub(crate) fn direct() -> Self {
         let engine = WebReadEngine {
             client: OnceLock::new(),
-            base_override: Some(base.to_string()),
+            base_override: None,
         };
         let _ = engine.client.set(
-            reqwest::Client::builder()
+            pa_ai::utils::tls::http_client_builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
@@ -234,7 +244,8 @@ impl WebReadEngine {
         engine
     }
 
-    fn client(&self) -> &reqwest::Client {
+    /// The shared client, built on first use (`web-crawl` fetches with it too).
+    pub(crate) fn client(&self) -> &reqwest::Client {
         self.client.get_or_init(|| {
             pa_ai::utils::tls::http_client_builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -359,7 +370,7 @@ fn sniff(fetched: &Fetched) -> Sniffed {
 
 /// Render a fetched body by its content type (CPU-bound work runs on a
 /// blocking thread).
-async fn render(fetched: Fetched) -> anyhow::Result<Document> {
+pub(crate) async fn render(fetched: Fetched) -> anyhow::Result<Document> {
     let kind = sniff(&fetched);
     let content_type = fetched
         .media_type
@@ -469,7 +480,11 @@ async fn render(fetched: Fetched) -> anyhow::Result<Document> {
 }
 
 /// Apply the section (or the URL's own fragment) and the truncation.
-fn finish(request: &ReadRequest, document: Document, elapsed: Duration) -> anyhow::Result<WebPage> {
+pub(crate) fn finish(
+    request: &ReadRequest,
+    document: Document,
+    elapsed: Duration,
+) -> anyhow::Result<WebPage> {
     let mut notes = document.notes;
     let fragment = request
         .url

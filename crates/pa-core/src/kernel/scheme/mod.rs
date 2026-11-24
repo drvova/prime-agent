@@ -64,6 +64,8 @@ pub use cell::StuckCellSink;
 pub(in crate::kernel::scheme) use factory::validate_factory_spec;
 pub use factory::{factory_cli_dispatch, FactoryEnvironment};
 pub(crate) use native::FileReads;
+#[cfg(windows)]
+pub(crate) use native::JobObject;
 
 /// The Scheme side of the host bridge, defined in every session engine after
 /// its `%host-request-json` primitive is registered.

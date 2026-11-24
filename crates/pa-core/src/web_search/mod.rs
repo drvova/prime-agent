@@ -291,7 +291,7 @@ impl WebSearchEngine {
             limits: engine_limits::EngineLimits::new(),
         };
         let _ = engine.client.set(
-            reqwest::Client::builder()
+            pa_ai::utils::tls::http_client_builder()
                 .no_proxy()
                 .build()
                 .expect("test client"),

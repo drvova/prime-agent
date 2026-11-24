@@ -9,3 +9,14 @@ properties = [
   "web_read_truncated_count",
   "web_read_max_ms",
 ]
+
+[[telemetry]]
+event = "agent web crawls"
+properties = [
+  "web_crawl_count",
+  "web_crawl_failed_count",
+  "web_crawl_plain_count",
+  "web_crawl_rendered_count",
+  "web_crawl_page_count",
+  "web_crawl_max_ms",
+]

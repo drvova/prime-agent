@@ -1,4 +1,4 @@
-//! The `web` capability: reading a URL. Its search counters are not a standalone event: they
+//! The `web` capability: reading a URL and crawling a site. Its search counters are not a standalone event: they
 //! ride `agent session ended` (`web_search_*`), whose rule stays in the catalog.
 
 use super::super::{count, duration, required, uuid, EventRule};
@@ -19,5 +19,23 @@ pub(in crate::catalog) const AGENT_WEB_READS: EventRule = EventRule {
         ("web_read_page_count", required(count())),
         ("web_read_truncated_count", required(count())),
         ("web_read_max_ms", required(duration())),
+    ],
+};
+
+/// Kernel `web.crawl` adoption for one session, emitted at session end beside `agent web reads`
+/// only when the session crawled a site: crawls, crawls that failed outright, plain and rendered
+/// (a local browser) crawls, pages returned, and the slowest crawl. Counts only: never a URL, a
+/// pattern, a title, or content.
+pub(in crate::catalog) const AGENT_WEB_CRAWLS: EventRule = EventRule {
+    name: "agent web crawls",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("web_crawl_count", required(count())),
+        ("web_crawl_failed_count", required(count())),
+        ("web_crawl_plain_count", required(count())),
+        ("web_crawl_rendered_count", required(count())),
+        ("web_crawl_page_count", required(count())),
+        ("web_crawl_max_ms", required(duration())),
     ],
 };

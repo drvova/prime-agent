@@ -18,10 +18,13 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 # `http2` enables ALPN-negotiated HTTP/2 for providers whose TS transport
 # speaks it (bedrock); every other provider stays pinned to HTTP/1.1 via the
 # shared client's `http1_only()`.
-reqwest = { version = "0.12", default-features = false, features = [
+# TLS is rustls on ring with no built-in roots: `utils::tls` installs ring
+# as the process's crypto provider and gives every client the native store
+# plus the webpki roots (and a session's extra CA bundle), as 0.12's
+# `rustls-tls-native-roots` + `rustls-tls-webpki-roots` did.
+reqwest = { version = "0.13", default-features = false, features = [
     "json",
-    "rustls-tls-native-roots",
-    "rustls-tls-webpki-roots",
+    "rustls-no-provider",
     "gzip",
     "http2",
 ] }
@@ -44,8 +47,8 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
 ] }
 rustls-native-certs = "0.8"
-webpki-roots = "1"
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
+webpki-root-certs = "1"
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
 http = "1"
 
 [dev-dependencies]

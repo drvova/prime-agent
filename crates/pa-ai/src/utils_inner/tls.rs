@@ -96,6 +96,14 @@ impl ClientEnvironment {
     }
 }
 
+/// Make ring the process's rustls crypto provider unless one is already
+/// installed (the one installed first stays, as reqwest 0.12 deferred to
+/// it): reqwest 0.13 without aws-lc-rs refuses to build a client otherwise.
+pub fn install_crypto_provider() {
+    // `Err` only says a provider is already installed, which is the goal.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// A client builder with the process's trust store and the calling
 /// session's proxies and extra CA bundle.
 ///
@@ -104,18 +112,19 @@ impl ClientEnvironment {
 /// Never: every certificate below is a DER blob the root-store filter or
 /// the PEM parser already accepted.
 pub fn http_client_builder() -> reqwest::ClientBuilder {
+    install_crypto_provider();
     let environment = ClientEnvironment::current();
-    let mut builder = reqwest::Client::builder().tls_built_in_native_certs(false);
-    for cert in &*NATIVE_CERTS {
-        builder = builder.add_root_certificate(
-            reqwest::Certificate::from_der(cert).expect("native CA certificate"),
-        );
-    }
-    for cert in &*extra_certs(environment.extra_ca.as_ref()) {
-        builder = builder.add_root_certificate(
-            reqwest::Certificate::from_der(cert).expect("extra CA certificate"),
-        );
-    }
+    // Exactly these roots, verified by webpki: the OS store, the webpki
+    // (Mozilla) roots and the session's extra bundle, as reqwest 0.12's
+    // native-roots + webpki-roots features gave. Without `tls_certs_only`
+    // reqwest 0.13 hands the roots to the platform verifier instead.
+    let mut builder = reqwest::Client::builder().tls_certs_only(
+        NATIVE_CERTS
+            .iter()
+            .chain(webpki_root_certs::TLS_SERVER_ROOT_CERTS)
+            .chain(extra_certs(environment.extra_ca.as_ref()).iter())
+            .map(|cert| reqwest::Certificate::from_der(cert).expect("CA certificate")),
+    );
     if let Some([http_upper, http, https_upper, https, all_upper, all, no_upper, no]) =
         environment.proxies
     {
@@ -163,7 +172,7 @@ pub(crate) fn websocket_connector() -> tokio_tungstenite::Connector {
         let mut roots = rustls::RootCertStore::empty();
         roots.add_parsable_certificates(NATIVE_CERTS.iter().cloned());
         roots.add_parsable_certificates(extra.iter().cloned());
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        roots.add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
         Arc::new(
             rustls::ClientConfig::builder()
                 .with_root_certificates(roots)

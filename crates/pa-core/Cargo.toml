@@ -38,7 +38,15 @@ getrandom = "0.3"
 url = "2"
 globset = "0.4"
 toml.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots", "json", "stream", "gzip"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "stream", "gzip", "query", "form"] }
+# `web-crawl`: spider's frontier (robots.txt, depth, page limits, include and
+# exclude patterns, sitemaps) over pa-core's own bounded fetch. No default
+# features: those spoof the user agent, open a sqlite store and start
+# io_uring and NUMA threads. `chrome` drives a local browser for
+# `#:render #t`; the browser process itself is started by `web_crawl`.
+spider = { version = "=2.54.2", default-features = false, features = ["sync", "regex", "headers", "sitemap", "chrome"] }
+# Checks `web-crawl`'s include and exclude patterns as spider will compile them.
+regex = "1"
 tar = "0.4"
 flate2 = "1"
 unicode-normalization = "0.1"

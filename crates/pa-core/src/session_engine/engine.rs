@@ -713,6 +713,18 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         spill_store.as_ref(),
         ctx_observer.as_ref(),
     );
+    // `web.crawl`: the kernel's `web-crawl`; pages past a crawl's output budget
+    // page out to the spill store. Telemetry counts crawls and pages (never a URL).
+    crate::web_crawl::WebCrawlHost {
+        engine: crate::web_crawl::WebCrawlEngine::shared(),
+        store: spill_store.clone(),
+        observer: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |outcome| counters.note_web_crawl(outcome))
+                as crate::web_crawl::CrawlObserver
+        }),
+    }
+    .register(&mut handlers);
     // `fs.symbol`: the project's symbol index, built in the background from
     // its first query on; a definition's source pages out to the spill store.
     crate::symbol_index::register_symbol_handler(
