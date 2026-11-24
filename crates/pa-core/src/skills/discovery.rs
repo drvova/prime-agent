@@ -258,7 +258,12 @@ fn load_skills_from_dir_internal(
             state,
         );
     };
-    for entry in entries.flatten() {
+    // By name, not in the filesystem's listing order (hash order on ext4,
+    // newest first on tmpfs): the skills list, the prompt's skills block and
+    // `reuse-report` read the same on every machine and every session.
+    let mut entries: Vec<std::fs::DirEntry> = entries.flatten().collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with('.') || name == "node_modules" {
             continue;
