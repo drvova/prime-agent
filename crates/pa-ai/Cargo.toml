@@ -2,6 +2,7 @@
 name = "pa-ai"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Provider APIs, model registry, and streaming for Prime Agent."
 

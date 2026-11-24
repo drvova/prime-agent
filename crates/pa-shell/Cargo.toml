@@ -2,6 +2,7 @@
 name = "pa-shell"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "In-process bash-compatible shell and session-safe utilities for Prime Agent."
 

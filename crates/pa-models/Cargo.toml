@@ -2,6 +2,7 @@
 name = "pa-models"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Live model catalog: fetch, no-cold-start chain, transport pinning, Prime Inference."
 
