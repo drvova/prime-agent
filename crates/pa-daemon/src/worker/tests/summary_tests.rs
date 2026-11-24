@@ -206,9 +206,12 @@ fn live_summary_usage_is_the_catalog_fold() {
     ];
     std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
     let store = crate::session_store::SessionFile::open_windowed(&path).unwrap();
-    assert!(
+    // The windowed reader is unix-only (it anchors on inode identity):
+    // elsewhere the same summary comes from the full history.
+    assert_eq!(
         store.window.is_some(),
-        "the fixture must serve a windowed open"
+        cfg!(unix),
+        "the fixture must serve a windowed open where the window runs"
     );
     let core = SessionCore::test_core(Some(store), "/tmp".to_string());
     let summary = session_summary(&core, inputs());

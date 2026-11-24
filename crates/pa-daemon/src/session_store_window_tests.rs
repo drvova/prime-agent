@@ -3,6 +3,7 @@ use super::*;
 /// The attribution fold survives the windowed fast open on both sides of the
 /// compaction boundary: the windowed store's `session_stats` equals the full
 /// open's, never losing or double-counting the attributed child spend.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn windowed_open_folds_attributions_on_both_sides_of_the_boundary() {
     let dir = tempfile::tempdir().unwrap();
@@ -87,6 +88,7 @@ fn windowed_open_folds_attributions_on_both_sides_of_the_boundary() {
 
 /// Hydrating a windowed store keeps reporting the billed rows appended
 /// afterwards to the engine's sink.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn full_history_hydration_keeps_the_billed_row_sink() {
     let dir = tempfile::tempdir().unwrap();
@@ -125,6 +127,7 @@ fn full_history_hydration_keeps_the_billed_row_sink() {
     assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn window_preserves_transcript_metadata_and_append_then_hydrate() {
     let dir = tempfile::tempdir().unwrap();
@@ -320,6 +323,7 @@ fn usage_of(input: u64, output: u64, cache_read: u64, total: f64) -> Value {
 /// The tool-call seed walk counts on both sides of the window cut: the
 /// folded prefix rides `older_path_stats`, the retained rows the store
 /// entries, and a windowed open seeds the same count a full open does.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn windowed_tool_call_count_matches_the_full_open_across_the_cut() {
     let dir = tempfile::tempdir().unwrap();
@@ -562,6 +566,7 @@ fn walk_pins_the_compaction_boundary_sequences() {
     assert_eq!(messages[4]["content"], "u3");
 }
 
+#[cfg(unix)] // only the unix-only windowed-reader tests use it
 fn assert_windowed_restored_settings_match_the_full_open(name: &str, path: &std::path::Path) {
     let windowed = SessionFile::open_windowed(path).unwrap();
     assert!(
@@ -585,6 +590,7 @@ fn assert_windowed_restored_settings_match_the_full_open(name: &str, path: &std:
     );
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn windowed_restored_settings_match_the_full_open() {
     let dir = tempfile::tempdir().unwrap();
@@ -626,6 +632,7 @@ fn windowed_restored_settings_match_the_full_open() {
     assert_windowed_restored_settings_match_the_full_open("whole-file window", &path);
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn non_message_compaction_boundary_retains_the_persisted_timeline() {
     for boundary_type in ["custom", "session_state"] {

@@ -272,7 +272,7 @@ impl SessionFile {
         Ok(file)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))] // only the unix-only windowed-reader tests use it
     pub(super) fn ensure_full_history(&mut self) -> Result<()> {
         if self.window.is_some() {
             let full = Self::open(&self.path)?;

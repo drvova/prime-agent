@@ -257,6 +257,7 @@ fn aborted_assistant_usage_is_skipped() {
 /// never loads the pre-cut ancestry and must still report the same numbers
 /// as the full store — the kept region's counts and the whole branch's spend,
 /// the billed rows on both sides of the cut included.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn compaction_boundary_serves_the_windowed_reader() {
     let dir = tempfile::TempDir::new().unwrap();

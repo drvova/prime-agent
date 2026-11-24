@@ -391,6 +391,7 @@ async fn pages_continue_into_pre_compaction_history_with_one_summary() {
 
 /// `get_session_messages` reads a slice inside the window without hydrating, its indexes
 /// counting the unloaded prefix; a slice reaching into the prefix hydrates the store.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[tokio::test]
 async fn session_messages_hydrate_only_for_the_unloaded_prefix() {
     let (_tmp, dir) = session_dir();

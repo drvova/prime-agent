@@ -4,6 +4,7 @@ use super::*;
 use crate::goals::MAX_THREAD_GOAL_OBJECTIVE_CHARS;
 use crate::session::manager::SessionManager;
 use pa_types::ai::UserContent;
+#[cfg(unix)] // only the unix-only windowed-reader tests use it
 use std::fmt::Write as _;
 
 /// The latest persisted goal state with the terminal row reverted:
@@ -149,6 +150,7 @@ fn usage(input: u64, output: u64) -> pa_types::ai::Usage {
     }
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[tokio::test]
 async fn compacted_goal_restore_and_mutation_do_not_hydrate_history() {
     let dir = tempfile::tempdir().unwrap();
