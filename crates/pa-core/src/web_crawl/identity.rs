@@ -188,7 +188,7 @@ impl Identity {
         website
             .with_respect_robots_txt(self.respect_robots)
             .with_user_agent(Some(match &self.user_agent {
-                UserAgent::Rotating => spider::configuration::get_ua(render == Render::Browser),
+                UserAgent::Rotating => spider::configuration::get_ua(render != Render::Http),
                 UserAgent::Honest | UserAgent::Custom(_) => self.user_agent(),
             }))
             .with_stealth(self.stealth)
@@ -197,7 +197,7 @@ impl Identity {
             // A plain crawl's requests are pa-core's own: `site_headers` and
             // `clients` carry these.
             Render::Http => {}
-            Render::Browser => {
+            Render::Browser | Render::Smart => {
                 if !self.headers.is_empty() {
                     website.with_headers(Some(self.headers.clone()));
                 }

@@ -591,7 +591,7 @@ fn browser_options_need_render() {
         .map_err(|error| error.to_string());
     assert_eq!(
         refused,
-        Err("web.crawl waitSelector needs render: the browser does it".to_string())
+        Err("web.crawl waitSelector needs render or smart mode: the browser does it".to_string())
     );
 }
 
@@ -863,6 +863,90 @@ async fn basic_credentials_open_a_protected_site() {
             ["/", "/a", "/a/deep", "/b", "/docs/one", "/docs/two"]
                 .map(str::to_string)
                 .to_vec(),
+            Vec::new()
+        )
+    );
+}
+
+/// `#:mode 'smart` reads every page over HTTP and loads in the browser only
+/// the page whose HTML asks for JavaScript (an app shell loading its
+/// bundles): the app page reads as the
+/// browser shows it, and the plain page is never rendered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_smart_crawl_renders_only_the_page_that_needs_it() {
+    const CHROMIUM: &str = "/opt/pw-browsers/chromium";
+    if !std::path::Path::new(CHROMIUM).exists() {
+        eprintln!("skipped: no Chromium at {CHROMIUM} to render with");
+        return;
+    }
+    let site = Site::serving(
+        HashMap::from([
+            ("/", ("text/html", page("Home", &["/plain", "/app"]))),
+            (
+                "/plain",
+                (
+                    "text/html",
+                    page("Plain", &[]).replace("</main>", "</main><img src=\"/plain.png\">"),
+                ),
+            ),
+            (
+                "/app",
+                (
+                    "text/html",
+                    "<!doctype html><html><head><title>App</title></head><body><noscript>please enable javascript to use this app</noscript><main id=\"m\"></main><script src=\"/app/1.js\"></script><script src=\"/app/2.js\"></script><script src=\"/app/3.js\"></script><script src=\"/app/4.js\"></script><script>document.getElementById('m').innerHTML='<h1>App</h1><p>This paragraph exists only after the app script ran in a browser.</p>';</script></body></html>".to_string(),
+                ),
+            ),
+        ]),
+        false,
+    )
+    .await;
+    let scope = pa_types::session_scope::SessionScope::new(
+        "smart".to_string(),
+        std::env::temp_dir(),
+        BTreeMap::from([(browser::BROWSER_PATH_VAR.to_string(), CHROMIUM.to_string())]),
+        BTreeSet::new(),
+    );
+    let crawl = {
+        let _scope = pa_types::session_scope::enter(Some(scope));
+        let request =
+            parse_request(&json!({"url": format!("{}/", site.base), "mode": "smart"})).unwrap();
+        WebCrawlEngine::direct()
+            .crawl(&request, &Identity::default(), None)
+            .await
+    }
+    .unwrap();
+    let app = crawl
+        .pages
+        .iter()
+        .find(|page| {
+            page["finalUrl"]
+                .as_str()
+                .is_some_and(|url| url.ends_with("/app"))
+        })
+        .and_then(|page| page["markdown"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    // Chrome's requests carry client hints; pa-core's fetch does not. The
+    // browser renders the HTTP body it is handed, so a rendered page shows
+    // in the browser asking for what the page loads.
+    let by_browser = |path: &str| {
+        heads_for(&site, path)
+            .iter()
+            .any(|head| head.contains("sec-ch-ua"))
+    };
+    assert_eq!(
+        (
+            paths(&crawl),
+            app.contains("This paragraph exists only after the app script ran"),
+            by_browser("/app/1.js"),
+            site.hits().contains("/plain.png"),
+            browsers_left().await,
+        ),
+        (
+            ["/", "/app", "/plain"].map(str::to_string).to_vec(),
+            true,
+            true,
+            false,
             Vec::new()
         )
     );

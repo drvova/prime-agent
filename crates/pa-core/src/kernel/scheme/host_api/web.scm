@@ -66,7 +66,9 @@
 ;; (default 20, at most 200) pages #:max-depth (default 3) links deep.
 ;; #:include / #:exclude are URL regexes (one or a list); #:max-chars cuts
 ;; each page (default 8000); #:sitemap #t also reads /sitemap.xml;
-;; #:render #t loads pages in a local headless Chrome; #:timeout is the
+;; #:render #t loads pages in a local headless Chrome (#:mode 'render);
+;; #:mode 'smart reads over HTTP and loads in the browser only a page that
+;; needs JavaScript; #:timeout is the
 ;; whole crawl's deadline in seconds (default 60). Pages past the result's
 ;; output budget carry 'handle for ctx-page instead of their markdown.
 ;; Reach: #:budget (a hash of path prefix to pages, "*" for all),
@@ -88,6 +90,7 @@
                    #:subdomains [subdomains #f]
                    #:sitemap [sitemap #f]
                    #:render [render #f]
+                   #:mode [mode #f]
                    #:timeout [timeout #f]
                    #:budget [budget #f]
                    #:external-domains [external-domains #f]
@@ -121,6 +124,11 @@
                         'subdomains subdomains
                         'sitemap sitemap
                         'render render
+                        'mode (cond
+                                [(not mode) #f]
+                                [(symbol? mode) (symbol->string mode)]
+                                [(string? mode) mode]
+                                [else (error "web-crawl: #:mode is 'http, 'render or 'smart")])
                         'timeoutSeconds (and timeout (%seconds "web-crawl" timeout))
                         'budget budget
                         'externalDomains (and external-domains

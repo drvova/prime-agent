@@ -103,6 +103,10 @@ pub(crate) enum Render {
     Http,
     /// A local headless Chrome: the DOM after the page's scripts ran.
     Browser,
+    /// Plain HTTP first; a page whose HTML says it needs JavaScript (an
+    /// app shell, a framework's client bundle, a `<noscript>` asking for
+    /// it) is loaded again in the browser (spider's `crawl_smart`).
+    Smart,
 }
 
 /// What adoption telemetry learns of one crawl: counts only.
@@ -221,19 +225,25 @@ impl WebCrawlEngine {
         // Upstream reads the site's /sitemap.xml after its links unless told not to.
         website.with_ignore_sitemap(!request.sitemap);
         request.reach.apply(&mut website, request.max_pages);
+        // Smart mode's upgrade, whatever `SPIDER_CHROME_RENDER_UPGRADE` in
+        // the daemon's environment says.
+        website.with_enhancement(
+            spider::configuration::CrawlEnhancement::RenderUpgrade,
+            request.render == Render::Smart,
+        );
         request.browsing.apply(&mut website);
         let mut notes = Vec::new();
-        if request.render == Render::Browser
+        if request.render != Render::Http
             && identity
                 .site_headers
                 .contains_key(reqwest::header::AUTHORIZATION)
         {
-            notes.push("web.crawl.auth is sent on plain crawls only: a browser would send it to every host a page loads from".to_string());
+            notes.push("web.crawl.auth is sent on plain HTTP reads only: a browser would send it to every host a page loads from".to_string());
         }
         // Kept until the crawl's end: dropping it kills the browser.
         let browser = match request.render {
             Render::Http => None,
-            Render::Browser => {
+            Render::Browser | Render::Smart => {
                 let program = browser::find().ok_or_else(|| anyhow!(browser::NO_BROWSER))?;
                 let started = browser::Browser::start(&program, &[]).await?;
                 website.with_chrome_connection(Some(started.endpoint.clone()));
@@ -251,6 +261,7 @@ impl WebCrawlEngine {
                     match request.render {
                         Render::Http => website.crawl_raw().await,
                         Render::Browser => website.crawl().await,
+                        Render::Smart => website.crawl_smart().await,
                     }
                 };
                 tokio::pin!(crawl);
@@ -376,7 +387,7 @@ impl<'a> Collected<'a> {
             .and_then(|value| value.split(';').next())
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty())
-            .or_else(|| (self.request.render == Render::Browser).then(|| "text/html".to_string()));
+            .or_else(|| (self.request.render != Render::Http).then(|| "text/html".to_string()));
         let fetched = Fetched {
             final_url,
             media_type,
@@ -455,6 +466,7 @@ impl Crawl {
             match self.render {
                 Render::Http => "http",
                 Render::Browser => "rendered",
+                Render::Smart => "smart",
             },
             if self.truncated { ", truncated" } else { "" }
         )];
@@ -488,7 +500,12 @@ impl Crawl {
             "url": self.url,
             "render": match self.render {
                 Render::Http => false,
-                Render::Browser => true,
+                Render::Browser | Render::Smart => true,
+            },
+            "mode": match self.render {
+                Render::Http => "http",
+                Render::Browser => "render",
+                Render::Smart => "smart",
             },
             "pages": self.pages,
             "failed": self.failed,
@@ -626,10 +643,14 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
         }
         Some(_) => bail!("web.crawl timeoutSeconds must be positive"),
     };
-    let render = if flag("render") {
-        Render::Browser
-    } else {
-        Render::Http
+    let render = match (data.get("mode").and_then(Value::as_str), flag("render")) {
+        (None | Some("http"), false) => Render::Http,
+        (None | Some("render"), true) | (Some("render"), false) => Render::Browser,
+        (Some("smart"), false) => Render::Smart,
+        (Some("http" | "smart"), true) => {
+            bail!("web.crawl render #t is mode render; pass one of them")
+        }
+        (Some(other), _) => bail!("web.crawl mode must be http, render or smart; got {other:?}"),
     };
     Ok(CrawlRequest {
         url,
@@ -658,6 +679,6 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
         render,
         timeout,
         reach: options::Reach::parse(data)?,
-        browsing: options::Browsing::parse(data, render == Render::Browser)?,
+        browsing: options::Browsing::parse(data, render != Render::Http)?,
     })
 }

@@ -37,6 +37,16 @@ spider builds itself routes its connects through that runtime; a client set
 with `Website::set_http_client`, which pa-core always does, never does. The
 patch starts the runtime only when no client was supplied.
 
+## `src/page.rs`: a smart crawl keeps the page it rendered
+
+`Page::links_stream_smart` (both copies, with and without `full_resources`)
+takes the HTTP body, and when its upgrade score says the page needs
+JavaScript renders it in the browser and assigns the rendered page to
+`self`, then puts the HTTP body back over it unconditionally, so
+`crawl_smart` delivered the unrendered HTML and kept only the rendered
+page's links. The patch puts the HTTP body back only when nothing replaced
+it.
+
 Drop the vendored copy with the spider release that declares reqwest without
 default features and makes `dynamic-versions` optional (and the runtime
 lazy), or once pa-core no longer needs spider.

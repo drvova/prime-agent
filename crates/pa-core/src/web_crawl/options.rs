@@ -267,7 +267,7 @@ impl Browsing {
                 .iter()
                 .find(|option| data.get(**option).is_some_and(|value| !value.is_null()))
             {
-                bail!("web.crawl {option} needs render: the browser does it");
+                bail!("web.crawl {option} needs render or smart mode: the browser does it");
             }
             return Ok(Browsing::default());
         }

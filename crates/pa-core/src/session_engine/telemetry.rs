@@ -684,6 +684,7 @@ impl SessionCounters {
                 match outcome.render {
                     Render::Http => "web_crawl_plain_count",
                     Render::Browser => "web_crawl_rendered_count",
+                    Render::Smart => "web_crawl_smart_count",
                 },
                 1,
             );
