@@ -120,8 +120,9 @@ fn posix_join(a: &str, b: &str) -> String {
 }
 
 /// Node `path.win32.join(a, b)`: backslash separation plus lexical
-/// normalization with both `/` and `\\` as segment boundaries.
-#[cfg(windows)]
+/// normalization with both `/` and `\\` as segment boundaries; a rooted
+/// `a` (either separator) stays rooted, and a UNC `a` keeps its two.
+#[cfg(any(windows, test))]
 fn win32_join(a: &str, b: &str) -> String {
     let mut segments: Vec<String> = Vec::new();
     for part in [a, b] {
@@ -136,8 +137,11 @@ fn win32_join(a: &str, b: &str) -> String {
         }
     }
     let mut joined = segments.join("\\");
-    if a.starts_with('\\') {
-        joined.insert(0, '\\');
+    let mut leading = a.chars().take_while(|c| win32_is_path_separator(*c));
+    match (leading.next(), leading.next()) {
+        (Some(_), Some(_)) => joined.insert_str(0, "\\\\"),
+        (Some(_), None) => joined.insert(0, '\\'),
+        (None, _) => {}
     }
     if joined.is_empty() {
         joined.push('.');
@@ -500,7 +504,10 @@ pub fn resolve_read_path(file_path: &str, cwd: &str) -> String {
 mod tests {
     use super::*;
 
+    /// POSIX expansion (the join is platform-picked, so a POSIX expectation
+    /// is a not-windows test; `win32_join_matches_node_outputs` is the sibling).
     #[test]
+    #[cfg(not(windows))]
     fn expand_tilde() {
         assert_eq!(expand_path_platform("~", Some("/home/u")), "/home/u");
         assert_eq!(
@@ -516,8 +523,35 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn strips_at_prefix() {
         assert_eq!(expand_path_platform("@~/f", Some("/h")), "/h/f");
+    }
+
+    /// `path.win32.join` as Node answers it (`node -e` over the same inputs):
+    /// the join a `~` expansion takes on Windows.
+    #[test]
+    fn win32_join_matches_node_outputs() {
+        let cases = [
+            (r"C:\Users\u", "sub/x"),
+            ("/home/u", "sub/x"),
+            ("/h", "f"),
+            (r"\\server\share", r"dir\..\x"),
+            ("rel", "x"),
+            ("", ""),
+        ];
+        let joined: Vec<String> = cases.iter().map(|(a, b)| win32_join(a, b)).collect();
+        assert_eq!(
+            joined,
+            [
+                r"C:\Users\u\sub\x",
+                r"\home\u\sub\x",
+                r"\h\f",
+                r"\\server\share\x",
+                r"rel\x",
+                ".",
+            ]
+        );
     }
 
     /// POSIX dispatcher semantics; the win32 sibling lives below (the dispatcher is
