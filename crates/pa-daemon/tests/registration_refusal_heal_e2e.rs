@@ -251,10 +251,17 @@ fn a_refused_registration_retires_the_worker() {
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(agent_dir.join("sessions")).expect("sessions dir");
     let _daemon = spawn_daemon(&socket, &agent_dir);
-    // Binding the socket precedes the boot predecessor census. Wait for the
-    // accept loop's hello before spawning our intentionally descriptorless
-    // worker, so startup cannot mistake it for a predecessor to reap.
-    drop(Client::connect(&socket));
+    // The boot predecessor census runs beside the accept loop, so the hello
+    // alone does not mean it is done: a worker spawned right after it was
+    // reaped as a predecessor on a loaded runner. A command's response is the
+    // readiness signal - commands wait for the reap - so only then spawn our
+    // intentionally descriptorless worker.
+    {
+        let mut client = Client::connect(&socket);
+        client.send_command("boot", &json!({ "type": "get_state" }));
+        // Its arrival is the signal, whatever it says.
+        client.read_response("boot");
+    }
 
     // A bare worker with an identity no descriptor backs: the supervisor can only refuse it.
     // The scripted engine keeps the runtime self-contained, so the retire path under test
