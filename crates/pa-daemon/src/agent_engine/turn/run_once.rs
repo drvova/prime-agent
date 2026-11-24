@@ -215,20 +215,32 @@ impl AgentSessionEngine {
                                             let _ = tx.send(EngineEvent::UserMessage(value));
                                         }
                                     }
-                                    // The kernel-reset notice rides the turn's prompt
-                                    // messages from the engine's next-turn mailbox: the
-                                    // worker owns the transcript, so the row reaches it
-                                    // (and the attached clients) here. Without the durable
-                                    // row a later rebuild could not tell the model was
-                                    // already told.
-                                    // The guiding row after a reply cut off at the output limit
-                                    // is the worker's to keep the same way.
+                                    // The rows the session engine adds to a turn itself,
+                                    // which no worker lane saw: the worker owns the
+                                    // transcript, so each reaches it (and the attached
+                                    // clients) here, or the saved session differs from what
+                                    // the model was shown and a rebuild or resume loses it.
+                                    // The next-turn mailbox's rows ride the turn's prompt
+                                    // messages: the kernel-reset notice (without it a later
+                                    // rebuild could not tell the model was already told), the
+                                    // unavailable Scheme skills and the per-model prompt
+                                    // error the kernel and the build reported. The guiding
+                                    // row after a reply cut off at the output limit is
+                                    // admitted as its own prompt, and a subdirectory's
+                                    // context file is steered in after the cell that worked
+                                    // there. The other custom rows of a run came from a
+                                    // worker lane, which saved them as it delivered them,
+                                    // except the first turn's harness digest, which each
+                                    // lifetime renders afresh.
                                     pa_agent::types::AgentMessage::Custom(custom)
                                         if matches!(
                                             custom.payload.get("customType").and_then(Value::as_str),
                                             Some(
                                                 pa_core::session_engine::state_restore_notice::KERNEL_STATE_RESTORED_CUSTOM_TYPE
+                                                    | pa_core::kernel::scheme::skills::SCHEME_SKILLS_UNAVAILABLE_CUSTOM_TYPE
+                                                    | pa_core::prompts::model_prompts::MODEL_PROMPT_ERROR_CUSTOM_TYPE
                                                     | pa_core::session_engine::messages::OUTPUT_LIMIT_CONTINUATION_CUSTOM_TYPE
+                                                    | pa_core::session_engine::messages::NESTED_CONTEXT_CUSTOM_TYPE
                                             )
                                         ) =>
                                     {
