@@ -33,7 +33,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use url::Url;
 
-pub(crate) use fetch::{Accept, Fetched, Fetcher, HttpStatusError};
+pub(crate) use fetch::{Accept, Fetched, Fetcher, HttpStatusError, RequestIdentity};
 pub(crate) use host::{ReadObserver, WebReadHost};
 
 use markdown::{AnchorStyle, Heading};
@@ -269,6 +269,7 @@ impl WebReadEngine {
             client: self.client(),
             base_override: self.base_override.as_deref(),
             timeout: request.timeout,
+            identity: None,
         };
         let document =
             match tokio::time::timeout(request.timeout, document(&fetcher, &request.url)).await {

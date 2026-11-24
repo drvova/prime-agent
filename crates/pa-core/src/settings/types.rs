@@ -311,6 +311,42 @@ pub struct TelemetrySettings {
     pub local_mirror: Option<bool>,
 }
 
+/// `web` (global settings only): how the kernel's web functions present
+/// themselves to the sites they reach.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSettings {
+    pub crawl: Option<WebCrawlSettings>,
+}
+
+/// `web.crawl`: the identity `web-crawl` crawls with. Read from the global
+/// scope at each crawl, so a change takes effect for the next crawl; the
+/// model cannot turn any of it on, and neither can a project's settings.
+/// Unset, a crawl obeys robots.txt and announces itself as Prime Agent.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebCrawlSettings {
+    /// Obey the site's robots.txt (unset means on).
+    pub respect_robots_txt: Option<bool>,
+    /// The `User-Agent` every crawl request sends instead of Prime Agent's.
+    pub user_agent: Option<String>,
+    /// Send a different real browser's `User-Agent` on each request
+    /// (ignored when `userAgent` is set).
+    pub rotate_user_agent: Option<bool>,
+    /// Extra request headers, sent only to the crawled site's hosts.
+    pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// A `Cookie` header value (`a=1; b=2`), sent only to the crawled
+    /// site's hosts.
+    pub cookies: Option<String>,
+    /// Proxies requests go through (`http://`, `https://`, `socks5://`,
+    /// `socks5h://`); with more than one, each request takes the next.
+    pub proxies: Option<Vec<String>>,
+    /// A rendered crawl hides that the browser is automated.
+    pub stealth: Option<bool>,
+    /// A rendered crawl presents a consistent real-browser fingerprint.
+    pub fingerprint: Option<bool>,
+}
+
 /// `cacheRetention`: the prompt-cache lifetime requested from providers with
 /// explicit cache markers. `short` (the default) is the provider's default
 /// lifetime (five minutes on Anthropic, writes at 1.25x input); `long` asks
@@ -459,6 +495,9 @@ pub struct Settings {
     /// Lets the kernel's `model.set_effort(...)` change the session's thinking level (unset
     /// means off: it changes cost). Read from the global scope only.
     pub repl_can_change_effort: Option<bool>,
+    /// `web`: the web functions' identity settings. Read from the global
+    /// scope only.
+    pub web: Option<WebSettings>,
     /// Unknown keys survive load/save round-trips (forward compatibility).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,

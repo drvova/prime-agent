@@ -691,6 +691,7 @@ impl SessionCounters {
                 Some(pages) => counts.add("web_crawl_page_count", pages as u64),
                 None => counts.add("web_crawl_failed_count", 1),
             }
+            counts.add("web_crawl_identity_count", u64::from(outcome.identity));
             counts.raise(
                 "web_crawl_max_ms",
                 u64::try_from(outcome.elapsed.as_millis()).unwrap_or(u64::MAX),

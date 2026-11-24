@@ -2,12 +2,12 @@
 //! The kernel's `(web-crawl url ...)` reaches it through the `web.crawl`
 //! host request.
 //!
-//! The spider crate keeps the frontier: robots.txt (always honoured), the
-//! same-site rule, the depth and page limits, include and exclude patterns,
+//! The spider crate keeps the frontier: robots.txt (honoured unless the
+//! user's settings say otherwise, [`identity`]), the same-site rule, the depth and page limits, include and exclude patterns,
 //! the sitemap, a polite delay and concurrency. The fetch is pa-core's own:
 //! spider hands each URL to [`BoundedFetch`], which reads it with
 //! `web.read`'s client and fetcher (bounded bodies, redirects followed by
-//! hand, an honest user agent, the session's proxies and CA bundle), and
+//! hand, the crawl's identity, the session's proxies and CA bundle), and
 //! every page is rendered by `web.read`'s renderer, so a crawled page and a
 //! read page are the same object. With `render` a local Chrome loads each
 //! page instead ([`browser`]); spider drives it over `DevTools`.
@@ -21,6 +21,7 @@
 
 mod browser;
 mod host;
+mod identity;
 mod options;
 #[cfg(test)]
 mod tests;
@@ -35,7 +36,8 @@ use serde_json::{json, Value};
 use spider::fetch_engine::{EngineError, EngineRequest, EngineResponse, HttpFetchEngine};
 use url::Url;
 
-pub(crate) use host::{CrawlObserver, WebCrawlHost};
+pub(crate) use host::{CrawlObserver, CrawlSettings, WebCrawlHost};
+pub(crate) use identity::{changes as identity_changes, Identity};
 
 use crate::kernel::spill::{SpillCopy, SpillStore};
 use crate::web_read::{Accept, Fetched, Fetcher, HttpStatusError, ReadRequest, WebPage};
@@ -66,7 +68,7 @@ const DELAY_MS: u64 = 250;
 const PAGE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The largest page body a rendered crawl keeps.
 const RENDERED_PAGE_BYTES: f64 = 8.0 * 1024.0 * 1024.0;
-/// What a crawl announces itself as.
+/// What a crawl announces itself as unless the user's settings say otherwise.
 const USER_AGENT: &str =
     "Mozilla/5.0 (compatible; prime-agent web.crawl; +https://github.com/PrimeIntellect-ai/prime-agent)";
 
@@ -109,6 +111,8 @@ pub(crate) struct CrawlOutcome {
     /// Pages returned; `None` when the crawl failed outright.
     pub(crate) pages: Option<usize>,
     pub(crate) elapsed: Duration,
+    /// The user's `web.crawl` settings changed what the crawl presents.
+    pub(crate) identity: bool,
 }
 
 /// A finished crawl.
@@ -164,6 +168,7 @@ impl WebCrawlEngine {
     pub(crate) async fn crawl(
         &self,
         request: &CrawlRequest,
+        identity: &Identity,
         store: Option<&SpillStore>,
     ) -> anyhow::Result<Crawl> {
         let started = Instant::now();
@@ -171,25 +176,27 @@ impl WebCrawlEngine {
             regex::Regex::new(pattern)
                 .map_err(|error| anyhow!("web.crawl: invalid pattern {pattern:?}: {error}"))?;
         }
-        let client = self.reader.client().clone();
+        let clients = identity.clients(self.reader.client())?;
         let mut website = spider::website::Website::new(request.url.as_str());
         website
-            .with_respect_robots_txt(true)
             .with_subdomains(request.subdomains)
             .with_tld(false)
             .with_limit(request.max_pages)
             .with_depth(request.max_depth)
             .with_delay(DELAY_MS)
             .with_concurrency_limit(Some(CONCURRENCY))
-            .with_user_agent(Some(USER_AGENT))
             .with_request_timeout(Some(PAGE_TIMEOUT))
             .with_redirect_limit(8)
-            .with_stealth(false)
-            .with_fingerprint(false)
             .with_max_page_bytes(Some(RENDERED_PAGE_BYTES))
             .with_fetch_engine(BoundedFetch {
-                client: client.clone(),
+                clients: clients.clone(),
+                next: std::sync::atomic::AtomicUsize::new(0),
+                identity: identity.clone(),
+                start: request.url.clone(),
+                subdomains: request.subdomains,
+                reach: request.reach.clone(),
             });
+        identity.apply(&mut website, request.render);
         let compiled = |patterns: &[String]| {
             patterns
                 .iter()
@@ -217,7 +224,8 @@ impl WebCrawlEngine {
                 Some(started)
             }
         };
-        website.set_http_client(client);
+        // spider reads robots.txt and the sitemap with this one.
+        website.set_http_client(clients[0].clone());
         // Room for every page the limit allows plus its failures.
         let mut pages_rx = website.subscribe(request.max_pages as usize * 2 + 16);
         let mut collected = Collected::new(request, store);
@@ -333,13 +341,12 @@ impl<'a> Collected<'a> {
         else {
             return;
         };
-        if !same_site(&self.request.url, &final_url, self.request.subdomains)
-            && !final_url.host_str().is_some_and(|host| {
-                self.request
-                    .reach
-                    .includes_host(host.trim_start_matches("www."))
-            })
-        {
+        if !on_site(
+            &self.request.url,
+            self.request.subdomains,
+            &self.request.reach,
+            &final_url,
+        ) {
             self.notes.push(format!(
                 "{url} redirected off the site to {final_url}; not kept"
             ));
@@ -405,14 +412,16 @@ impl<'a> Collected<'a> {
     }
 }
 
-/// Whether `candidate` is on `start`'s site: the same host, or with
-/// `subdomains` one under it.
-fn same_site(start: &Url, candidate: &Url, subdomains: bool) -> bool {
+/// Whether `candidate` is on the crawled site: `start`'s host, with
+/// `subdomains` one under it, or one of the crawl's other hosts.
+fn on_site(start: &Url, subdomains: bool, reach: &options::Reach, candidate: &Url) -> bool {
     match (start.host_str(), candidate.host_str()) {
         (Some(start), Some(candidate)) => {
             let start = start.trim_start_matches("www.");
             let candidate = candidate.trim_start_matches("www.");
-            candidate == start || subdomains && candidate.ends_with(&format!(".{start}"))
+            candidate == start
+                || subdomains && candidate.ends_with(&format!(".{start}"))
+                || reach.includes_host(candidate)
         }
         (Some(_) | None, None) | (None, Some(_)) => false,
     }
@@ -476,9 +485,16 @@ impl Crawl {
 
 /// spider's per-URL fetch, done by `web.read`'s fetcher: the body is capped,
 /// redirects are followed by hand, and no failure is reported as a TLS
-/// handshake failure (which would make spider retry over plain http).
+/// handshake failure (which would make spider retry over plain http). It
+/// sends the crawl's identity, its site headers to the site's hosts only.
 struct BoundedFetch {
-    client: reqwest::Client,
+    /// One per proxy, taken in turn.
+    clients: Vec<reqwest::Client>,
+    next: std::sync::atomic::AtomicUsize,
+    identity: Identity,
+    start: Url,
+    subdomains: bool,
+    reach: options::Reach,
 }
 
 impl HttpFetchEngine for BoundedFetch {
@@ -495,10 +511,17 @@ impl HttpFetchEngine for BoundedFetch {
     {
         Box::pin(async move {
             let asked = Url::parse(request.url).map_err(|_| EngineError::Request)?;
+            let turn = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let on_site = |url: &Url| on_site(&self.start, self.subdomains, &self.reach, url);
             let reader = Fetcher {
-                client: &self.client,
+                client: &self.clients[turn % self.clients.len()],
                 base_override: None,
                 timeout: PAGE_TIMEOUT,
+                identity: Some(crate::web_read::RequestIdentity {
+                    user_agent: self.identity.user_agent(),
+                    site_headers: &self.identity.site_headers,
+                    on_site: &on_site,
+                }),
             };
             match reader.get(&asked, Accept::Document).await {
                 Ok(fetched) => {

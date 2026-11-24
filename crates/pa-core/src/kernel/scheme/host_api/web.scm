@@ -61,7 +61,8 @@
 ;; Crawl a site from `source` (a URL or anything carrying one under 'url):
 ;; {url, render, pages, failed, truncated, notes, text}. Each page has
 ;; web-read's shape; `text` is the index. Same host only (#:subdomains #t
-;; adds its subdomains), robots.txt always honoured, at most #:max-pages
+;; adds its subdomains), robots.txt honoured and an honest user agent
+;; unless the user's `web.crawl` settings say otherwise, at most #:max-pages
 ;; (default 20, at most 200) pages #:max-depth (default 3) links deep.
 ;; #:include / #:exclude are URL regexes (one or a list); #:max-chars cuts
 ;; each page (default 8000); #:sitemap #t also reads /sitemap.xml;

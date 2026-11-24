@@ -67,6 +67,8 @@ fn pages() -> Pages {
 struct Site {
     base: String,
     hits: Arc<Mutex<Vec<String>>>,
+    /// Each request's path and lowercased head (request line and headers).
+    heads: Arc<Mutex<Vec<(String, String)>>>,
     asked: Arc<tokio::sync::Notify>,
 }
 
@@ -79,14 +81,17 @@ impl Site {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let base = format!("http://{}", listener.local_addr().expect("addr"));
         let hits = Arc::new(Mutex::new(Vec::new()));
+        let heads = Arc::new(Mutex::new(Vec::new()));
         let asked = Arc::new(tokio::sync::Notify::new());
         let pages = Arc::new(pages);
-        let (recorded, notify) = (Arc::clone(&hits), Arc::clone(&asked));
+        let (recorded, received, notify) =
+            (Arc::clone(&hits), Arc::clone(&heads), Arc::clone(&asked));
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
-                let (pages, recorded, notify) = (
+                let (pages, recorded, received, notify) = (
                     Arc::clone(&pages),
                     Arc::clone(&recorded),
+                    Arc::clone(&received),
                     Arc::clone(&notify),
                 );
                 tokio::spawn(async move {
@@ -99,7 +104,16 @@ impl Site {
                         }
                     }
                     let head = String::from_utf8_lossy(&buffer).to_string();
-                    let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let target = head.split_whitespace().nth(1).unwrap_or("/");
+                    // A proxy is asked for the absolute URL.
+                    let path = match Url::parse(target) {
+                        Ok(absolute) => absolute.path().to_string(),
+                        Err(_) => target.to_string(),
+                    };
+                    received
+                        .lock()
+                        .unwrap()
+                        .push((path.clone(), head.to_ascii_lowercase()));
                     recorded.lock().unwrap().push(path.clone());
                     notify.notify_one();
                     if hang && path != "/robots.txt" {
@@ -109,8 +123,13 @@ impl Site {
                         Some((content_type, body)) => (200, *content_type, body.clone()),
                         None => (404, "text/plain", "not found".to_string()),
                     };
+                    // A `redirect` page sends its body as the Location.
+                    let (status, location) = match content_type {
+                        "redirect" => (302, format!("Location: {body}\r\n")),
+                        _ => (status, String::new()),
+                    };
                     let head = format!(
-                        "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\n{location}Content-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len()
                     );
                     let _ = socket.write_all(head.as_bytes()).await;
@@ -119,7 +138,12 @@ impl Site {
                 });
             }
         });
-        Site { base, hits, asked }
+        Site {
+            base,
+            hits,
+            heads,
+            asked,
+        }
     }
 
     fn hits(&self) -> BTreeSet<String> {
@@ -157,7 +181,11 @@ fn paths(crawl: &Crawl) -> Vec<String> {
 async fn a_crawl_stays_on_site_obeys_robots_and_stops_at_its_depth() {
     let site = Site::start(false).await;
     let crawl = WebCrawlEngine::direct()
-        .crawl(&request(&site, &json!({"maxDepth": 2})), None)
+        .crawl(
+            &request(&site, &json!({"maxDepth": 2})),
+            &Identity::default(),
+            None,
+        )
         .await
         .unwrap();
     let hits = site.hits();
@@ -184,7 +212,11 @@ async fn a_crawl_stays_on_site_obeys_robots_and_stops_at_its_depth() {
 async fn a_crawl_stops_at_its_page_limit() {
     let site = Site::start(false).await;
     let crawl = WebCrawlEngine::direct()
-        .crawl(&request(&site, &json!({"maxPages": 2})), None)
+        .crawl(
+            &request(&site, &json!({"maxPages": 2})),
+            &Identity::default(),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -207,6 +239,7 @@ async fn include_and_exclude_patterns_pick_the_followed_links() {
                 &site,
                 &json!({"maxDepth": 5, "include": ["/$", "/docs/", "/a"], "exclude": "/a/deep"}),
             ),
+            &Identity::default(),
             None,
         )
         .await
@@ -226,6 +259,7 @@ async fn a_crawled_page_has_web_reads_shape() {
     let crawl = WebCrawlEngine::direct()
         .crawl(
             &request(&site, &json!({"maxDepth": 1, "maxPages": 1})),
+            &Identity::default(),
             None,
         )
         .await
@@ -301,7 +335,11 @@ async fn rendering_without_a_browser_says_how_to_get_one() {
     );
     let _scope = pa_types::session_scope::enter(Some(scope));
     let error = WebCrawlEngine::direct()
-        .crawl(&request(&site, &json!({"render": true})), None)
+        .crawl(
+            &request(&site, &json!({"render": true})),
+            &Identity::default(),
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(format!("{error:#}"), browser::NO_BROWSER);
@@ -339,7 +377,8 @@ fn browsers_running() -> Vec<u32> {
 }
 
 /// A rendered crawl sees the DOM after the page's scripts ran and after the
-/// automation steps asked for (a click), and leaves no browser process behind.
+/// automation steps asked for (a click), sends the user's user agent and
+/// cookies, and leaves no browser process behind.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rendered_crawl_reads_the_scripted_page_and_leaves_no_browser() {
     const CHROMIUM: &str = "/opt/pw-browsers/chromium";
@@ -374,7 +413,16 @@ async fn a_rendered_crawl_reads_the_scripted_page_and_leaves_no_browser() {
             "actions": {"/": [{"Click": "#more"}, {"WaitFor": "#m p + p"}]},
         }))
         .unwrap();
-        WebCrawlEngine::direct().crawl(&request, None).await
+        // The browser presents the user's settings too.
+        let identity = Identity::from_settings(&crate::settings::WebCrawlSettings {
+            user_agent: Some("ExampleBot/2.0".to_string()),
+            cookies: Some("sid=abc".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+        WebCrawlEngine::direct()
+            .crawl(&request, &identity, None)
+            .await
     }
     .unwrap();
     let markdown = crawl.pages[0]["markdown"].as_str().unwrap();
@@ -382,9 +430,13 @@ async fn a_rendered_crawl_reads_the_scripted_page_and_leaves_no_browser() {
         (
             markdown.contains("This paragraph exists only after the page script ran"),
             markdown.contains("This paragraph appears only once the button was clicked"),
+            heads_for(&site, "/")
+                .iter()
+                .any(|head| head.contains("user-agent: examplebot/2.0")
+                    && head.contains("cookie: sid=abc")),
             browsers_left().await,
         ),
-        (true, true, Vec::new())
+        (true, true, true, Vec::new())
     );
 }
 
@@ -403,6 +455,7 @@ async fn a_stopped_cell_stops_its_crawl() {
         engine: Arc::new(WebCrawlEngine::direct()),
         store: None,
         observer: None,
+        settings: None,
     }
     .register(&mut handlers);
     let kernel = crate::kernel::scheme::SchemeKernelProvisioner::new(handlers, "/")
@@ -450,6 +503,7 @@ async fn a_path_budget_caps_its_section() {
     let crawl = WebCrawlEngine::direct()
         .crawl(
             &request(&site, &json!({"maxDepth": 5, "budget": {"/a": 1, "*": 20}})),
+            &Identity::default(),
             None,
         )
         .await
@@ -493,11 +547,15 @@ async fn full_resources_keep_the_linked_documents() {
     };
     let engine = WebCrawlEngine::direct();
     let pages_only = engine
-        .crawl(&request(&site, &json!({})), None)
+        .crawl(&request(&site, &json!({})), &Identity::default(), None)
         .await
         .unwrap();
     let everything = engine
-        .crawl(&request(&site, &json!({"fullResources": true})), None)
+        .crawl(
+            &request(&site, &json!({"fullResources": true})),
+            &Identity::default(),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -519,5 +577,130 @@ fn browser_options_need_render() {
     assert_eq!(
         refused,
         Err("web.crawl waitSelector needs render: the browser does it".to_string())
+    );
+}
+
+/// The request heads (lowercased) `site` received for `path`.
+fn heads_for(site: &Site, path: &str) -> Vec<String> {
+    site.heads
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(asked, _)| asked == path)
+        .map(|(_, head)| head.clone())
+        .collect()
+}
+
+/// The user's `web.crawl` settings are read at each crawl: the same host
+/// first crawls honestly (robots.txt obeyed, Prime Agent's user agent), and
+/// after the settings change the next crawl ignores robots.txt and sends the
+/// user's user agent, headers and cookies.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_users_settings_change_what_the_next_crawl_presents() {
+    let site = Site::start(false).await;
+    let settings = Arc::new(Mutex::new(crate::settings::WebCrawlSettings::default()));
+    let host = WebCrawlHost {
+        engine: Arc::new(WebCrawlEngine::direct()),
+        store: None,
+        observer: None,
+        settings: Some({
+            let settings = Arc::clone(&settings);
+            Arc::new(move || settings.lock().unwrap().clone()) as CrawlSettings
+        }),
+    };
+    let payload = json!({"url": format!("{}/", site.base), "maxDepth": 2});
+    host.handle(&payload).await.unwrap();
+    let honest = (
+        site.hits().contains("/private/secret"),
+        heads_for(&site, "/"),
+    );
+    *settings.lock().unwrap() = crate::settings::WebCrawlSettings {
+        respect_robots_txt: Some(false),
+        user_agent: Some("ExampleBot/2.0".to_string()),
+        headers: Some(BTreeMap::from([("X-Team".to_string(), "docs".to_string())])),
+        cookies: Some("sid=abc".to_string()),
+        ..Default::default()
+    };
+    site.heads.lock().unwrap().clear();
+    host.handle(&payload).await.unwrap();
+    let home = heads_for(&site, "/");
+    assert_eq!(
+        (
+            honest.0,
+            !honest.1.is_empty()
+                && honest.1.iter().all(|head| {
+                    head.contains("user-agent: mozilla/5.0 (compatible; prime-agent web.crawl")
+                }),
+            site.hits().contains("/private/secret"),
+            !home.is_empty()
+                && home.iter().all(|head| {
+                    head.contains("user-agent: examplebot/2.0")
+                        && head.contains("x-team: docs")
+                        && head.contains("cookie: sid=abc")
+                }),
+        ),
+        (false, true, true, true)
+    );
+}
+
+/// Headers and cookies from the settings go to the crawled site only: a
+/// redirect to another host is followed without them.
+#[tokio::test(flavor = "multi_thread")]
+async fn site_headers_never_follow_a_redirect_off_the_site() {
+    let elsewhere = Site::serving(
+        HashMap::from([("/landing", ("text/html", page("Landing", &[])))]),
+        false,
+    )
+    .await;
+    // The same server reached by another name is another host.
+    let away = elsewhere.base.replace("127.0.0.1", "localhost");
+    let site = Site::serving(
+        HashMap::from([("/", ("redirect", format!("{away}/landing")))]),
+        false,
+    )
+    .await;
+    let identity = Identity::from_settings(&crate::settings::WebCrawlSettings {
+        cookies: Some("sid=abc".to_string()),
+        ..Default::default()
+    })
+    .unwrap();
+    let _ = WebCrawlEngine::direct()
+        .crawl(&request(&site, &json!({"maxDepth": 1})), &identity, None)
+        .await;
+    let (asked, followed) = (heads_for(&site, "/"), heads_for(&elsewhere, "/landing"));
+    assert_eq!(
+        (
+            !asked.is_empty() && asked.iter().all(|head| head.contains("cookie: sid=abc")),
+            !followed.is_empty() && followed.iter().all(|head| !head.contains("cookie:")),
+        ),
+        (true, true)
+    );
+}
+
+/// With proxies in the settings every request goes through one of them, in
+/// turn, asking for the site's absolute URL.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crawl_goes_through_its_proxies_in_turn() {
+    let (first, second) = (Site::start(false).await, Site::start(false).await);
+    let identity = Identity::from_settings(&crate::settings::WebCrawlSettings {
+        proxies: Some(vec![first.base.clone(), second.base.clone()]),
+        ..Default::default()
+    })
+    .unwrap();
+    let request = parse_request(&json!({"url": "http://docs.invalid/", "maxDepth": 2})).unwrap();
+    let crawl = WebCrawlEngine::direct()
+        .crawl(&request, &identity, None)
+        .await
+        .unwrap();
+    let through = |site: &Site| {
+        let heads = site.heads.lock().unwrap();
+        !heads.is_empty()
+            && heads
+                .iter()
+                .all(|(_, head)| head.starts_with("get http://docs.invalid/"))
+    };
+    assert_eq!(
+        (crawl.pages.len(), through(&first), through(&second)),
+        (6, true, true)
     );
 }

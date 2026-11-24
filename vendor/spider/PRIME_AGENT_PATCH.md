@@ -20,6 +20,11 @@ Each change is listed here; nothing else differs from the published crate.
   crate's build script downloads Chrome version lists from the network on
   every build (and writes into its own source directory); without it, the
   crate uses the version list it ships.
+- `ua_generator` is built without its default `fetch` feature. With it, that
+  crate's build script pulls in an HTTP client (`ureq`, a second
+  `webpki-roots`) and, when `BUILD_ENABLED` is set in the build's environment
+  or a `.env` file, downloads user-agent lists from spider.cloud; without
+  it, the crate uses the lists it ships.
 - The `[[test]]`, `[[bench]]` and `[dev-dependencies]` sections are removed
   with the sources they name.
 

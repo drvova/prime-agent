@@ -458,6 +458,18 @@ impl SettingsManager {
             .unwrap_or(false)
     }
 
+    /// `web.crawl`: the identity `web-crawl` crawls with. Global scope only, so
+    /// neither the model nor a project's settings can change what a crawl
+    /// presents to a site; unset fields keep the honest defaults.
+    #[must_use]
+    pub(crate) fn get_web_crawl_settings(&self) -> super::types::WebCrawlSettings {
+        self.global_settings()
+            .web
+            .as_ref()
+            .and_then(|web| web.crawl.clone())
+            .unwrap_or_default()
+    }
+
     /// `replCanRestoreCheckpoints` (the kernel's destructive `checkpoint.restore` gate): unset
     /// reads as off. GLOBAL SCOPE ONLY, so a project's `.prime/agent/settings.json` can never
     /// let the model rewrite the workspace.

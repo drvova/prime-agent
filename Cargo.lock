@@ -4670,6 +4670,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+ "ua_generator",
  "url",
  "which",
 ]
@@ -5463,6 +5464,15 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "ua_generator"
+version = "0.5.91"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "921237d4e12b3ed93acd02ef1443a07b28cd06dca87925c76bf98a0d4fe94e97"
+dependencies = [
+ "fastrand",
+]
 
 [[package]]
 name = "ucd-trie"

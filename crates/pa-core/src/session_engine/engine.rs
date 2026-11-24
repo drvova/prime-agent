@@ -310,6 +310,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let (cache_retention, cache_warming) =
         (settings.get_cache_retention(), settings.get_cache_warming());
     let web_search_provider = settings.get_web_search_provider();
+    // `web.crawl`'s identity settings: a crawl rereads them; the prompt's
+    // environment line names what they changed when the session started.
+    let crawl_settings = settings.reopen();
+    let crawl_identity = crate::web_crawl::identity_changes(&settings.get_web_crawl_settings());
     // The `settings.session` view's armed values, read before `settings` moves.
     let (compaction_enabled, image_model) = (
         settings.get_compaction_enabled(),
@@ -723,6 +727,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             std::sync::Arc::new(move |outcome| counters.note_web_crawl(outcome))
                 as crate::web_crawl::CrawlObserver
         }),
+        // The user's `web.crawl` identity settings, read afresh per crawl.
+        settings: Some({
+            let settings = crawl_settings;
+            std::sync::Arc::new(move || settings.reopen().get_web_crawl_settings())
+                as crate::web_crawl::CrawlSettings
+        }),
     }
     .register(&mut handlers);
     // `fs.symbol`: the project's symbol index, built in the background from
@@ -1118,6 +1128,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             generic_mcp_servers: generic_mcp_servers.clone(),
             project_card: project_card_text.clone(),
             host: Some(crate::prompts::HostAccess::current()),
+            web_crawl_identity: crawl_identity.clone(),
             append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
             ..Default::default()
         },
@@ -1143,6 +1154,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 can_spawn: config.rlm_subagent_host.is_some(),
                 generic_mcp_servers,
                 project_card: project_card_text,
+                web_crawl_identity: crawl_identity,
             },
         },
         resources.skills.clone(),
