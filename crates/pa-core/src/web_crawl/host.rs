@@ -2,7 +2,7 @@
 //! the crawler through it, as `web-read` reaches the reader.
 //!
 //! Payload: `{url, maxPages?, maxDepth?, include?, exclude?, maxChars?,
-//! subdomains?, sitemap?, render?, timeoutSeconds?}`.
+//! subdomains?, sitemap?, render?, timeoutSeconds?, automate?, ...}`.
 //! Reply: the [`super::Crawl::to_json`] shape.
 
 use std::sync::Arc;
@@ -148,7 +148,13 @@ impl WebCrawlHost {
         let identity = Identity::from_settings(&self.settings())?;
         let crawl = self
             .engine
-            .crawl(&request, &identity, None, &self.jar(request.cookies))
+            .crawl(
+                &request,
+                &identity,
+                None,
+                &self.jar(request.cookies),
+                /*automation*/ None,
+            )
             .await?;
         match (crawl.pages.first(), crawl.failed.first()) {
             (Some(page), _) => page.get("extract").cloned().ok_or_else(|| {
@@ -214,10 +220,18 @@ impl WebCrawlHost {
         captured
     }
 
+    /// `web.crawl`; with `automate`, only with the user's `web.crawl.ai`
+    /// setting, its key scrubbed from the whole reply.
     #[tracing::instrument(skip_all)]
     pub(super) async fn handle(&self, data: &Value) -> anyhow::Result<Value> {
         let request = parse_request(data)?;
         let settings = self.settings();
+        let model = match request.automate {
+            Some(_) => Some(
+                automate::Model::resolve(settings.ai.as_ref(), self.credentials.as_ref()).await?,
+            ),
+            None => None,
+        };
         let identity = Identity::from_settings(&settings)?;
         let started = Instant::now();
         let jar = self.jar(request.cookies);
@@ -227,7 +241,13 @@ impl WebCrawlHost {
         };
         let crawled = self
             .engine
-            .crawl(&request, &identity, self.store.as_ref(), &jar)
+            .crawl(
+                &request,
+                &identity,
+                self.store.as_ref(),
+                &jar,
+                model.as_ref(),
+            )
             .await;
         if let Some(observer) = &self.observer {
             observer(CrawlOutcome {
@@ -240,9 +260,24 @@ impl WebCrawlHost {
                     shaped: !request.shaping.is_default(),
                     extracted: request.extract.is_some(),
                     session_cookies,
+                    automation_calls: crawled
+                        .as_ref()
+                        .ok()
+                        .and_then(|crawl| crawl.automation)
+                        .map(|(calls, _)| calls)
+                        .or(model.as_ref().map(|_| 0)),
                 },
             });
         }
-        crawled.map(|crawl| crawl.to_json())
+        match (crawled, &model) {
+            (Ok(crawl), None) => Ok(crawl.to_json()),
+            (Err(error), None) => Err(error),
+            // The key never leaves in a reply or an error, whatever echoed it.
+            (Ok(crawl), Some(model)) => {
+                serde_json::from_str(&model.scrub(&crawl.to_json().to_string()))
+                    .map_err(|error| anyhow!("scrubbing the crawl: {error}"))
+            }
+            (Err(error), Some(model)) => Err(anyhow!(model.scrub(&format!("{error:#}")))),
+        }
     }
 }

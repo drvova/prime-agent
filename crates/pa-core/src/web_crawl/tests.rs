@@ -200,6 +200,7 @@ async fn a_crawl_stays_on_site_obeys_robots_and_stops_at_its_depth() {
             &Identity::default(),
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await
         .unwrap();
@@ -232,6 +233,7 @@ async fn a_crawl_stops_at_its_page_limit() {
             &Identity::default(),
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await
         .unwrap();
@@ -258,6 +260,7 @@ async fn include_and_exclude_patterns_pick_the_followed_links() {
             &Identity::default(),
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await
         .unwrap();
@@ -279,6 +282,7 @@ async fn a_crawled_page_has_web_reads_shape() {
             &Identity::default(),
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await
         .unwrap();
@@ -329,7 +333,7 @@ async fn pages_past_the_output_budget_page_out_to_the_store() {
         notes: Vec::new(),
         elapsed: Duration::ZERO,
     };
-    collected.keep(&page, None);
+    collected.keep(&page, None, None);
     let handle = collected.pages[0]["handle"].as_str().unwrap().to_string();
     let stored = match store.lookup(handle.trim_start_matches("out:")).await {
         crate::kernel::spill::SpillLookup::Stored(stored) => Some(stored.text),
@@ -362,6 +366,7 @@ async fn rendering_without_a_browser_says_how_to_get_one() {
             &Identity::default(),
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await
         .unwrap_err();
@@ -444,7 +449,13 @@ async fn a_rendered_crawl_reads_the_scripted_page_and_leaves_no_browser() {
         })
         .unwrap();
         WebCrawlEngine::direct()
-            .crawl(&request, &identity, None, &CookieJar::default())
+            .crawl(
+                &request,
+                &identity,
+                None,
+                &CookieJar::default(),
+                /*automation*/ None,
+            )
             .await
     }
     .unwrap();
@@ -534,6 +545,7 @@ async fn a_path_budget_caps_its_section() {
             &Identity::default(),
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await
         .unwrap();
@@ -581,6 +593,7 @@ async fn full_resources_keep_the_linked_documents() {
             &Identity::default(),
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await
         .unwrap();
@@ -590,6 +603,7 @@ async fn full_resources_keep_the_linked_documents() {
             &Identity::default(),
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await
         .unwrap();
@@ -710,6 +724,7 @@ async fn site_headers_never_follow_a_redirect_off_the_site() {
             &identity,
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await;
     let (asked, followed) = (heads_for(&site, "/"), heads_for(&elsewhere, "/landing"));
@@ -734,7 +749,13 @@ async fn a_crawl_goes_through_its_proxies_in_turn() {
     .unwrap();
     let request = parse_request(&json!({"url": "http://docs.invalid/", "maxDepth": 2})).unwrap();
     let crawl = WebCrawlEngine::direct()
-        .crawl(&request, &identity, None, &CookieJar::default())
+        .crawl(
+            &request,
+            &identity,
+            None,
+            &CookieJar::default(),
+            /*automation*/ None,
+        )
         .await
         .unwrap();
     let through = |site: &Site| {
@@ -793,7 +814,13 @@ async fn a_rendered_crawl_blocks_injects_and_emulates() {
         }))
         .unwrap();
         WebCrawlEngine::direct()
-            .crawl(&request, &Identity::default(), None, &CookieJar::default())
+            .crawl(
+                &request,
+                &Identity::default(),
+                None,
+                &CookieJar::default(),
+                /*automation*/ None,
+            )
             .await
     }
     .unwrap();
@@ -892,6 +919,7 @@ async fn basic_credentials_open_a_protected_site() {
             &identity,
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await
         .unwrap();
@@ -949,7 +977,13 @@ async fn a_smart_crawl_renders_only_the_page_that_needs_it() {
         let request =
             parse_request(&json!({"url": format!("{}/", site.base), "mode": "smart"})).unwrap();
         WebCrawlEngine::direct()
-            .crawl(&request, &Identity::default(), None, &CookieJar::default())
+            .crawl(
+                &request,
+                &Identity::default(),
+                None,
+                &CookieJar::default(),
+                /*automation*/ None,
+            )
             .await
     }
     .unwrap();
@@ -1011,6 +1045,7 @@ async fn a_crawl_archives_every_response_to_its_warc_file() {
                 &Identity::default(),
                 None,
                 &CookieJar::default(),
+                /*automation*/ None,
             )
             .await
             .unwrap()
@@ -1046,6 +1081,7 @@ async fn a_crawl_formats_and_extracts_every_page() {
             &Identity::default(),
             None,
             &CookieJar::default(),
+            /*automation*/ None,
         )
         .await
         .unwrap();

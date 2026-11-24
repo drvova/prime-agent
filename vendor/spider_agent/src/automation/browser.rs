@@ -4971,6 +4971,9 @@ pub async fn run_remote_multimodal_with_page(
     engine.with_chrome_ai(cfgs.use_chrome_ai);
     engine.with_chrome_ai_max_user_chars(cfgs.chrome_ai_max_user_chars);
     engine.with_proxies(cfgs.proxies.as_deref());
+    if cfgs.client.is_some() {
+        engine.with_client(cfgs.client.clone());
+    }
     #[cfg(feature = "skills")]
     if let Some(ref registry) = cfgs.skill_registry {
         engine.with_skill_registry(Some(registry.clone()));

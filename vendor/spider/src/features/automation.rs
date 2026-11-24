@@ -562,6 +562,7 @@ pub async fn run_remote_multimodal_extraction(
     engine.with_remote_multimodal_config(cfgs.cfg.clone());
     engine.with_prompt_url_gate(cfgs.prompt_url_gate.clone());
     engine.with_semaphore(sem);
+    engine.with_client(cfgs.client.clone());
 
     let result = engine.extract_from_html(html, url, title).await?;
 
@@ -633,6 +634,7 @@ pub(crate) async fn prefilter_urls(
     .with_api_key(cfgs.api_key.as_deref());
 
     engine.with_semaphore(sem);
+    engine.with_client(cfgs.client.clone());
 
     // Copy dual-model routing so text model is used
     engine.with_vision_model(cfgs.vision_model.clone());

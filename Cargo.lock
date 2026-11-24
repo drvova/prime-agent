@@ -4871,6 +4871,7 @@ dependencies = [
  "simdutf8",
  "sitemap",
  "smallvec",
+ "spider_agent",
  "spider_agent_types",
  "spider_fingerprint",
  "string-interner",

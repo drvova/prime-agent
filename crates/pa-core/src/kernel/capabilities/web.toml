@@ -25,6 +25,8 @@ properties = [
   "web_crawl_transformed_count",
   "web_crawl_extract_count",
   "web_crawl_session_cookie_count",
+  "web_crawl_automate_count",
+  "web_crawl_automate_model_call_count",
   "web_crawl_max_ms",
   "web_screenshot_count",
   "web_pdf_count",

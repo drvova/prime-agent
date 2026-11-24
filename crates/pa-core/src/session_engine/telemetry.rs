@@ -707,6 +707,10 @@ impl SessionCounters {
                 "web_crawl_session_cookie_count",
                 u64::from(outcome.per_page.session_cookies),
             );
+            if let Some(calls) = outcome.per_page.automation_calls {
+                counts.add("web_crawl_automate_count", 1);
+                counts.add("web_crawl_automate_model_call_count", u64::from(calls));
+            }
             counts.raise(
                 "web_crawl_max_ms",
                 u64::try_from(outcome.elapsed.as_millis()).unwrap_or(u64::MAX),

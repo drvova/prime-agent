@@ -709,7 +709,7 @@ mod tests {
     fn the_environment_names_what_the_users_crawl_settings_change() {
         let line = |settings: &crate::settings::WebCrawlSettings| {
             let mut options = base_options();
-            options.web_crawl_identity = crate::web_crawl::identity_changes(settings);
+            options.web_crawl_identity = crate::web_crawl::crawl_environment(settings);
             system_prompt_breakdown(&options)
                 .segments
                 .into_iter()
@@ -731,6 +731,22 @@ mod tests {
                     stealth: Some(true),
                     ..Default::default()
                 }),
+                line(&crate::settings::WebCrawlSettings {
+                    ai: Some(crate::settings::WebCrawlAiSettings {
+                        endpoint: Some("https://api.example.com/v1/chat/completions".to_string()),
+                        model: Some("m".to_string()),
+                        key_from: None,
+                    }),
+                    ..Default::default()
+                }),
+                line(&crate::settings::WebCrawlSettings {
+                    ai: Some(crate::settings::WebCrawlAiSettings {
+                        endpoint: Some("https://api.example.com/v1/chat/completions".to_string()),
+                        model: None,
+                        key_from: None,
+                    }),
+                    ..Default::default()
+                }),
             ],
             [
                 None,
@@ -738,6 +754,11 @@ mod tests {
                     "Web crawls (the user's settings, which only they change): robots.txt ignored, proxies, stealth."
                         .to_string()
                 ),
+                Some(
+                    "Web crawls (the user's settings, which only they change): model-driven automation on (web-automate, web-crawl #:automate; each model request is billed to the user's account)."
+                        .to_string()
+                ),
+                None,
             ]
         );
     }

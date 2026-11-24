@@ -22,5 +22,18 @@ Each change is listed here; nothing else differs from the published crate.
 - The `[[example]]`, `[[test]]` and `[dev-dependencies]` sections are
   removed with the sources they name.
 
+## `src/automation/config.rs`, `src/automation/browser.rs`: the configs carry a client
+
+`RemoteMultimodalConfigs` gains `client: Option<reqwest::Client>` (not
+serialized, not compared, `None` by default), and
+`run_remote_multimodal_with_page`, which builds an engine from the configs
+for each page of a crawl, hands that client to it after its `proxies`.
+Upstream that engine always sends its model requests on its own client (a
+process-wide static `reqwest::Client`, or one built from `proxies`), so a
+crawl's per-page automation (`Website::with_remote_multimodal`, behind
+`web-crawl #:automate`) could not use pa-core's client, with the session's
+proxies and CA bundle. spider's own engine builders get the same line
+(vendor/spider/PRIME_AGENT_PATCH.md).
+
 Drop the vendored copy with the spider_agent release that declares reqwest
 without default features, or once pa-core no longer needs it.

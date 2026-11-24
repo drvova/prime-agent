@@ -104,6 +104,26 @@ pub(crate) fn changes(settings: &WebCrawlSettings) -> Vec<&'static str> {
     .collect()
 }
 
+/// What the environment section's `Web crawls:` line names: [`changes`],
+/// and whether the user's `web.crawl.ai` model is on for `web-automate` and
+/// `web-crawl #:automate` (both its endpoint and its model set).
+pub(crate) fn environment(settings: &WebCrawlSettings) -> Vec<&'static str> {
+    let mut named = changes(settings);
+    let set = |value: &Option<String>| {
+        value
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    if settings
+        .ai
+        .as_ref()
+        .is_some_and(|ai| set(&ai.endpoint) && set(&ai.model))
+    {
+        named.push("model-driven automation on (web-automate, web-crawl #:automate; each model request is billed to the user's account)");
+    }
+    named
+}
+
 impl Identity {
     /// The identity the user's settings ask for.
     ///

@@ -313,7 +313,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // `web.crawl`'s identity settings: a crawl rereads them; the prompt's
     // environment line names what they changed when the session started.
     let crawl_settings = settings.reopen();
-    let crawl_identity = crate::web_crawl::identity_changes(&settings.get_web_crawl_settings());
+    let crawl_identity = crate::web_crawl::crawl_environment(&settings.get_web_crawl_settings());
     // The `settings.session` view's armed values, read before `settings` moves.
     let (compaction_enabled, image_model) = (
         settings.get_compaction_enabled(),

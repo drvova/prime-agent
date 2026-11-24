@@ -147,6 +147,11 @@ pub struct RemoteMultimodalConfigs {
     /// request/response payloads with an intercepting proxy like mitmproxy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxies: Option<Vec<String>>,
+    /// Prime Agent: the HTTP client every engine built from these configs
+    /// sends its model requests with (over `proxies`); `None` keeps the
+    /// engine's own.
+    #[serde(skip)]
+    pub client: Option<reqwest::Client>,
 }
 
 impl PartialEq for RemoteMultimodalConfigs {
@@ -167,7 +172,7 @@ impl PartialEq for RemoteMultimodalConfigs {
             && self.use_chrome_ai == other.use_chrome_ai
             && self.chrome_ai_max_user_chars == other.chrome_ai_max_user_chars
             && self.proxies == other.proxies
-        // NOTE: intentionally ignoring `semaphore` and `skill_registry`
+        // NOTE: intentionally ignoring `semaphore`, `skill_registry` and `client`
     }
 }
 
@@ -199,6 +204,7 @@ impl Default for RemoteMultimodalConfigs {
             relevance_credits: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             url_prefilter_cache: Arc::new(dashmap::DashMap::new()),
             proxies: None,
+            client: None,
         }
     }
 }

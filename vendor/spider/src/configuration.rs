@@ -1143,6 +1143,7 @@ impl Configuration {
         .with_vision_route_mode(cfgs.vision_route_mode)
         .with_chrome_ai(cfgs.use_chrome_ai)
         .with_semaphore(sem)
+        .with_client(cfgs.client.clone())
         .to_owned();
 
         #[cfg(feature = "agent_skills")]

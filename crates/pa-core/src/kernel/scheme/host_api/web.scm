@@ -142,7 +142,8 @@
                    #:format [format #f]
                    #:transform [transform #f]
                    #:extract [extract #f]
-                   #:cookies [cookies 'session])
+                   #:cookies [cookies 'session]
+                   #:automate [automate #f])
   (%host-call "web.crawl"
               (%options (hash 'url
                               (cond
@@ -193,7 +194,11 @@
                         'format (and format (%format "web-crawl" format))
                         'transform (and transform (%transform "web-crawl" transform))
                         'extract (and extract (%selectors "web-crawl" "#:extract" extract))
-                        'cookies (%cookies "web-crawl" cookies))))
+                        'cookies (%cookies "web-crawl" cookies)
+                        'automate (cond
+                                    [(not automate) #f]
+                                    [(string? automate) automate]
+                                    [else (error "web-crawl: #:automate is the goal, a string")]))))
 
 ;; A selectors map: names to a CSS selector or XPath expression, or a list of them.
 (define (%selectors who name value)

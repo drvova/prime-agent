@@ -48,8 +48,11 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 # only the user's `web.crawl.rotateUserAgent` and `web.crawl.proxies` settings.
 # `chrome_intercept` and `adblock` (spider's built-in filter list; not
 # `adblock_easylist`, which downloads EasyList at build time) serve a rendered
-# crawl's `#:block` and the `web.crawl.auth` credentials.
-spider = { version = "=2.54.2", default-features = false, features = ["sync", "regex", "headers", "sitemap", "chrome", "chrome_intercept", "adblock", "smart", "warc", "auto_throttle", "ua_generator", "socks"] }
+# crawl's `#:block` and the `web.crawl.auth` credentials. `agent` and
+# `agent_chrome` (spider_agent, already below) serve `web-crawl #:automate`:
+# spider runs the user's `web.crawl.ai` model on each rendered page, on the
+# client pa-core hands it (vendor/spider_agent/PRIME_AGENT_PATCH.md).
+spider = { version = "=2.54.2", default-features = false, features = ["sync", "regex", "headers", "sitemap", "chrome", "chrome_intercept", "adblock", "smart", "warc", "auto_throttle", "ua_generator", "socks", "agent", "agent_chrome"] }
 # `web-extract` and `web-crawl #:extract`: spider's CSS and XPath extraction.
 spider_utils = "=2.54.2"
 # `web-read` / `web-crawl` `#:format` and `#:transform`: spider's HTML to
