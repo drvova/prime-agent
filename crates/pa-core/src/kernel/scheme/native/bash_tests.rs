@@ -110,6 +110,7 @@ async fn run_within(
                 timeout_ms: limit.map(|limit| limit.as_millis() as u64),
                 on_stream: None,
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         )
         .await
@@ -1251,6 +1252,7 @@ async fn a_background_command_that_goes_quiet_is_reported_on_a_backoff(shell) {
             timeout_ms: None,
             on_stream: None,
             on_late_sent_agent_message: None,
+            tool_call_id: None,
         },
     );
     let stop = async {

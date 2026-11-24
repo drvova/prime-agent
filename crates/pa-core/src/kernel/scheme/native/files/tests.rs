@@ -36,6 +36,7 @@ async fn value(kernel: &dyn KernelExecutor, expression: &str) -> Result<Value, S
                 timeout_ms: None,
                 on_stream: None,
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         )
         .await
@@ -231,6 +232,7 @@ async fn a_call_ends_with_its_cell_and_the_kernel_stays_usable() {
                 timeout_ms: Some(300),
                 on_stream: None,
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         )
         .await
@@ -1001,6 +1003,7 @@ async fn fs_write_and_fs_edit_show_their_change_on_the_card_as_edit_does() {
                     timeout_ms: None,
                     on_stream: None,
                     on_late_sent_agent_message: None,
+                    tool_call_id: None,
                 },
             )
             .await

@@ -205,6 +205,7 @@ async fn scheme_validates_canonicalizes_compiles_and_orders_a_spec() {
                 timeout_ms: None,
                 on_stream: None,
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         )
         .await

@@ -830,6 +830,7 @@ mod tests {
             timeout_ms,
             on_stream: None,
             on_late_sent_agent_message: None,
+            tool_call_id: None,
         }
     }
 
@@ -1011,6 +1012,7 @@ mod tests {
                     timeout_ms: None,
                     on_stream: Some(&on_stream),
                     on_late_sent_agent_message: None,
+                    tool_call_id: None,
                 },
             )
             .await

@@ -145,6 +145,11 @@ pub struct KernelExecuteOptions<'a> {
     /// Streams cell output while the cell runs.
     pub on_stream: StreamFn<'a>,
     pub on_late_sent_agent_message: Option<crate::kernel::shared::LateSentAgentMessageCallback>,
+    /// The id of the model's tool call this cell runs for; `None` for a cell
+    /// the session runs itself. A command the cell waits for is listed under
+    /// it, so the session's next kernel can tell it from the background work
+    /// when the kernel ends under the call.
+    pub tool_call_id: Option<String>,
 }
 
 /// A cell's run. It may borrow the call's options, so a kernel can call
@@ -279,6 +284,7 @@ pub(crate) fn timeout_arg_ms(params: &serde_json::Value) -> Option<u64> {
 )]
 pub async fn execute_kernel_cell(
     options: &KernelToolOptions,
+    tool_call_id: &str,
     code: &str,
     timeout_ms: Option<u64>,
     signal: Option<AbortSignal>,
@@ -316,6 +322,7 @@ pub async fn execute_kernel_cell(
             timeout_ms,
             on_stream: Some(&stream_update),
             on_late_sent_agent_message,
+            tool_call_id: Some(tool_call_id.to_string()),
         },
     )
     .await;
@@ -513,7 +520,7 @@ mod tests {
             )),
             on_late_sent_agent_message: None,
         };
-        let result = execute_kernel_cell(&options, code, None, None, None, None)
+        let result = execute_kernel_cell(&options, "call-1", code, None, None, None, None)
             .await
             .unwrap();
         result.details.unwrap()["diffs"].take()

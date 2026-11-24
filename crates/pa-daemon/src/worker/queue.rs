@@ -598,6 +598,27 @@ pub(crate) fn admit_kernel_notice(
     if idle_only && core_guard.busy {
         return NoticeAdmission::DroppedBusy;
     }
+    // A command lost with the call that was waiting for it, when this
+    // lifetime answered that call as of unknown outcome
+    // (`interrupted_calls`): that result already tells the model, so the
+    // `[bash-lost]` row would only repeat it and run a turn for it. The
+    // transcript has the session's word on it.
+    let answered_call = row
+        .details
+        .as_ref()
+        .filter(|details| details["lost"] == true)
+        .and_then(|details| details["toolCallId"].as_str());
+    if let (Some(call), Some(store)) = (answered_call, core_guard.store.as_ref()) {
+        if store.branch().iter().any(|entry| {
+            let message = &entry.fields["message"];
+            entry.type_ == "message"
+                && message["role"] == "toolResult"
+                && message["toolCallId"] == call
+                && message["details"]["outcome"] == "unknown"
+        }) {
+            return NoticeAdmission::Taken;
+        }
+    }
     let (policy, queue_visible) = if core_guard.busy {
         (TurnPolicy::Queued, true)
     } else {

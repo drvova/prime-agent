@@ -771,6 +771,7 @@ pub(super) mod tests {
             timeout_ms: None,
             on_stream: None,
             on_late_sent_agent_message: None,
+            tool_call_id: None,
         };
         let cell = format!("(display (value->jsexpr-string {expression}))");
         let result = kernel.execute(&cell, options).await.unwrap();

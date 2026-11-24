@@ -976,6 +976,7 @@ pub(super) async fn execute(
         timeout_ms,
         on_stream,
         on_late_sent_agent_message,
+        tool_call_id,
     } = options;
     if signal.as_ref().is_some_and(AbortSignal::is_cancelled) {
         return Ok(ExecuteResult {
@@ -1163,6 +1164,7 @@ pub(super) async fn execute(
                 limit
                     .filter(|_| window.is_none())
                     .map(|limit| started + limit),
+                tool_call_id.clone(),
             );
             // A cell that names a skill's function uses the skill.
             running.skills.note_cell(&code);

@@ -178,6 +178,7 @@ async fn golden_cell_result_group_matches_ts() {
         };
         let result = execute_kernel_cell(
             &options,
+            "call-1",
             case["code"].as_str().expect("code"),
             None,
             None,
@@ -256,7 +257,7 @@ async fn cell_details_carry_the_cell_edit_diffs() {
         }),
         on_late_sent_agent_message: None,
     };
-    let result = execute_kernel_cell(&options, "edit()", None, None, None, None)
+    let result = execute_kernel_cell(&options, "call-1", "edit()", None, None, None, None)
         .await
         .expect("cell executes");
     assert_eq!(
