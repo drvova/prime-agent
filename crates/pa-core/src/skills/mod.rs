@@ -306,6 +306,30 @@ mod tests {
         assert!(!validate_name("web", "other").is_empty());
     }
 
+    /// Skills load in name order whatever order the filesystem lists their
+    /// directories in, so the skills list and `reuse-report` are the same
+    /// on every machine.
+    #[test]
+    fn skills_load_in_name_order_not_listing_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let names: Vec<String> = (0..24).map(|index| format!("skill-{index:02}")).collect();
+        for name in names.iter().rev() {
+            let skill_dir = dir.path().join(name);
+            std::fs::create_dir(&skill_dir).expect("skill dir");
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test skill\n---\nUse it."),
+            )
+            .expect("write skill file");
+        }
+        let loaded: Vec<String> = load_skills_from_dir(dir.path(), "user")
+            .skills
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect();
+        assert_eq!(loaded, names);
+    }
+
     #[test]
     fn description_validation_rules() {
         assert_eq!(validate_description(""), vec!["description is required"]);
