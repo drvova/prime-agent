@@ -58,12 +58,11 @@ pub(super) fn load(path: &Path) -> Option<SessionScanState> {
 /// write costs the next open its warm resume, nothing more - the same
 /// error policy as the window sidecar's flush.
 pub(crate) fn persist_info_sidecar(path: &Path) {
-    let Some(state) = session_info_cache().lock().ok().and_then(|cache| {
-        cache
-            .states
-            .get(path)
-            .map(SessionScanState::clone_for_resume)
-    }) else {
+    let Some(state) = session_info_cache()
+        .states
+        .get(path)
+        .map(SessionScanState::clone_for_resume)
+    else {
         return;
     };
     let result = (|| -> io::Result<()> {

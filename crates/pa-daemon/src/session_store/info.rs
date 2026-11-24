@@ -162,10 +162,16 @@ impl SessionInfoScanCache {
     }
 }
 
-pub(super) fn session_info_cache() -> &'static std::sync::Mutex<SessionInfoScanCache> {
+/// The process-wide scan cache, locked. Every session's scans share it, so a
+/// panic while it was held (poisoning) costs no later scan anything: each
+/// entry is replaced whole, and a stale one fails its generation check.
+pub(super) fn session_info_cache() -> std::sync::MutexGuard<'static, SessionInfoScanCache> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<SessionInfoScanCache>> =
         std::sync::OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(SessionInfoScanCache::default()))
+    CACHE
+        .get_or_init(|| std::sync::Mutex::new(SessionInfoScanCache::default()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The trailing window of the consumed prefix a resumed scan verifies before
@@ -388,7 +394,7 @@ pub(crate) fn read_session_info_from(
 
     // The unchanged case answers from the cache; the grown case resumes.
     let state = {
-        let mut cache = session_info_cache().lock().ok()?;
+        let mut cache = session_info_cache();
         match cache.states.get(path) {
             Some(cached) if cached.generation == generation => {
                 let info = cached.info.clone();
@@ -467,9 +473,7 @@ pub(crate) fn read_session_info_from(
     {
         state.generation = generation;
         state.info = Some(info.clone());
-        if let Ok(mut cache) = session_info_cache().lock() {
-            cache.store_state(path, state);
-        }
+        session_info_cache().store_state(path, state);
     }
     Some((info, sidecar_behind))
 }

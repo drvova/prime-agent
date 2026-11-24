@@ -74,9 +74,11 @@ pub use info::{find_most_recent_session_for_cwd, read_session_info, SessionInfo}
 #[cfg(test)]
 use info::{
     message_content_text, raw_string, raw_u64, session_info_cache, SessionInfoEntry,
-    SessionInfoGeneration, SessionInfoScanCache, SessionScanState, SESSION_SCAN_MAX_CACHED_STATES,
-    SESSION_SCAN_RESUME_TAIL_BYTES,
+    SessionInfoGeneration, SessionInfoScanCache, SessionScanState, SESSION_SCAN_RESUME_TAIL_BYTES,
 };
+// Only the unix-only scan-cache cap test reads it.
+#[cfg(all(test, unix))]
+use info::SESSION_SCAN_MAX_CACHED_STATES;
 pub(crate) use info_sidecar::persist_info_sidecar;
 
 // The inline unit battery lives in session_store::tests.

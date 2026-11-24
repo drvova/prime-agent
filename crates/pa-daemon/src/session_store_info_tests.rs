@@ -294,7 +294,7 @@ fn captured_fixture_cold_and_warm_timings() {
         let start = std::time::Instant::now();
         let reference = legacy_read_session_info(path);
         legacy.push(start.elapsed());
-        super::session_info_cache().lock().unwrap().drop_state(path);
+        super::session_info_cache().drop_state(path);
         let start = std::time::Instant::now();
         let result = read_session_info(path);
         cold.push(start.elapsed());
@@ -508,10 +508,7 @@ fn a_persisted_scan_state_resumes_like_the_full_fold() {
         pa_core::platform::perms::file_mode(&path.with_extension("info-cache.json")),
         Some(pa_core::platform::perms::PRIVATE_FILE_MODE)
     );
-    super::session_info_cache()
-        .lock()
-        .unwrap()
-        .drop_state(&path);
+    super::session_info_cache().drop_state(&path);
     append_rows(
         &path,
         &[attribution("x2", "a2", 0.02, 0.52), assistant("a4", 0.4)],
@@ -528,10 +525,7 @@ fn a_persisted_scan_state_resumes_like_the_full_fold() {
         ],
     );
     fs::rename(&replacement, &path).unwrap();
-    super::session_info_cache()
-        .lock()
-        .unwrap()
-        .drop_state(&path);
+    super::session_info_cache().drop_state(&path);
     assert_fold_matches(&path);
     fs::remove_dir_all(dir).unwrap();
 }
@@ -578,10 +572,7 @@ fn a_symlinked_lease_release_persists_a_sidecar_the_next_read_serves() {
         ("{".to_string(), &cold),
     ] {
         fs::write(&sidecar, contents).unwrap();
-        super::session_info_cache()
-            .lock()
-            .unwrap()
-            .drop_state(&path);
+        super::session_info_cache().drop_state(&path);
         assert_eq!(read_session_info(&path).as_ref(), Some(expected));
     }
     fs::remove_dir_all(dir).unwrap();
@@ -615,6 +606,29 @@ fn a_valid_unterminated_final_line_folds_into_the_snapshot() {
     assert_eq!(completed.name.as_deref(), Some("tail-name"));
 }
 
+/// The scan cache is the whole process's: a panic while one scan held it
+/// (poisoning its lock) must not fail every later scan.
+#[test]
+fn a_panic_while_the_scan_cache_was_held_fails_no_later_scan() {
+    let (_tmp, dir) = test_dir();
+    let path = dir.join("after-poison.jsonl");
+    append_rows(
+        &path,
+        &[json!({"type":"session","id":"p","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/test"})],
+    );
+    let poisoned = std::thread::spawn(|| {
+        let _held = super::session_info_cache();
+        panic!("a scan panics while it holds the cache");
+    })
+    .join();
+    assert!(poisoned.is_err());
+    assert_eq!(
+        read_session_info(&path).map(|info| info.id),
+        Some("p".to_string())
+    );
+}
+
+#[cfg(unix)] // the scan-state cache is unix-only: it anchors on inode identity
 #[test]
 fn zero_usage_states_are_capped_by_count_not_only_the_usage_budget() {
     let (_tmp, dir) = test_dir();
@@ -634,7 +648,7 @@ fn zero_usage_states_are_capped_by_count_not_only_the_usage_budget() {
     }
     // The cache really populated past the cap and stayed capped: LRU-first eviction
     // dropped the earliest-written files, the latest stay resident.
-    let cache = super::session_info_cache().lock().unwrap();
+    let cache = super::session_info_cache();
     assert_eq!(
         super::SESSION_SCAN_MAX_CACHED_STATES,
         cache.states.len(),
