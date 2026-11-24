@@ -7,9 +7,13 @@ use super::*;
 
 use serde_json::{json, Value};
 
-/// The session's cell yield window: far shorter than either wait, so a wait
-/// the window counted would move its cell to the background.
-const WINDOW_MS: u64 = 300;
+/// The session's cell yield window: far shorter than either wait (the
+/// program's 3 s, the user's 3 windows), so a wait the window counted would
+/// move its cell to the background. It still has to hold the cell's work the
+/// waits do not cover - starting a system shell for the background job,
+/// reaping it, evaluating the cell - which took over 300 ms on a loaded CI
+/// runner.
+const WINDOW_MS: u64 = 1_000;
 
 /// Start a daemon whose sessions run `shell` and the short window, create a
 /// session that runs `cell` and then replies `reply`, attach as a client that
@@ -120,8 +124,8 @@ fn finish_turn(
     (text, backgrounded, reply)
 }
 
-/// A program started in the background, by its path, writes a file a second
-/// later; `wait-until` waits for the file inside the cell, and the turn goes
+/// A program started in the background, by its path, writes a file three
+/// seconds later; `wait-until` waits for the file inside the cell, and the turn goes
 /// on to its reply. On the built-in shell and on the system shell.
 #[test]
 fn a_cell_waits_for_a_program_it_started_and_the_turn_goes_on() {
@@ -132,7 +136,7 @@ fn a_cell_waits_for_a_program_it_started_and_the_turn_goes_on() {
         // The job's result is read in the cell, so no `[bash-done]` notice
         // adds a turn of its own.
         let cell = format!(
-            "(define job (bash \"/bin/sleep 1 && echo ready > '{flag}'\" (hash 'background #t)))
+            "(define job (bash \"/bin/sleep 3 && echo ready > '{flag}'\" (hash 'background #t)))
              (define waited (wait-until \"test -f '{flag}'\" #:timeout 30 #:every 0.1
                                         #:label \"the program's file\"))
              (bash-wait job 10)
