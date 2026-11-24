@@ -135,6 +135,25 @@ impl Editor {
             return;
         }
 
+        // Keys earlier in this batch parked a request the host loop has not materialized yet, so
+        // the open rows list an earlier prefix (`/m` highlights `model` while the text reads
+        // `/mcp`). A key that acts on those rows acts on the rows for the text as it stands.
+        let accepts_row =
+            self.kb_matches(input, "tui.input.tab") || self.kb_matches(input, "tui.select.confirm");
+        let moves_row =
+            self.kb_matches(input, "tui.select.up") || self.kb_matches(input, "tui.select.down");
+        if (accepts_row || moves_row)
+            && self.autocomplete.is_some()
+            && self.pending_autocomplete.is_some()
+        {
+            self.materialize_autocomplete();
+            // A background `@` search has no rows for this text yet: accepting closes the stale
+            // rows and the key acts on the prompt as typed (Enter submits it, Tab asks anew).
+            if accepts_row && self.autocomplete_search.is_some() {
+                self.cancel_autocomplete();
+            }
+        }
+
         if self.autocomplete.is_some() {
             if self.kb_matches(input, "tui.select.cancel") {
                 self.cancel_autocomplete();
@@ -421,6 +440,32 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(submitted, vec!["/goal"]);
         assert_eq!(e.get_text(), "");
+    }
+
+    /// A burst that lands while the menu is open for an earlier prefix (the
+    /// terminal split `/mcp⏎` into `/`, `m`, then `cp⏎`): Enter acts on the
+    /// rows for `/mcp`, not on the `/m` menu's highlighted `model`.
+    #[test]
+    fn enter_after_a_burst_acts_on_the_typed_text_not_the_open_menu() {
+        let mut e = ed();
+        for read in [&["/"][..], &["m"], &["c", "p", "enter"]] {
+            for key in read {
+                e.handle_input(key);
+            }
+            e.materialize_autocomplete();
+        }
+        let submitted = e
+            .take_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                EditorEvent::Submitted(text) => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            (submitted, e.get_text()),
+            (vec!["/mcp".to_string()], String::new())
+        );
     }
 
     /// The TS async-suggestion behavior for character-by-character typing
