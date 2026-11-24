@@ -1,0 +1,1 @@
+- Sessions can react to events instead of polling: `event-source-define` registers a named event source with a JSON schema, `event-publish` validates and publishes its events, and `event-subscribe` gives a session a new turn for each matching event, waking it if it is idle or saved. The daemon keeps sources and subscriptions across restarts.
