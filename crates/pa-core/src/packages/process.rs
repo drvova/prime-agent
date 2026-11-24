@@ -16,7 +16,11 @@ pub fn run_command(
     args: &[&str],
     cwd: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let mut command = pa_types::session_scope::std_command(program);
+    // Resolved on PATH first: Windows runs a `.cmd` launcher (npm) only by its path.
+    let mut command = pa_types::session_scope::std_command(
+        crate::platform::process::find_program(program)
+            .unwrap_or_else(|| std::path::PathBuf::from(program)),
+    );
     command.args(args);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
@@ -42,7 +46,11 @@ pub fn run_command_capture(
     timeout: Option<Duration>,
     env: &[(&str, &str)],
 ) -> anyhow::Result<String> {
-    let mut command = pa_types::session_scope::std_command(program);
+    // Resolved on PATH first: Windows runs a `.cmd` launcher (npm) only by its path.
+    let mut command = pa_types::session_scope::std_command(
+        crate::platform::process::find_program(program)
+            .unwrap_or_else(|| std::path::PathBuf::from(program)),
+    );
     command.args(args);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);

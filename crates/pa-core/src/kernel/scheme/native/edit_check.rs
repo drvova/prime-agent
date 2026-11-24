@@ -156,22 +156,6 @@ fn stats_file(state_dir: &Path, root: &Path) -> PathBuf {
     state_dir.join(format!("{name}.json"))
 }
 
-/// A program on `PATH`.
-fn find_program(name: &str) -> Option<PathBuf> {
-    let suffixes: &[&str] = if cfg!(windows) {
-        &[".exe", ".cmd", ".bat", ""]
-    } else {
-        &[""]
-    };
-    std::env::split_paths(&pa_types::session_scope::var_os("PATH")?)
-        .flat_map(|directory| {
-            suffixes
-                .iter()
-                .map(move |suffix| directory.join(format!("{name}{suffix}")))
-        })
-        .find(|candidate| candidate.is_file() && platform::is_executable(candidate))
-}
-
 /// The nearest directory from `start` up to `root` holding the file `name`.
 fn nearest(start: &Path, root: &Path, name: &str) -> Option<PathBuf> {
     let mut directory = start;
@@ -199,7 +183,7 @@ fn choose(path: &Path, root: &Path) -> Option<Check> {
     };
     let file = text(path);
     match path.extension()?.to_str()? {
-        "py" => Some(match find_program("ruff") {
+        "py" => Some(match platform::process::find_program("ruff") {
             Some(ruff) => check(
                 "ruff",
                 &ruff,
@@ -217,14 +201,15 @@ fn choose(path: &Path, root: &Path) -> Option<Check> {
             ),
             None => check(
                 "py_compile",
-                &find_program("python3").or_else(|| find_program("python"))?,
+                &platform::process::find_program("python3")
+                    .or_else(|| platform::process::find_program("python"))?,
                 &["-m", "py_compile", &file],
                 root,
             ),
         }),
         "rs" => {
             let manifest = nearest(directory, root, "Cargo.toml")?.join("Cargo.toml");
-            let cargo = find_program("cargo")?;
+            let cargo = platform::process::find_program("cargo")?;
             let manifest: toml::Value =
                 toml::from_str(&std::fs::read_to_string(manifest).ok()?).ok()?;
             let name = manifest.get("package")?.get("name")?.as_str()?;
@@ -241,7 +226,7 @@ fn choose(path: &Path, root: &Path) -> Option<Check> {
                 .into_iter()
                 .map(|base| base.join("node_modules").join(".bin").join("tsc"))
                 .find(|local| local.is_file())
-                .or_else(|| find_program("tsc"))?;
+                .or_else(|| platform::process::find_program("tsc"))?;
             Some(check(
                 "tsc",
                 &tsc,
@@ -251,7 +236,7 @@ fn choose(path: &Path, root: &Path) -> Option<Check> {
         }
         "go" => {
             let module = nearest(directory, root, "go.mod")?;
-            let go = find_program("go")?;
+            let go = platform::process::find_program("go")?;
             let package: Vec<String> = directory
                 .strip_prefix(&module)
                 .ok()?
