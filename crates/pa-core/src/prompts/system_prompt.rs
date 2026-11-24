@@ -106,7 +106,69 @@ pub struct BuildSystemPromptOptions<'a> {
     /// The project card (build/test commands, key dirs, learned commands),
     /// as the session read it at start.
     pub project_card: Option<String>,
+    /// The machine the session's commands run on and the rights they run
+    /// with: the environment section's `Machine:` line. `None` states
+    /// nothing.
+    pub host: Option<HostAccess>,
 }
+
+/// Where a session's commands run: the user's own computer, on this
+/// platform, with the daemon process's rights (every session of a daemon
+/// runs in its process, so they share its elevation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostAccess {
+    pub route: pa_types::platform::ElevationRoute,
+    pub elevation: pa_types::platform::Elevation,
+}
+
+impl HostAccess {
+    /// This process's platform and elevation.
+    #[must_use]
+    pub fn current() -> Self {
+        Self {
+            route: pa_types::platform::ElevationRoute::CURRENT,
+            elevation: pa_types::platform::process_elevation(),
+        }
+    }
+
+    /// The environment section's line: the session is on the user's own
+    /// machine, not in a sandbox, and how a step that needs more rights gets
+    /// them here (or that every command already has them).
+    fn line(self) -> String {
+        use pa_types::platform::{Elevation, ElevationRoute};
+        let system = match self.route {
+            ElevationRoute::Uac => "Windows",
+            ElevationRoute::MacosSudo => "macOS",
+            ElevationRoute::UnixSudo => "Linux",
+        };
+        let rights = match (self.elevation, self.route) {
+            (Elevation::Elevated, ElevationRoute::Uac) => HOST_ELEVATED_ADMINISTRATOR.to_string(),
+            (Elevation::Elevated, ElevationRoute::MacosSudo | ElevationRoute::UnixSudo) => {
+                HOST_ELEVATED_ROOT.to_string()
+            }
+            (Elevation::Standard, ElevationRoute::Uac) => {
+                format!("{HOST_STANDARD_UAC} {HOST_DETAILS}")
+            }
+            (Elevation::Standard, ElevationRoute::MacosSudo) => {
+                format!("{HOST_STANDARD_SUDO} {HOST_STANDARD_MACOS_DIALOG} {HOST_DETAILS}")
+            }
+            (Elevation::Standard, ElevationRoute::UnixSudo) => {
+                format!("{HOST_STANDARD_SUDO} {HOST_STANDARD_PKEXEC} {HOST_DETAILS}")
+            }
+        };
+        format!(
+            "Machine: the user's own computer ({system}), not a sandbox or container: what a command does, it does to their real system. {rights}"
+        )
+    }
+}
+
+const HOST_DETAILS: &str = "`(api-help \"shell\")` has the details.";
+const HOST_ELEVATED_ADMINISTRATOR: &str = "This session runs elevated, as Administrator: every command has administrator rights with no consent prompt, so a mistake reaches the whole machine. Use those rights only for what the task needs.";
+const HOST_ELEVATED_ROOT: &str = "This session runs as root: every command has root rights with no `sudo`, so a mistake reaches the whole machine, and files it creates belong to root. Use those rights only for what the task needs.";
+const HOST_STANDARD_UAC: &str = "This session runs with the user's own rights, not elevated. A step that needs administrator rights runs its program elevated through UAC, and the user approves a consent prompt on their screen: start `powershell -NoProfile -Command '$p = Start-Process -FilePath <program> -ArgumentList <arguments> -Verb RunAs -Wait -PassThru; exit $p.ExitCode'` with `(hash 'background #t)`, `ask` the user to approve the prompt, then `bash-wait` the job: it ends when the elevated program exits, with its exit code. The elevated program runs in a window of its own, so its output never reaches the command: have it write to a file under an absolute path, and read that.";
+const HOST_STANDARD_SUDO: &str = "This session runs with the user's own rights, not as root. A step that needs root runs under `sudo`, but commands have no terminal, so `sudo` cannot ask for a password (and the user's password never goes through you): `sudo -n <command>` runs only when `sudo` needs no password, and otherwise fails at once with `a password is required`. Then give the user the exact command, `ask` them to run it in their own terminal, and continue in the same turn with their answer.";
+const HOST_STANDARD_PKEXEC: &str = "On a desktop with a polkit agent, `pkexec <command>` started with `(hash 'background #t)` asks for the password in a window instead: `ask` the user to answer it.";
+const HOST_STANDARD_MACOS_DIALOG: &str = "Or `osascript -e 'do shell script \"<command>\" with administrator privileges'`, started with `(hash 'background #t)`, asks for the password in a macOS dialog and prints the command's output: `ask` the user to answer it.";
 
 /// Build the system prompt (assembled text only).
 #[must_use]
@@ -286,6 +348,9 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
         Some(true) => lines.push(IMAGE_INPUT_SEEN.to_string()),
         Some(false) => lines.push(IMAGE_INPUT_UNSEEN.to_string()),
         None => {}
+    }
+    if let Some(host) = options.host {
+        lines.push(host.line());
     }
     lines.join("\n")
 }
@@ -488,6 +553,40 @@ mod tests {
         assert!(tail.contains("Conversation log: /log.jsonl"));
         assert!(tail.contains("<available_skills>"));
         assert!(tail.contains("Recursive agent depth: 0 (root)"));
+    }
+
+    /// The model is told it runs on the user's machine with their rights, and how a step that
+    /// needs more gets them on this platform; an elevated session is told it has them.
+    #[test]
+    fn the_environment_states_the_machine_and_its_rights() {
+        use pa_types::platform::{Elevation, ElevationRoute};
+        let environment = |route, elevation| {
+            let mut options = base_options();
+            options.host = Some(HostAccess { route, elevation });
+            system_prompt_breakdown(&options)
+                .segments
+                .into_iter()
+                .find(|segment| segment.name == "environment")
+                .map(|segment| segment.text)
+        };
+        let opening = format!(
+            "Current date: {}\nWorking directory: /w\nConversation log: /log.jsonl\n",
+            today()
+        );
+        assert_eq!(
+            [
+                environment(ElevationRoute::Uac, Elevation::Standard),
+                environment(ElevationRoute::UnixSudo, Elevation::Elevated),
+            ],
+            [
+                Some(format!(
+                    "{opening}Machine: the user's own computer (Windows), not a sandbox or container: what a command does, it does to their real system. This session runs with the user's own rights, not elevated. A step that needs administrator rights runs its program elevated through UAC, and the user approves a consent prompt on their screen: start `powershell -NoProfile -Command '$p = Start-Process -FilePath <program> -ArgumentList <arguments> -Verb RunAs -Wait -PassThru; exit $p.ExitCode'` with `(hash 'background #t)`, `ask` the user to approve the prompt, then `bash-wait` the job: it ends when the elevated program exits, with its exit code. The elevated program runs in a window of its own, so its output never reaches the command: have it write to a file under an absolute path, and read that. `(api-help \"shell\")` has the details."
+                )),
+                Some(format!(
+                    "{opening}Machine: the user's own computer (Linux), not a sandbox or container: what a command does, it does to their real system. This session runs as root: every command has root rights with no `sudo`, so a mistake reaches the whole machine, and files it creates belong to root. Use those rights only for what the task needs."
+                )),
+            ]
+        );
     }
 
     #[test]

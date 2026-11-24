@@ -255,6 +255,7 @@ impl ResourceReload {
                 can_spawn: prompt.can_spawn,
                 generic_mcp_servers: prompt.generic_mcp_servers.clone(),
                 project_card: prompt.project_card.clone(),
+                host: Some(crate::prompts::HostAccess::current()),
                 append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
                 ..Default::default()
             },

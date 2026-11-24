@@ -123,6 +123,7 @@ fn assemble_breakdown(
             generic_mcp_servers: generic_servers,
             rlm_depth: Some(0),
             model_prompt_extras: model_prompts.extras.as_deref(),
+            host: Some(pa_core::prompts::HostAccess::current()),
             ..Default::default()
         },
     );
