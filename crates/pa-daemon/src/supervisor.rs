@@ -28,6 +28,8 @@ mod supervision;
 
 #[cfg(all(test, unix))]
 mod dead_child_delete_tests;
+#[cfg(all(test, unix))]
+mod event_bus_tests;
 #[cfg(test)]
 mod handshake_tests;
 #[cfg(all(test, unix))]
@@ -141,6 +143,9 @@ pub struct Supervisor {
     /// holding a superseded id resolves to the session's current
     /// resident instead of `Unknown active session`.
     pub(crate) session_bindings: crate::session_bindings::SessionBindingTable,
+    /// The daemon's event bus: sources, subscriptions, and the deliveries a
+    /// publication makes (`event_bus`), saved in the descriptor directory.
+    pub(crate) event_bus: crate::event_bus::EventBus,
     /// Per-session-file single-flight for opens (TS `openingWorkers`): a concurrent create
     /// reuses the first one's worker instead of losing the runtime session lease.
     pub(crate) opening_files:
@@ -288,6 +293,10 @@ impl Supervisor {
             &options.agent_dir,
         ));
         let admission = crate::provider_admission::AdmissionService::new(&options.agent_dir);
+        let event_bus = crate::event_bus::EventBus::load(
+            descriptor_dir.join(crate::event_bus::EVENT_BUS_FILE_NAME),
+            &log,
+        );
         Ok(Supervisor {
             admission,
             options,
@@ -295,6 +304,7 @@ impl Supervisor {
             bound_socket_identity: std::sync::Mutex::new(None),
             worker_connect_budget: std::sync::Mutex::new(None),
             session_bindings: crate::session_bindings::SessionBindingTable::new(),
+            event_bus,
             opening_files: std::sync::Mutex::new(std::collections::HashMap::new()),
             telemetry: std::sync::Mutex::new(None),
             daemon_event_counts: std::sync::Mutex::default(),

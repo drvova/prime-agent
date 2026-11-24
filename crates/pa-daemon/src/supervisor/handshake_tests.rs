@@ -11,7 +11,7 @@ pub(super) struct FakeWorkerSocket {
     // The listener is held so the bound socket path stays owned by the
     // test for the connection's whole lifetime.
     #[allow(dead_code)]
-    listener: Box<dyn pa_types::platform::transport::TransportListener>,
+    pub(super) listener: Box<dyn pa_types::platform::transport::TransportListener>,
     pub(super) read_half: Box<dyn pa_types::platform::transport::AsyncReadHalf>,
     pub(super) write_half: Box<dyn pa_types::platform::transport::AsyncWriteHalf>,
 }

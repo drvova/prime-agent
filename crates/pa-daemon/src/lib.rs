@@ -59,6 +59,7 @@ pub(crate) mod context_tree_children;
 pub(crate) mod create_reuse;
 pub mod descriptor;
 pub mod engine;
+pub(crate) mod event_bus;
 pub(crate) mod factory_activity;
 pub mod framing;
 mod goal_continuation;

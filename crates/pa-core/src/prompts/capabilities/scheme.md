@@ -27,6 +27,7 @@ Calling the API
 - Steel's own file, process, and environment functions are closed in this kernel: `open-input-file`, `open-output-file`, `read-dir`, `path-exists?`, `current-directory`, `command`, `spawn-process`, `load`, `(require "file.scm")`, `env-var` and the like raise or are undefined. Read and write files with `fs-read`, `fs-write`, `fs-edit` and `edit`, find them with `fs-glob`, `fs-find` and `fs-grep`, and run commands with `bash`: they work in the session's working directory. String ports (`open-output-string`, `with-output-to-string`) and `eval` work as usual.
 
 - `(api-help [topic])`: print this reference. Without an argument it lists the topics; with a topic name it prints that topic, and with a function name that function's entry
+- `(api-search query #:limit)`: print the passages of this reference that best match the words of `query` (BM25 ranking), best first, each under its topic and section: at most `#:limit` (default 5). A function's name ranks its entry first; a description (`"wait for a child"`, `"kill a background job"`) finds the functions and details that use those words. Use it when you do not know a function's name or topic, instead of printing whole topics
 - `(session-cwd)`: the session's working directory, an absolute path
 - `(session-id)`: the session's id, or `#f` when the host gave none
 - `(session-artifact-dir)`: the saved session's artifact directory, or `#f`

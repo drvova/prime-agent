@@ -1100,6 +1100,13 @@ impl Supervisor {
                 };
                 (vec![response_line(&response)], false)
             }
+            DaemonCommand::EventBus { .. } => {
+                // `event_bus`: a session's worker-token-authenticated event bus request.
+                let response = self
+                    .handle_event_bus(command, &command_id, &type_name)
+                    .await;
+                (vec![response_line(&response)], false)
+            }
             DaemonCommand::ListAgentPeers { .. } => {
                 // `list_agent_peers`: the worker-token-authenticated peer roster.
                 self.handle_list_agent_peers(command, &command_id, &type_name)

@@ -14,6 +14,7 @@ pub mod compaction;
 pub mod context_breakdown;
 pub mod control;
 pub mod daemon;
+pub mod events;
 pub mod goal;
 pub mod incident;
 pub mod memory_release;

@@ -12,7 +12,7 @@ The harness often sends messages to the agent. These are user messages starting 
 - Optional arguments are keywords, `(web-search "query" #:num-results 5)`, or for `bash` and the `fs-*` tools one options hash, `(bash "make" (hash 'timeout-ms 60000))`. An option or argument a function does not declare is refused before the call runs, never ignored, and the error names what the function accepts.
 - A failed call raises and ends the cell with `Error: ...`; `(with-handler (lambda (e) (to-string e)) (fs-read "maybe.txt"))` catches it. A command's non-zero exit is a result, not an error.
 - `string-append` takes strings only (convert with `(to-string x)`); there is no `format`. `void` is a value, not a function.
-- This prompt gives each function's call form: `[x]` is an optional argument, `#:x` an optional keyword that takes a value. The reference with every result shape, option, and default is in the kernel: `(api-help "fs-edit")` prints one function's entry, `(api-help "fs")` a topic, `(api-help)` the topics. Read an entry before the first use of a function whose result or options you do not know.
+- This prompt gives each function's call form: `[x]` is an optional argument, `#:x` an optional keyword that takes a value. The reference with every result shape, option, and default is in the kernel: `(api-help "fs-edit")` prints one function's entry, `(api-help "fs")` a topic, `(api-help)` the topics. When you do not know the name, `(api-search "what you need")` prints the best-matching entries and details. Read an entry before the first use of a function whose result or options you do not know.
 
 {{calls:scheme}}
 
@@ -78,6 +78,12 @@ In goal mode prime-agent helps an agent stay on track until a task is fully fini
 Agents can schedule a prompt to run in their session later, and create heartbeats to wake themselves up recurrently with remembered instructions.
 
 {{calls:schedule}}
+
+## Events
+
+Sessions react to events instead of polling. An event source is a service with a schema: a session defines one, publishes its events, and every session subscribed to it gets a turn for each matching event.
+
+{{calls:events}}
 
 ## Worktrees and checkpoints
 

@@ -56,3 +56,18 @@ pub(in crate::catalog) const AGENT_KERNEL_WAITS: EventRule = EventRule {
         ("wait_until_timed_out_count", required(count())),
     ],
 };
+
+/// Reads of the kernel API reference from cells (v2), emitted at session end beside `agent
+/// session ended` (which sits near the backend's 128-key cap) only when a cell read it:
+/// `api-help` calls, `api-search` calls, and the searches that matched no passage. Counts only:
+/// never a topic, a query, or what was printed.
+pub(in crate::catalog) const AGENT_KERNEL_REFERENCE_LOOKUPS: EventRule = EventRule {
+    name: "agent kernel reference lookups",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("api_help_count", required(count())),
+        ("api_search_count", required(count())),
+        ("api_search_miss_count", required(count())),
+    ],
+};

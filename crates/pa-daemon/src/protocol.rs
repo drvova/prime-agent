@@ -50,6 +50,7 @@ pub const KNOWN_COMMAND_TYPES: &[&str] = &[
     "ack_result",
     "list",
     "list_agent_peers",
+    "event_bus",
     "get_direct_worker_transport",
     "roster_subscribe",
     "roster_unsubscribe",
@@ -946,6 +947,7 @@ pub fn command_active_session_id(command: &DaemonCommand) -> Option<&str> {
         // Control-plane commands carry no session selector.
         DaemonCommand::List { .. }
         | DaemonCommand::ListAgentPeers { .. }
+        | DaemonCommand::EventBus { .. }
         | DaemonCommand::GetUsage { .. }
         | DaemonCommand::GetWorkerPeerTransport { .. }
         | DaemonCommand::RosterSubscribe { .. }
@@ -977,6 +979,7 @@ pub fn command_type_name(command: &DaemonCommand) -> &'static str {
         DaemonCommand::List { .. } => "list",
         DaemonCommand::ListSavedSessions { .. } => "list_saved_sessions",
         DaemonCommand::ListAgentPeers { .. } => "list_agent_peers",
+        DaemonCommand::EventBus { .. } => "event_bus",
         DaemonCommand::GetDirectWorkerTransport { .. } => "get_direct_worker_transport",
         DaemonCommand::GetWorkerPeerTransport { .. } => "get_worker_peer_transport",
         DaemonCommand::RosterSubscribe { .. } => "roster_subscribe",

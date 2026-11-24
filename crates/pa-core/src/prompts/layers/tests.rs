@@ -2,10 +2,12 @@
 //! serves it. `tests/prompt_guards.rs` holds the reference equal to the kernel's sources.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use super::{api_help, documented_calls, splice_core_layer, API_DOCS, CORE_TEMPLATE};
 use crate::kernel::scheme::{SchemeKernelOptions, SchemeKernelProvisioner};
-use crate::tools::kernel_cell::{KernelExecuteOptions, KernelProvisioner};
+use crate::kernel::shared::ReferenceLookupFact;
+use crate::tools::kernel_cell::{ExecuteStatus, KernelExecuteOptions, KernelProvisioner};
 
 const NO_OPTIONS: KernelExecuteOptions<'static> = KernelExecuteOptions {
     signal: None,
@@ -116,5 +118,69 @@ async fn api_help_prints_the_topics_a_topic_and_one_function() {
                 api_help("")
             ),
         ]
+    );
+}
+
+/// `(api-search query)` ranks the reference: a function's name puts its entry first, a
+/// description of what a function does finds it, a query no passage shares a word with says so
+/// and lists the topics, and a limit below 1 is refused. The session's observer hears each search
+/// that ran and whether it found a passage.
+#[tokio::test(flavor = "multi_thread")]
+async fn api_search_ranks_the_reference_by_the_querys_words() {
+    let dir = tempfile::tempdir().unwrap();
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let observer = Arc::clone(&heard);
+    let kernel = SchemeKernelProvisioner::with_options(SchemeKernelOptions {
+        cwd: dir.path().to_path_buf(),
+        on_reference_lookup: Some(Arc::new(move |fact| observer.lock().unwrap().push(fact))),
+        ..SchemeKernelOptions::default()
+    })
+    .ensure(None, None)
+    .await
+    .unwrap();
+    let mut printed = Vec::new();
+    for cell in [
+        "(api-search \"fs-read\" #:limit 1)",
+        "(api-search \"kill a background job\")",
+        "(api-search \"xyzzy\")",
+        "(api-search \"fs-read\" #:limit 0)",
+    ] {
+        let result = kernel.execute(cell, NO_OPTIONS).await.unwrap();
+        printed.push((result.status, result.stdout));
+    }
+    let described = printed[1].1.contains(api_help("bash-kill").as_str());
+    printed[1].1 = String::new();
+    printed[3].1 = String::new();
+    let heard = heard.lock().unwrap().clone();
+    assert_eq!(
+        (printed, described, heard),
+        (
+            vec![
+                (
+                    ExecuteStatus::Ok,
+                    format!(
+                        "api-search: 1 passage of the reference for \"fs-read\", best first. \
+                         (api-help \"<function>\") prints an entry, (api-help \"<topic>\") a \
+                         topic.\n\n[fs]\n{}",
+                        api_help("fs-read")
+                    )
+                ),
+                (ExecuteStatus::Ok, String::new()),
+                (
+                    ExecuteStatus::Ok,
+                    format!(
+                        "api-search: nothing in the reference matches \"xyzzy\".\n{}",
+                        api_help("")
+                    )
+                ),
+                (ExecuteStatus::Error, String::new()),
+            ],
+            true,
+            vec![
+                ReferenceLookupFact::SearchFound,
+                ReferenceLookupFact::SearchFound,
+                ReferenceLookupFact::SearchMissed,
+            ]
+        )
     );
 }

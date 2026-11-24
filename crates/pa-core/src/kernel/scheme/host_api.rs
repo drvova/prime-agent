@@ -20,7 +20,7 @@ use steel::steel_vm::register_fn::RegisterFn;
 
 /// The API's Scheme sources in load order: a later file calls the earlier
 /// ones, and Steel resolves names when a file is loaded.
-const SOURCES: [(&str, &str); 9] = [
+const SOURCES: [(&str, &str); 10] = [
     ("bridge", include_str!("host_api/bridge.scm")),
     ("rlm", include_str!("host_api/rlm.scm")),
     ("agents", include_str!("host_api/agents.scm")),
@@ -30,6 +30,7 @@ const SOURCES: [(&str, &str); 9] = [
     ("worktree", include_str!("host_api/worktree.scm")),
     ("harness", include_str!("host_api/harness.scm")),
     ("hypothesis", include_str!("host_api/hypothesis.scm")),
+    ("events", include_str!("host_api/events.scm")),
 ];
 
 /// Define the host API in a session's `engine`, whose `host-request` bridge
