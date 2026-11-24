@@ -29,7 +29,7 @@ mod tests;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{anyhow, bail};
 use serde::Serialize;
 use serde_json::{json, Value};
 use url::Url;
@@ -427,11 +427,13 @@ pub(crate) async fn render(fetched: Fetched, shaping: &Shaping) -> anyhow::Resul
         }
         Sniffed::Html if shaping.is_default() => {
             let page_url = final_url.clone();
-            let rendered = tokio::task::spawn_blocking(move || {
-                html::render_page(&String::from_utf8_lossy(&fetched.body), &page_url)
+            let rendered = on_own_thread("web-render", move || {
+                Ok(html::render_page(
+                    &String::from_utf8_lossy(&fetched.body),
+                    &page_url,
+                ))
             })
-            .await
-            .context("HTML rendering")?;
+            .await?;
             Ok(Document {
                 final_url,
                 title: rendered.title,

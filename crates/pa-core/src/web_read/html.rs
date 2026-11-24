@@ -13,6 +13,7 @@
 
 use url::Url;
 
+use super::shape::MAX_NESTING;
 use super::PageLink;
 use crate::web_search::http::decode_entities;
 
@@ -165,11 +166,18 @@ fn collect_text(nodes: &[Node], out: &mut String) {
     }
 }
 
-/// Parse `html` into a tree under a synthetic `#root` element.
+/// Parse `html` into a tree under a synthetic `#root` element, at most
+/// [`MAX_NESTING`] elements deep (see [`TreeBuilder`]).
 pub(crate) fn parse(html: &str) -> Element {
+    build(html).finish()
+}
+
+/// Run the tree builder over `html`, its open elements still open.
+fn build(html: &str) -> TreeBuilder {
     let lower = html.to_ascii_lowercase();
     let mut builder = TreeBuilder {
         stack: vec![Element::new("#root", Vec::new())],
+        deepest: 0,
     };
     let mut at = 0;
     while at < html.len() {
@@ -220,7 +228,7 @@ pub(crate) fn parse(html: &str) -> Element {
             at += 1;
         }
     }
-    builder.finish()
+    builder
 }
 
 struct Tag {
@@ -311,14 +319,30 @@ fn parse_tag(html: &str, lower: &str, start: usize) -> (Tag, usize) {
     )
 }
 
+/// The open elements, root first. Everything past [`MAX_NESTING`] levels is
+/// flattened: an element opened deeper stays on the stack for its end tag,
+/// but its content goes to the open element at that depth and the element
+/// itself is left out when it closes. Every walk of the tree (the renderer,
+/// [`Element::find`], dropping it) recurses with its depth, and a stack
+/// overflow aborts the daemon, so a hostile page nested 100,000 deep must
+/// not build a tree that deep.
 struct TreeBuilder {
     stack: Vec<Element>,
+    /// The deepest element the page nests, flattened ones included.
+    deepest: usize,
 }
 
 impl TreeBuilder {
+    /// The element new content goes to: the innermost open one, or the one
+    /// at [`MAX_NESTING`] when the page is nested deeper.
+    fn target(&mut self) -> &mut Element {
+        let at = (self.stack.len() - 1).min(MAX_NESTING);
+        &mut self.stack[at]
+    }
+
     fn text(&mut self, text: &str) {
         let decoded = decode_entities(text);
-        let top = self.stack.last_mut().expect("root stays open");
+        let top = self.target();
         if let Some(Node::Text(previous)) = top.children.last_mut() {
             previous.push_str(&decoded);
         } else {
@@ -327,11 +351,8 @@ impl TreeBuilder {
     }
 
     fn leaf(&mut self, element: Element) {
-        self.stack
-            .last_mut()
-            .expect("root stays open")
-            .children
-            .push(Node::Element(element));
+        self.deepest = self.deepest.max(self.stack.len());
+        self.target().children.push(Node::Element(element));
     }
 
     /// Pop the innermost open `targets` element if it sits above every
@@ -386,7 +407,12 @@ impl TreeBuilder {
     fn pop_to(&mut self, position: usize) {
         while self.stack.len() > position {
             let element = self.stack.pop().expect("above the root");
-            self.leaf(element);
+            if self.stack.len() > MAX_NESTING {
+                // Flattened: its content went to the element at the bound.
+                self.deepest = self.deepest.max(self.stack.len());
+            } else {
+                self.leaf(element);
+            }
         }
     }
 
@@ -446,22 +472,12 @@ pub(crate) fn render_fragment(html: &str, page_url: &Url) -> (String, Vec<PageLi
     (markdown, renderer.links)
 }
 
-/// How deeply `html` nests elements as [`parse`] builds its tree. The tree
-/// is taken apart as it is measured, so even a hostile page's depth never
-/// recurses (dropping the tree whole would).
+/// How deeply `html` nests elements, counting the levels [`parse`]
+/// flattens past [`MAX_NESTING`].
 pub(crate) fn nesting(html: &str) -> usize {
-    let mut deepest = 0;
-    let mut open = vec![(parse(html), 0_usize)];
-    while let Some((mut element, depth)) = open.pop() {
-        deepest = deepest.max(depth);
-        for child in std::mem::take(&mut element.children) {
-            match child {
-                Node::Element(child) => open.push((child, depth + 1)),
-                Node::Text(_) => {}
-            }
-        }
-    }
-    deepest
+    let mut builder = build(html);
+    builder.pop_to(1);
+    builder.deepest
 }
 
 /// `html` as well-formed XML for an `XPath` query, without recursion: one

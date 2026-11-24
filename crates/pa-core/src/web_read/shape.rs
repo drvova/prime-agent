@@ -19,7 +19,9 @@ use url::Url;
 
 use super::html;
 
-/// The deepest element nesting a page may have for spider's parsers.
+/// The deepest element nesting a page may have for spider's parsers, and
+/// the deepest tree `web.read`'s own renderer builds (it flattens a page
+/// nested deeper instead of refusing it).
 pub(crate) const MAX_NESTING: usize = 2_000;
 /// The stack of a transformation thread: room for [`MAX_NESTING`] levels of
 /// every parser's recursion many times over.
