@@ -746,6 +746,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         // The session's cookies for its rendered crawls and captures: in
         // memory, gone with the session.
         cookies: crate::web_crawl::CookieJar::default(),
+        // `web.automate` reads the key `web.crawl.ai.keyFrom` names from the
+        // shared auth store per call, as `web.search` does.
+        credentials: Some(mcp_manager.lock().unwrap().auth_storage_handle()),
+        automate_observer: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |outcome| counters.note_web_automate(outcome))
+                as crate::web_crawl::AutomateObserver
+        }),
     }
     .register(&mut handlers);
     // `fs.symbol`: the project's symbol index, built in the background from

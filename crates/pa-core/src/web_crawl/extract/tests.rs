@@ -82,6 +82,8 @@ async fn web_extract_reads_given_html_from_a_cell() {
         extract_observer: None,
         settings: None,
         cookies: CookieJar::default(),
+        credentials: None,
+        automate_observer: None,
     }
     .register(&mut handlers);
     let kernel = crate::kernel::scheme::SchemeKernelProvisioner::new(handlers, "/")

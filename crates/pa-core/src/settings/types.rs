@@ -348,6 +348,23 @@ pub struct WebCrawlSettings {
     /// HTTP Basic credentials a plain crawl sends to the crawled site's
     /// hosts.
     pub auth: Option<WebCrawlCredentials>,
+    /// The model `web-automate` drives the browser with; unset, it is off.
+    pub ai: Option<WebCrawlAiSettings>,
+}
+
+/// `web.crawl.ai`: the OpenAI-compatible chat-completions endpoint and model
+/// spider's browser automation calls, and the configured provider whose
+/// credential it sends. The key itself never appears here: it is resolved
+/// from the user's provider credentials at each call.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebCrawlAiSettings {
+    /// The full chat-completions URL (`https://api.openai.com/v1/chat/completions`).
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    /// The provider id whose credential is sent (`openai`, `openrouter`);
+    /// unset sends none (a local endpoint).
+    pub key_from: Option<String>,
 }
 
 /// `web.crawl.auth`: a username and password.

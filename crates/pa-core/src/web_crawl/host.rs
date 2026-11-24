@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use reqwest::cookie::CookieStore as _;
 
 use super::{
-    capture, extract, identity, parse_request, CaptureOutcome, CookieJar, CookieScope,
+    automate, capture, extract, identity, parse_request, CaptureOutcome, CookieJar, CookieScope,
     CrawlOutcome, ExtractOutcome, Identity, Render, WebCrawlEngine,
 };
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
@@ -27,6 +27,9 @@ pub(crate) type CrawlObserver = Arc<dyn Fn(CrawlOutcome) + Send + Sync>;
 
 /// Observes each finished `web.capture` (counts only, like crawls).
 pub(crate) type CaptureObserver = Arc<dyn Fn(CaptureOutcome) + Send + Sync>;
+
+/// Observes each `web.automate` (counts only: never a URL, a goal, or a key).
+pub(crate) type AutomateObserver = Arc<dyn Fn(automate::AutomateOutcome) + Send + Sync>;
 
 /// Observes each finished `web.extract`: whether it succeeded, nothing else.
 pub(crate) type ExtractObserver = Arc<dyn Fn(ExtractOutcome) + Send + Sync>;
@@ -51,6 +54,10 @@ pub(crate) struct WebCrawlHost {
     pub(crate) settings: Option<CrawlSettings>,
     /// The session's cookie jar for its rendered crawls and captures.
     pub(crate) cookies: CookieJar,
+    /// The session's provider credentials, which `web.automate` reads the
+    /// key `web.crawl.ai.keyFrom` names from; `None` for a session without.
+    pub(crate) credentials: Option<automate::Credentials>,
+    pub(crate) automate_observer: Option<AutomateObserver>,
 }
 
 impl WebCrawlHost {
@@ -63,6 +70,14 @@ impl WebCrawlHost {
             host_handler(move |payload| {
                 let host = Arc::clone(&crawler);
                 async move { host.handle(&payload.data).await }
+            }),
+        );
+        let automator = Arc::clone(&host);
+        handlers.register(
+            "web.automate",
+            host_handler(move |payload| {
+                let host = Arc::clone(&automator);
+                async move { host.automate(&payload.data).await }
             }),
         );
         let extractor = Arc::clone(&host);
@@ -151,6 +166,32 @@ impl WebCrawlHost {
             ),
             (None, None) => bail!("web.extract read nothing: {}", crawl.notes.join("; ")),
         }
+    }
+
+    /// `web.automate`: spider's model-driven automation of one page, only
+    /// with the user's `web.crawl.ai` setting.
+    #[tracing::instrument(skip_all)]
+    pub(super) async fn automate(&self, data: &Value) -> anyhow::Result<Value> {
+        let request = automate::parse_request(data)?;
+        let settings = self.settings();
+        let observe = |outcome| {
+            if let Some(observer) = &self.automate_observer {
+                observer(outcome);
+            }
+        };
+        let model =
+            match automate::Model::resolve(settings.ai.as_ref(), self.credentials.as_ref()).await {
+                Ok(model) => model,
+                Err(error) => {
+                    observe(automate::AutomateOutcome::Refused);
+                    return Err(error);
+                }
+            };
+        let identity = Identity::from_settings(&settings)?;
+        let (reply, outcome) =
+            automate::automate(&request, &identity, &self.jar(request.cookies), &model).await;
+        observe(outcome);
+        reply
     }
 
     #[tracing::instrument(skip_all)]

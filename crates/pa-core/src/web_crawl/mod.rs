@@ -19,6 +19,7 @@
 //! and past [`TOTAL_CHARS`] of markdown a page's text is paged out to the
 //! session's spill store under an `out:` handle instead.
 
+mod automate;
 mod browser;
 mod capture;
 mod extract;
@@ -38,8 +39,9 @@ use serde_json::{json, Value};
 use spider::fetch_engine::{EngineError, EngineRequest, EngineResponse, HttpFetchEngine};
 use url::Url;
 
+pub(crate) use automate::AutomateOutcome;
 pub(crate) use host::{
-    CaptureObserver, CrawlObserver, CrawlSettings, ExtractObserver, WebCrawlHost,
+    AutomateObserver, CaptureObserver, CrawlObserver, CrawlSettings, ExtractObserver, WebCrawlHost,
 };
 pub(crate) use identity::{changes as identity_changes, Identity};
 

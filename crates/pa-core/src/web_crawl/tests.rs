@@ -23,7 +23,7 @@ fn page(title: &str, links: &[&str]) -> String {
 }
 
 /// What a fixture site serves: each path's content type and body.
-type Pages = HashMap<&'static str, (&'static str, String)>;
+pub(super) type Pages = HashMap<&'static str, (&'static str, String)>;
 
 /// The site's pages: a home page linking two levels down, a robots.txt that
 /// disallows `/private`, an off-site link, and a docs section.
@@ -64,8 +64,8 @@ fn pages() -> Pages {
 
 /// A loopback server for `pages`, recording every path it was asked for.
 /// `hang` makes every page but robots.txt wait forever instead.
-struct Site {
-    base: String,
+pub(super) struct Site {
+    pub(super) base: String,
     hits: Arc<Mutex<Vec<String>>>,
     /// Each request's path and lowercased head (request line and headers).
     heads: Arc<Mutex<Vec<(String, String)>>>,
@@ -77,7 +77,7 @@ impl Site {
         Self::serving(pages(), hang).await
     }
 
-    async fn serving(pages: Pages, hang: bool) -> Self {
+    pub(super) async fn serving(pages: Pages, hang: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let base = format!("http://{}", listener.local_addr().expect("addr"));
         let hits = Arc::new(Mutex::new(Vec::new()));
@@ -371,7 +371,7 @@ async fn rendering_without_a_browser_says_how_to_get_one() {
 /// The processes whose command line names this test's browser profiles,
 /// once they are all gone or 10 s passed: a killed process leaves `/proc`
 /// only when it has finished dying.
-async fn browsers_left() -> Vec<u32> {
+pub(super) async fn browsers_left() -> Vec<u32> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let running = browsers_running();
@@ -482,6 +482,8 @@ async fn a_stopped_cell_stops_its_crawl() {
         extract_observer: None,
         settings: None,
         cookies: CookieJar::default(),
+        credentials: None,
+        automate_observer: None,
     }
     .register(&mut handlers);
     let kernel = crate::kernel::scheme::SchemeKernelProvisioner::new(handlers, "/")
@@ -643,6 +645,8 @@ async fn the_users_settings_change_what_the_next_crawl_presents() {
             Arc::new(move || settings.lock().unwrap().clone()) as CrawlSettings
         }),
         cookies: CookieJar::default(),
+        credentials: None,
+        automate_observer: None,
     };
     let payload = json!({"url": format!("{}/", site.base), "maxDepth": 2});
     host.handle(&payload).await.unwrap();
@@ -1117,6 +1121,8 @@ async fn a_sessions_cookies_carry_across_its_rendered_crawls_and_captures() {
             ..Default::default()
         }) as CrawlSettings),
         cookies: CookieJar::default(),
+        credentials: None,
+        automate_observer: None,
     };
     {
         let _scope = pa_types::session_scope::enter(Some(scope));

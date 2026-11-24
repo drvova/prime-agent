@@ -1,0 +1,1827 @@
+//! Core Agent struct and builder for spider_agent.
+
+use crate::config::{AgentConfig, UsageSnapshot, UsageStats};
+#[cfg(feature = "search")]
+use crate::config::{ResearchOptions, SearchOptions};
+use crate::error::{AgentError, AgentResult};
+#[cfg(feature = "search")]
+use crate::llm::TokenUsage;
+use crate::llm::{CompletionOptions, CompletionResponse, LLMProvider, Message};
+use crate::memory::AgentMemory;
+use crate::tools::{
+    CustomTool, CustomToolRegistry, CustomToolResult, SpiderBrowserToolConfig,
+    SpiderCloudToolConfig,
+};
+use std::sync::Arc;
+
+/// Check if an API key is a placeholder or empty.
+fn is_placeholder_api_key(key: &str) -> bool {
+    let trimmed = key.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("YOUR_API_KEY")
+        || trimmed.eq_ignore_ascii_case("YOUR-API-KEY")
+        || trimmed.eq_ignore_ascii_case("API_KEY")
+        || trimmed.eq_ignore_ascii_case("API-KEY")
+}
+use tokio::sync::Semaphore;
+
+#[cfg(feature = "search")]
+use crate::search::{SearchProvider, SearchResults};
+
+#[cfg(feature = "chrome")]
+use crate::browser::BrowserContext;
+
+#[cfg(feature = "webdriver")]
+use crate::webdriver::WebDriverContext;
+
+#[cfg(feature = "fs")]
+use crate::temp::TempStorage;
+
+/// Multimodal agent for web automation and research.
+///
+/// Designed to be wrapped in `Arc` for concurrent access.
+///
+/// # Example
+/// ```ignore
+/// use spider_agent::{Agent, AgentConfig};
+/// use std::sync::Arc;
+///
+/// let agent = Arc::new(Agent::builder()
+///     .with_openai("sk-...", "gpt-4o")
+///     .with_search_serper("serper-key")
+///     .build()?);
+///
+/// // Spawn concurrent tasks
+/// let agent_clone = agent.clone();
+/// tokio::spawn(async move {
+///     agent_clone.search("rust web frameworks").await
+/// });
+/// ```
+pub struct Agent {
+    /// LLM provider for inference.
+    llm: Option<Box<dyn LLMProvider>>,
+
+    /// HTTP client for requests.
+    client: reqwest::Client,
+
+    /// Search provider (if configured).
+    #[cfg(feature = "search")]
+    search_provider: Option<Box<dyn SearchProvider>>,
+
+    /// Browser context for Chrome automation.
+    #[cfg(feature = "chrome")]
+    browser: Option<BrowserContext>,
+
+    /// WebDriver context for browser automation.
+    #[cfg(feature = "webdriver")]
+    webdriver: Option<WebDriverContext>,
+
+    /// Temporary storage for large operations.
+    #[cfg(feature = "fs")]
+    temp_storage: Option<TempStorage>,
+
+    /// Session memory backed by DashMap.
+    memory: AgentMemory,
+
+    /// Concurrency semaphore for LLM calls.
+    llm_semaphore: Arc<Semaphore>,
+
+    /// Configuration.
+    config: AgentConfig,
+
+    /// Usage statistics (atomic counters for lock-free updates).
+    usage: Arc<UsageStats>,
+
+    /// Custom tool registry.
+    custom_tools: CustomToolRegistry,
+}
+
+impl Agent {
+    /// Create a new agent builder.
+    pub fn builder() -> AgentBuilder {
+        AgentBuilder::new()
+    }
+
+    /// Returns a reference to the underlying HTTP client.
+    pub fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    // ==================== Search Methods ====================
+
+    /// Search the web and return results.
+    #[cfg(feature = "search")]
+    pub async fn search(&self, query: &str) -> AgentResult<SearchResults> {
+        self.search_with_options(query, SearchOptions::default())
+            .await
+    }
+
+    /// Search with custom options.
+    #[cfg(feature = "search")]
+    pub async fn search_with_options(
+        &self,
+        query: &str,
+        options: SearchOptions,
+    ) -> AgentResult<SearchResults> {
+        let provider = self
+            .search_provider
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("search provider"))?;
+
+        self.usage
+            .reserve_search_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        provider
+            .search(query, &options, &self.client)
+            .await
+            .map_err(AgentError::Search)
+    }
+
+    // ==================== LLM Methods ====================
+
+    /// Send a prompt to the LLM and get a response.
+    pub async fn prompt(&self, messages: Vec<Message>) -> AgentResult<String> {
+        let response = self.complete(messages).await?;
+        Ok(response.content)
+    }
+
+    /// Send a completion request with full options.
+    pub async fn complete(&self, messages: Vec<Message>) -> AgentResult<CompletionResponse> {
+        let llm = self
+            .llm
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("LLM provider"))?;
+
+        let _permit = self
+            .llm_semaphore
+            .acquire()
+            .await
+            .map_err(|_| AgentError::Llm("Failed to acquire semaphore".to_string()))?;
+
+        if let Some(limit) = self.usage.check_token_limits(&self.config.limits) {
+            return Err(AgentError::LimitExceeded(limit));
+        }
+
+        let options = CompletionOptions {
+            temperature: self.config.temperature,
+            max_tokens: self.config.max_tokens,
+            json_mode: self.config.json_mode,
+        };
+
+        self.usage
+            .reserve_llm_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        let response = llm.complete(messages, &options, &self.client).await?;
+
+        // Track token usage
+        self.usage.add_tokens(
+            response.usage.prompt_tokens as u64,
+            response.usage.completion_tokens as u64,
+        );
+
+        Ok(response)
+    }
+
+    // ==================== Extraction Methods ====================
+
+    /// Extract structured data from HTML using the LLM.
+    pub async fn extract(&self, html: &str, prompt: &str) -> AgentResult<serde_json::Value> {
+        let cleaned_html = self.clean_html(html);
+        let truncated = self.truncate_html(&cleaned_html);
+
+        let messages = vec![
+            Message::system(
+                "You are a data extraction assistant. Extract the requested information from the HTML and return it as JSON.",
+            ),
+            Message::user(format!(
+                "Extract the following from this HTML:\n\n{}\n\nHTML:\n{}",
+                prompt, truncated
+            )),
+        ];
+
+        let response = self.complete(messages).await?;
+        self.parse_json(&response.content)
+    }
+
+    /// Extract data with a JSON schema for structured output.
+    pub async fn extract_structured(
+        &self,
+        html: &str,
+        schema: &serde_json::Value,
+    ) -> AgentResult<serde_json::Value> {
+        let cleaned_html = self.clean_html(html);
+        let truncated = self.truncate_html(&cleaned_html);
+
+        let messages = vec![
+            Message::system(
+                "You are a data extraction assistant. Extract data matching the provided JSON schema.",
+            ),
+            Message::user(format!(
+                "Extract data matching this schema:\n{}\n\nFrom this HTML:\n{}",
+                serde_json::to_string_pretty(schema).unwrap_or_default(),
+                truncated
+            )),
+        ];
+
+        let response = self.complete(messages).await?;
+        self.parse_json(&response.content)
+    }
+
+    // ==================== HTTP Methods ====================
+
+    /// Fetch a URL and return the HTML content.
+    pub async fn fetch(&self, url: &str) -> AgentResult<FetchResult> {
+        self.usage
+            .reserve_fetch_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        let response = self.client.get(url).send().await?;
+
+        let status = response.status();
+        let headers = response.headers().clone();
+
+        let content_type = headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        let html = response.text().await?;
+
+        Ok(FetchResult {
+            url: url.to_string(),
+            status: status.as_u16(),
+            content_type,
+            html,
+        })
+    }
+
+    // ==================== Research Methods ====================
+
+    /// Research a topic using search and extraction.
+    #[cfg(feature = "search")]
+    pub async fn research(
+        &self,
+        topic: &str,
+        options: ResearchOptions,
+    ) -> AgentResult<ResearchResult> {
+        // Search for the topic
+        let search_opts = options
+            .search_options
+            .clone()
+            .unwrap_or_else(|| SearchOptions::new().with_limit(options.max_pages.max(5)));
+
+        let search_results = self.search_with_options(topic, search_opts).await?;
+
+        if search_results.is_empty() {
+            return Ok(ResearchResult {
+                topic: topic.to_string(),
+                search_results,
+                extractions: Vec::new(),
+                summary: None,
+                usage: TokenUsage::default(),
+            });
+        }
+
+        // Extract from each result
+        let extraction_prompt = options.extraction_prompt.clone().unwrap_or_else(|| {
+            format!(
+                "Extract key information relevant to: {}. Include facts, data points, and insights.",
+                topic
+            )
+        });
+
+        let mut extractions = Vec::new();
+        let mut total_usage = TokenUsage::default();
+
+        let max_pages = options.max_pages.min(search_results.results.len());
+
+        for result in search_results.results.iter().take(max_pages) {
+            // Fetch page
+            match self.fetch(&result.url).await {
+                Ok(fetch_result) => {
+                    // Extract
+                    match self.extract(&fetch_result.html, &extraction_prompt).await {
+                        Ok(extracted) => {
+                            extractions.push(PageExtraction {
+                                url: result.url.clone(),
+                                title: result.title.clone(),
+                                extracted,
+                            });
+                        }
+                        Err(e) => {
+                            log::warn!("Extraction failed for {}: {}", result.url, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Fetch failed for {}: {}", result.url, e);
+                }
+            }
+        }
+
+        // Synthesize if requested
+        let summary = if options.synthesize && !extractions.is_empty() {
+            match self.synthesize_research(topic, &extractions).await {
+                Ok((summary, usage)) => {
+                    total_usage.accumulate(&usage);
+                    Some(summary)
+                }
+                Err(e) => {
+                    log::warn!("Synthesis failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(ResearchResult {
+            topic: topic.to_string(),
+            search_results,
+            extractions,
+            summary,
+            usage: total_usage,
+        })
+    }
+
+    /// Synthesize research findings into a summary.
+    #[cfg(feature = "search")]
+    async fn synthesize_research(
+        &self,
+        topic: &str,
+        extractions: &[PageExtraction],
+    ) -> AgentResult<(String, TokenUsage)> {
+        let mut context = String::new();
+        for (i, extraction) in extractions.iter().enumerate() {
+            context.push_str(&format!(
+                "\n\nSource {} ({}): {}\n{}",
+                i + 1,
+                extraction.url,
+                extraction.title,
+                serde_json::to_string_pretty(&extraction.extracted).unwrap_or_default()
+            ));
+        }
+
+        let messages = vec![
+            Message::system(
+                "You are a research synthesis assistant. Summarize the findings from multiple sources into a coherent response.",
+            ),
+            Message::user(format!(
+                "Topic: {}\n\nSources:{}\n\nProvide a comprehensive summary of the findings, citing sources where appropriate. Return as JSON with a 'summary' field.",
+                topic, context
+            )),
+        ];
+
+        let response = self.complete(messages).await?;
+        let json = self.parse_json(&response.content)?;
+        let summary = json
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&response.content)
+            .to_string();
+
+        Ok((summary, response.usage))
+    }
+
+    // ==================== Memory Methods ====================
+
+    /// Get a value from memory.
+    pub fn memory_get(&self, key: &str) -> Option<serde_json::Value> {
+        self.memory.get(key)
+    }
+
+    /// Set a value in memory.
+    pub fn memory_set(&self, key: &str, value: serde_json::Value) {
+        self.memory.set(key, value);
+    }
+
+    /// Clear all memory.
+    pub fn memory_clear(&self) {
+        self.memory.clear();
+    }
+
+    /// Get the memory instance for direct access.
+    pub fn memory(&self) -> &AgentMemory {
+        &self.memory
+    }
+
+    // ==================== Usage Methods ====================
+
+    /// Get a snapshot of usage statistics.
+    pub fn usage(&self) -> UsageSnapshot {
+        self.usage.snapshot()
+    }
+
+    /// Get the raw usage stats for direct access.
+    pub fn usage_stats(&self) -> &Arc<UsageStats> {
+        &self.usage
+    }
+
+    /// Reset usage statistics.
+    pub fn reset_usage(&self) {
+        self.usage.reset();
+    }
+
+    // ==================== Custom Tool Methods ====================
+
+    /// Register a custom tool.
+    pub fn register_custom_tool(&self, tool: CustomTool) {
+        self.custom_tools.register(tool);
+    }
+
+    /// Remove a custom tool.
+    pub fn remove_custom_tool(&self, name: &str) -> bool {
+        self.custom_tools.remove(name).is_some()
+    }
+
+    /// List all registered custom tools.
+    pub fn list_custom_tools(&self) -> Vec<String> {
+        self.custom_tools.list()
+    }
+
+    /// Check if a custom tool is registered.
+    pub fn has_custom_tool(&self, name: &str) -> bool {
+        self.custom_tools.contains(name)
+    }
+
+    /// Execute a custom tool by name.
+    ///
+    /// # Arguments
+    /// * `name` - The registered tool name
+    /// * `path` - Optional path to append to the base URL
+    /// * `query` - Optional query parameters
+    /// * `body` - Optional request body
+    pub async fn execute_custom_tool(
+        &self,
+        name: &str,
+        path: Option<&str>,
+        query: Option<&[(&str, &str)]>,
+        body: Option<&str>,
+    ) -> AgentResult<CustomToolResult> {
+        self.usage
+            .reserve_custom_tool_call(name, &self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        // Execute the tool
+        self.custom_tools
+            .execute(name, &self.client, path, query, body)
+            .await
+    }
+
+    /// Execute a custom tool and parse the JSON response.
+    pub async fn execute_custom_tool_json(
+        &self,
+        name: &str,
+        path: Option<&str>,
+        query: Option<&[(&str, &str)]>,
+        body: Option<&str>,
+    ) -> AgentResult<serde_json::Value> {
+        let result = self.execute_custom_tool(name, path, query, body).await?;
+        serde_json::from_str(&result.body).map_err(AgentError::Json)
+    }
+
+    /// Get the custom tool registry for direct access.
+    pub fn custom_tool_registry(&self) -> &CustomToolRegistry {
+        &self.custom_tools
+    }
+
+    /// Register Spider Cloud routes as custom tools.
+    ///
+    /// Core routes (`/crawl`, `/scrape`, `/search`, `/links`, `/transform`)
+    /// are enabled by default. AI routes are gated and disabled
+    /// by default.
+    ///
+    /// Returns the number of tools registered.
+    pub fn register_spider_cloud(&self, config: SpiderCloudToolConfig) -> usize {
+        self.custom_tools.register_spider_cloud(&config)
+    }
+
+    /// Register Spider Browser Cloud tools.
+    ///
+    /// Returns the number of tools registered.
+    pub fn register_spider_browser(&self, config: SpiderBrowserToolConfig) -> usize {
+        self.custom_tools.register_spider_browser(&config)
+    }
+
+    // ==================== Browser Methods ====================
+
+    /// Get the browser context if configured.
+    #[cfg(feature = "chrome")]
+    pub fn browser(&self) -> Option<&BrowserContext> {
+        self.browser.as_ref()
+    }
+
+    /// Navigate to a URL using the browser.
+    #[cfg(feature = "chrome")]
+    pub async fn navigate(&self, url: &str) -> AgentResult<()> {
+        let browser = self
+            .browser
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("browser"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        browser
+            .navigate(url)
+            .await
+            .map_err(|e| AgentError::Browser(e.to_string()))
+    }
+
+    /// Get HTML from the current browser page.
+    #[cfg(feature = "chrome")]
+    pub async fn browser_html(&self) -> AgentResult<String> {
+        let browser = self
+            .browser
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("browser"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        browser
+            .html()
+            .await
+            .map_err(|e| AgentError::Browser(e.to_string()))
+    }
+
+    /// Take a screenshot of the current browser page.
+    #[cfg(feature = "chrome")]
+    pub async fn screenshot(&self) -> AgentResult<Vec<u8>> {
+        let browser = self
+            .browser
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("browser"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        browser
+            .screenshot()
+            .await
+            .map_err(|e| AgentError::Browser(e.to_string()))
+    }
+
+    /// Open a new page/tab in the browser.
+    ///
+    /// The returned [`BrowserContext`] **owns** the new tab: the CDP target is
+    /// closed once the last clone of that context drops. Code that keeps only
+    /// `ctx.page().clone()` and drops the context will find its tab closed —
+    /// call [`BrowserContext::defuse_page`] to let the page outlive the context.
+    #[cfg(feature = "chrome")]
+    pub async fn new_page(&self) -> AgentResult<crate::browser::BrowserContext> {
+        let browser = self
+            .browser
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("browser"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        browser
+            .clone_page()
+            .await
+            .map_err(|e| AgentError::Browser(e.to_string()))
+    }
+
+    /// Open a new page and navigate to URL.
+    ///
+    /// The bare page handle carries no ownership, so the tab is only released
+    /// when the agent's browser context drops. Prefer
+    /// [`Agent::new_page_with_url_owned`], which scopes the tab to the returned
+    /// context.
+    #[cfg(feature = "chrome")]
+    #[deprecated(
+        since = "2.52.14",
+        note = "leaks the CDP tab until the agent's browser context drops; use new_page_with_url_owned()"
+    )]
+    pub async fn new_page_with_url(
+        &self,
+        url: &str,
+    ) -> AgentResult<std::sync::Arc<crate::browser::Page>> {
+        let browser = self
+            .browser
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("browser"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        #[allow(deprecated)]
+        browser
+            .new_page_with_url(url)
+            .await
+            .map_err(|e| AgentError::Browser(e.to_string()))
+    }
+
+    /// Open a new page at `url` and return it as an owning context.
+    ///
+    /// The tab is closed when the last clone of the returned
+    /// [`BrowserContext`] drops. Leak-free replacement for
+    /// [`Agent::new_page_with_url`].
+    #[cfg(feature = "chrome")]
+    pub async fn new_page_with_url_owned(
+        &self,
+        url: &str,
+    ) -> AgentResult<crate::browser::BrowserContext> {
+        let browser = self
+            .browser
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("browser"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        browser
+            .new_page_with_url_owned(url)
+            .await
+            .map_err(|e| AgentError::Browser(e.to_string()))
+    }
+
+    /// Click an element in the browser.
+    #[cfg(feature = "chrome")]
+    pub async fn click(&self, selector: &str) -> AgentResult<()> {
+        let browser = self
+            .browser
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("browser"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        browser
+            .click(selector)
+            .await
+            .map_err(|e| AgentError::Browser(e.to_string()))
+    }
+
+    /// Type text into an element in the browser.
+    #[cfg(feature = "chrome")]
+    pub async fn type_text(&self, selector: &str, text: &str) -> AgentResult<()> {
+        let browser = self
+            .browser
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("browser"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        browser
+            .type_text(selector, text)
+            .await
+            .map_err(|e| AgentError::Browser(e.to_string()))
+    }
+
+    /// Extract from the current browser page using the LLM.
+    #[cfg(feature = "chrome")]
+    pub async fn extract_page(&self, prompt: &str) -> AgentResult<serde_json::Value> {
+        let html = self.browser_html().await?;
+        self.extract(&html, prompt).await
+    }
+
+    // ==================== WebDriver Methods ====================
+
+    /// Get the WebDriver context if configured.
+    #[cfg(feature = "webdriver")]
+    pub fn webdriver(&self) -> Option<&WebDriverContext> {
+        self.webdriver.as_ref()
+    }
+
+    /// Navigate using WebDriver.
+    #[cfg(feature = "webdriver")]
+    pub async fn webdriver_navigate(&self, url: &str) -> AgentResult<()> {
+        let driver = self
+            .webdriver
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("webdriver"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        driver
+            .navigate(url)
+            .await
+            .map_err(|e| AgentError::WebDriver(e.to_string()))
+    }
+
+    /// Get HTML from WebDriver.
+    #[cfg(feature = "webdriver")]
+    pub async fn webdriver_html(&self) -> AgentResult<String> {
+        let driver = self
+            .webdriver
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("webdriver"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        driver
+            .html()
+            .await
+            .map_err(|e| AgentError::WebDriver(e.to_string()))
+    }
+
+    /// Take a screenshot using WebDriver.
+    #[cfg(feature = "webdriver")]
+    pub async fn webdriver_screenshot(&self) -> AgentResult<Vec<u8>> {
+        let driver = self
+            .webdriver
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("webdriver"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        driver
+            .screenshot()
+            .await
+            .map_err(|e| AgentError::WebDriver(e.to_string()))
+    }
+
+    /// Click an element using WebDriver.
+    #[cfg(feature = "webdriver")]
+    pub async fn webdriver_click(&self, selector: &str) -> AgentResult<()> {
+        let driver = self
+            .webdriver
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("webdriver"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        driver
+            .click(selector)
+            .await
+            .map_err(|e| AgentError::WebDriver(e.to_string()))
+    }
+
+    /// Type text into an element using WebDriver.
+    #[cfg(feature = "webdriver")]
+    pub async fn webdriver_type_text(&self, selector: &str, text: &str) -> AgentResult<()> {
+        let driver = self
+            .webdriver
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("webdriver"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        driver
+            .type_text(selector, text)
+            .await
+            .map_err(|e| AgentError::WebDriver(e.to_string()))
+    }
+
+    /// Extract from the current WebDriver page using the LLM.
+    #[cfg(feature = "webdriver")]
+    pub async fn webdriver_extract_page(&self, prompt: &str) -> AgentResult<serde_json::Value> {
+        // Note: webdriver_html already tracks the webbrowser call
+        let html = self.webdriver_html().await?;
+        self.extract(&html, prompt).await
+    }
+
+    /// Open a new tab using WebDriver.
+    #[cfg(feature = "webdriver")]
+    pub async fn webdriver_new_tab(&self) -> AgentResult<crate::webdriver::WindowHandle> {
+        let driver = self
+            .webdriver
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("webdriver"))?;
+
+        self.usage
+            .reserve_webbrowser_call(&self.config.limits)
+            .map_err(AgentError::LimitExceeded)?;
+
+        driver
+            .new_tab()
+            .await
+            .map_err(|e| AgentError::WebDriver(e.to_string()))
+    }
+
+    // ==================== Temp Storage Methods ====================
+
+    /// Get the temp storage if configured.
+    #[cfg(feature = "fs")]
+    pub fn temp_storage(&self) -> Option<&TempStorage> {
+        self.temp_storage.as_ref()
+    }
+
+    /// Store data in temp storage.
+    #[cfg(feature = "fs")]
+    pub fn store_temp(&self, name: &str, data: &[u8]) -> AgentResult<std::path::PathBuf> {
+        let storage = self
+            .temp_storage
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("temp storage"))?;
+        storage.store_bytes(name, data).map_err(AgentError::Io)
+    }
+
+    /// Store JSON in temp storage.
+    #[cfg(feature = "fs")]
+    pub fn store_temp_json(
+        &self,
+        name: &str,
+        data: &serde_json::Value,
+    ) -> AgentResult<std::path::PathBuf> {
+        let storage = self
+            .temp_storage
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("temp storage"))?;
+        storage.store_json(name, data).map_err(AgentError::Io)
+    }
+
+    /// Read data from temp storage.
+    #[cfg(feature = "fs")]
+    pub fn read_temp(&self, name: &str) -> AgentResult<Vec<u8>> {
+        let storage = self
+            .temp_storage
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("temp storage"))?;
+        storage.read_bytes(name).map_err(AgentError::Io)
+    }
+
+    /// Read JSON from temp storage.
+    #[cfg(feature = "fs")]
+    pub fn read_temp_json(&self, name: &str) -> AgentResult<serde_json::Value> {
+        let storage = self
+            .temp_storage
+            .as_ref()
+            .ok_or(AgentError::NotConfigured("temp storage"))?;
+        storage.read_json(name).map_err(AgentError::Io)
+    }
+
+    // ==================== Helper Methods ====================
+
+    /// Clean HTML by removing scripts, styles, etc.
+    fn clean_html(&self, html: &str) -> String {
+        use crate::config::HtmlCleaningMode;
+
+        match self.config.html_cleaning {
+            HtmlCleaningMode::Raw => html.to_string(),
+            HtmlCleaningMode::Minimal => {
+                // Remove scripts only
+                remove_tags(html, &["script"])
+            }
+            HtmlCleaningMode::Default => {
+                // Remove scripts, styles, comments
+                remove_tags(html, &["script", "style", "noscript"])
+            }
+            HtmlCleaningMode::Aggressive => {
+                // Remove more elements
+                remove_tags(
+                    html,
+                    &[
+                        "script", "style", "noscript", "svg", "canvas", "video", "audio", "iframe",
+                    ],
+                )
+            }
+        }
+    }
+
+    /// Truncate HTML to max bytes.
+    fn truncate_html<'a>(&self, html: &'a str) -> &'a str {
+        if html.len() <= self.config.html_max_bytes {
+            html
+        } else {
+            // Walk back to the nearest UTF-8 char boundary so slicing a page
+            // whose multibyte char straddles `html_max_bytes` cannot panic.
+            let mut end = self.config.html_max_bytes;
+            while end > 0 && !html.is_char_boundary(end) {
+                end -= 1;
+            }
+            let truncated = &html[..end];
+            // Try to break at a tag boundary ('<' is ASCII, always a boundary)
+            if let Some(pos) = truncated.rfind('<') {
+                &truncated[..pos]
+            } else {
+                truncated
+            }
+        }
+    }
+
+    /// Parse JSON from LLM response.
+    fn parse_json(&self, content: &str) -> AgentResult<serde_json::Value> {
+        // Try direct parse first
+        if let Ok(json) = serde_json::from_str(content) {
+            return Ok(json);
+        }
+
+        // Try to extract JSON from markdown code block
+        if let Some(start) = content.find("```json") {
+            let start = start + 7;
+            if let Some(end) = content[start..].find("```") {
+                let json_str = content[start..start + end].trim();
+                if let Ok(json) = serde_json::from_str(json_str) {
+                    return Ok(json);
+                }
+            }
+        }
+
+        // Try to extract JSON from plain code block
+        if let Some(start) = content.find("```") {
+            let start = start + 3;
+            // Skip language identifier if present
+            let start = content[start..]
+                .find('\n')
+                .map(|n| start + n + 1)
+                .unwrap_or(start);
+            if let Some(end) = content[start..].find("```") {
+                let json_str = content[start..start + end].trim();
+                if let Ok(json) = serde_json::from_str(json_str) {
+                    return Ok(json);
+                }
+            }
+        }
+
+        // Try to find JSON object in content
+        if let Some(start) = content.find('{') {
+            if let Some(end) = content.rfind('}') {
+                // Guard against `}`-before-`{` (e.g. "} text {"): `start > end`
+                // would make `content[start..=end]` panic.
+                if start <= end {
+                    let json_str = &content[start..=end];
+                    if let Ok(json) = serde_json::from_str(json_str) {
+                        return Ok(json);
+                    }
+                }
+            }
+        }
+
+        Err(AgentError::Json(
+            serde_json::from_str::<serde_json::Value>(content).unwrap_err(),
+        ))
+    }
+}
+
+/// Tags that [`remove_tags`] can strip, in a fixed lookup order.
+const STRIPPABLE_TAGS: [&str; 8] = [
+    "script", "style", "noscript", "svg", "canvas", "video", "audio", "iframe",
+];
+
+/// Build a single-pattern, ASCII case-insensitive matcher.
+fn tag_matcher(pattern: &str) -> aho_corasick::AhoCorasick {
+    aho_corasick::AhoCorasick::builder()
+        .ascii_case_insensitive(true)
+        .build([pattern])
+        .expect("valid pattern")
+}
+
+/// Pre-built `<tag` / `</tag>` matchers for every strippable tag.
+///
+/// Matching case-insensitively on the original bytes replaces the full-document
+/// `to_ascii_lowercase()` allocation each tag pass previously required.
+static TAG_MATCHERS: std::sync::LazyLock<
+    [(&str, aho_corasick::AhoCorasick, aho_corasick::AhoCorasick); STRIPPABLE_TAGS.len()],
+> = std::sync::LazyLock::new(|| {
+    STRIPPABLE_TAGS.map(|tag| {
+        (
+            tag,
+            tag_matcher(&format!("<{tag}")),
+            tag_matcher(&format!("</{tag}>")),
+        )
+    })
+});
+
+/// Remove specified HTML tags (and their content) from HTML.
+///
+/// Single-pass per tag — avoids O(n²) from repeated `find()` + concatenation.
+/// Tags absent from the document cost one scan and no rebuild.
+fn remove_tags(html: &str, tags: &[&str]) -> String {
+    let mut result = std::borrow::Cow::Borrowed(html);
+    for tag in tags {
+        // Case-insensitive matchers make offsets valid on the original bytes
+        // directly (per-tag `to_ascii_lowercase()` copies desync on nothing
+        // and are pure allocation overhead). Tag names are ASCII, so ASCII
+        // case-insensitivity is equivalent to the lowercased-haystack search.
+        let prebuilt = TAG_MATCHERS.iter().find(|(t, _, _)| t == tag);
+        let adhoc;
+        let (open, close) = match prebuilt {
+            Some((_, open, close)) => (open, close),
+            None => {
+                adhoc = (
+                    tag_matcher(&format!("<{tag}")),
+                    tag_matcher(&format!("</{tag}>")),
+                );
+                (&adhoc.0, &adhoc.1)
+            }
+        };
+
+        let cur: &str = &result;
+        // Tag not present — skip the rebuild entirely.
+        let Some(first) = open.find(cur) else {
+            continue;
+        };
+
+        let mut out = String::with_capacity(cur.len());
+        let mut pos = 0;
+        let mut next_start = Some(first.start());
+        while pos < cur.len() {
+            if let Some(start) = next_start {
+                out.push_str(&cur[pos..start]);
+                if let Some(c) = close.find(&cur[start..]) {
+                    pos = start + c.end();
+                } else {
+                    // No closing tag — keep remaining text as-is
+                    out.push_str(&cur[start..]);
+                    pos = cur.len();
+                }
+                next_start = open.find(&cur[pos..]).map(|m| pos + m.start());
+            } else {
+                out.push_str(&cur[pos..]);
+                break;
+            }
+        }
+        result = std::borrow::Cow::Owned(out);
+    }
+    result.into_owned()
+}
+
+/// Result from fetching a URL.
+#[derive(Debug, Clone)]
+pub struct FetchResult {
+    /// The URL that was fetched.
+    pub url: String,
+    /// HTTP status code.
+    pub status: u16,
+    /// Content type header.
+    pub content_type: String,
+    /// HTML content.
+    pub html: String,
+}
+
+/// Result from research.
+#[cfg(feature = "search")]
+#[derive(Debug, Clone)]
+pub struct ResearchResult {
+    /// The original research topic.
+    pub topic: String,
+    /// Search results used.
+    pub search_results: SearchResults,
+    /// Extracted data from each page.
+    pub extractions: Vec<PageExtraction>,
+    /// Synthesized summary.
+    pub summary: Option<String>,
+    /// Token usage.
+    pub usage: TokenUsage,
+}
+
+/// Extraction from a single page.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PageExtraction {
+    /// Page URL.
+    pub url: String,
+    /// Page title.
+    pub title: String,
+    /// Extracted data.
+    pub extracted: serde_json::Value,
+}
+
+/// Agent builder for configuring and creating agents.
+pub struct AgentBuilder {
+    config: AgentConfig,
+    llm: Option<Box<dyn LLMProvider>>,
+    spider_cloud: Option<SpiderCloudToolConfig>,
+    spider_browser: Option<SpiderBrowserToolConfig>,
+    proxies: Option<Vec<String>>,
+    client: Option<reqwest::Client>,
+    #[cfg(feature = "search")]
+    search_provider: Option<Box<dyn SearchProvider>>,
+    #[cfg(feature = "chrome")]
+    browser: Option<BrowserContext>,
+    #[cfg(feature = "webdriver")]
+    webdriver: Option<WebDriverContext>,
+    #[cfg(feature = "fs")]
+    enable_temp_storage: bool,
+}
+
+impl AgentBuilder {
+    /// Create a new builder with defaults.
+    pub fn new() -> Self {
+        Self {
+            config: AgentConfig::default(),
+            llm: None,
+            spider_cloud: None,
+            spider_browser: None,
+            proxies: None,
+            client: None,
+            #[cfg(feature = "search")]
+            search_provider: None,
+            #[cfg(feature = "chrome")]
+            browser: None,
+            #[cfg(feature = "webdriver")]
+            webdriver: None,
+            #[cfg(feature = "fs")]
+            enable_temp_storage: false,
+        }
+    }
+
+    /// Set the agent configuration.
+    pub fn with_config(mut self, config: AgentConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Set the system prompt.
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.config.system_prompt = Some(prompt.into());
+        self
+    }
+
+    /// Set max concurrent LLM calls.
+    pub fn with_max_concurrent_llm_calls(mut self, n: usize) -> Self {
+        self.config.max_concurrent_llm_calls = n;
+        self
+    }
+
+    /// Configure with OpenAI provider.
+    #[cfg(feature = "openai")]
+    pub fn with_openai(mut self, api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        self.llm = Some(Box::new(crate::llm::OpenAIProvider::new(api_key, model)));
+        self
+    }
+
+    /// Configure with OpenAI-compatible provider.
+    #[cfg(feature = "openai")]
+    pub fn with_openai_compatible(
+        mut self,
+        api_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.llm = Some(Box::new(
+            crate::llm::OpenAIProvider::new(api_key, model).with_api_url(api_url),
+        ));
+        self
+    }
+
+    /// Configure with OpenAI Responses API.
+    ///
+    /// Uses the stateful Responses API (`/v1/responses`) instead of Chat
+    /// Completions.  System messages become `instructions`, user/assistant
+    /// messages become `input` items.
+    #[cfg(feature = "openai")]
+    pub fn with_openai_responses(
+        mut self,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.llm = Some(Box::new(
+            crate::llm::OpenAIProvider::new(api_key, model).with_responses_api(),
+        ));
+        self
+    }
+
+    /// Configure with OpenAI-compatible provider using the Responses API.
+    #[cfg(feature = "openai")]
+    pub fn with_openai_compatible_responses(
+        mut self,
+        api_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.llm = Some(Box::new(
+            crate::llm::OpenAIProvider::new(api_key, model)
+                .with_responses_api()
+                .with_api_url(api_url),
+        ));
+        self
+    }
+
+    /// Register Spider Cloud tools using an API key.
+    ///
+    /// Registers `/crawl`, `/scrape`, `/search`, `/links`, and `/transform`.
+    /// AI routes remain disabled unless enabled in `with_spider_cloud_config`.
+    pub fn with_spider_cloud(mut self, api_key: impl Into<String>) -> Self {
+        let key = api_key.into();
+        if is_placeholder_api_key(&key) {
+            log::warn!("Spider Cloud API key looks like a placeholder — skipping. Get a real key at https://spider.cloud");
+            return self;
+        }
+        self.spider_cloud = Some(SpiderCloudToolConfig::new(key));
+        self
+    }
+
+    /// Register Spider Cloud tools using a full config.
+    ///
+    /// Use this when you need custom API URL, route toggles, or AI route gating.
+    pub fn with_spider_cloud_config(mut self, config: SpiderCloudToolConfig) -> Self {
+        self.spider_cloud = Some(config);
+        self
+    }
+
+    /// Register [Spider Browser Cloud](https://spider.cloud/docs/api#browser) tools.
+    ///
+    /// Connects to a remote browser instance at `wss://browser.spider.cloud/v1/browser`
+    /// via CDP. Registers navigate, html, screenshot, evaluate, click, fill, and wait tools.
+    pub fn with_spider_browser(mut self, api_key: impl Into<String>) -> Self {
+        let key = api_key.into();
+        if is_placeholder_api_key(&key) {
+            log::warn!("Spider Browser Cloud API key looks like a placeholder — skipping. Get a real key at https://spider.cloud");
+            return self;
+        }
+        self.spider_browser = Some(SpiderBrowserToolConfig::new(key));
+        self
+    }
+
+    /// Register Spider Browser Cloud tools using a full config.
+    ///
+    /// Use this when you need stealth mode, country targeting, or custom WSS URL.
+    pub fn with_spider_browser_config(mut self, config: SpiderBrowserToolConfig) -> Self {
+        self.spider_browser = Some(config);
+        self
+    }
+
+    /// Set the HTTP request timeout.
+    ///
+    /// Pass `None` for no timeout (infinite).  Defaults to 60 seconds.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::time::Duration;
+    /// let agent = Agent::builder()
+    ///     .with_timeout(Some(Duration::from_secs(300)))
+    ///     .build()?;
+    /// ```
+    pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        match timeout {
+            Some(d) => self.config.timeout = d,
+            None => self.config.timeout = std::time::Duration::MAX,
+        }
+        self
+    }
+
+    /// Provide a pre-built [`reqwest::Client`].
+    ///
+    /// When set, the builder skips its own client construction (timeout,
+    /// proxy settings, etc.) and uses this client directly.  This gives
+    /// full control over TLS, timeouts, connection pools, and proxies.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let client = reqwest::Client::builder()
+    ///     .timeout(std::time::Duration::from_secs(120))
+    ///     .proxy(reqwest::Proxy::all("http://proxy:8080")?)
+    ///     .build()?;
+    ///
+    /// let agent = Agent::builder()
+    ///     .with_client(client)
+    ///     .with_openai("sk-...", "gpt-4o")
+    ///     .build()?;
+    /// ```
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = Some(client);
+        self
+    }
+
+    /// Configure one or more HTTP/SOCKS proxies.
+    ///
+    /// Each entry is a proxy URL (e.g. `http://host:port`, `socks5://host:port`).
+    /// The first proxy is applied to the underlying HTTP client; additional
+    /// proxies are added via `reqwest::Proxy::all`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let agent = Agent::builder()
+    ///     .with_openai("sk-...", "gpt-4o")
+    ///     .with_proxies(vec!["http://proxy.example.com:8080".into()])
+    ///     .build()?;
+    /// ```
+    pub fn with_proxies(mut self, proxies: Vec<String>) -> Self {
+        if !proxies.is_empty() {
+            self.proxies = Some(proxies);
+        }
+        self
+    }
+
+    /// Configure a single HTTP/SOCKS proxy.
+    pub fn with_proxy(mut self, proxy: impl Into<String>) -> Self {
+        self.proxies = Some(vec![proxy.into()]);
+        self
+    }
+
+    /// Configure with Serper search provider.
+    #[cfg(feature = "search_serper")]
+    pub fn with_search_serper(mut self, api_key: impl Into<String>) -> Self {
+        self.search_provider = Some(Box::new(crate::search::SerperProvider::new(api_key)));
+        self
+    }
+
+    /// Configure with Brave search provider.
+    #[cfg(feature = "search_brave")]
+    pub fn with_search_brave(mut self, api_key: impl Into<String>) -> Self {
+        self.search_provider = Some(Box::new(crate::search::BraveProvider::new(api_key)));
+        self
+    }
+
+    /// Configure with Bing search provider.
+    #[cfg(feature = "search_bing")]
+    pub fn with_search_bing(mut self, api_key: impl Into<String>) -> Self {
+        self.search_provider = Some(Box::new(crate::search::BingProvider::new(api_key)));
+        self
+    }
+
+    /// Configure with Tavily search provider.
+    #[cfg(feature = "search_tavily")]
+    pub fn with_search_tavily(mut self, api_key: impl Into<String>) -> Self {
+        self.search_provider = Some(Box::new(crate::search::TavilyProvider::new(api_key)));
+        self
+    }
+
+    /// Configure with a browser context for Chrome automation.
+    #[cfg(feature = "chrome")]
+    pub fn with_browser(mut self, browser: BrowserContext) -> Self {
+        self.browser = Some(browser);
+        self
+    }
+
+    /// Configure with a browser from existing browser and page.
+    #[cfg(feature = "chrome")]
+    pub fn with_browser_page(
+        mut self,
+        browser: std::sync::Arc<crate::browser::Browser>,
+        page: std::sync::Arc<crate::browser::Page>,
+    ) -> Self {
+        self.browser = Some(BrowserContext::new(browser, page));
+        self
+    }
+
+    /// Enable temporary filesystem storage for large operations.
+    #[cfg(feature = "fs")]
+    pub fn with_temp_storage(mut self) -> Self {
+        self.enable_temp_storage = true;
+        self
+    }
+
+    /// Configure with a WebDriver context.
+    #[cfg(feature = "webdriver")]
+    pub fn with_webdriver(mut self, webdriver: WebDriverContext) -> Self {
+        self.webdriver = Some(webdriver);
+        self
+    }
+
+    /// Configure with a WebDriver from existing driver.
+    #[cfg(feature = "webdriver")]
+    pub fn with_webdriver_driver(
+        mut self,
+        driver: std::sync::Arc<crate::webdriver::WebDriver>,
+    ) -> Self {
+        self.webdriver = Some(WebDriverContext::new(driver));
+        self
+    }
+
+    /// Build the agent.
+    pub fn build(self) -> AgentResult<Agent> {
+        if self.config.max_concurrent_llm_calls == 0
+            || self.config.max_concurrent_llm_calls > Semaphore::MAX_PERMITS
+        {
+            return Err(AgentError::InvalidField("max_concurrent_llm_calls"));
+        }
+
+        let client = if let Some(client) = self.client {
+            client
+        } else {
+            let mut builder = reqwest::Client::builder();
+
+            // Duration::MAX effectively disables the timeout.
+            if self.config.timeout != std::time::Duration::MAX {
+                builder = builder.timeout(self.config.timeout);
+            }
+
+            if let Some(proxies) = &self.proxies {
+                for proxy_url in proxies {
+                    let proxy = reqwest::Proxy::all(proxy_url).map_err(AgentError::Http)?;
+                    builder = builder.proxy(proxy);
+                }
+            }
+
+            builder.build().map_err(AgentError::Http)?
+        };
+
+        let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_llm_calls));
+
+        #[cfg(feature = "fs")]
+        let temp_storage = if self.enable_temp_storage {
+            Some(TempStorage::new().map_err(AgentError::Io)?)
+        } else {
+            None
+        };
+
+        let custom_tools = CustomToolRegistry::new();
+        if let Some(cfg) = self.spider_cloud.as_ref() {
+            custom_tools.register_spider_cloud(cfg);
+        }
+        if let Some(cfg) = self.spider_browser.as_ref() {
+            custom_tools.register_spider_browser(cfg);
+        }
+
+        Ok(Agent {
+            llm: self.llm,
+            client,
+            #[cfg(feature = "search")]
+            search_provider: self.search_provider,
+            #[cfg(feature = "chrome")]
+            browser: self.browser,
+            #[cfg(feature = "webdriver")]
+            webdriver: self.webdriver,
+            #[cfg(feature = "fs")]
+            temp_storage,
+            memory: AgentMemory::new(),
+            llm_semaphore: semaphore,
+            config: self.config,
+            usage: Arc::new(UsageStats::new()),
+            custom_tools,
+        })
+    }
+}
+
+impl Default for AgentBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct StubLlm;
+
+    #[async_trait::async_trait]
+    impl LLMProvider for StubLlm {
+        async fn complete(
+            &self,
+            _messages: Vec<Message>,
+            _options: &CompletionOptions,
+            _client: &reqwest::Client,
+        ) -> AgentResult<CompletionResponse> {
+            tokio::task::yield_now().await;
+            Ok(CompletionResponse {
+                content: "ok".into(),
+                usage: crate::llm::TokenUsage::default(),
+            })
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "stub"
+        }
+        fn is_configured(&self) -> bool {
+            true
+        }
+    }
+
+    fn limited_agent(limits: crate::config::UsageLimits) -> Agent {
+        let mut builder = Agent::builder().with_config(
+            AgentConfig::new()
+                .with_max_concurrent_llm_calls(1)
+                .with_limits(limits),
+        );
+        builder.llm = Some(Box::new(StubLlm));
+        builder.build().unwrap()
+    }
+
+    #[test]
+    fn invalid_concurrency_returns_error_instead_of_hanging_or_panicking() {
+        for n in [0, Semaphore::MAX_PERMITS + 1] {
+            assert!(matches!(
+                Agent::builder().with_max_concurrent_llm_calls(n).build(),
+                Err(AgentError::InvalidField("max_concurrent_llm_calls"))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_completions_respect_call_limit() {
+        let agent = limited_agent(crate::config::UsageLimits::new().with_max_llm_calls(1));
+        let permit = agent.llm_semaphore.acquire().await.unwrap();
+        let first = agent.complete(vec![]);
+        let second = agent.complete(vec![]);
+        tokio::pin!(first, second);
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        drop(permit);
+        let (first, second) = tokio::join!(first, second);
+        assert!(first.is_ok());
+        assert!(matches!(
+            second,
+            Err(AgentError::LimitExceeded(
+                crate::config::LimitType::LlmCalls { .. }
+            ))
+        ));
+        assert_eq!(agent.usage().llm_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn queued_completion_rechecks_tokens_after_admission() {
+        let agent = limited_agent(crate::config::UsageLimits::new().with_max_total_tokens(1));
+        let permit = agent.llm_semaphore.acquire().await.unwrap();
+        let completion = agent.complete(vec![]);
+        tokio::pin!(completion);
+        assert!(futures::poll!(&mut completion).is_pending());
+        agent.usage.add_tokens(1, 0);
+        drop(permit);
+        assert!(matches!(
+            completion.await,
+            Err(AgentError::LimitExceeded(
+                crate::config::LimitType::TotalTokens { .. }
+            ))
+        ));
+        assert_eq!(agent.usage().llm_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_waiter_does_not_consume_a_call() {
+        let agent = limited_agent(crate::config::UsageLimits::new().with_max_llm_calls(1));
+        let permit = agent.llm_semaphore.acquire().await.unwrap();
+        {
+            let completion = agent.complete(vec![]);
+            tokio::pin!(completion);
+            assert!(futures::poll!(&mut completion).is_pending());
+        }
+        drop(permit);
+        assert!(agent.complete(vec![]).await.is_ok());
+        assert_eq!(agent.usage().llm_calls, 1);
+    }
+
+    #[test]
+    fn test_builder_registers_spider_cloud_default_routes() {
+        let agent = Agent::builder()
+            .with_spider_cloud("sk_spider_cloud")
+            .build()
+            .expect("agent should build");
+
+        let tools = agent.list_custom_tools();
+        assert!(tools.contains(&"spider_cloud_crawl".to_string()));
+        assert!(tools.contains(&"spider_cloud_scrape".to_string()));
+        assert!(tools.contains(&"spider_cloud_search".to_string()));
+        assert!(tools.contains(&"spider_cloud_links".to_string()));
+        assert!(tools.contains(&"spider_cloud_transform".to_string()));
+        assert!(!tools.contains(&"spider_cloud_unblocker".to_string()));
+        assert!(!tools.contains(&"spider_cloud_ai_scrape".to_string()));
+    }
+
+    #[test]
+    fn test_builder_registers_spider_cloud_ai_routes_when_enabled() {
+        let cfg = SpiderCloudToolConfig::new("sk_spider_cloud").with_enable_ai_routes(true);
+        let agent = Agent::builder()
+            .with_spider_cloud_config(cfg)
+            .build()
+            .expect("agent should build");
+
+        let tools = agent.list_custom_tools();
+        assert!(tools.contains(&"spider_cloud_ai_crawl".to_string()));
+        assert!(tools.contains(&"spider_cloud_ai_scrape".to_string()));
+        assert!(tools.contains(&"spider_cloud_ai_search".to_string()));
+        assert!(tools.contains(&"spider_cloud_ai_browser".to_string()));
+        assert!(tools.contains(&"spider_cloud_ai_links".to_string()));
+    }
+
+    #[test]
+    fn test_builder_with_single_proxy() {
+        let agent = Agent::builder()
+            .with_proxy("http://proxy.example.com:8080")
+            .build()
+            .expect("agent with proxy should build");
+        // Client was constructed — no panic, proxy applied at reqwest level.
+        drop(agent);
+    }
+
+    #[test]
+    fn test_builder_with_multiple_proxies() {
+        let agent = Agent::builder()
+            .with_proxies(vec![
+                "http://proxy1.example.com:8080".into(),
+                "http://proxy2.example.com:9090".into(),
+            ])
+            .build()
+            .expect("agent with multiple proxies should build");
+        drop(agent);
+    }
+
+    #[test]
+    fn test_builder_with_socks5_proxy() {
+        let agent = Agent::builder()
+            .with_proxy("socks5://127.0.0.1:1080")
+            .build()
+            .expect("agent with socks5 proxy should build");
+        drop(agent);
+    }
+
+    #[test]
+    fn test_builder_with_empty_proxies_no_op() {
+        let agent = Agent::builder()
+            .with_proxies(vec![])
+            .build()
+            .expect("agent with empty proxies should build");
+        drop(agent);
+    }
+
+    #[test]
+    fn test_builder_with_invalid_proxy_returns_error() {
+        let result = Agent::builder()
+            .with_proxy("not a valid url at all ://")
+            .build();
+        assert!(result.is_err(), "invalid proxy URL should fail at build");
+    }
+
+    #[test]
+    fn test_builder_no_proxies_by_default() {
+        // Default builder has no proxies — just ensure it builds fine.
+        let agent = Agent::builder()
+            .build()
+            .expect("default agent should build");
+        drop(agent);
+    }
+
+    #[test]
+    fn test_builder_with_custom_client() {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .expect("custom client should build");
+
+        let agent = Agent::builder()
+            .with_client(client)
+            .build()
+            .expect("agent with custom client should build");
+        // Verify the client accessor works.
+        let _ = agent.client();
+    }
+
+    #[test]
+    fn test_builder_with_custom_client_ignores_proxy_and_timeout() {
+        // When a custom client is provided, proxy/timeout settings on the
+        // builder are bypassed — the caller owns the full client config.
+        let client = reqwest::Client::new();
+        let agent = Agent::builder()
+            .with_client(client)
+            .with_proxy("http://proxy.example.com:8080")
+            .with_timeout(Some(std::time::Duration::from_secs(999)))
+            .build()
+            .expect("custom client should take precedence");
+        drop(agent);
+    }
+
+    #[test]
+    fn test_builder_with_timeout_some() {
+        let agent = Agent::builder()
+            .with_timeout(Some(std::time::Duration::from_secs(300)))
+            .build()
+            .expect("agent with 300s timeout should build");
+        drop(agent);
+    }
+
+    #[test]
+    fn test_builder_with_timeout_none_infinite() {
+        let agent = Agent::builder()
+            .with_timeout(None)
+            .build()
+            .expect("agent with no timeout should build");
+        drop(agent);
+    }
+
+    #[test]
+    fn test_client_accessor_returns_reference() {
+        let agent = Agent::builder().build().expect("agent should build");
+        // Ensure we can obtain a shared reference without moving.
+        let _c1 = agent.client();
+        let _c2 = agent.client();
+    }
+
+    #[test]
+    fn test_builder_registers_spider_browser_default_tools() {
+        let agent = Agent::builder()
+            .with_spider_browser("sk_browser_key")
+            .build()
+            .expect("agent should build");
+
+        let tools = agent.list_custom_tools();
+        assert!(tools.contains(&"spider_browser_navigate".to_string()));
+        assert!(tools.contains(&"spider_browser_html".to_string()));
+        assert!(tools.contains(&"spider_browser_screenshot".to_string()));
+        assert!(tools.contains(&"spider_browser_evaluate".to_string()));
+        assert!(tools.contains(&"spider_browser_click".to_string()));
+        assert!(tools.contains(&"spider_browser_fill".to_string()));
+        assert!(tools.contains(&"spider_browser_wait".to_string()));
+    }
+
+    #[test]
+    fn test_builder_spider_browser_with_stealth_and_country() {
+        let cfg = SpiderBrowserToolConfig::new("sk_key")
+            .with_stealth(true)
+            .with_country("us");
+        assert_eq!(
+            cfg.connection_url(),
+            "wss://browser.spider.cloud/v1/browser?token=sk_key&stealth=true&country=us"
+        );
+
+        let agent = Agent::builder()
+            .with_spider_browser_config(cfg)
+            .build()
+            .expect("agent should build");
+        assert!(agent.has_custom_tool("spider_browser_navigate"));
+    }
+
+    #[test]
+    fn test_builder_spider_cloud_and_browser_together() {
+        let agent = Agent::builder()
+            .with_spider_cloud("cloud-key")
+            .with_spider_browser("browser-key")
+            .build()
+            .expect("agent should build");
+
+        // Both sets of tools registered.
+        assert!(agent.has_custom_tool("spider_cloud_crawl"));
+        assert!(agent.has_custom_tool("spider_browser_navigate"));
+    }
+
+    /// Verbatim copy of the pre-Aho-Corasick `remove_tags` — the byte-identity
+    /// oracle for the optimized implementation.
+    fn remove_tags_reference(html: &str, tags: &[&str]) -> String {
+        let mut result = html.to_string();
+        for tag in tags {
+            let open = format!("<{}", tag);
+            let close = format!("</{}>", tag);
+            let mut out = String::with_capacity(result.len());
+            let lower = result.to_ascii_lowercase();
+            let mut pos = 0;
+            while pos < result.len() {
+                if let Some(rel_start) = lower[pos..].find(&open) {
+                    let start = pos + rel_start;
+                    out.push_str(&result[pos..start]);
+                    if let Some(rel_end) = lower[start..].find(&close) {
+                        pos = start + rel_end + close.len();
+                    } else {
+                        out.push_str(&result[start..]);
+                        pos = result.len();
+                    }
+                } else {
+                    out.push_str(&result[pos..]);
+                    break;
+                }
+            }
+            result = out;
+        }
+        result
+    }
+
+    #[test]
+    fn remove_tags_matches_reference_byte_for_byte() {
+        let inputs = [
+            "",
+            "plain text with no tags at all",
+            "<p>keep</p><script>drop()</script><p>keep2</p>",
+            "<SCRIPT src=x>UP</SCRIPT><Style>.a{}</Style><p>ok</p>",
+            "<script>no close tag here",
+            "<div><script>a</script><style>b</style><noscript>c</noscript></div>",
+            "<svg><circle/></svg><canvas></canvas><video src=v></video><audio></audio>",
+            "<iframe src=f></iframe>tail",
+            "<script>first</script>mid<script>second</script>",
+            "<scriptx>prefix-match removes to close</script><p>after</p>",
+            "text<style>s1<script>nested</script>s2</style>done",
+            "unicode é–中<script>x</script>文ü tail",
+            "<script>unterminated<style>both</style>",
+            "</script>orphan close<p>x</p>",
+        ];
+        let tag_sets: [&[&str]; 3] = [
+            &["script"],
+            &["script", "style", "noscript"],
+            &[
+                "script", "style", "noscript", "svg", "canvas", "video", "audio", "iframe",
+            ],
+        ];
+        for html in inputs {
+            for tags in tag_sets {
+                assert_eq!(
+                    remove_tags(html, tags),
+                    remove_tags_reference(html, tags),
+                    "divergence for {html:?} with tags {tags:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn remove_tags_handles_unknown_tag_fallback() {
+        // Not in STRIPPABLE_TAGS — exercises the ad-hoc matcher path.
+        assert_eq!(
+            remove_tags("<marquee>old</marquee><p>x</p>", &["marquee"]),
+            remove_tags_reference("<marquee>old</marquee><p>x</p>", &["marquee"])
+        );
+    }
+}

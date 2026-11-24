@@ -29,8 +29,9 @@ pub(in crate::catalog) const AGENT_WEB_READS: EventRule = EventRule {
 /// changed (robots.txt, user agent, headers, cookies, proxies, stealth), crawls that wrote a WARC
 /// archive, crawls with a `#:format`/`#:transform` and with `#:extract`, rendered crawls and
 /// captures that started with cookies the session's jar held for the site, the slowest crawl,
-/// `web-screenshot` / `web-pdf` captures and their failures, and `web-extract` calls and their
-/// failures.
+/// `web-screenshot` / `web-pdf` captures and their failures, `web-extract` calls and their
+/// failures, and `web-automate` runs (failed, refused because `web.crawl.ai` is off, the steps
+/// they ran and the model calls they made).
 /// Counts only: never a URL, a pattern, a selector, a title, a setting's value, or content.
 pub(in crate::catalog) const AGENT_WEB_CRAWLS: EventRule = EventRule {
     name: "agent web crawls",
@@ -55,5 +56,10 @@ pub(in crate::catalog) const AGENT_WEB_CRAWLS: EventRule = EventRule {
         ("web_capture_session_cookie_count", required(count())),
         ("web_extract_count", required(count())),
         ("web_extract_failed_count", required(count())),
+        ("web_automate_count", required(count())),
+        ("web_automate_failed_count", required(count())),
+        ("web_automate_refused_count", required(count())),
+        ("web_automate_step_count", required(count())),
+        ("web_automate_model_call_count", required(count())),
     ],
 };

@@ -3419,6 +3419,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "spider",
+ "spider_agent",
  "spider_transformations",
  "spider_utils",
  "steel-core",
@@ -5022,6 +5023,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8543003b89236a34adb8d995345fbd884440014a349e8ec7e44745293f5f40b3"
 dependencies = [
  "new_debug_unreachable",
+]
+
+[[package]]
+name = "spider_agent"
+version = "2.54.2"
+dependencies = [
+ "aho-corasick",
+ "async-trait",
+ "base64 0.22.1",
+ "chromey",
+ "dashmap",
+ "futures",
+ "llm_models_spider",
+ "log",
+ "lol_html",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "spider_agent_html",
+ "spider_agent_types",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "spider_agent_html"
+version = "2.54.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6e29f56d557d2ecd5f1f7c73de8719a38b9e9b0a0c6b15b0d327ff662c0f26a"
+dependencies = [
+ "aho-corasick",
+ "lol_html",
+ "serde",
+ "serde_json",
+ "spider_agent_types",
 ]
 
 [[package]]

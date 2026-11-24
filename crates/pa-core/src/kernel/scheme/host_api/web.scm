@@ -299,3 +299,28 @@
                         'initScript init-script
                         'timeoutSeconds (and timeout (%seconds "web-pdf" timeout))
                         'cookies (%cookies "web-pdf" cookies))))
+
+;; Let spider's model-driven automation work `source` toward `goal` in a
+;; local headless Chrome: {url, finalUrl, title, label, success, steps,
+;; error, extracted, usage, markdown, truncated, text}. Only with the user's
+;; web.crawl.ai setting (it spends model tokens on their account); refused
+;; otherwise. #:max-steps model rounds (default 6, at most 30); #:extract is
+;; what the model returns as 'extracted when done; #:max-chars cuts the final
+;; page's markdown (default 8000); #:timeout in seconds (default 120);
+;; #:cookies as for web-crawl.
+(define (web-automate source goal
+                      #:max-steps [max-steps #f]
+                      #:extract [extract #f]
+                      #:max-chars [max-chars #f]
+                      #:timeout [timeout #f]
+                      #:cookies [cookies 'session])
+  (%host-call "web.automate"
+              (%options (hash 'url (%capture-url "web-automate" source)
+                              'goal (if (string? goal)
+                                        goal
+                                        (error "web-automate: the goal is a string")))
+                        'maxSteps (and max-steps (%integer "web-automate" "#:max-steps" max-steps))
+                        'extract extract
+                        'maxChars (and max-chars (%integer "web-automate" "#:max-chars" max-chars))
+                        'timeoutSeconds (and timeout (%seconds "web-automate" timeout))
+                        'cookies (%cookies "web-automate" cookies))))

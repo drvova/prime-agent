@@ -734,6 +734,23 @@ impl SessionCounters {
         });
     }
 
+    /// One kernel `web.automate` (counts only: never a URL, a goal, a model, or a key).
+    pub(crate) fn note_web_automate(&self, outcome: crate::web_crawl::AutomateOutcome) {
+        use crate::web_crawl::AutomateOutcome;
+        self.with(|values| {
+            let counts = &mut values.capabilities;
+            match outcome {
+                AutomateOutcome::Refused => counts.add("web_automate_refused_count", 1),
+                AutomateOutcome::Ran { ok, steps, calls } => {
+                    counts.add("web_automate_count", 1);
+                    counts.add("web_automate_failed_count", u64::from(!ok));
+                    counts.add("web_automate_step_count", steps as u64);
+                    counts.add("web_automate_model_call_count", u64::from(calls));
+                }
+            }
+        });
+    }
+
     /// One kernel `web.extract` (counts only: never a URL, a selector, or a value).
     pub(crate) fn note_web_extract(&self, outcome: crate::web_crawl::ExtractOutcome) {
         self.with(|values| {

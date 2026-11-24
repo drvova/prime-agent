@@ -32,4 +32,9 @@ properties = [
   "web_capture_session_cookie_count",
   "web_extract_count",
   "web_extract_failed_count",
+  "web_automate_count",
+  "web_automate_failed_count",
+  "web_automate_refused_count",
+  "web_automate_step_count",
+  "web_automate_model_call_count",
 ]
