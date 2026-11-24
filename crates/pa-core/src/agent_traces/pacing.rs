@@ -40,17 +40,33 @@ const TRACE_CONTROLLER_CONFIG: ControllerConfig = ControllerConfig {
     ceiling_ttl_ms: 15 * 60_000,
 };
 
-/// Milliseconds on tokio's clock (paused in tests), from the first read.
+/// Milliseconds on tokio's clock (paused in tests), measured from the first read and offset by
+/// [`CLOCK_ORIGIN_MS`] so a clock behind that read still moves.
+///
+/// Every runtime has a clock of its own: a paused one starts where it was built and moves only
+/// as its tests advance it, so a runtime can read before the first read of another (one built
+/// earlier, or one whose first read came after a paused clock ran far ahead). Saturated at the
+/// first read, such a runtime read 0 until its own clock caught up, and a bucket that had
+/// spent its one token never refilled.
 fn tokio_clock_ms() -> u64 {
     static BASE: OnceLock<tokio::time::Instant> = OnceLock::new();
     let base = *BASE.get_or_init(tokio::time::Instant::now);
-    u64::try_from(
-        tokio::time::Instant::now()
-            .saturating_duration_since(base)
-            .as_millis(),
-    )
-    .unwrap_or(u64::MAX)
+    let now = tokio::time::Instant::now();
+    // Whole milliseconds rounded down on both sides of the first read, so readings an
+    // interval apart differ by that interval wherever they fall.
+    match now.checked_duration_since(base) {
+        Some(after) => {
+            CLOCK_ORIGIN_MS.saturating_add(u64::try_from(after.as_millis()).unwrap_or(u64::MAX))
+        }
+        None => CLOCK_ORIGIN_MS.saturating_sub(
+            u64::try_from((base - now).as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX),
+        ),
+    }
 }
+
+/// Where [`tokio_clock_ms`] reads at its first read: about 35 years from either end of `u64`,
+/// and every use of the clock is a difference between two of its readings.
+const CLOCK_ORIGIN_MS: u64 = 1 << 40;
 
 fn trace_key() -> AdmissionKey {
     AdmissionKey {
