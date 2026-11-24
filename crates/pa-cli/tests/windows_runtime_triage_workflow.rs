@@ -347,3 +347,27 @@ fn the_tui_battery_job_drives_the_keyboard_through_both_console_hosts() {
         assert!(source.contains(test), "the keyboard battery defines {test}");
     }
 }
+
+/// The elevated helper battery (`windows_elevation_e2e`): the only place the
+/// Windows elevated helper runs, since the runner is elevated and a session
+/// there otherwise takes the already-elevated shortcut. The job runs it
+/// locked, and the file keeps defining the tests the job claims.
+#[test]
+fn the_tui_battery_job_runs_the_elevated_helper_battery() {
+    let (workflow, _) = workflow_yaml();
+    let runs = step_runs(&job(&workflow, "windows-runtime-tui-battery"));
+    let source =
+        fs::read_to_string(repo_root().join("crates/pa-cli/tests/windows_elevation_e2e.rs"))
+            .expect("read the elevated helper battery source");
+    assert_eq!(
+        (
+            runs.iter()
+                .any(|run| run
+                    .contains("cargo test --locked -p pa-cli --test windows_elevation_e2e")),
+            source.contains("fn the_elevated_helper_runs_captures_reuses_and_cancels"),
+            source.contains("fn an_idle_elevated_helper_ends_and_the_next_command_starts_another"),
+            source.contains("PRIME_AGENT_ELEVATION_ALWAYS_ASK"),
+        ),
+        (true, true, true, true)
+    );
+}

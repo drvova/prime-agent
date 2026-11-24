@@ -87,6 +87,12 @@ const NOT_RUN: i32 = 126;
 /// the already-elevated shortcut and `pkexec`.
 #[cfg(debug_assertions)]
 pub(super) const RUNNER_VARIABLE: &str = "PRIME_AGENT_ELEVATION_RUNNER";
+/// In debug builds, a session variable that turns off the already-elevated
+/// shortcut, so a test machine that runs as Administrator (GitHub's Windows
+/// runners, with UAC off) takes the consent route: on Windows the elevated
+/// helper, which `runas` starts there without a prompt.
+#[cfg(debug_assertions)]
+pub(super) const ALWAYS_ASK_VARIABLE: &str = "PRIME_AGENT_ELEVATION_ALWAYS_ASK";
 
 /// The elevated part of a job: how the command is stopped, which this
 /// process's own rights cannot do.
@@ -195,10 +201,12 @@ pub(super) fn spawn(session: &Arc<Session>, command: &str) -> anyhow::Result<Arc
         );
     }
     #[cfg(debug_assertions)]
-    let injected = session_var(session, RUNNER_VARIABLE).is_some();
+    let always_ask = [RUNNER_VARIABLE, ALWAYS_ASK_VARIABLE]
+        .iter()
+        .any(|name| session_var(session, name).is_some());
     #[cfg(not(debug_assertions))]
-    let injected = false;
-    if !injected
+    let always_ask = false;
+    if !always_ask
         && pa_types::platform::process_elevation() == pa_types::platform::Elevation::Elevated
     {
         report(
