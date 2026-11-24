@@ -21,7 +21,8 @@ pub struct ContextFile {
     pub content: String,
 }
 
-fn load_context_file_from_dir(dir: &Path) -> Option<ContextFile> {
+/// The context file `dir` holds: the first of [`CONTEXT_FILE_CANDIDATES`] that reads as text.
+pub(crate) fn load_context_file_from_dir(dir: &Path) -> Option<ContextFile> {
     for filename in CONTEXT_FILE_CANDIDATES {
         let file_path = dir.join(filename);
         if let Ok(content) = std::fs::read_to_string(&file_path) {

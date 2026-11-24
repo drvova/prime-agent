@@ -68,6 +68,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "warnings",
     "sessionDir",
     "requestTiming",
+    "nestedContextFiles",
     "pythonCellTimeoutMs",
     "cacheRetention",
     "cacheWarming",

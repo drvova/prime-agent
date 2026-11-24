@@ -446,6 +446,9 @@ pub struct Settings {
     /// Log per-request provider timing phases to the diagnostic log
     /// (unset means OFF, exactly the TS default).
     pub request_timing: Option<bool>,
+    /// Append a directory's AGENTS.md (or CLAUDE.md) below the working directory to the
+    /// conversation the first time a cell reads or edits a file under it (unset means on).
+    pub nested_context_files: Option<bool>,
     pub cache_retention: Option<CacheRetentionSetting>,
     pub cache_warming: Option<CacheWarmingSetting>,
     /// The stream loop guard (unset means on, at each model family's default sensitivity).

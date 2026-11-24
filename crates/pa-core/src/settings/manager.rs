@@ -846,6 +846,13 @@ impl SettingsManager {
         self.merged.request_timing.unwrap_or(false)
     }
 
+    /// `nestedContextFiles`: unset means on: a subdirectory's AGENTS.md joins the
+    /// conversation the first time a cell works under it.
+    #[must_use]
+    pub fn get_nested_context_files(&self) -> bool {
+        self.merged.nested_context_files.unwrap_or(true)
+    }
+
     /// `cacheRetention`: unset means `short`, the provider's default
     /// lifetime. The `PI_CACHE_RETENTION` env override is applied by the
     /// session engine, which reads it per request.

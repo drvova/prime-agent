@@ -40,6 +40,9 @@ pub const ASYNC_BASH_QUIET_CUSTOM_TYPE: &str = "async_bash_quiet";
 /// The durable row a backgrounded kernel cell's end (`cell.completed`)
 /// admits as the woken turn's injected prompt.
 pub const ASYNC_CELL_COMPLETION_CUSTOM_TYPE: &str = "async_cell_completion";
+/// The row that appends a subdirectory's AGENTS.md (or CLAUDE.md) to the conversation the first
+/// time a cell works under it (`session_engine::nested_context`).
+pub const NESTED_CONTEXT_CUSTOM_TYPE: &str = "nested_context_file";
 /// TS `SESSION_RENAMED_CUSTOM_TYPE` (#2529): the displayed notice a
 /// rename that changed an existing name leaves in the renamed session's
 /// transcript.

@@ -410,6 +410,8 @@ struct CounterValues {
     cache_warm_sent_count: u64,
     cache_warm_skipped_count: u64,
     cache_warm_cost_usd: f64,
+    /// Subdirectory context files appended to the conversation (`session_engine::nested_context`).
+    nested_context_file_count: u64,
     /// Net prompt-cache saving over the session's real requests: what the
     /// cache reads saved against uncached input, less the write premium.
     cache_savings_usd: f64,
@@ -1065,6 +1067,11 @@ impl SessionCounters {
         self.with(|values| values.cache_warm_skipped_count += 1);
     }
 
+    /// One subdirectory context file joined the conversation (a count: never its path).
+    pub(crate) fn note_nested_context_file(&self) {
+        self.with(|values| values.nested_context_file_count += 1);
+    }
+
     /// One real request's prompt-cache saving in dollars (negative when its
     /// cache writes cost more than its reads saved).
     pub(crate) fn note_cache_savings(&self, savings_usd: f64) {
@@ -1165,6 +1172,13 @@ impl SessionCounters {
                 properties.set(
                     "cache_savings_usd",
                     Value::from(values.cache_savings_usd.max(0.0)),
+                );
+            }
+            // Sessions that loaded no nested context file keep their ended event unchanged.
+            if values.nested_context_file_count > 0 {
+                properties.set(
+                    "nested_context_file_count",
+                    Value::from(values.nested_context_file_count),
                 );
             }
             for (key, count) in &values.feature_outcomes {

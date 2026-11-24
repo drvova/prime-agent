@@ -779,6 +779,9 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("cache_warm_skipped_count", optional(count())),
         ("cache_warm_cost_usd", optional(cost())),
         ("cache_savings_usd", optional(cost())),
+        // Subdirectory AGENTS.md/CLAUDE.md files appended to the conversation
+        // (a count only: never a path or the file's text).
+        ("nested_context_file_count", optional(count())),
         // Provider auth descriptors (strategy and counters only: never a
         // provider, URL, account, or token).
         (
