@@ -48,13 +48,20 @@ pub fn activate(
         update_id: update_id.to_string(),
     };
     let state_path = root.join(".activation-state");
-    std::fs::write(&state_path, state.render())
-        .with_context(|| format!("write {}", state_path.display()))?;
-    // The rollback record must be durable BEFORE any launcher moves: a crash between
-    // the write and the repoint would leave a truncated state file that
-    // `read_rollback_installation` trusts over the valid `bin/previous`.
-    std::fs::File::open(&state_path)?.sync_all()?;
-    pa_core::update::install::sync_directory(root)?;
+    // The rollback record must be durable BEFORE any launcher moves, and is
+    // replaced whole: a crash between the write and the repoint must never
+    // leave a truncated state file that `read_rollback_installation` trusts
+    // over the valid `bin/previous`.
+    pa_types::platform::replace_file(
+        &state_path,
+        state.render().as_bytes(),
+        pa_types::platform::ReplaceOptions {
+            durability: pa_types::platform::Durability::SyncFileAndDirectory,
+            mode: pa_types::platform::FileMode::KeepTarget,
+            symlinks: pa_types::platform::Symlinks::ReplaceLink,
+        },
+    )
+    .with_context(|| format!("write {}", state_path.display()))?;
     write_launcher(
         root,
         pa_core::update::install::PREVIOUS_LAUNCHER,

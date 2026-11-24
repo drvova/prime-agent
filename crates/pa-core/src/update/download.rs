@@ -310,9 +310,18 @@ fn update_install_source(release_dir: &Path, install_source: &str) -> Result<()>
     if current.trim() == install_source.trim() {
         return Ok(());
     }
-    std::fs::write(&path, install_source).with_context(|| format!("write {}", path.display()))?;
-    crate::platform::fs::sync_file(&path)?;
-    Ok(super::install::sync_directory(release_dir)?)
+    // Replaced whole and durable: a crash leaves the old source or the new,
+    // never a truncated URL the next channel update would resolve from.
+    pa_types::platform::replace_file(
+        &path,
+        install_source.as_bytes(),
+        pa_types::platform::ReplaceOptions {
+            durability: pa_types::platform::Durability::SyncFileAndDirectory,
+            mode: pa_types::platform::FileMode::KeepTarget,
+            symlinks: pa_types::platform::Symlinks::ReplaceLink,
+        },
+    )
+    .with_context(|| format!("write {}", path.display()))
 }
 
 /// Copy or extract the payload into staging scratch, check the release
@@ -686,14 +695,32 @@ mod tests {
                 .unwrap();
         assert_eq!(again, release_dir);
         assert_eq!(again_version, "9.9.9");
+        // The reused release's marker is replaced whole, never rewritten in
+        // place: a hard link made before keeps the old source, and no temp
+        // file is left in the release.
+        let linked = dir.path().join("install-source-before");
+        std::fs::hard_link(release_dir.join(".install-source"), &linked).unwrap();
         let (reused, _) =
             stage_local_payload(&payload, &root, "https://mirror.example.com/tree/def")
                 .await
                 .unwrap();
         assert_eq!(reused, release_dir);
+        let leftovers: Vec<String> = std::fs::read_dir(&reused)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
         assert_eq!(
-            std::fs::read_to_string(reused.join(".install-source")).unwrap(),
-            "https://mirror.example.com/tree/def"
+            (
+                std::fs::read_to_string(reused.join(".install-source")).unwrap(),
+                std::fs::read_to_string(&linked).unwrap(),
+                leftovers,
+            ),
+            (
+                "https://mirror.example.com/tree/def".to_string(),
+                "https://example.com/tree/abc".to_string(),
+                Vec::<String>::new(),
+            )
         );
         std::fs::write(payload.join("README.md"), "changed").unwrap();
         let (changed, _) =

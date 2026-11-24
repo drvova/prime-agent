@@ -685,7 +685,13 @@ pub(super) fn import_machine(
     let destination = library.join(&machine.name).join(MACHINE_FILE_NAME);
     let created = !destination.exists();
     std::fs::create_dir_all(library.join(&machine.name))
-        .and_then(|()| std::fs::write(&destination, &raw))
+        .and_then(|()| {
+            pa_types::platform::replace_file(
+                &destination,
+                &raw,
+                crate::platform::REPLACE_KEEPING_MODE,
+            )
+        })
         .map_err(|error| error.to_string())?;
     Ok(json!({"name": machine.name, "path": destination.to_string_lossy(), "created": created}))
 }
@@ -720,7 +726,15 @@ pub(super) fn write_export(
     }
     let mut options = std::fs::OpenOptions::new();
     match overwrite {
-        Overwrite::Replace => options.write(true).create(true).truncate(true),
+        // Replaced whole: a failed export leaves the file that was there.
+        Overwrite::Replace => {
+            return pa_types::platform::replace_file(
+                destination,
+                text.as_bytes(),
+                crate::platform::REPLACE_KEEPING_MODE,
+            )
+            .map_err(|error| error.to_string());
+        }
         Overwrite::Refuse => options.write(true).create_new(true),
     };
     match options.open(destination) {

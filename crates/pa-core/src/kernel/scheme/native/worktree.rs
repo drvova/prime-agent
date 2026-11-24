@@ -393,7 +393,7 @@ impl Worktrees {
             base: base_commit.clone(),
             exists: true,
         };
-        std::fs::write(
+        pa_types::platform::replace_file(
             &record,
             serde_json::to_string(&Record {
                 name: name.to_string(),
@@ -402,7 +402,9 @@ impl Worktrees {
                 base: base_commit,
                 baseline,
                 merged: None,
-            })?,
+            })?
+            .as_bytes(),
+            crate::platform::REPLACE_KEEPING_MODE,
         )
         .with_context(|| format!("could not write {}", record.display()))?;
         self.record("create", "ok", Some(&tree)).await;
@@ -532,7 +534,11 @@ impl Worktrees {
             .await?;
             Self::text(stop, &tree.repo, &["branch", "--force", &branch, &commit]).await?;
             record.merged = Some(current);
-            std::fs::write(&record_path, serde_json::to_string(&record)?)?;
+            pa_types::platform::replace_file(
+                &record_path,
+                serde_json::to_string(&record)?.as_bytes(),
+                crate::platform::REPLACE_KEEPING_MODE,
+            )?;
             self.record("merge", "branch", None).await;
             return Ok(result("branch", Vec::new(), Some(&branch)));
         }
@@ -615,7 +621,11 @@ impl Worktrees {
         }
         Self::git(stop, &tree.repo, apply, Some(&patch), None, Failure::Raises).await?;
         record.merged = Some(current);
-        std::fs::write(&record_path, serde_json::to_string(&record)?)?;
+        pa_types::platform::replace_file(
+            &record_path,
+            serde_json::to_string(&record)?.as_bytes(),
+            crate::platform::REPLACE_KEEPING_MODE,
+        )?;
         self.record("merge", "applied", None).await;
         Ok(result("applied", Vec::new(), None))
     }
@@ -856,9 +866,32 @@ pub(super) mod tests {
             .await
             .unwrap();
         let untouched = std::fs::read_to_string(repo.join("notes.txt")).unwrap();
+        // The merge replaces the record whole: a hard link made before it
+        // keeps the old record, and no temp file is left beside it.
+        let records = root
+            .join("agent/worktrees")
+            .join(repo_key(&repo))
+            .join("s1");
+        let record_before = std::fs::read_to_string(records.join("lane-a.json")).unwrap();
+        std::fs::hard_link(records.join("lane-a.json"), root.join("lane-a.before")).unwrap();
         let merged = evaluate(kernel.as_ref(), "(worktree-merge (car (worktree-list)))")
             .await
             .unwrap();
+        let mut record_names: Vec<String> = std::fs::read_dir(&records)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        record_names.sort();
+        assert_eq!(
+            (
+                std::fs::read_to_string(root.join("lane-a.before")).unwrap(),
+                record_names,
+            ),
+            (
+                record_before,
+                vec!["lane-a".to_string(), "lane-a.json".to_string()]
+            )
+        );
         let removed = evaluate(kernel.as_ref(), r#"(worktree-remove "lane-a")"#).await;
         let left = evaluate(kernel.as_ref(), "(worktree-list)").await;
         let outcome = |status: &str| {

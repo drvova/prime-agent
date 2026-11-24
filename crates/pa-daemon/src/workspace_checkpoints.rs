@@ -279,8 +279,15 @@ impl Store {
             map_path,
             map: Mutex::new(map),
         };
+        // Replaced whole, so a git that a concurrent capture runs never reads
+        // half a config (a torn attributes file would turn conversions on).
+        let config = pa_types::platform::ReplaceOptions {
+            durability: pa_types::platform::Durability::Unsynced,
+            mode: pa_types::platform::FileMode::KeepTarget,
+            symlinks: pa_types::platform::Symlinks::ReplaceLink,
+        };
         if !store.git_dir.join("HEAD").exists() {
-            std::fs::write(&store.empty_config, "")?;
+            pa_types::platform::replace_file(&store.empty_config, b"", config)?;
             store.git(&["init", "--quiet"])?;
             store.git(&["config", "core.autocrlf", "false"])?;
             // Load-bearing: trees are unreferenced objects an auto-gc could
@@ -290,9 +297,10 @@ impl Store {
         let info = store.git_dir.join("info");
         std::fs::create_dir_all(&info)?;
         // Each path's bytes as on disk: no `.gitattributes` conversion or filter.
-        std::fs::write(
-            info.join("attributes"),
-            "* -text -eol -ident -filter -diff -merge -working-tree-encoding\n",
+        pa_types::platform::replace_file(
+            &info.join("attributes"),
+            b"* -text -eol -ident -filter -diff -merge -working-tree-encoding\n",
+            config,
         )?;
         Ok(store)
     }

@@ -477,3 +477,51 @@ async fn jq_hands_what_it_does_not_run_to_the_program_with_its_input() {
         )
     );
 }
+
+/// `sed -i` replaces its file whole and never rewrites it in place: a hard
+/// link made before keeps the old text, the file keeps its mode, a symlink
+/// to it keeps pointing at it, and no temp file is left beside it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn sed_in_place_replaces_its_file_whole() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("run.sh");
+    std::fs::write(&file, "old\n").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o751)).unwrap();
+    std::fs::hard_link(&file, dir.path().join("linked")).unwrap();
+    std::os::unix::fs::symlink("run.sh", dir.path().join("pointer")).unwrap();
+    let (_, output) = begin("sed -i s/old/new/ pointer; echo rc=$?", dir.path(), &[])
+        .finish()
+        .await;
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        (
+            output,
+            std::fs::read_to_string(&file).unwrap(),
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            std::fs::read_to_string(dir.path().join("linked")).unwrap(),
+            std::fs::symlink_metadata(dir.path().join("pointer"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            names,
+        ),
+        (
+            "rc=0\n".to_string(),
+            "new\n".to_string(),
+            0o751,
+            "old\n".to_string(),
+            true,
+            vec![
+                "linked".to_string(),
+                "pointer".to_string(),
+                "run.sh".to_string()
+            ],
+        )
+    );
+}

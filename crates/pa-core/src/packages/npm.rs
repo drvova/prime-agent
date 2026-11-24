@@ -140,7 +140,13 @@ pub fn ensure_npm_project(install_root: &Path) -> Result<()> {
     let package_json = install_root.join("package.json");
     if !package_json.exists() {
         let manifest = serde_json::json!({ "name": "pi-extensions", "private": true });
-        std::fs::write(&package_json, serde_json::to_string_pretty(&manifest)?)?;
+        // Created whole: a torn manifest would "exist" and fail every later
+        // npm call in this root.
+        pa_types::platform::replace_file(
+            &package_json,
+            serde_json::to_string_pretty(&manifest)?.as_bytes(),
+            crate::platform::REPLACE_KEEPING_MODE,
+        )?;
     }
     Ok(())
 }
@@ -150,7 +156,11 @@ pub fn ensure_gitignore(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let ignore_path = dir.join(".gitignore");
     if !ignore_path.exists() {
-        std::fs::write(&ignore_path, "*\n!.gitignore\n")?;
+        pa_types::platform::replace_file(
+            &ignore_path,
+            b"*\n!.gitignore\n",
+            crate::platform::REPLACE_KEEPING_MODE,
+        )?;
     }
     Ok(())
 }
