@@ -22,7 +22,7 @@ use crate::journal::{WorkerQueueItemRecord, WorkerRecoveryJournal};
 pub(crate) const TURN_INTERRUPTED_CUSTOM_TYPE: &str = "turn_interrupted";
 
 /// The notice text.
-const NOTICE_CONTENT: &str = "[turn-interrupted]\n\nThe daemon hosting this session restarted while your previous turn was running. Everything above was saved; a reply or tool call that was in flight was lost, and a tool call with no result did not finish (check what it changed before you repeat it). Continue the interrupted turn from where it stopped.";
+const NOTICE_CONTENT: &str = "[turn-interrupted]\n\nThe daemon hosting this session restarted while your previous turn was running. Everything above was saved; a reply that was in flight was lost, and a tool call that was running was not run again: its result says what is known of it (check what it changed before you repeat it). Continue the interrupted turn from where it stopped.";
 
 /// How far the transcript shows a redelivered turn got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

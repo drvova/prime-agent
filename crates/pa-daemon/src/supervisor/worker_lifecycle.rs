@@ -900,8 +900,12 @@ impl Supervisor {
     /// Kill the `bash()` process groups a provably-dead worker's kernels
     /// journaled (TS `recoverUncertainWorkerOperations`' orphan sweep):
     /// a worker killed without its shutdown hook leaves them behind, and
-    /// only the supervisor still knows the journal's path.
-    pub(super) async fn reap_dead_worker_orphans(self: &Arc<Self>, resident: &Arc<ResidentWorker>) {
+    /// only the supervisor still knows the journal's path. Answers how many
+    /// programs it stopped.
+    pub(super) async fn reap_dead_worker_orphans(
+        self: &Arc<Self>,
+        resident: &Arc<ResidentWorker>,
+    ) -> usize {
         // Capture one generation: a concurrent retry or registration may
         // replace the descriptor while the blocking identity probe runs.
         let (pid, start_id, orphan_path) = {
@@ -913,10 +917,10 @@ impl Supervisor {
             )
         };
         let Some(orphan_path) = orphan_path else {
-            return;
+            return 0;
         };
         let Ok(worker_pid) = i32::try_from(pid) else {
-            return;
+            return 0;
         };
         // A hosted session's commands were children of the daemon process
         // that hosted it, and their journal records name that process as
@@ -932,12 +936,12 @@ impl Supervisor {
             Some(worker_pid)
         };
         let Some(journal_owner) = journal_owner else {
-            return;
+            return 0;
         };
         // The reap is blocking file I/O and kill signals (and on macOS a
         // `ps` probe): keep it off the async executor, as the adoption
         // identity probes do.
-        let _ = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             // Stop escalation and adopted-process watch failures do not
             // prove death. The proof and reap must use the same owner pid.
             if !recovery_journal_owner_is_gone(
@@ -945,14 +949,15 @@ impl Supervisor {
                 start_id.as_deref(),
                 crate::lease::get_process_start_id(worker_pid as u32).as_deref(),
             ) {
-                return;
+                return 0;
             }
             pa_core::kernel::orphan_journal::reap_worker_orphan_processes(
                 Path::new(&orphan_path),
                 journal_owner,
-            );
+            )
         })
-        .await;
+        .await
+        .unwrap_or(0)
     }
 }
 

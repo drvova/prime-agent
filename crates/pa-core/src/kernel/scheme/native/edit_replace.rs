@@ -13,7 +13,8 @@
 //! fails as ambiguous; the reply's `matchedBy` names the step. Whatever step
 //! matched, only the matched text is replaced (whole lines for the two
 //! whitespace steps). A miss says where `old-str` stops matching, so the
-//! next call can fix it without another read.
+//! next call can fix it without another read. The file is replaced whole
+//! (a temp file beside it renamed onto it), never rewritten in place.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -256,9 +257,11 @@ pub(super) fn replace(cwd: &Path, options: &Value) -> anyhow::Result<Replaced> {
     };
     let start_line = content[..range.start].matches('\n').count() + 1;
     let replaced = content[range.clone()].to_string();
-    let mut edited = content;
+    let mut edited = content.clone();
     edited.replace_range(range, &new);
-    std::fs::write(&file, edited).with_context(|| format!("{path} could not be written"))?;
+    // Replaced whole, as `fs-write` and `fs-edit` replace theirs: a reader,
+    // or a daemon that dies mid-write, sees the old text or the new.
+    crate::fs_edit::replace_atomically(&file, path, content.as_bytes(), edited.as_bytes())?;
     let file = file.canonicalize().unwrap_or(file);
     let (matched_by, how) = matched.words();
     let text = match matched {

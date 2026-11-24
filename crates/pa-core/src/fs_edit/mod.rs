@@ -35,6 +35,7 @@ use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+pub(crate) use document::replace_atomically;
 use document::{Document, Encoding, LineEnds};
 pub(crate) use host::{EditObserver, FsEditHost};
 pub(crate) use seen::{ContextMark, RereadFact, RereadObserver, SeenFiles};

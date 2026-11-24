@@ -32,11 +32,13 @@ impl Supervisor {
     /// `revived_turn` is how far the transcript shows the turn got (`None`
     /// when no picked-up turn is on record): a turn whose answer was saved
     /// is over either way, and one whose prompt was saved continues behind
-    /// a notice instead of being prompted again.
+    /// a notice instead of being prompted again. `reaped_programs` is how
+    /// many programs its commands left running the boot stopped.
     pub(super) async fn record_host_death(
         self: &Arc<Self>,
         resident: &Arc<ResidentWorker>,
         revived_turn: Option<crate::revived_turn::RevivedTurn>,
+        reaped_programs: usize,
     ) {
         use crate::revived_turn::RevivedTurn;
         let prior = {
@@ -79,6 +81,7 @@ impl Supervisor {
                 at: util::now_iso(),
             },
             turn,
+            reaped_programs,
         )
         .await;
     }
@@ -100,12 +103,16 @@ impl Supervisor {
     /// Make one session crash visible: append it to the crash log, stamp it
     /// on the session's descriptor (the roster's `lastCrash`), tell every
     /// attached client, and count it. The caller owns what happens next (the
-    /// restart with backoff, or the give-up).
+    /// restart with backoff, or the give-up). `reaped_programs` (how many
+    /// programs the session's commands left running were stopped after it
+    /// went down) rides the record to the rebuilt session, which tells the
+    /// model of them in the result of a call the crash cut off.
     pub(super) async fn record_session_crash(
         self: &Arc<Self>,
         resident: &Arc<ResidentWorker>,
         crash: &SessionCrash,
         turn: InterruptedTurn,
+        reaped_programs: usize,
     ) {
         let (active_session_id, record, journal_path) = {
             let mut descriptor = resident.descriptor.lock().await;
@@ -119,6 +126,7 @@ impl Supervisor {
                 "location": crash.location,
                 "thread": crash.thread,
                 "at": crash.at,
+                "reapedPrograms": reaped_programs,
             });
             descriptor.last_failure_at = Some(util::now_iso());
             descriptor.last_error = Some(format!(

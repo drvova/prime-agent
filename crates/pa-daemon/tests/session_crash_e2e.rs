@@ -1047,6 +1047,108 @@ fn a_turn_cut_off_by_a_daemon_restart_continues_behind_one_notice_and_its_prompt
     );
 }
 
+/// A cell the daemon dies under is never run again: the revived turn's
+/// context answers it as of unknown outcome, with what its code can have
+/// done, and the model decides. The revived lifetime's script answers in
+/// text, so a second run of the cell could only be the daemon's.
+#[test]
+fn a_cell_cut_off_by_the_daemons_death_is_answered_as_outcome_unknown_and_not_run_again() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let mut first = spawn_supervisor(&socket, &agent_dir);
+    let session = {
+        let mut client = Client::connect(&socket);
+        let session = client.create_attached(
+            dir.path(),
+            "cut-off",
+            &json!({
+                "engine": "faux",
+                "responses": [
+                    { "content": [
+                        { "type": "toolCall", "name": "eval", "arguments": {
+                            "code": format!(
+                                "(bash \"echo ran >> counter.txt\") {}",
+                                wedged_cell(dir.path())
+                            ),
+                        } },
+                    ] },
+                    { "text": "done" },
+                ],
+            }),
+            json!({ "launchEnv": { "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM": "1" } }),
+        );
+        let prompted = client.request(
+            "prompt",
+            &json!({ "type": "prompt", "activeSessionId": session, "message": "run the cell" }),
+        );
+        assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
+        await_wedged(dir.path());
+        session
+    };
+    first.child.kill().expect("kill the daemon");
+    first.child.wait().expect("reap the daemon");
+    let _ = std::fs::remove_file(&socket);
+    std::fs::write(
+        dir.path().join("cut-off-script.json"),
+        json!({ "engine": "faux", "responses": [ { "text": "continued" }, { "text": "after" } ] })
+            .to_string(),
+    )
+    .expect("rewrite the script");
+
+    let _second = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    let after = client.request("after", &turn(&session, "after"));
+    assert_eq!(after["success"], true, "the next turn failed: {after}");
+    let session_file = std::fs::read_dir(dir.path().join("sessions"))
+        .expect("sessions dir")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .expect("the session file");
+    let results: Vec<Value> = std::fs::read_to_string(session_file)
+        .expect("read the session file")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("entry json"))
+        .filter(|entry| entry["message"]["role"] == "toolResult")
+        .map(|entry| {
+            json!([
+                entry["message"]["content"][0]["text"],
+                entry["message"]["isError"],
+                entry["message"]["details"]
+            ])
+        })
+        .collect();
+    assert_eq!(
+        (
+            std::fs::read_to_string(dir.path().join("counter.txt")).expect("the counter"),
+            kernel_story(dir.path()),
+            results,
+        ),
+        (
+            "ran\n".to_string(),
+            story(&[
+                "user",
+                "crashed row (daemon_restart)",
+                "recovered row",
+                "cell: [outcome-unknown] The daemon hosting this session stopped while this `eval` call ran, so its outcome is unknown: it may have run in part, in full or not at all, and its result was lost. It was not run again: check its effects before you run it again.",
+                "interrupted notice",
+                "kernel reset notice (restored: false)",
+                "user",
+            ]),
+            vec![json!([
+                "[outcome-unknown] The daemon hosting this session stopped while this `eval` call ran, so its outcome is unknown: it may have run in part, in full or not at all, and its result was lost. It was not run again: check its effects before you run it again.\n\nWhat is known:\n\
+                 - it runs `bash`: a command it started may have done part of its work; commands still running were stopped with the session, except in a persistent shell",
+                true,
+                { "outcome": "unknown" },
+            ])],
+        )
+    );
+}
+
 #[test]
 fn a_restarted_daemon_still_marks_the_session_that_crashed_under_its_predecessor() {
     let dir = tempfile::TempDir::new().expect("temp dir");

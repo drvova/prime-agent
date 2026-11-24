@@ -320,6 +320,43 @@ async fn a_unique_string_is_replaced_and_a_miss_says_where_it_diverges() {
     );
 }
 
+/// An `edit` replaces its file whole, as `fs-write` and `fs-edit` do: a
+/// temp file beside it is renamed onto it, so a daemon that dies mid-write
+/// leaves the old text or the new, never part of either. A hard link made
+/// before the edit still names the old file, and no temp file is left.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_replaces_its_file_whole_and_never_rewrites_it_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    std::fs::hard_link(&file, dir.path().join("before.txt")).unwrap();
+    let kernel = kernel_over(HostRequestHandlers::new(), dir.path()).await;
+    let edited = value(
+        kernel.as_ref(),
+        r#"(hash-ref (edit "notes.txt" "two" "TWO") 'start-line)"#,
+    )
+    .await;
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        (
+            edited,
+            std::fs::read_to_string(&file).unwrap(),
+            std::fs::read_to_string(dir.path().join("before.txt")).unwrap(),
+            names,
+        ),
+        (
+            Ok(json!(2)),
+            "one\nTWO\n".to_string(),
+            "one\ntwo\n".to_string(),
+            vec!["before.txt".to_string(), "notes.txt".to_string()],
+        )
+    );
+}
+
 /// Near misses an exact `edit` refuses: each normalization of the ladder
 /// finds its one place and says so, a normalized match found twice fails as
 /// ambiguous, and text pasted with `fs-read`'s anchors is refused with the
