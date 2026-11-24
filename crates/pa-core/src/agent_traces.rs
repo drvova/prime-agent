@@ -569,24 +569,19 @@ fn record_agent_trace_outbox_upload(
     let entry_path = agent_trace_outbox_entry_path(agent_dir, session_file);
     let mutation = outbox_mutation_lock(&entry_path)?;
     crate::platform::lock_exclusive(&mutation)?;
-    let temp = entry_path.with_extension(format!(
-        "{}.{}.tmp",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::write(
-        &temp,
-        format!(
-            "{}\n",
-            json!({
-                "sessionFile": session_file.to_string_lossy(),
-                "size": signature.size,
-                "mtimeMs": signature.mtime_ms,
-            })
-        ),
-    )?;
-    std::fs::rename(temp, entry_path)?;
-    Ok(())
+    let body = format!(
+        "{}\n",
+        json!({
+            "sessionFile": session_file.to_string_lossy(),
+            "size": signature.size,
+            "mtimeMs": signature.mtime_ms,
+        })
+    );
+    pa_types::platform::replace_file(
+        &entry_path,
+        body.as_bytes(),
+        crate::platform::REPLACE_KEEPING_MODE,
+    )
 }
 
 // Preview

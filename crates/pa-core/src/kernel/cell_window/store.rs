@@ -72,14 +72,13 @@ impl CellWindowStore for DiskStore {
                 })?;
                 let dir = path.parent().unwrap_or_else(|| Path::new("."));
                 std::fs::create_dir_all(dir)?;
-                // Temp + rename, so a reader never sees half a file. The temp name is unique per
-                // write (not per process like `settings::storage::atomic_write_with`): sessions in
-                // one process can share a project, and two writers must never share a temp file.
-                let temp = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4().simple()));
-                std::fs::write(&temp, body)?;
-                crate::platform::rename_onto(&temp, &path).inspect_err(|_| {
-                    let _ = std::fs::remove_file(&temp);
-                })
+                // Temp + rename, so a reader never sees half a file; the shared helper's temp
+                // name is unique per write, so sessions sharing a project never share one.
+                pa_types::platform::replace_file(
+                    &path,
+                    body.as_bytes(),
+                    crate::platform::REPLACE_KEEPING_MODE,
+                )
             })
             .await;
             match written {

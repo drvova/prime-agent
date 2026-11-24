@@ -142,19 +142,19 @@ pub(super) fn evict_live_snapshot(path: &Path) {
 }
 
 pub(super) fn save(path: &Path, snapshot: &Snapshot) -> io::Result<()> {
-    let temp = path.with_extension(format!("window-cache-{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        crate::platform::perms::set_private_mode(&mut options);
-        let mut file = options.open(&temp)?;
+        let mut file = pa_types::platform::AtomicFile::create(
+            &cache_path(path),
+            pa_types::platform::ReplaceOptions {
+                durability: pa_types::platform::Durability::Unsynced,
+                mode: pa_types::platform::FileMode::Private,
+                symlinks: pa_types::platform::Symlinks::ReplaceLink,
+            },
+        )?;
         serde_json::to_writer(&mut file, snapshot)?;
-        file.flush()?;
-        std::fs::rename(&temp, cache_path(path))
+        file.commit()
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temp);
-    } else if let Ok(mut snapshots) = live_snapshots().lock() {
+    if let (Ok(()), Ok(mut snapshots)) = (&result, live_snapshots().lock()) {
         snapshots.insert(path.to_owned(), snapshot.clone());
     }
     result

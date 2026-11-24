@@ -157,24 +157,13 @@ fn is_intent_holder_alive(intent: &UpdateIntent) -> bool {
 }
 
 fn write_atomically(path: &Path, intent: &UpdateIntent) -> Result<()> {
-    let temporary = path.with_extension("tmp");
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)
-            .with_context(|| format!("create {}", temporary.display()))?;
-        file.write_all(serde_json::to_string_pretty(intent)?.as_bytes())?;
-        file.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    std::fs::write(&temporary, serde_json::to_string_pretty(intent)?)?;
-    std::fs::rename(&temporary, path).with_context(|| format!("finalize {}", path.display()))
+    let content = serde_json::to_string_pretty(intent)?;
+    pa_types::platform::replace_file(
+        path,
+        content.as_bytes(),
+        super::status::UPDATE_ARTIFACT_WRITE,
+    )
+    .with_context(|| format!("write {}", path.display()))
 }
 
 #[cfg(all(test, unix))]

@@ -189,11 +189,7 @@ fn save(path: &Path, estimate: Estimate) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(dir)?;
     // Temp + rename with a per-write name: sessions sharing a project never share a temp file.
-    let temp = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4().simple()));
-    std::fs::write(&temp, body)?;
-    crate::platform::rename_onto(&temp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp);
-    })
+    pa_types::platform::replace_file(path, body.as_bytes(), crate::platform::REPLACE_KEEPING_MODE)
 }
 
 #[cfg(test)]

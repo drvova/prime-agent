@@ -75,22 +75,28 @@ pub(crate) enum Finalize {
 }
 
 pub(crate) fn rewrite_records(path: &Path, records: &[Value], finalize: Finalize) -> Result<()> {
-    let temp = path.with_extension(format!("jsonl.tmp-{}", std::process::id()));
+    use pa_types::platform::{Durability, FileMode, ReplaceOptions, Symlinks};
+    let options = ReplaceOptions {
+        durability: match finalize {
+            Finalize::Synced => Durability::SyncFile,
+            Finalize::Bare => Durability::Unsynced,
+        },
+        mode: FileMode::KeepTarget,
+        symlinks: Symlinks::ReplaceLink,
+    };
+    let mut file = pa_types::platform::AtomicFile::create(path, options)
+        .with_context(|| format!("create a temp file beside {}", path.display()))?;
     {
-        let file = File::create(&temp).with_context(|| format!("create {}", temp.display()))?;
-        let mut writer = BufWriter::new(file);
+        let mut writer = BufWriter::new(&mut file);
         for record in records {
             let mut line = serde_json::to_string(record)?;
             line.push('\n');
             writer.write_all(line.as_bytes())?;
         }
         writer.flush()?;
-        if !matches!(finalize, Finalize::Bare) {
-            writer.get_ref().sync_all()?;
-        }
     }
-    let rename = fs::rename(&temp, path);
-    rename.with_context(|| format!("persist {}", path.display()))?;
+    file.commit()
+        .with_context(|| format!("persist {}", path.display()))?;
     Ok(())
 }
 

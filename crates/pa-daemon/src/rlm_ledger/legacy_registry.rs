@@ -1,6 +1,5 @@
 //! The legacy subagent topology surfaces: the pre-ledger per-parent registry reader with its
 //! bounded header-line probe, and the per-child display sidecar entry with its atomic writer.
-use std::io::Write as _;
 
 use anyhow::Context as _;
 
@@ -100,26 +99,20 @@ pub fn write_rlm_subagent_display(entry: &RlmSubagentDisplayEntry) -> Result<boo
     let dir = Path::new(&entry.session_dir);
     fs::create_dir_all(dir)?;
     let payload = serde_json::to_string(entry)?;
-    // TS `writeFileAtomicSync` temp naming: a unique temp per writer, so
-    // two processes never share one temp.
-    let temp = dir.join(format!(
-        "rlm-subagent.json.{}.{}.tmp",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    ));
-    // The temp carries the TS display writer's 0o600 mode; the rename
-    // preserves it onto the final file.
-    let mut options = fs::OpenOptions::new();
-    options.create(true).write(true).truncate(true);
-    pa_core::platform::perms::set_private_mode(&mut options);
-    let mut file = options.open(&temp)?;
-    file.write_all(format!("{payload}\n").as_bytes())?;
-    // TS `writeFileAtomicSync(..., { fsync: true })`: the temp is durable
-    // before the rename, so a crash mid-write leaves a stale temp and the
-    // previous file intact - never a half-written display state.
-    file.sync_all()?;
-    pa_core::platform::rename_onto(&temp, &dir.join("rlm-subagent.json"))
-        .with_context(|| format!("persist rlm-subagent display at {}", dir.display()))?;
+    // TS `writeFileAtomicSync(..., { fsync: true })` with the TS display
+    // writer's 0o600 mode: a unique temp per writer, durable before the
+    // rename, so a crash mid-write leaves the previous file intact - never a
+    // half-written display state.
+    pa_types::platform::replace_file(
+        &dir.join("rlm-subagent.json"),
+        format!("{payload}\n").as_bytes(),
+        pa_types::platform::ReplaceOptions {
+            durability: pa_types::platform::Durability::SyncFile,
+            mode: pa_types::platform::FileMode::Private,
+            symlinks: pa_types::platform::Symlinks::ReplaceLink,
+        },
+    )
+    .with_context(|| format!("persist rlm-subagent display at {}", dir.display()))?;
     Ok(true)
 }
 

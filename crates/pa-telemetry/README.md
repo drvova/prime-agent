@@ -35,14 +35,6 @@ pseudonymous installation identity for Prime Agent product analytics.
   (`input_tokens` is the uncached input).
 - `install_id`: `<agentDir>/telemetry.json` `{version, installationId}`,
   exclusive 0600 create, validated on load (TS parity).
-- `rename_onto`: the shared rename-onto-destination primitive for durable
-  persist writes (TS `renameOntoSync`: bounded win32 destination-busy
-  retry, `10ms * attempt` backoff, every failure immediate off Windows).
-  Lives in this crate because every persist owner (pa-core's settings and
-  session writes, pa-daemon's descriptors/journals/session store, this
-  crate's install id) already depends on it while it depends on no other
-  workspace crate; pa-core re-exports it as `platform::rename_onto` so its
-  platform wall stays the engine's single platform entry.
 - The TS boolean env parsing (`parse_bool_override`); the opt-out
   precedence (`PI_OFFLINE`, `DO_NOT_TRACK`, `PRIME_AGENT_TELEMETRY`,
   settings) lives in pa-core's `telemetry_switch`.
@@ -66,7 +58,6 @@ pseudonymous installation identity for Prime Agent product analytics.
 - `TelemetrySink` trait, `SinkOutcome`
 - `Properties`, `TelemetryEvent`
 - `install_id(agent_dir)`
-- `rename_onto(from, to)`
 - `parse_bool_override(value)`, `existing_install_id(agent_dir)`
 - Sinks: `AnalyticsSink` (+ `ANALYTICS_ENDPOINT`), `FileSink`, `NoopSink`, `MockSink`
   (+ `RecordedBatch`)

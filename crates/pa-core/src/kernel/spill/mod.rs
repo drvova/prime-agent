@@ -583,12 +583,15 @@ impl StoreState {
         if path.exists() {
             return Ok(());
         }
-        let temp = self.dir.join(format!("{id}.tmp"));
-        let mut file = std::fs::File::create(&temp)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        crate::platform::rename_onto(&temp, &path)
+        pa_types::platform::replace_file(
+            &path,
+            text.as_bytes(),
+            pa_types::platform::ReplaceOptions {
+                durability: pa_types::platform::Durability::SyncFile,
+                mode: pa_types::platform::FileMode::KeepTarget,
+                symlinks: pa_types::platform::Symlinks::ReplaceLink,
+            },
+        )
     }
 
     /// Store one job (with bounded retries), then evict past the cap.

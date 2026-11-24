@@ -217,9 +217,13 @@ impl AdmissionService {
         let path = self.store_path.clone();
         let text = serde_json::to_string_pretty(&store)?;
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            let staging = path.with_extension("json.tmp");
-            std::fs::write(&staging, text)?;
-            std::fs::rename(&staging, &path)?;
+            use pa_types::platform::{Durability, FileMode, ReplaceOptions, Symlinks};
+            let options = ReplaceOptions {
+                durability: Durability::Unsynced,
+                mode: FileMode::KeepTarget,
+                symlinks: Symlinks::FollowToTarget,
+            };
+            pa_types::platform::replace_file(&path, text.as_bytes(), options)?;
             Ok(())
         })
         .await?

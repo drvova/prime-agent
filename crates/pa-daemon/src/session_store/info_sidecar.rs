@@ -66,29 +66,33 @@ pub(crate) fn persist_info_sidecar(path: &Path) {
     }) else {
         return;
     };
-    let temp = path.with_extension(format!("info-cache-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
+    let result = (|| -> io::Result<()> {
+        // The sidecar carries message text (the first message): it is
+        // owner-only like the session files (`persist.rs`'s writer).
+        let mut file = pa_types::platform::AtomicFile::create(
+            &sidecar_path(path),
+            pa_types::platform::ReplaceOptions {
+                durability: pa_types::platform::Durability::Unsynced,
+                mode: pa_types::platform::FileMode::Private,
+                symlinks: pa_types::platform::Symlinks::ReplaceLink,
+            },
+        )?;
         // Buffered: the serialized state is megabytes of small map
         // entries, and an unbuffered file writer would turn every
         // serialized fragment into its own write syscall.
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        // The sidecar carries message text (the first message): the temp is
-        // owner-only like the session files (`persist.rs`'s writer), and the
-        // rename carries the mode onto the sidecar.
-        pa_core::platform::perms::set_private_mode(&mut options);
-        let mut file = io::BufWriter::new(options.open(&temp)?);
+        let mut writer = io::BufWriter::new(&mut file);
         serde_json::to_writer(
-            &mut file,
+            &mut writer,
             &InfoSidecar {
                 version: INFO_SIDECAR_VERSION,
                 state,
             },
         )?;
-        file.flush()?;
-        pa_core::platform::rename_onto(&temp, &sidecar_path(path))
+        writer.flush()?;
+        drop(writer);
+        file.commit()
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
+    // A failed write costs the next open its warm resume, nothing more (the
+    // error policy above); its temp file is already gone.
+    let _ = result;
 }
