@@ -180,13 +180,18 @@ async fn a_skill_whose_source_fails_is_reported_by_name_and_the_other_skills_sti
     let kernel = kernel.as_ref();
     let reports = skills.reports();
     let unavailable = reports.first().cloned().unwrap_or_default();
+    // A source is named by its path inside the skill, in the platform's spelling.
+    let torn_source = format!(
+        "{}: ",
+        std::path::Path::new("scheme").join("10-open.scm").display()
+    );
     let named: Vec<(&str, bool, bool)> = unavailable
         .iter()
         .map(|(skill, error)| {
             (
                 skill.as_str(),
                 error.starts_with("skill.scm: "),
-                error.starts_with("scheme/10-open.scm: "),
+                error.starts_with(&torn_source),
             )
         })
         .collect();
