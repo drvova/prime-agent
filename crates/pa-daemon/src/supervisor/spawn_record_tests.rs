@@ -132,14 +132,25 @@ async fn a_relaunch_spawn_record_serves_the_durable_persist() {
     let descriptor_path = dir.join("w-relaunch.json");
     // The relaunch hosts a real session in this process, and a session that
     // came up would go on to rewrite its record. This one never can: its
-    // socket path runs through a regular file, so the bind fails and the
-    // relaunch stops at the probe, after the spawn record served.
+    // socket address refuses the bind, so the relaunch stops at the probe,
+    // after the spawn record served. On unix the socket path runs through a
+    // regular file; on Windows the endpoint is a named pipe, which a file
+    // does not block, so the address is a pipe name past the 256-character
+    // limit.
     std::fs::write(dir.join("occupied"), "").expect("the file in the socket's way");
+    #[cfg(unix)]
+    let socket_path = dir
+        .join("occupied")
+        .join("w-relaunch.sock")
+        .to_string_lossy()
+        .into_owned();
+    #[cfg(windows)]
+    let socket_path = format!(r"\\.\pipe\{}", "x".repeat(300));
     let descriptor: DaemonWorkerDescriptor = serde_json::from_value(serde_json::json!({
         "version": 2,
         "workerId": "w-relaunch",
         "pid": 4242,
-        "socketPath": dir.join("occupied").join("w-relaunch.sock").to_string_lossy(),
+        "socketPath": socket_path,
         "recoveryJournalPath": "/tmp/w-relaunch.recovery.jsonl",
         "supervisorSocketPath": "/tmp/none.sock",
         "authenticationToken": "spawnrec-token",

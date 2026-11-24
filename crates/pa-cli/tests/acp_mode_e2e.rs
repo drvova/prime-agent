@@ -510,7 +510,7 @@ fn acp_cwd_mismatch_is_reported_not_adopted() {
     // (the value is tempdir-random).
     assert!(meta["actual"]
         .as_str()
-        .is_some_and(|actual| actual.starts_with(std::path::MAIN_SEPARATOR)));
+        .is_some_and(|actual| std::path::Path::new(actual).is_absolute()));
 }
 
 #[test]
@@ -880,8 +880,17 @@ fn acp_daemon_attached_eof_teardown_clears_the_connection_mcp_servers() {
 #[test]
 fn acp_mode_daemon_unreachable_exits_1_without_fallback() {
     let home = tempfile::TempDir::new().unwrap();
-    let socket = home.path().join("daemon.sock");
-    std::fs::write(&socket, "not a socket").unwrap();
+    // An address nothing can listen on. On unix a regular file holds the socket path; on
+    // Windows the endpoint is a named pipe, which a file does not block, so the address is a
+    // pipe name past the 256-character limit that both bind and connect refuse.
+    #[cfg(unix)]
+    let socket = {
+        let socket = home.path().join("daemon.sock");
+        std::fs::write(&socket, "not a socket").unwrap();
+        socket
+    };
+    #[cfg(windows)]
+    let socket = std::path::PathBuf::from(format!(r"\\.\pipe\{}", "x".repeat(300)));
     std::fs::write(
         home.path().join("worker-script.json"),
         json!({ "engine": "faux", "responses": ["unused"] }).to_string(),
