@@ -107,6 +107,7 @@ fn completed_append_error_retry_keeps_one_physical_attribution() {
     );
 }
 
+#[cfg(unix)] // only the unix-only windowed-reader tests use it
 fn windowed_fixture() -> (tempfile::TempDir, SessionFile, String, Usage) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.jsonl");
@@ -144,6 +145,7 @@ fn windowed_fixture() -> (tempfile::TempDir, SessionFile, String, Usage) {
     (dir, live, target, raw)
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn hydration_after_an_uncertain_append_does_not_lose_child_usage() {
     use pa_core::session_engine::rlm_usage::attribute_child_usage;
@@ -360,6 +362,7 @@ fn conflicting_owned_bytes_and_incomplete_tail_fail_closed_without_truncation() 
     assert_eq!(std::fs::read(&store.path).unwrap(), conflict);
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn hydration_before_confirmation_retains_pending_and_created_receipts() {
     let (_dir, mut live, target, _raw) = windowed_fixture();
@@ -414,6 +417,7 @@ fn changed_session_identity_cannot_confirm_an_owned_attribution() {
     assert!(store.child_usage_recovery.pending.is_some());
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn nonzero_cost_hydration_confirms_the_complete_wire_decoded_owned_row() {
     use pa_types::ai::UsageCost;

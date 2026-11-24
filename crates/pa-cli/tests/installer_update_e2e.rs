@@ -105,7 +105,7 @@ impl Sandbox {
             .expect("sandbox root");
         // The installer reports resolved paths; macOS's temp dir sits behind
         // the /var -> /private/var symlink.
-        let root = dir.path().canonicalize().expect("canonical sandbox root");
+        let root = pa_types::platform::canonicalize(dir.path()).expect("canonical sandbox root");
         let home = root.join("home");
         let session_file = home.join(".prime/agent/sessions/session.jsonl");
         std::fs::create_dir_all(session_file.parent().expect("session dir")).expect("session dir");

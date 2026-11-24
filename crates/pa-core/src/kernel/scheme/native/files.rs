@@ -293,7 +293,7 @@ impl Files {
                 // The read rides the cell's result, as an edit's diff does:
                 // a compaction reads the session's latest files from them.
                 if let Some(kernel) = crate::kernel::scheme::cell::current() {
-                    let path = file.canonicalize().unwrap_or(file);
+                    let path = pa_types::platform::canonicalize(&file).unwrap_or(file);
                     kernel.record(crate::kernel::scheme::cell::CellRecord::FileRead {
                         path: path.to_string_lossy().into_owned(),
                     });
@@ -588,7 +588,7 @@ fn show_rewrite(reply: &mut Value, file: &Path) {
         // Moved out of the reply, not copied: a side is the whole file.
         let mut text =
             |side: &str| serde_json::from_value::<String>(rewrite[side].take()).unwrap_or_default();
-        let path = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        let path = pa_types::platform::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
         kernel.record(crate::kernel::scheme::cell::CellRecord::Diff(
             KernelDiffDisplay {
                 path: path.to_string_lossy().into_owned(),

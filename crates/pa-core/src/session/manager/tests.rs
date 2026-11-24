@@ -402,6 +402,7 @@ fn open_treats_a_path_shaped_header_id_as_corrupted() {
 /// Replay validation must stay on the retained index: the full-history query
 /// panics after window adoption. Replaying a registered row once does not
 /// suppress a later legitimate submission of the same text.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn replay_admitted_user_rows_stays_windowed_and_reuses_only_registered_ids() {
     let dir = tempfile::tempdir().unwrap();

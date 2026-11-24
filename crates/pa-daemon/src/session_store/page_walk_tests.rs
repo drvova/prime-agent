@@ -105,6 +105,7 @@ fn mixed_store() -> SessionFile {
 }
 
 /// A compacted file reopened through the window, with rows appended after it.
+#[cfg(unix)] // only the unix-only windowed-reader tests use it
 fn windowed_store(dir: &std::path::Path) -> SessionFile {
     let path = dir.join("windowed.jsonl");
     let mut store = SessionFile::create("/tmp", None, 0);
@@ -155,8 +156,10 @@ fn reference_branch(store: &SessionFile) -> Vec<&SessionEntry> {
     path
 }
 
+#[cfg(unix)] // only the unix-only windowed-reader tests use it
 type PageView = (Vec<Value>, Option<String>, Option<String>, bool);
 
+#[cfg(unix)] // only the unix-only windowed-reader tests use it
 fn page_view(rows: TranscriptPageRows) -> PageView {
     (
         rows.messages,
@@ -168,6 +171,7 @@ fn page_view(rows: TranscriptPageRows) -> PageView {
 
 /// The pre-index page: every display row of the whole branch, anchors found by scan,
 /// and the cut settled over all rows.
+#[cfg(unix)] // only the unix-only windowed-reader tests use it
 fn reference_page(store: &SessionFile, page: &TranscriptPage) -> Option<PageView> {
     let mut rows: Vec<DisplayRow<'_>> = reference_branch(store)
         .into_iter()
@@ -227,6 +231,7 @@ fn reference_page(store: &SessionFile, page: &TranscriptPage) -> Option<PageView
     ))
 }
 
+#[cfg(unix)] // only the unix-only windowed-reader tests use it
 fn assert_page(store: &SessionFile, page: &TranscriptPage) -> Option<PageView> {
     let actual = store.transcript_page(page).map(page_view);
     assert_eq!(actual, reference_page(store, page), "{page:?}");
@@ -235,6 +240,7 @@ fn assert_page(store: &SessionFile, page: &TranscriptPage) -> Option<PageView> {
 
 /// Every page boundary a client reaches (tail-first End pages, head-first Start pages
 /// with and without `until`), plus every entry as an anchor and as `historyLeafId`.
+#[cfg(unix)] // only the unix-only windowed-reader tests use it
 fn assert_matches_reference(store: &SessionFile) {
     for entry in store.entries() {
         assert_eq!(
@@ -305,6 +311,7 @@ fn assert_matches_reference(store: &SessionFile) {
     }
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn pages_match_the_full_branch_reference() {
     assert_matches_reference(&mixed_store());
@@ -580,6 +587,7 @@ fn the_in_flight_assistant_row_is_left_out() {
 /// A windowed store counts its unloaded prefix: totals and indexes match the hydrated
 /// store, a slice inside the window reads without the prefix, and a slice reaching
 /// into it asks for hydration. Hydration carries the counts over unchanged.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn a_windowed_store_counts_its_prefix_and_reads_its_window() {
     let dir = tempfile::tempdir().unwrap();

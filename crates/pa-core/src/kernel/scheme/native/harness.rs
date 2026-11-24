@@ -922,7 +922,12 @@ mod tests {
         ] {
             returned.push(evaluate(kernel.as_ref(), expression).await);
         }
-        let file = dir.path().join("sessions/s1/harness/harness_state.json");
+        let file = dir
+            .path()
+            .join("sessions")
+            .join("s1")
+            .join("harness")
+            .join("harness_state.json");
         let overview = returned.pop().unwrap().unwrap();
         let lines: Vec<&str> = overview.as_str().unwrap().lines().collect();
         assert_eq!(

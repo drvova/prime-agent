@@ -20,6 +20,7 @@ fn fixture() -> String {
 }
 
 /// The stats carry the cumulative aggregate, not the raw row.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn older_path_stats_fold_child_usage_attributions() {
     let dir = tempfile::tempdir().unwrap();
@@ -72,6 +73,7 @@ fn older_path_stats_fold_child_usage_attributions() {
 }
 
 /// Newest-first, the FIRST aggregate seen per target is the last one written.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn older_path_stats_keep_a_targets_last_aggregate() {
     let dir = tempfile::tempdir().unwrap();
@@ -110,6 +112,7 @@ fn older_path_stats_keep_a_targets_last_aggregate() {
 }
 
 /// The capture gate accepts objects only, like the session-store fold.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn older_path_stats_skip_malformed_aggregates() {
     let dir = tempfile::tempdir().unwrap();
@@ -143,6 +146,7 @@ fn older_path_stats_skip_malformed_aggregates() {
 
 /// A post-compaction switch inside the retained window must not re-label the boundary's early
 /// summarizer spend.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn boundary_model_is_the_prefixs_newest_model_change_not_the_leafs() {
     let dir = tempfile::tempdir().unwrap();
@@ -177,6 +181,7 @@ fn boundary_model_is_the_prefixs_newest_model_change_not_the_leafs() {
     );
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn warm_cache_reads_only_header_and_suffix_and_append_stays_warm() {
     let dir = tempfile::tempdir().unwrap();
@@ -214,6 +219,7 @@ fn warm_cache_reads_only_header_and_suffix_and_append_stays_warm() {
     );
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[tokio::test]
 async fn historical_refinement_is_read_only_on_trigger_not_in_hot_cache() {
     let dir = tempfile::tempdir().unwrap();
@@ -243,6 +249,7 @@ async fn historical_refinement_is_read_only_on_trigger_not_in_hot_cache() {
     assert_eq!(cold.context().messages, warm.context().messages);
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn blank_rows_and_uncompacted_context_are_warm() {
     let dir = tempfile::tempdir().unwrap();
@@ -257,6 +264,7 @@ fn blank_rows_and_uncompacted_context_are_warm() {
     }
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn valid_goal_and_physical_metadata_survive_invalid_newer_branch_goal() {
     let dir = tempfile::tempdir().unwrap();
@@ -286,6 +294,7 @@ fn valid_goal_and_physical_metadata_survive_invalid_newer_branch_goal() {
 /// paying a full-file parse — and the cached sidecar serves it warm. The
 /// matcher is honest about the payload: a row with `data.shown` false is
 /// not a marker.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn anthropic_warning_marker_hydrates_from_before_the_boundary() {
     let dir = tempfile::tempdir().unwrap();
@@ -324,6 +333,7 @@ fn anthropic_warning_marker_hydrates_from_before_the_boundary() {
 /// A `custom` row with the marker's type but `data.shown` false is not the
 /// marker: the gate's payload check keeps a future un-show payload (or a
 /// foreign row borrowing the type) from suppressing the warning.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn an_unshown_marker_row_never_hydrates_the_gate() {
     let dir = tempfile::tempdir().unwrap();
@@ -343,6 +353,7 @@ fn an_unshown_marker_row_never_hydrates_the_gate() {
     assert!(!store.anthropic_warning_shown());
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn unleased_append_invalidates_without_certification() {
     let dir = tempfile::tempdir().unwrap();
@@ -372,6 +383,7 @@ fn cached_accounting_preserves_subtotal_bits() {
     assert_eq!(restored.cost.to_bits(), stats.cost.to_bits());
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn explicit_null_tier_append_stays_warm() {
     let dir = tempfile::tempdir().unwrap();
@@ -400,6 +412,7 @@ fn explicit_null_tier_append_stays_warm() {
     assert_eq!(window.context().service_tier, None);
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn stale_corrupt_and_replaced_cache_rebuild() {
     let dir = tempfile::tempdir().unwrap();
@@ -434,6 +447,7 @@ fn stale_corrupt_and_replaced_cache_rebuild() {
     );
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[tokio::test]
 async fn context_and_hydration_match_full_reader() {
     let dir = tempfile::tempdir().unwrap();
@@ -465,6 +479,7 @@ async fn context_and_hydration_match_full_reader() {
     assert_eq!(std::fs::read_to_string(path).unwrap(), body);
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[tokio::test]
 async fn metadata_and_concurrent_disk_append_survive_hydration() {
     use std::io::Write;
@@ -495,6 +510,7 @@ async fn metadata_and_concurrent_disk_append_survive_hydration() {
     );
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[tokio::test]
 async fn manager_opens_window_and_appends_without_hydration() {
     let dir = tempfile::tempdir().unwrap();
@@ -522,6 +538,7 @@ async fn manager_opens_window_and_appends_without_hydration() {
     );
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[tokio::test]
 async fn failed_window_append_returns_error_without_id_or_listener() {
     let dir = tempfile::tempdir().unwrap();
@@ -544,6 +561,7 @@ async fn failed_window_append_returns_error_without_id_or_listener() {
     assert!(!path.exists());
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn sparse_settings_and_sibling_changes_match_full_context() {
     let dir = tempfile::tempdir().unwrap();
@@ -606,6 +624,7 @@ fn reverse_reader_preserves_long_lines_and_unterminated_tail() {
     assert_eq!(lines, vec!["last".to_owned(), long, "first".to_owned()]);
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn windowed_context_is_byte_identical_to_the_cold_parse() {
     // The resumed worker's first model request is built from this context:
@@ -647,6 +666,7 @@ fn windowed_context_is_byte_identical_to_the_cold_parse() {
     }
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn sequential_appends_keep_reopens_amortized() {
     // N leased appends stay O(append): every reopen stays a cache hit whose
@@ -683,6 +703,7 @@ fn sequential_appends_keep_reopens_amortized() {
 }
 
 /// The detach changes WHO holds the retained rows, never WHAT is served.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 fn adopted_context_matches_unadopted_window_byte_for_byte() {
     let dir = tempfile::tempdir().unwrap();
@@ -736,6 +757,7 @@ fn adopted_context_matches_unadopted_window_byte_for_byte() {
 /// The detached window keeps its snapshot/settings/metadata surfaces; its
 /// transcript context moves to the owning manager — `context()` on a
 /// detached window is a programming error, caught loudly.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[test]
 #[should_panic(expected = "detached window's transcript context")]
 fn detached_window_serves_lookups_but_not_its_own_context() {
@@ -859,6 +881,7 @@ async fn adopted_manager_live_appends_match_full_reopen() {
 }
 
 /// A no-compaction fixture: the walk retains every row (`retained_whole_file`).
+#[cfg(unix)] // only the unix-only windowed-reader tests use it
 fn full_history_fixture() -> String {
     let mut rows = vec![
         json!({"type":"session","id":"s","version":3,"cwd":"/tmp","timestamp":"2026-01-01T00:00:00Z"}),
@@ -874,6 +897,7 @@ fn full_history_fixture() -> String {
     rows.into_iter().map(|row| row.to_string() + "\n").collect()
 }
 
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[tokio::test]
 async fn full_history_snapshot_serves_retained_rows_without_the_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -915,6 +939,7 @@ async fn full_history_snapshot_serves_retained_rows_without_the_file() {
 }
 
 /// Without the sole-writer lease another writer may have appended out of band.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[tokio::test]
 async fn full_history_snapshot_without_lease_keeps_the_historical_read() {
     use std::io::Write as _;
@@ -940,6 +965,7 @@ async fn full_history_snapshot_without_lease_keeps_the_historical_read() {
 }
 
 /// A compaction boundary discards a prefix by design; the fast path never claims coverage.
+#[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
 #[tokio::test]
 async fn boundary_window_snapshot_keeps_the_historical_read() {
     let dir = tempfile::tempdir().unwrap();

@@ -293,7 +293,7 @@ async fn rlm_spawn_cwd_starts_the_child_in_that_directory() {
     });
     assert_eq!(
         summary["cwd"],
-        json!(project.canonicalize().expect("project"))
+        json!(pa_types::platform::canonicalize(&project).expect("project"))
     );
     client.send_command(
         "prompt",

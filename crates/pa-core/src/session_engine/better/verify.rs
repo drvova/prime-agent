@@ -165,13 +165,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/parser.rs"), "pub fn parse_expr() {}\n").unwrap();
+        // A program every machine of the platform has on PATH.
+        let present = if cfg!(windows) {
+            "cmd /c exit 0"
+        } else {
+            "sh -c true"
+        };
         let checked: Vec<(String, bool)> = [
             Reference::Path("src/parser.rs".to_string()),
             Reference::Path("parser.rs".to_string()),
             Reference::Path("src/lexer.rs".to_string()),
             Reference::Symbol("parse_expr".to_string()),
             Reference::Symbol("Parser::parse_statement".to_string()),
-            Reference::Command("sh -c true".to_string()),
+            Reference::Command(present.to_string()),
             Reference::Command("no-such-program-xyz --flag".to_string()),
         ]
         .iter()
@@ -190,7 +196,7 @@ mod tests {
                 ("src/lexer.rs", false),
                 ("parse_expr", true),
                 ("Parser::parse_statement", false),
-                ("sh -c true", cfg!(unix)),
+                (present, true),
                 ("no-such-program-xyz --flag", false),
             ]
             .map(|(text, resolved)| (text.to_string(), resolved))

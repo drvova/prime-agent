@@ -89,7 +89,7 @@ impl AtomicFile {
     pub fn create(path: &Path, options: ReplaceOptions) -> io::Result<Self> {
         let target = match options.symlinks {
             Symlinks::ReplaceLink => path.to_path_buf(),
-            Symlinks::FollowToTarget => match fs::canonicalize(path) {
+            Symlinks::FollowToTarget => match crate::platform::canonicalize(path) {
                 Ok(target) => target,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => path.to_path_buf(),
                 Err(error) => return Err(error),

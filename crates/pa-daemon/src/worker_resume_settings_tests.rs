@@ -162,15 +162,20 @@ mod resume_settings_tests {
                     }
                 );
                 assert_eq!(*capture.tier.lock().unwrap(), None);
-                assert!(worker
-                    .core
-                    .lock()
-                    .unwrap()
-                    .store
-                    .as_ref()
-                    .unwrap()
-                    .window
-                    .is_some());
+                // Windowed where the windowed reader runs (unix: it anchors
+                // on inode identity); the full history elsewhere.
+                assert_eq!(
+                    worker
+                        .core
+                        .lock()
+                        .unwrap()
+                        .store
+                        .as_ref()
+                        .unwrap()
+                        .window
+                        .is_some(),
+                    cfg!(unix)
+                );
             }
             // The worker's core is Arc-shared with its handler seams, so an
             // in-process drop never releases the store; `kill` is the real teardown.
@@ -218,7 +223,8 @@ mod resume_settings_tests {
         assert!(response.success, "{response:?}");
         {
             let core = worker.core.lock().unwrap();
-            assert!(core.store.as_ref().unwrap().window.is_some());
+            // Windowed where the windowed reader runs (unix only).
+            assert_eq!(core.store.as_ref().unwrap().window.is_some(), cfg!(unix));
             assert_eq!(core.service_tier, Some(pa_types::ai::ServiceTier::Default));
         }
         assert_eq!(

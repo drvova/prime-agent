@@ -127,8 +127,8 @@ fn the_ledger_replays_through_the_product_reader() {
 fn the_same_seed_rebuilds_the_identical_tree() {
     let first = tempfile::tempdir().expect("temp dir");
     let second = tempfile::tempdir().expect("temp dir");
-    let first_root = first.path().canonicalize().expect("canonical first");
-    let second_root = second.path().canonicalize().expect("canonical second");
+    let first_root = pa_types::platform::canonicalize(first.path()).expect("canonical first");
+    let second_root = pa_types::platform::canonicalize(second.path()).expect("canonical second");
     generate(&tiny(Profile::Small, &first_root)).expect("first generate");
     generate(&tiny(Profile::Small, &second_root)).expect("second generate");
     // The ledger file NAME is the hash of the canonical sessions dir, so

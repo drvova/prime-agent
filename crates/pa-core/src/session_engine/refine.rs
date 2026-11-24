@@ -1618,33 +1618,36 @@ Reviewer instructions: record it"
         );
 
         // The read-leg proof: the unleased window must serve an
-        // out-of-band audit row.
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("session.jsonl");
-        std::fs::write(&path, &body).unwrap();
-        let session = SessionManager::open_windowed(dir.path(), dir.path(), &path)
-            .await
+        // out-of-band audit row. The windowed reader is unix-only (it anchors
+        // on inode identity); elsewhere every open is the full history.
+        if cfg!(unix) {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("session.jsonl");
+            std::fs::write(&path, &body).unwrap();
+            let session = SessionManager::open_windowed(dir.path(), dir.path(), &path)
+                .await
+                .unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(
+                br#"{"type":"custom","id":"oob-audit","parentId":"audit","customType":"prime-agent.refinement","data":{"id":"refine_oob","summary":"oob","rationale":"r","expectedOutcome":"o","appliedEdits":[],"harnessStatePath":""}}"#
+            )
             .unwrap();
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        file.write_all(
-            br#"{"type":"custom","id":"oob-audit","parentId":"audit","customType":"prime-agent.refinement","data":{"id":"refine_oob","summary":"oob","rationale":"r","expectedOutcome":"o","appliedEdits":[],"harnessStatePath":""}}"#
-        )
-        .unwrap();
-        file.write_all(b"\n").unwrap();
-        drop(file);
-        let parts = session.refine_transcript_parts();
-        let crate::session::manager::RefineTranscriptParts {
-            refinement_history, ..
-        } = parts.await.unwrap();
-        assert!(
-            refinement_history
-                .iter()
-                .any(|item| item.id == "refine_oob"),
-            "the unleased window must keep re-reading the file (out-of-band audit visible)"
-        );
+            file.write_all(b"\n").unwrap();
+            drop(file);
+            let parts = session.refine_transcript_parts();
+            let crate::session::manager::RefineTranscriptParts {
+                refinement_history, ..
+            } = parts.await.unwrap();
+            assert!(
+                refinement_history
+                    .iter()
+                    .any(|item| item.id == "refine_oob"),
+                "the unleased window must keep re-reading the file (out-of-band audit visible)"
+            );
+        }
     }
 
     #[tokio::test]

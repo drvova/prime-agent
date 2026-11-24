@@ -1183,13 +1183,16 @@ fn view_with(entries: Vec<ChatEntry>) -> AgentView {
 }
 
 fn settled_tool_card(id: &str) -> ChatEntry {
+    // A fixed run time: two `Instant::now()` reads can be equal (Windows'
+    // clock), and a card whose run took no time shows none.
+    let started = std::time::Instant::now();
     ChatEntry::Tool(Box::new(ToolCallCard {
         id: id.to_string(),
         name: "bash".to_string(),
         args: serde_json::json!({"command": "echo done"}),
         started: true,
-        started_at: Some(std::time::Instant::now()),
-        ended_at: Some(std::time::Instant::now()),
+        started_at: Some(started),
+        ended_at: Some(started + std::time::Duration::from_millis(1)),
         result: Some(ToolResultView {
             content: vec![serde_json::json!({"type": "text", "text": "done"})],
             details: serde_json::Value::Null,
@@ -1210,6 +1213,7 @@ fn transcript_text(view: &mut AgentView, width: usize) -> String {
 
 /// A prompt's send time sits flush right on its first text row; a row too full for it keeps
 /// its text, and the clock never changes the entry's height.
+#[cfg(unix)] // Windows renders no clock: pa_types::platform::local_clock answers None there
 #[test]
 fn a_prompt_shows_its_send_time_flush_right() {
     let sent_at = 1_763_300_000_000;

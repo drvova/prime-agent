@@ -647,7 +647,7 @@ fn protected_worker_pids(agent_dir: &Path, socket_path: &Path) -> HashSet<u32> {
 #[cfg(unix)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn normalize_socket_spelling(path: &Path) -> String {
-    if let Ok(canonical) = path.canonicalize() {
+    if let Ok(canonical) = pa_types::platform::canonicalize(path) {
         return canonical.to_string_lossy().to_string();
     }
     let mut normalized = PathBuf::new();

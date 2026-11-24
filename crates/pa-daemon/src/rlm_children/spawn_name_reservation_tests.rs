@@ -127,8 +127,8 @@ async fn sessions_with_gated_supervisor(
     rename_seen_tx: mpsc::UnboundedSender<Value>,
     rename_verdict_rx: Option<mpsc::UnboundedReceiver<()>>,
 ) -> (tempfile::TempDir, SupervisorChildSessions) {
-    // Under /tmp: the dir holds the fake supervisor's socket (SUN_LEN).
-    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    // Under the socket temp root: the dir holds the fake supervisor's socket (SUN_LEN).
+    let tmp = tempfile::tempdir_in(crate::test_support::socket_temp_root()).unwrap();
     let socket = tmp.path().join("pa-rlm-gate.sock");
     spawn_gated_supervisor(
         socket.clone(),

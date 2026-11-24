@@ -208,10 +208,11 @@ struct Store {
 
 impl Store {
     fn open(agent_dir: &Path, workspace: &Path, session_id: &str) -> Result<Self> {
-        let workspace = std::fs::canonicalize(workspace)?;
+        let workspace = pa_types::platform::canonicalize(workspace)?;
         // Never one workspace: the root, a top-level directory (`/tmp`, `/home`,
         // ...), the temp directory, the home directory, or its parent.
-        let same = |dir: &Path| std::fs::canonicalize(dir).is_ok_and(|dir| dir == workspace);
+        let same =
+            |dir: &Path| pa_types::platform::canonicalize(dir).is_ok_and(|dir| dir == workspace);
         let home = pa_types::session_scope::var_os("HOME")
             .or_else(|| pa_types::session_scope::var_os("USERPROFILE"))
             .map(PathBuf::from);

@@ -301,7 +301,7 @@ async fn a_unique_string_is_replaced_and_a_miss_says_where_it_diverges() {
     let replaced = value(kernel.as_ref(), "(edit \"words.txt\" \"beta\" \"BETA\")").await;
     let missed = value(kernel.as_ref(), "(edit \"words.txt\" \"BETx\" \"q\")").await;
     let repeated = value(kernel.as_ref(), "(edit \"words.txt\" \"a\" \"b\")").await;
-    let shown = file.canonicalize().unwrap();
+    let shown = pa_types::platform::canonicalize(&file).unwrap();
     assert_eq!(
         (replaced, missed, repeated, std::fs::read_to_string(&file).unwrap()),
         (
@@ -413,7 +413,7 @@ async fn a_near_miss_edit_matches_by_the_first_normalization_that_finds_one_plac
         outcomes.push((outcome, std::fs::read_to_string(&file).unwrap()));
     }
     let edited = |name: &str, line: u64, by: &str, how: &str| {
-        let shown = dir.path().join(name).canonicalize().unwrap();
+        let shown = pa_types::platform::canonicalize(dir.path().join(name)).unwrap();
         Ok(json!({
             "path": shown.to_string_lossy(),
             "start-line": line,
@@ -707,7 +707,7 @@ const EDIT_APP: &str = "(let ([done (fs-edit \"app.ts\" (hash 'append \"total +=
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edit_carries_its_files_check_and_the_outcome_is_counted() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = pa_types::platform::canonicalize(dir.path()).unwrap();
     typescript_project(
         &root,
         "echo \"app.ts(2,1): error TS1005: ';' expected.\"\nexit 2",
@@ -743,7 +743,7 @@ async fn an_edit_carries_its_files_check_and_the_outcome_is_counted() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_slow_check_lets_the_edit_return_and_reports_later_as_a_notice() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = pa_types::platform::canonicalize(dir.path()).unwrap();
     let gate = root.join("gate");
     nix::unistd::mkfifo(&gate, nix::sys::stat::Mode::S_IRWXU).unwrap();
     typescript_project(
@@ -966,9 +966,7 @@ async fn a_read_carries_related_handles_that_ctx_page_reads() {
 async fn fs_write_and_fs_edit_show_their_change_on_the_card_as_edit_does() {
     let dir = tempfile::tempdir().unwrap();
     let kernel = kernel_over(HostRequestHandlers::new(), dir.path()).await;
-    let path = dir
-        .path()
-        .canonicalize()
+    let path = pa_types::platform::canonicalize(dir.path())
         .unwrap()
         .join("new.txt")
         .to_string_lossy()

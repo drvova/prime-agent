@@ -1054,6 +1054,7 @@ mod tests {
 
     /// macOS Terminal with "use option as meta key": Option+Up arrives as `ESC ESC [ A`, and the
     /// repair rebuilds the Alt+Up identity.
+    #[cfg(not(windows))] // the legacy-meta repair is off on Windows, which reads Alt from console records
     #[test]
     fn wrapped_meta_escape_rebuilds_alt_arrows() {
         let _guard = crate::enhanced_keys::TEST_STATE_LOCK
@@ -1078,6 +1079,7 @@ mod tests {
     /// The xterm modifier parameter inside the wrapper: 1 plain, 2 shift, 5 ctrl, 6 shift+ctrl
     /// decode; 3/4/7/8 carry the alt bit IN the parameter, which TS's stripped key id can never
     /// match.
+    #[cfg(not(windows))] // the legacy-meta repair is off on Windows, which reads Alt from console records
     #[test]
     fn wrapped_modifier_parameters_decode_like_ts() {
         let _guard = crate::enhanced_keys::TEST_STATE_LOCK
@@ -1118,6 +1120,7 @@ mod tests {
 
     /// rxvt-family rows inside the wrapper: shift+arrows (`\x1b[a`), ctrl+arrows over SS3
     /// (`\x1bOa`), the `$`/`^` tilde complements, and the home/end alternates.
+    #[cfg(not(windows))] // the legacy-meta repair is off on Windows, which reads Alt from console records
     #[test]
     fn wrapped_rxvt_modifier_rows_decode() {
         let _guard = crate::enhanced_keys::TEST_STATE_LOCK
@@ -1197,6 +1200,7 @@ mod tests {
 
     /// The wrapped Option+Up chunk is repaired BEFORE the guard sees it, keeping the option
     /// identity.
+    #[cfg(not(windows))] // the legacy-meta repair is off on Windows, which reads Alt from console records
     #[test]
     fn the_wrapped_meta_form_passes_the_guard_with_alt_kept() {
         let _state = crate::enhanced_keys::TEST_STATE_LOCK

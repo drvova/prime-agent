@@ -32,7 +32,9 @@ fn model() -> pa_agent::types::Model {
 /// is the global settings document.
 fn project(settings: &serde_json::Value) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path().canonicalize().unwrap().join("project");
+    let cwd = pa_types::platform::canonicalize(dir.path())
+        .unwrap()
+        .join("project");
     for (name, text) in [
         ("project/AGENTS.md", "Root rules."),
         ("project/.gitignore", "vendor/\n"),
@@ -45,7 +47,9 @@ fn project(settings: &serde_json::Value) -> (tempfile::TempDir, PathBuf) {
         ("outside/x.rs", "pub fn x() {}\n"),
         ("agent/settings.json", &settings.to_string()),
     ] {
-        let path = dir.path().canonicalize().unwrap().join(name);
+        let path = pa_types::platform::canonicalize(dir.path())
+            .unwrap()
+            .join(name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     }
@@ -104,7 +108,9 @@ fn nested_rows(request: &pa_agent::stream::LlmContext) -> Vec<serde_json::Value>
 #[tokio::test(flavor = "multi_thread")]
 async fn the_first_read_under_a_subdirectory_appends_its_agents_md_once() {
     let (dir, cwd) = project(&json!({}));
-    let outside = dir.path().canonicalize().unwrap().join("outside/x.rs");
+    let outside = pa_types::platform::canonicalize(dir.path())
+        .unwrap()
+        .join("outside/x.rs");
     let requests = requests(
         dir.path(),
         &cwd,

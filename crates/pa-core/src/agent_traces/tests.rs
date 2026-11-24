@@ -271,8 +271,9 @@ async fn an_oversize_session_reports_the_limit() {
     )
     .expect("header");
     drop(file);
+    // `set_len` needs write access: Windows refuses it on an append-only handle.
     std::fs::File::options()
-        .append(true)
+        .write(true)
         .open(&session)
         .expect("reopen")
         .set_len(MAX_TRACE_BYTES + 1)
@@ -376,8 +377,8 @@ async fn the_parent_chain_resolves_the_trace_id() {
     std::fs::write(
         &child,
         format!(
-            "{{\"type\":\"session\",\"id\":\"child-id\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/w\",\"parentSession\":\"{}\",\"version\":3}}\n",
-            parent.display()
+            "{{\"type\":\"session\",\"id\":\"child-id\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/w\",\"parentSession\":{},\"version\":3}}\n",
+            serde_json::json!(parent.display().to_string())
         ),
     )
     .expect("child file");

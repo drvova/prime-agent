@@ -331,7 +331,7 @@ async fn the_first_agents_view_render_is_clean_behind_hundreds_of_dead_subagents
     let dir = tempfile::TempDir::new().expect("temp dir");
     // The saved catalog reports canonical parent paths; macOS temp dirs sit behind the
     // /var -> /private/var symlink.
-    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let root = pa_types::platform::canonicalize(dir.path()).expect("canonical temp dir");
     let agent_dir = root.join("agent");
     let sessions_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).expect("session dir");

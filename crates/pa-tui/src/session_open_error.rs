@@ -216,9 +216,9 @@ pub fn decorate_interactive_refusal(
 /// The canonical form of a session path matching `pa_daemon::lease::canonical_session_path`
 /// without pa-tui depending on pa-daemon.
 fn canonical_form(path: &Path) -> std::path::PathBuf {
-    match path.canonicalize() {
+    match pa_types::platform::canonicalize(path) {
         Ok(canonical) => canonical,
-        Err(_) => match path.parent().map(Path::canonicalize) {
+        Err(_) => match path.parent().map(pa_types::platform::canonicalize) {
             Some(Ok(parent)) => parent.join(path.file_name().unwrap_or_default()),
             _ => path.to_path_buf(),
         },
@@ -273,7 +273,11 @@ mod tests {
             file.display()
         )));
         assert!(text.contains("Holder: session holder-1 \u{201c}lane work\u{201d} \u{b7} cwd /w"));
-        assert!(text.contains("Attach to it instead: prime-agent --resume 'holder-1'"));
+        // The platform's quoting (`quoted_resume_arg` pins both forms).
+        assert!(text.contains(&format!(
+            "Attach to it instead: prime-agent {}",
+            quoted_resume_arg("holder-1")
+        )));
         assert!(text.contains("the file unlocks when that session exits"));
     }
 
@@ -286,9 +290,10 @@ mod tests {
             model: None,
         };
         let text = already_active_error(&holder, Path::new("/s/a.jsonl"));
-        assert!(text.contains(
-            "Holder: session live-9\nAttach to it instead: prime-agent --resume 'live-9'"
-        ));
+        assert!(text.contains(&format!(
+            "Holder: session live-9\nAttach to it instead: prime-agent {}",
+            quoted_resume_arg("live-9")
+        )));
     }
 
     #[test]
@@ -385,7 +390,10 @@ mod decorate_tests {
             "{text}"
         );
         assert!(
-            text.contains("Attach instead: prime-agent --resume 'abc123'"),
+            text.contains(&format!(
+                "Attach instead: prime-agent {}",
+                quoted_resume_arg("abc123")
+            )),
             "{text}"
         );
     }
@@ -418,7 +426,7 @@ mod decorate_tests {
     #[test]
     fn the_resume_suggestion_quotes_a_hostile_holder_id() {
         // The Some arm names the roster-identified id in the suggested command: the
-        // hostile id must ride single-quoted.
+        // hostile id must ride quoted (single quotes on unix, double on Windows).
         let holder = SessionHolder {
             id: "245ddb974b6d; rm -rf /".to_string(),
             name: None,
@@ -428,9 +436,10 @@ mod decorate_tests {
         let original = "Session is already active in 245ddb974b6d; rm -rf /: /tmp/s.jsonl";
         let text =
             decorate_interactive_refusal(original, Some(holder.clone()), "245ddb974b6d; rm -rf /");
+        let quoted = quoted_resume_arg("245ddb974b6d; rm -rf /");
         assert!(
-            text.contains("--resume '245ddb974b6d; rm -rf /'"),
-            "the hostile id rides single-quoted: {text}"
+            text.contains(&quoted),
+            "the hostile id rides quoted: {text}"
         );
         assert!(
             !text.contains("--resume 245ddb974b6d;"),
@@ -439,16 +448,20 @@ mod decorate_tests {
         // The print-mode refusal quotes the same way.
         let printed = already_active_error(&holder, Path::new("/tmp/s.jsonl"));
         assert!(
-            printed.contains("--resume '245ddb974b6d; rm -rf /'"),
+            printed.contains(&quoted),
             "the print-mode line quotes too: {printed}"
         );
-        // The embedded-quote escape: an id carrying a single quote still round-trips as ONE
-        // argument.
-        assert_eq!(
-            quoted_resume_arg("it's"),
-            "--resume 'it'\\''s'",
-            "the POSIX escape form"
-        );
+        #[cfg(not(windows))]
+        {
+            assert_eq!(quoted, "--resume '245ddb974b6d; rm -rf /'");
+            // The embedded-quote escape: an id carrying a single quote still round-trips as ONE
+            // argument.
+            assert_eq!(
+                quoted_resume_arg("it's"),
+                "--resume 'it'\\''s'",
+                "the POSIX escape form"
+            );
+        }
         #[cfg(windows)]
         {
             // The cmd separator stays ^-escaped with a SINGLE caret (the caret

@@ -1,5 +1,6 @@
 //! npm/git package flows against local fixtures: a bash "npm" shim (no
-//! network) and a bare git repo cloned over the filesystem.
+//! network, run through the platform's bash) and a bare git repo cloned
+//! over the filesystem.
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -14,9 +15,11 @@ use crate::settings::SettingsManager;
 /// Minimal npm replacement: bash script with the fixture paths embedded, so
 /// parallel tests never share state. Logs every call to `<root>/npm.log`.
 fn write_npm_shim(dir: &Path) -> PathBuf {
-    let global_root = dir.join("global-root").display().to_string();
-    let fixtures = dir.join("fixtures").display().to_string();
-    let log = dir.join("npm.log").display().to_string();
+    // Forward slashes: bash would read a Windows path's backslashes as escapes.
+    let in_bash = |name: &str| dir.join(name).display().to_string().replace('\\', "/");
+    let global_root = in_bash("global-root");
+    let fixtures = in_bash("fixtures");
+    let log = in_bash("npm.log");
     std::fs::create_dir_all(&global_root).unwrap();
     std::fs::create_dir_all(Path::new(&fixtures).join("fake-pkg")).unwrap();
 
@@ -119,10 +122,14 @@ impl Sandbox {
         std::fs::create_dir_all(&agent_dir).unwrap();
         let root = dir.path().to_path_buf();
         let npm_shim = write_npm_shim(&root);
+        let bash = crate::platform::get_shell_config(None)
+            .expect("bash is required for package tests")
+            .shell;
         std::fs::write(
             agent_dir.join("settings.json"),
             serde_json::to_string_pretty(&serde_json::json!({
-                "npmCommand": [npm_shim.display().to_string()]
+                // Run through bash: Windows cannot start a script by its path.
+                "npmCommand": [bash, npm_shim.display().to_string()]
             }))
             .unwrap(),
         )
@@ -337,7 +344,7 @@ fn git_ref_checkout_installs_the_pinned_revision() {
 fn exe_dir_of_resolves_a_launcher_symlink() {
     let root = tempfile::tempdir().unwrap();
     // exe_dir_of returns a canonical path; macOS temp dirs sit behind the /var symlink.
-    let root_path = root.path().canonicalize().unwrap();
+    let root_path = pa_types::platform::canonicalize(root.path()).unwrap();
     let libexec = root_path.join("libexec");
     let bin = root_path.join("bin");
     std::fs::create_dir_all(&libexec).unwrap();

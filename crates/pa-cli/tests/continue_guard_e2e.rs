@@ -224,7 +224,9 @@ fn print_continue_refuses_an_active_daemon_session() {
     // line, then the holder's identity and the next steps.
     let first_line = format!(
         "Error: Session is already active in {active_session_id}: {}\n",
-        session_path.canonicalize().expect("canonical").display()
+        pa_types::platform::canonicalize(&session_path)
+            .expect("canonical")
+            .display()
     );
     assert!(
         stderr.starts_with(&first_line),

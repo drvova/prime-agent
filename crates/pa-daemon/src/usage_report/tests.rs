@@ -18,15 +18,29 @@ use super::quotas::{quota_report, CachePolicy, QuotaFetchConfig};
 const DAY_MS: i64 = 86_400_000;
 
 /// Local noon of the day holding `base`: the fixture rows sit hours from it, never across a
-/// local midnight, whatever the test machine's zone.
+/// local midnight, whatever the test machine's zone. Where the platform has no zone binding
+/// (Windows) the history keys days in UTC, and so does this.
 fn local_noon(base: i64) -> i64 {
-    let civil = pa_types::platform::local_civil(base).expect("a unix zone binding");
-    base - (i64::from(civil.hour) - 12) * 3_600_000 - i64::from(civil.minute) * 60_000
+    let (hour, minute) = pa_types::platform::local_civil(base).map_or_else(
+        || {
+            let of_day = base.rem_euclid(DAY_MS);
+            (of_day / 3_600_000, of_day % 3_600_000 / 60_000)
+        },
+        |civil| (i64::from(civil.hour), i64::from(civil.minute)),
+    );
+    base - (hour - 12) * 3_600_000 - minute * 60_000
 }
 
 fn local_date(epoch_ms: i64) -> String {
-    let civil = pa_types::platform::local_civil(epoch_ms).unwrap();
-    format!("{:04}-{:02}-{:02}", civil.year, civil.month, civil.day)
+    pa_types::platform::local_civil(epoch_ms).map_or_else(
+        || {
+            crate::util::iso_from_unix_ms(u64::try_from(epoch_ms).unwrap())
+                .chars()
+                .take(10)
+                .collect()
+        },
+        |civil| format!("{:04}-{:02}-{:02}", civil.year, civil.month, civil.day),
+    )
 }
 
 fn assistant(id: &str, at_ms: i64, model: &str, input: u64, output: u64, cost: f64) -> String {

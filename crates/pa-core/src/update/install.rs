@@ -91,7 +91,7 @@ pub const PREVIOUS_LAUNCHER: &str = "previous";
 /// through `<root>/bin/<link>`; the root is `<root>/.managed`'s directory.
 #[must_use]
 pub fn install_root_of(executable: &Path) -> Option<PathBuf> {
-    let resolved = executable.canonicalize().ok()?;
+    let resolved = pa_types::platform::canonicalize(executable).ok()?;
     // The resolved executable is <root>/releases/<name>/prime-agent: walk up
     // through the release directory to `releases`, then one more level.
     let releases = resolved.parent()?.parent()?;
@@ -161,8 +161,7 @@ pub struct RunningRelease {
 /// Returns an error when the executable cannot be resolved or does not
 /// live in a managed release directory.
 pub fn running_release(executable: &Path) -> Result<RunningRelease> {
-    let resolved = executable
-        .canonicalize()
+    let resolved = pa_types::platform::canonicalize(executable)
         .with_context(|| format!("resolve {}", executable.display()))?;
     let directory = resolved
         .parent()
@@ -434,7 +433,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let release = format!("0.1.0-linux-x64-{}", "a".repeat(64));
         // running_release returns a canonical path; macOS temp dirs sit behind the /var symlink.
-        let release_dir = dir.path().canonicalize().unwrap().join(&release);
+        let release_dir = pa_types::platform::canonicalize(dir.path())
+            .unwrap()
+            .join(&release);
         std::fs::create_dir_all(&release_dir).unwrap();
         let exe = release_dir.join("prime-agent");
         std::fs::write(&exe, "binary").unwrap();

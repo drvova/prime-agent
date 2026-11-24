@@ -154,7 +154,9 @@ mod tests {
         // not disable the credential for the process lifetime).
         let counter = std::env::temp_dir().join(format!("pa-resolve-retry-{}", std::process::id()));
         let _ = std::fs::remove_file(&counter);
-        let command = format!("echo x >> {} ; exit 1", counter.display());
+        // Quoted, with forward slashes: the shell would eat a Windows path's backslashes.
+        let target = counter.display().to_string().replace('\\', "/");
+        let command = format!("echo x >> \"{target}\" ; exit 1");
         for _ in 0..3 {
             assert_eq!(resolve_config_value(&format!("!{command}")), None);
         }

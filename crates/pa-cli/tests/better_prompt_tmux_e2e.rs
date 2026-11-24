@@ -199,8 +199,10 @@ fn user_messages(home: &Path) -> Vec<String> {
 
 #[test]
 fn better_fills_the_composer_and_nothing_is_sent() {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let pane = start(dir.path());
     pane.wait("the composer", |screen| screen.contains("faux"));
     pane.send(&["-l", "/better fix the parser"]);

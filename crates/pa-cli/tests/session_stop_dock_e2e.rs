@@ -207,8 +207,10 @@ fn dock_line(frame: &str) -> &str {
 async fn stopping_the_attached_session_clears_its_shells_from_the_dock() {
     // Under the canonical temp root: the session lease keys on canonical paths,
     // and macOS temp dirs sit behind the /var -> /private/var symlink.
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let supervisor = spawn_supervisor(dir.path());
     let active = session_running(
         &supervisor.socket,

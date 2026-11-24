@@ -302,18 +302,38 @@ mod tests {
             information: u32,
             descriptor: *mut c_void,
         ) -> i32;
+        fn OpenProcessToken(process: Handle, access: u32, token: *mut Handle) -> i32;
+        fn CreateRestrictedToken(
+            existing: Handle,
+            flags: u32,
+            disable_sid_count: u32,
+            sids_to_disable: *const c_void,
+            delete_privilege_count: u32,
+            privileges_to_delete: *const c_void,
+            restricted_sid_count: u32,
+            sids_to_restrict: *const c_void,
+            token: *mut Handle,
+        ) -> i32;
+        fn ImpersonateLoggedOnUser(token: Handle) -> i32;
+        fn RevertToSelf() -> i32;
     }
 
     #[link(name = "kernel32")]
     extern "system" {
         fn LocalFree(memory: *mut c_void) -> *mut c_void;
         fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
+        fn GetCurrentProcess() -> Handle;
     }
 
     /// `winnt.h` `DACL_SECURITY_INFORMATION`.
     const DACL_SECURITY_INFORMATION: u32 = 4;
     /// `winbase.h` `WAIT_TIMEOUT`.
     const WAIT_TIMEOUT: u32 = 0x102;
+    /// `winnt.h`: the rights to copy a token and read it.
+    const TOKEN_DUPLICATE_AND_QUERY: u32 = 0x0002 | 0x0008;
+    /// `winnt.h` `DISABLE_MAX_PRIVILEGE`: drop every privilege but
+    /// `SeChangeNotifyPrivilege`.
+    const DISABLE_MAX_PRIVILEGE: u32 = 0x1;
 
     /// A program that runs far longer than the test (`ping` is on every
     /// Windows).
@@ -363,7 +383,42 @@ mod tests {
         };
         assert_ne!(restricted, 0);
 
+        // An elevated test process can hold `SeDebugPrivilege` (a CI runner's
+        // does), which opens any process whatever its access list says, so the
+        // stand-in would be within reach. The job is ended from this thread
+        // impersonating this process's own token without its privileges: the
+        // reach a program of the user's has.
+        let mut own = std::ptr::null_mut();
+        let mut unprivileged = std::ptr::null_mut();
+        // SAFETY: the pseudo-handle of this process and live out-pointers;
+        // each token is closed once below, after the thread reverts.
+        let impersonating = unsafe {
+            OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE_AND_QUERY, &raw mut own) != 0
+                && CreateRestrictedToken(
+                    own,
+                    DISABLE_MAX_PRIVILEGE,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    &raw mut unprivileged,
+                ) != 0
+                && ImpersonateLoggedOnUser(unprivileged) != 0
+        };
         let terminated = job.terminate();
+        // SAFETY: plain calls on handles opened above (a null one is skipped).
+        let reverted = unsafe {
+            let reverted = RevertToSelf() != 0;
+            for token in [own, unprivileged] {
+                if !token.is_null() {
+                    CloseHandle(token);
+                }
+            }
+            reverted
+        };
+        assert!(impersonating && reverted);
         drop(job);
         let ours_ended = ours.wait().unwrap().code();
         // Ending a process is asynchronous: `ours` has ended, and a process

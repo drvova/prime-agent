@@ -1,0 +1,8 @@
+# The standard library's canonicalize answers a verbatim path on Windows
+# (`\\?\C:\...`), which git, other programs and people do not take;
+# `pa_types::platform::canonicalize` answers the plain spelling.
+disallowed-methods = [
+    { path = "std::fs::canonicalize", reason = "use pa_types::platform::canonicalize (plain Windows spelling)" },
+    { path = "std::path::Path::canonicalize", reason = "use pa_types::platform::canonicalize (plain Windows spelling)" },
+    { path = "tokio::fs::canonicalize", reason = "use pa_types::platform::canonicalize (plain Windows spelling)" },
+]

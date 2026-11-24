@@ -187,8 +187,10 @@ fn dock_line<'a>(screen: &'a str, prefix: &str) -> Option<&'a str> {
 
 #[test]
 fn todos_and_a_question_are_driven_from_the_kernel_and_answered_by_keyboard() {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let pane = start(dir.path());
     pane.wait_for("faux-1");
     pane.type_text("plan the cache work");

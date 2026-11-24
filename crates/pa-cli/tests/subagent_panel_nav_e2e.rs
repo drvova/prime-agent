@@ -246,8 +246,10 @@ fn session_options(
 async fn down_arrow_focuses_the_dock_and_enter_opens_the_scoped_agents_view() {
     // The daemon reports canonical session paths; macOS temp dirs sit behind
     // the /var -> /private/var symlink.
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
@@ -436,8 +438,10 @@ async fn down_arrow_focuses_the_dock_and_enter_opens_the_scoped_agents_view() {
 async fn the_title_bills_a_passive_subagents_spend() {
     // The daemon reports canonical session paths; macOS temp dirs sit behind
     // the /var -> /private/var symlink.
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
@@ -525,8 +529,10 @@ async fn the_title_bills_a_passive_subagents_spend() {
 async fn the_title_bills_a_deleted_subagents_spend() {
     // The daemon reports canonical session paths; macOS temp dirs sit behind
     // the /var -> /private/var symlink.
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");

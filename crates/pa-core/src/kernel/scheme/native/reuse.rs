@@ -122,19 +122,19 @@ mod tests {
         let a = session(dir.path(), "session-a").await;
         for cell in [
             format!(
-                r#"(fs-write "{}" "---\nname: deploy-notes\ndescription: How to deploy\n---\nRun (deploy-notes-steps).\n")"#,
+                r#"(fs-write {:?} "---\nname: deploy-notes\ndescription: How to deploy\n---\nRun (deploy-notes-steps).\n")"#,
                 skill_file("deploy-notes")
             ),
             format!(
-                r#"(fs-write "{}" "(define (deploy-notes-steps) (list \"build\" \"ship\"))\n")"#,
-                skills.join("deploy-notes").join("skill.scm").display()
+                r#"(fs-write {:?} "(define (deploy-notes-steps) (list \"build\" \"ship\"))\n")"#,
+                skills.join("deploy-notes").join("skill.scm").display().to_string()
             ),
             format!(
-                r#"(fs-write "{}" "---\nname: scratch-only\ndescription: A one-off\n---\nOnce.\n")"#,
+                r#"(fs-write {:?} "---\nname: scratch-only\ndescription: A one-off\n---\nOnce.\n")"#,
                 skill_file("scratch-only")
             ),
-            format!(r#"(fs-read "{}")"#, skill_file("deploy-notes")),
-            format!(r#"(fs-read "{}")"#, skill_file("scratch-only")),
+            format!("(fs-read {:?})", skill_file("deploy-notes")),
+            format!("(fs-read {:?})", skill_file("scratch-only")),
             r#"(harness-create-memory "Dev port" "the dev server listens on 8080" #:id "dev_port" #:global #t)"#.to_string(),
             r#"(harness-search "port" #:global #t)"#.to_string(),
         ] {

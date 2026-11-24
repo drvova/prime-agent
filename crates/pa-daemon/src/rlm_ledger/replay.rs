@@ -365,7 +365,7 @@ fn resolve_path(dir: &Path) -> PathBuf {
 /// Canonicalize a directory: realpath when it exists, plain resolve otherwise.
 pub(super) fn canonicalize_dir(dir: &Path) -> PathBuf {
     let resolved = resolve_path(dir);
-    resolved.canonicalize().unwrap_or(resolved)
+    pa_types::platform::canonicalize(&resolved).unwrap_or(resolved)
 }
 
 /// Resolve a rename/delete record whose canonical key does not join an edge

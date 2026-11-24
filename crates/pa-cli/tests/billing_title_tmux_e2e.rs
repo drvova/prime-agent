@@ -154,8 +154,10 @@ fn start(dir: &Path, quota_origin: &str) -> Pane {
 
 #[test]
 fn a_subscription_session_titles_its_plan_without_a_dollar_figure() {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let pane = start(dir.path(), "http://127.0.0.1:9");
     pane.wait("the composer", |screen| screen.contains("claude-fable-5"));
     assert!(pane
@@ -237,8 +239,10 @@ fn iso_seconds(epoch: u64) -> String {
 
 #[test]
 fn the_usage_page_splits_plan_spend_and_the_title_shows_the_cached_quota() {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let pane = start(dir.path(), &quota_fixture());
     pane.wait("the composer", |screen| screen.contains("claude-fable-5"));
     assert!(pane
@@ -290,8 +294,10 @@ fn the_usage_page_splits_plan_spend_and_the_title_shows_the_cached_quota() {
 /// views, the details title the card with its age, and Esc comes back to the same overview.
 #[test]
 fn the_usage_details_keep_the_overview_card_and_esc_returns_to_it() {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let pane = start(dir.path(), &quota_fixture());
     pane.wait("the composer", |screen| screen.contains("claude-fable-5"));
     for (keys, ready) in [

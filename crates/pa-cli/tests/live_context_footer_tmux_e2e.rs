@@ -118,7 +118,7 @@ fn the_footer_context_moves_while_the_reply_streams() {
         return;
     }
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let root = pa_types::platform::canonicalize(dir.path()).expect("canonical temp dir");
     let (home, agent_dir, cwd) = (root.join("home"), root.join("agent"), root.join("project"));
     for path in [&home, &agent_dir, &cwd] {
         std::fs::create_dir_all(path).expect("fixture dir");

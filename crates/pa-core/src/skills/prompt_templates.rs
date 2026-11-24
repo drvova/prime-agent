@@ -251,7 +251,8 @@ pub fn load_prompt_templates(options: &LoadPromptTemplatesOptions) -> Vec<Prompt
         .join("prompts");
 
     let is_under = |target: &Path, root: &Path| -> bool {
-        std::fs::canonicalize(root).is_ok_and(|root| target == root || target.starts_with(root))
+        pa_types::platform::canonicalize(root)
+            .is_ok_and(|root| target == root || target.starts_with(root))
             || target == root
             || target.starts_with(root)
     };

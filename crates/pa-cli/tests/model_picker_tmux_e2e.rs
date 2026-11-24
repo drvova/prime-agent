@@ -230,8 +230,10 @@ fn row<'a>(screen: &'a str, name: &str) -> Option<&'a str> {
 
 #[test]
 fn the_picker_filters_by_billing_favorites_and_switches_the_session() {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let pane = start(dir.path());
     pane.wait("the composer", |screen| screen.contains("claude-fable-5"));
     // One answered turn materializes the session file the switch is recorded in.

@@ -62,10 +62,10 @@ pub enum HolderFlavor {
 fn holder_process(pid: Option<u32>) -> (HolderFlavor, Option<std::path::PathBuf>) {
     let exe = pid
         .and_then(pa_types::platform::process::process_executable_path)
-        .map(|path| path.canonicalize().unwrap_or(path));
+        .map(|path| pa_types::platform::canonicalize(&path).unwrap_or(path));
     let own = std::env::current_exe()
         .ok()
-        .map(|path| path.canonicalize().unwrap_or(path));
+        .map(|path| pa_types::platform::canonicalize(&path).unwrap_or(path));
     let flavor = classify_from(exe.as_deref(), own.as_deref());
     (flavor, exe)
 }

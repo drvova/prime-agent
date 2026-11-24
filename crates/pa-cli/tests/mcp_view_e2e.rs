@@ -28,10 +28,11 @@ use serde_json::{json, Value};
 
 /// The committed stdio echo fixture (pure stdlib; any Python 3 runs it).
 fn echo_fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../pa-daemon/tests/fixtures/mcp_echo_server.py")
-        .canonicalize()
-        .expect("echo fixture")
+    pa_types::platform::canonicalize(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../pa-daemon/tests/fixtures/mcp_echo_server.py"),
+    )
+    .expect("echo fixture")
 }
 
 /// The `{"engine": "faux"}` script drives the real agent engine,

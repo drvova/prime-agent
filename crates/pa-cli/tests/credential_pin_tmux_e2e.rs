@@ -271,8 +271,10 @@ fn start(dir: &Path, origin: &str, args: &str) -> Pane {
 
 #[test]
 fn a_session_pinned_to_a_named_credential_sends_only_that_key() {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let (origin, bearers) = completions_fixture();
     let pane = start(dir.path(), &origin, "--credential work");
     pane.wait("the composer", |screen| screen.contains("e2e-model"));
@@ -294,8 +296,10 @@ fn a_session_pinned_to_a_named_credential_sends_only_that_key() {
 
 #[test]
 fn a_new_session_under_a_profile_uses_the_profiles_credential() {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let (origin, bearers) = completions_fixture();
     let pane = start(dir.path(), &origin, "--profile work");
     // The top bar tags the profile beside the chat name.
@@ -316,8 +320,10 @@ fn a_new_session_under_a_profile_uses_the_profiles_credential() {
 /// only the named credential's key, never the default slot's.
 #[test]
 fn print_mode_with_a_credential_sends_only_that_key() {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let (origin, bearers) = completions_fixture();
     let launcher = seed(dir.path(), &origin);
     let mut child = Command::new("sh")

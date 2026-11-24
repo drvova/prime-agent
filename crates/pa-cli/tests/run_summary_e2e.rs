@@ -64,8 +64,10 @@ async fn summary_rows(
     cells: &[&str],
     steps_while_slow: Vec<HeadlessStep>,
 ) -> (Vec<String>, Vec<String>) {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     support::scrub_ambient_provider_credentials();
     std::env::set_var("DO_NOT_TRACK", "1");
     let agent_dir = dir.path().join("agent");

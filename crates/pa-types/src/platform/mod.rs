@@ -1,9 +1,10 @@
-//! Cross-crate platform contracts: transport, process identity, the process's elevation, home-dir resolution, and the
+//! Cross-crate platform contracts: transport, process identity, the process's elevation, home-dir resolution, canonical paths, and the
 //! atomic file replacement every persistent write goes through. pa-types is the only crate every
 //! platform consumer can depend on, so the shared platform traits live here;
 //! implementations are cfg-gated per platform, and call sites never branch on `cfg` themselves.
 
 mod atomic_file;
+mod canonical_path;
 pub mod clock;
 pub mod dirs;
 pub mod elevation;
@@ -18,6 +19,7 @@ pub mod windows_console;
 pub(crate) mod windows_pipe;
 
 pub use atomic_file::{replace_file, AtomicFile, Durability, FileMode, ReplaceOptions, Symlinks};
+pub use canonical_path::canonicalize;
 pub use clock::{local_civil, local_clock, LocalCivil};
 pub use dirs::{agent_dir, home_dir, StateLayout};
 pub use elevation::{process_elevation, Elevation, ElevationRoute};

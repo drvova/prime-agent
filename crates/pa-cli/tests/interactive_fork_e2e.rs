@@ -424,7 +424,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     // The fork header records the launch's resolved cwd; macOS temp dirs sit
     // behind the /var -> /private/var symlink.
-    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let root = pa_types::platform::canonicalize(dir.path()).expect("canonical temp dir");
     let agent_dir = root.join("agent");
     let session_dir = agent_dir.join("sessions");
     let cwd = root.join("project");

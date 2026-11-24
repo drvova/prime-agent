@@ -3,7 +3,26 @@
 //! conservatively (a kill that could not be proven reports false, matching
 //! the TS `killOrphanProcess` contract).
 
+use std::path::PathBuf;
 use std::process::Command;
+
+/// A program on the session's `PATH`. On Windows a bare name also resolves
+/// through `.exe`, `.cmd` and `.bat`: `CreateProcess` adds only `.exe`, and
+/// launchers such as `npm` and `npx` are `.cmd` files there.
+pub(crate) fn find_program(name: &str) -> Option<PathBuf> {
+    let suffixes: &[&str] = if cfg!(windows) {
+        &[".exe", ".cmd", ".bat", ""]
+    } else {
+        &[""]
+    };
+    std::env::split_paths(&pa_types::session_scope::var_os("PATH")?)
+        .flat_map(|directory| {
+            suffixes
+                .iter()
+                .map(move |suffix| directory.join(format!("{name}{suffix}")))
+        })
+        .find(|candidate| candidate.is_file() && super::is_executable(candidate))
+}
 
 /// The real Unix user id, matching Node `process.getuid()` for daemon namespaces.
 #[cfg(unix)]

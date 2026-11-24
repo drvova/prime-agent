@@ -71,12 +71,11 @@ fn autonomous_limit_stops_the_run_without_a_row() {
 
 #[test]
 fn autonomous_gate_pass_and_failure_drive_the_loop() {
-    // The gate passes only on its second run (a counter file in the cwd).
+    // The gate passes only on its second run (a counter file in the cwd the
+    // gate runs in, named relatively: bash would eat a Windows path's
+    // backslashes).
     let dir = tempfile::TempDir::new().unwrap();
-    let gate = format!(
-        "n=$(cat {0}/cnt 2>/dev/null || echo 0); echo $((n+1)) > {0}/cnt; [ $n -ge 1 ]",
-        dir.path().display()
-    );
+    let gate = "n=$(cat cnt 2>/dev/null || echo 0); echo $((n+1)) > cnt; [ $n -ge 1 ]";
     let engine = std::sync::Arc::new(
         AgentSessionEngine::new(AgentEngineConfig {
             cwd: dir.path().to_path_buf(),

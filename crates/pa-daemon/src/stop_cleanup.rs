@@ -473,7 +473,7 @@ mod tests {
 
     fn temp_dir() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().canonicalize().unwrap();
+        let dir = pa_types::platform::canonicalize(tmp.path()).unwrap();
         (tmp, dir)
     }
 

@@ -486,7 +486,12 @@ mod tests {
         assert_eq!(row["rlmParentNodeId"], "sub-7");
         assert_eq!(
             row["parentSessionPath"].as_str(),
-            Some(parent.canonicalize().unwrap().to_string_lossy().as_ref())
+            Some(
+                pa_types::platform::canonicalize(parent)
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
         );
         assert_eq!(row["parentActiveSessionId"], "act-9");
         assert_eq!(row["lifecycle"], "live");

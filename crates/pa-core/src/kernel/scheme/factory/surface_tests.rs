@@ -577,7 +577,12 @@ fn import_stores_a_valid_machine_byte_for_byte_and_nothing_of_an_invalid_one() {
         path
     };
     let crlf = machine_text("sweep", &json!({"nodes": [worker("a")]})).replace('\n', "\r\n");
-    let stored = temp.path().join("agent/machines/sweep/MACHINE.md");
+    let stored = temp
+        .path()
+        .join("agent")
+        .join("machines")
+        .join("sweep")
+        .join("MACHINE.md");
     let first = import_machine(&environment, &source("good.md", &crlf));
     let stored_bytes = std::fs::read_to_string(&stored).unwrap();
     let again = import_machine(&environment, &source("good.md", &crlf));
@@ -1183,7 +1188,7 @@ fn the_command_line_facade_lists_imports_and_exports_with_every_failure_as_data(
     let gate_error = dispatch(json!({"op": "import", "path": bad}));
     let nothing_stored = !agent.join("machines").exists();
     let imported = dispatch(json!({"op": "import", "path": source}));
-    let stored = agent.join("machines/sweep/MACHINE.md");
+    let stored = agent.join("machines").join("sweep").join("MACHINE.md");
     write(
         repo.join("shared/MACHINE.md"),
         &machine_text("shared", &json!({"nodes": [worker("a")]})),

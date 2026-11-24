@@ -114,7 +114,7 @@ impl ProjectScope {
 }
 
 fn normalize(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    pa_types::platform::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// One saved session read from disk: its header, title, and active-branch messages.

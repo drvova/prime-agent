@@ -59,12 +59,11 @@ impl NestedContext {
         counters: Arc<SessionCounters>,
     ) -> Self {
         Self {
-            root: cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf()),
+            root: pa_types::platform::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()),
             in_prompt: prompt_files
                 .iter()
                 .map(|file| {
-                    file.path
-                        .canonicalize()
+                    pa_types::platform::canonicalize(&file.path)
                         .unwrap_or_else(|_| file.path.clone())
                 })
                 .collect(),
@@ -118,7 +117,7 @@ impl NestedContext {
             .filter(|path| !path.is_empty())
             .map(|path| {
                 let path = Path::new(path);
-                path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+                pa_types::platform::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
             })
             .collect();
         // Every directory strictly between the root and a touched file; sorted, a parent
@@ -159,10 +158,8 @@ impl NestedContext {
                 continue;
             };
             // A file that links out of the project, or to one the prompt carries, is not new.
-            let target = file
-                .path
-                .canonicalize()
-                .unwrap_or_else(|_| file.path.clone());
+            let target =
+                pa_types::platform::canonicalize(&file.path).unwrap_or_else(|_| file.path.clone());
             if !target.starts_with(&self.root) || self.in_prompt.contains(&target) {
                 continue;
             }

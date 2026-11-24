@@ -111,7 +111,7 @@ fn exe_dir_of(exe: &Path) -> Option<PathBuf> {
     let is_symlink =
         std::fs::symlink_metadata(exe).is_ok_and(|metadata| metadata.file_type().is_symlink());
     let resolved = if is_symlink {
-        exe.canonicalize().ok()?
+        pa_types::platform::canonicalize(exe).ok()?
     } else {
         exe.to_path_buf()
     };
@@ -128,7 +128,7 @@ mod tests {
     fn a_launcher_symlink_resolves_to_the_real_payload_dir() {
         let root = tempfile::tempdir().unwrap();
         // exe_dir_of returns a canonical path; macOS temp dirs sit behind the /var symlink.
-        let root_path = root.path().canonicalize().unwrap();
+        let root_path = pa_types::platform::canonicalize(root.path()).unwrap();
         let libexec = root_path.join("libexec");
         let bin = root_path.join("bin");
         std::fs::create_dir_all(&libexec).unwrap();

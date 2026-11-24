@@ -178,8 +178,10 @@ fn start(dir: &Path) -> Pane {
 
 #[test]
 fn two_children_messaging_each_other_show_in_the_traffic_pane() {
-    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
-        .expect("temp dir");
+    let dir = tempfile::TempDir::new_in(
+        pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
+    )
+    .expect("temp dir");
     let pane = start(dir.path());
     pane.wait_for("faux-1");
     pane.type_text("spawn the pair");

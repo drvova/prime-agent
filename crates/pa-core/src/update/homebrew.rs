@@ -30,7 +30,7 @@ impl HomebrewKind {
 /// Unresolvable paths and unrelated install layouts are not Homebrew-owned.
 #[must_use]
 pub fn managed_kind(executable: &Path) -> Option<HomebrewKind> {
-    let resolved = executable.canonicalize().ok()?;
+    let resolved = pa_types::platform::canonicalize(executable).ok()?;
     for ancestor in resolved.ancestors() {
         if ancestor.file_name() != Some(OsStr::new("prime-agent")) {
             continue;

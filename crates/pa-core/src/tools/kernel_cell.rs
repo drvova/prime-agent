@@ -536,7 +536,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_huge_write_keeps_a_bounded_diff_that_still_counts_every_line() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = pa_types::platform::canonicalize(dir.path()).unwrap();
         let diffs = cell_diffs(
             dir.path(),
             r#"(define big
@@ -581,7 +581,9 @@ mod tests {
                  (fs-edit "a.txt" (hash 'replace (fs-anchor view 15) 'text "changed")))"#,
         )
         .await;
-        let path = dir.path().canonicalize().unwrap().join("a.txt");
+        let path = pa_types::platform::canonicalize(dir.path())
+            .unwrap()
+            .join("a.txt");
         let diff = [
             "    ...",
             " 11 line 11",

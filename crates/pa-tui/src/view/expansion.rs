@@ -69,13 +69,16 @@ pub(super) mod tests {
             .map(|number| format!("{line} {number}"))
             .collect::<Vec<_>>()
             .join("\n");
+        // A fixed run time: two `Instant::now()` reads can be equal (Windows'
+        // clock), and a card whose run took no time shows none.
+        let started = std::time::Instant::now();
         ChatEntry::Tool(Box::new(ToolCallCard {
             id: id.to_string(),
             name: "bash".to_string(),
             args: json!({ "command": "echo hi" }),
             started: true,
-            started_at: Some(std::time::Instant::now()),
-            ended_at: Some(std::time::Instant::now()),
+            started_at: Some(started),
+            ended_at: Some(started + std::time::Duration::from_millis(1)),
             result: Some(ToolResultView {
                 content: vec![json!({ "type": "text", "text": output })],
                 details: serde_json::Value::Null,

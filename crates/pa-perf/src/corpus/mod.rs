@@ -458,7 +458,7 @@ pub(crate) fn regenerate_for_suite(options: &CorpusOptions) -> anyhow::Result<Ma
         );
     }
     if root.exists() && std::fs::read_dir(root)?.next().transpose()?.is_some() {
-        let canonical = root.canonicalize()?;
+        let canonical = pa_types::platform::canonicalize(root)?;
         let manifest: Manifest =
             serde_json::from_slice(&std::fs::read(canonical.join("corpus.json"))?)
                 .context("refuse to replace output without a corpus manifest")?;
@@ -578,8 +578,7 @@ fn canonical_root(out: &Path) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
     // macOS /tmp -> /private/tmp: the ledger hash, the header parentSession
     // paths, and every ledger record key on canonical paths.
-    out.canonicalize()
-        .with_context(|| format!("canonicalize {}", out.display()))
+    pa_types::platform::canonicalize(out).with_context(|| format!("canonicalize {}", out.display()))
 }
 
 #[cfg(test)]

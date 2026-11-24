@@ -69,7 +69,7 @@ fn turn_failure_error(id: &Value, failure: &str, details: &str) -> Value {
 /// case-normalized-FS cases a lexical comparison misses.
 fn same_cwd(requested: &Path, actual: &Path) -> bool {
     let canonical = |path: &Path| -> PathBuf {
-        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        pa_types::platform::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
     };
     let requested = canonical(requested);
     let actual = canonical(actual);

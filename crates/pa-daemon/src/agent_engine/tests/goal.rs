@@ -1187,8 +1187,11 @@ fn shared_window_goal_seed_matches_persisted_goal_state() {
         std::fs::write(&path, content).unwrap();
         let opened = pa_core::session::window::WindowedSessionStore::open(&path);
         let window_served = opened.as_ref().is_ok_and(std::option::Option::is_some);
+        // The windowed reader is unix-only (it anchors on inode identity):
+        // elsewhere every class takes the full reader.
         assert_eq!(
-            window_served, window_serves,
+            window_served,
+            window_serves && cfg!(unix),
             "goal class {name}: the window-served outcome must match the class (the windowed classes must exercise the WINDOW path, the fallback classes the full reader)"
         );
         // The shared open's extraction: the window's snapshot goal when
