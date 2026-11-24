@@ -225,7 +225,7 @@ impl WebReadEngine {
             base_override: Some(base.to_string()),
         };
         let _ = engine.client.set(
-            reqwest::Client::builder()
+            pa_ai::utils::tls::http_client_builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()

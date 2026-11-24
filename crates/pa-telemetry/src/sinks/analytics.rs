@@ -48,6 +48,9 @@ impl AnalyticsSink {
     /// Panics if the reqwest HTTP client cannot be built.
     #[must_use]
     pub fn with_timeout(endpoint: impl Into<String>, timeout: Duration) -> Self {
+        // reqwest 0.13 without aws-lc-rs builds no client until a rustls
+        // provider is installed; `Err` only says one already is.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         Self::with_timeout_and_builder(endpoint, timeout, reqwest::Client::builder())
     }
 
