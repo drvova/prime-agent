@@ -81,8 +81,7 @@ fn read_elevation() -> Elevation {
 
 #[cfg(windows)]
 fn read_elevation() -> Elevation {
-    // SAFETY: the pseudo-handle of the current process needs no closing.
-    if windows::token_is_elevated(unsafe { windows::GetCurrentProcess() }) {
+    if windows::token_is_elevated() {
         Elevation::Elevated
     } else {
         Elevation::Standard
@@ -94,38 +93,6 @@ fn read_elevation() -> Elevation {
     Elevation::Standard
 }
 
-/// The access an elevated daemon's pipes (supervisor and workers) are created
-/// with, in SDDL: a protected DACL that lets only `SYSTEM` and
-/// `Administrators` (`BA`, which only an elevated token holds for granting)
-/// open them, and a High mandatory label that refuses writes from any process
-/// below High integrity. A daemon that is not elevated keeps Windows' default.
-const ELEVATED_PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)S:(ML;;NW;;;HI)";
-
-/// The security descriptor (SDDL) a daemon of `elevation` creates its pipes
-/// with; `None` keeps Windows' default access list.
-// Off Windows only the tests call it: there are no pipes.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn pipe_security_descriptor(elevation: Elevation) -> Option<&'static str> {
-    match elevation {
-        Elevation::Standard => None,
-        Elevation::Elevated => Some(ELEVATED_PIPE_SDDL),
-    }
-}
-
-/// Whether a client of elevation `client` may use a pipe whose serving process
-/// has elevation `server`: an elevated client trusts only an elevated server,
-/// since any process of the user can create a pipe of the elevated daemon's
-/// name before it does.
-// Off Windows only the tests call it: a Unix client checks its peer's uid.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn trusts_pipe_server(client: Elevation, server: Elevation) -> bool {
-    match (client, server) {
-        (Elevation::Standard, Elevation::Standard | Elevation::Elevated)
-        | (Elevation::Elevated, Elevation::Elevated) => true,
-        (Elevation::Elevated, Elevation::Standard) => false,
-    }
-}
-
 /// How a [`run_elevated`] launch ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElevatedRun {
@@ -135,8 +102,6 @@ pub enum ElevatedRun {
     Declined,
 }
 
-#[cfg(windows)]
-pub(crate) use windows::process_elevation_of;
 #[cfg(windows)]
 pub use windows::run_elevated;
 
@@ -172,9 +137,6 @@ mod windows {
     const TOKEN_QUERY: u32 = 0x0008;
     /// `winnt.h` `TokenElevation` (`TOKEN_INFORMATION_CLASS`).
     const TOKEN_ELEVATION: i32 = 20;
-    /// `winnt.h`: the right to ask about a process, which Windows grants on
-    /// another process of the same user at any integrity level.
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     /// `shellapi.h`: keep the started process's handle in `hProcess`.
     const SEE_MASK_NOCLOSEPROCESS: u32 = 0x0000_0040;
     /// `shellapi.h`: finish the launch before returning.
@@ -227,12 +189,8 @@ mod windows {
 
     #[link(name = "kernel32")]
     extern "system" {
-        pub(super) fn GetCurrentProcess() -> Handle;
+        fn GetCurrentProcess() -> Handle;
         fn CloseHandle(handle: Handle) -> i32;
-        // The id is a `DWORD`; declared as the crate's other declaration of
-        // `OpenProcess` declares it (`platform::process`): one symbol's
-        // declarations must agree.
-        fn OpenProcess(access: u32, inherit: i32, process_id: usize) -> Handle;
         fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
         fn GetExitCodeProcess(process: Handle, code: *mut u32) -> i32;
     }
@@ -242,13 +200,13 @@ mod windows {
         fn ShellExecuteExW(info: *mut ShellExecuteInfo) -> i32;
     }
 
-    /// Whether the token of `process` (a handle with at least
-    /// `PROCESS_QUERY_LIMITED_INFORMATION`) is elevated (`TOKEN_ELEVATION`). A
-    /// token that cannot be read reads as not elevated.
-    pub(super) fn token_is_elevated(process: Handle) -> bool {
+    /// Whether this process's token is elevated (`TOKEN_ELEVATION`). A token
+    /// that cannot be read reads as not elevated.
+    pub(super) fn token_is_elevated() -> bool {
         let mut token: Handle = std::ptr::null_mut();
-        // SAFETY: an open process handle and a live out-pointer.
-        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) } == 0 {
+        // SAFETY: the pseudo-handle of the current process and a live
+        // out-pointer.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) } == 0 {
             return false;
         }
         let mut elevated: u32 = 0;
@@ -267,30 +225,6 @@ mod windows {
         // SAFETY: the token was opened above and is closed once, here.
         unsafe { CloseHandle(token) };
         read != 0 && elevated != 0
-    }
-
-    /// The elevation of process `pid`. A process that cannot be opened, or
-    /// whose token cannot be read, reads as not elevated.
-    pub(crate) fn process_elevation_of(pid: u32) -> super::Elevation {
-        // SAFETY: plain call; a null result is checked.
-        let process = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION,
-                0,
-                usize::try_from(pid).unwrap_or(usize::MAX),
-            )
-        };
-        if process.is_null() {
-            return super::Elevation::Standard;
-        }
-        let elevated = token_is_elevated(process);
-        // SAFETY: the handle was opened above and is closed once, here.
-        unsafe { CloseHandle(process) };
-        if elevated {
-            super::Elevation::Elevated
-        } else {
-            super::Elevation::Standard
-        }
     }
 
     /// Start `program` with `args` in `directory` through UAC's `runas` verb,
@@ -400,35 +334,6 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// An elevated daemon's pipes admit only `SYSTEM` and elevated
-    /// administrators at High integrity; a standard daemon's keep the default.
-    #[test]
-    fn only_an_elevated_daemon_restricts_its_pipes() {
-        assert_eq!(
-            [
-                pipe_security_descriptor(Elevation::Standard),
-                pipe_security_descriptor(Elevation::Elevated),
-            ],
-            [None, Some("D:P(A;;GA;;;SY)(A;;GA;;;BA)S:(ML;;NW;;;HI)")]
-        );
-    }
-
-    /// An elevated client refuses a pipe a process that is not elevated serves
-    /// (a squatter of the elevated daemon's name); a standard client trusts as
-    /// before.
-    #[test]
-    fn an_elevated_client_trusts_only_an_elevated_server() {
-        assert_eq!(
-            [
-                trusts_pipe_server(Elevation::Elevated, Elevation::Standard),
-                trusts_pipe_server(Elevation::Elevated, Elevation::Elevated),
-                trusts_pipe_server(Elevation::Standard, Elevation::Standard),
-                trusts_pipe_server(Elevation::Standard, Elevation::Elevated),
-            ],
-            [false, true, true, true]
-        );
-    }
 
     #[test]
     fn root_is_the_only_elevated_unix_user() {
