@@ -602,6 +602,7 @@ impl Worker {
         // record only once the disclosure is durable (a requested record with no
         // disclosure row is vacuously durable; no requested record adds no key).
         let mut interrupted_compaction_persisted = interrupted_compaction_requested;
+        let interrupted_calls;
         // The core lock stays inside this block: everything after it may await,
         // and a std MutexGuard must never ride an await point.
         let (summary, rlm_depth) = {
@@ -684,6 +685,23 @@ impl Worker {
                     }
                 }
             }
+            // The calls the previous lifetime left without a result are answered
+            // once, before the engine adopts the transcript: nothing runs them again.
+            let crash = payload.get("sessionCrash");
+            interrupted_calls = match core.store.as_mut() {
+                Some(store) => crate::interrupted_calls::report(
+                    store,
+                    crash.and_then(|crash| crash["kind"].as_str()),
+                    crash
+                        .and_then(|crash| crash["reapedPrograms"].as_u64())
+                        .unwrap_or(0),
+                )
+                .unwrap_or_else(|error| {
+                    eprintln!("pa-daemon: an interrupted tool call was not answered: {error:#}");
+                    std::collections::BTreeMap::new()
+                }),
+                None => std::collections::BTreeMap::new(),
+            };
             core.created = true;
             core.abort_requested = false;
             core.turn_cancelled = false;
@@ -853,6 +871,11 @@ impl Worker {
         if interrupted_compaction_requested {
             data["interruptedCompactionPersisted"] =
                 serde_json::json!(interrupted_compaction_persisted);
+        }
+        // What the revival answered of the calls the previous lifetime left
+        // without a result (counts by class: the supervisor reports them).
+        if !interrupted_calls.is_empty() {
+            data["interruptedCalls"] = json!(interrupted_calls);
         }
         // A resumed create just rebuilt the store from the session
         // file: return the load's freed heap to the OS.

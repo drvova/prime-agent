@@ -335,9 +335,11 @@ impl Supervisor {
             // so the boot reap needs the same positive owner-death evidence
             // the tombstone probes use (TS `recoverWorker` runs its orphan
             // sweep only once the recorded process identity is gone).
-            if self.recorded_worker_is_gone(&resident).await {
-                self.reap_dead_worker_orphans(&resident).await;
-            }
+            let reaped_programs = if self.recorded_worker_is_gone(&resident).await {
+                self.reap_dead_worker_orphans(&resident).await
+            } else {
+                0
+            };
             let interrupted =
                 crate::journal::WorkerRecoveryJournal::read_interrupted(&journal_path);
             let kept = match &boot {
@@ -442,7 +444,8 @@ impl Supervisor {
                 None => None,
             };
             if host_died {
-                self.record_host_death(&resident, revived_turn).await;
+                self.record_host_death(&resident, revived_turn, reaped_programs)
+                    .await;
             }
             match self.relaunch_worker(&resident).await {
                 Ok(child) => {

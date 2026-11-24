@@ -691,7 +691,7 @@ impl Session {
             &policy,
             128_000,
             None,
-            || async {
+            |_| async {
                 let options = pa_agent::stream::StreamRequestOptions {
                     session_id: Some("conversation-1".to_string()),
                     ..Default::default()

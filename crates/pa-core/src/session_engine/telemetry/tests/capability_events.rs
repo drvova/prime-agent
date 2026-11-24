@@ -330,6 +330,7 @@ fn drive(counters: &SessionCounters) {
         EditMatch::NotFound,
         EditMatch::NotFound,
         EditMatch::NotFound,
+        EditMatch::AlreadyApplied,
     ] {
         counters.note_edit_match(outcome);
     }
@@ -612,7 +613,7 @@ const EXPECTED: &[(&str, &str)] = &[
     ),
     (
         "agent edit matches",
-        r#"{"edit_exact_count":3,"edit_trailing_whitespace_count":1,"edit_indentation_count":2,"edit_unicode_punctuation_count":1,"edit_unescaped_count":1,"edit_anchor_prefix_refused_count":2,"edit_ambiguous_count":1,"edit_not_found_count":4}"#,
+        r#"{"edit_exact_count":3,"edit_trailing_whitespace_count":1,"edit_indentation_count":2,"edit_unicode_punctuation_count":1,"edit_unescaped_count":1,"edit_anchor_prefix_refused_count":2,"edit_ambiguous_count":1,"edit_not_found_count":4,"edit_already_applied_count":1}"#,
     ),
     (
         "agent endpoint discovery",

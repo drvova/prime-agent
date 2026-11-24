@@ -2,23 +2,63 @@
 //! auto-retry driver ([`super::auto_retry`]): the turn seam of a host that
 //! runs the session without the daemon (print mode). The daemon's model turn
 //! drives its own streaming attempt through the same driver and the same
-//! reply settle ([`super::provider_retry::settle_final_reply`]).
+//! reply settle ([`super::provider_retry::settle_final_reply`]). Both hosts
+//! continue a reply cut off at the output limit through
+//! [`AgentSession::continue_after_output_limit`].
 
 use std::future::Future;
 
 use pa_agent::types::{AgentMessage, ImageContent, Message, StopReason};
 
-use super::auto_retry::{run_turn_with_auto_retry, AutoRetryEvent};
+use super::auto_retry::{run_turn_with_auto_retry, AutoRetryEvent, TurnAttempt};
+use super::messages::{OUTPUT_LIMIT_CONTINUATION_CUSTOM_TYPE, OUTPUT_LIMIT_CONTINUATION_TEXT};
 use super::provider_retry::{settle_final_reply, ProviderRetryPolicy};
-use super::{AgentSession, PromptOptions, PromptOutcome, TrailingAssistantFilter};
+use super::{
+    session_message_to_loop, AgentSession, PromptOptions, PromptOutcome, SessionAgentMessage,
+    TrailingAssistantFilter,
+};
 
 impl AgentSession {
+    /// Continue a run whose final reply was cut off at the output limit
+    /// ([`TurnAttempt::ContinueAfterOutputLimit`]): the cut reply stays in
+    /// the loop context, and the guiding row
+    /// ([`OUTPUT_LIMIT_CONTINUATION_TEXT`]) is admitted after it, so the
+    /// transcript keeps it and the next request carries it. The run stays
+    /// one run in telemetry and counts the continuation.
+    ///
+    /// # Errors
+    ///
+    /// The agent's refusal to start the run (one is already active), or the
+    /// run's failure.
+    pub async fn continue_after_output_limit(&self) -> anyhow::Result<()> {
+        if let Some(telemetry) = &self.skill_telemetry {
+            telemetry.note_output_limit_continuation();
+        }
+        let row = session_message_to_loop(&SessionAgentMessage::Custom(
+            pa_types::session::CustomMessage {
+                custom_type: OUTPUT_LIMIT_CONTINUATION_CUSTOM_TYPE.to_string(),
+                content: pa_types::ai::UserContent::Text(
+                    OUTPUT_LIMIT_CONTINUATION_TEXT.to_string(),
+                ),
+                display: false,
+                details: None,
+                timestamp: super::refine::now_millis(),
+                rest: serde_json::Map::default(),
+            },
+        ))
+        .ok_or_else(|| anyhow::anyhow!("output-limit continuation row conversion failed"))?;
+        self.agent
+            .prompt(pa_agent::agent::AgentPromptInput::Messages(vec![row]))
+            .await
+    }
+
     /// Admit `text` (with `images`) as a user prompt and drive its run until
     /// its final reply settles. A provider failure retries per `policy`, and
-    /// a reply that cannot end the turn (cut off at the output limit, or no
-    /// visible answer) is a retryable failure that gets one retry. A retry
-    /// drops the failed reply from the loop context and continues the run,
-    /// so the prompt is admitted once and finished tool work never re-runs.
+    /// a reply with no visible answer is a retryable failure that gets one
+    /// retry, and a reply cut off at the output limit is continued
+    /// ([`Self::continue_after_output_limit`]). A retry drops the failed
+    /// reply from the loop context and continues the run, so the prompt is
+    /// admitted once and finished tool work never re-runs.
     /// `emit` observes the retry events.
     ///
     /// A turn that still fails leaves its failure as the loop's trailing
@@ -49,7 +89,7 @@ impl AgentSession {
             policy,
             context_window,
             None,
-            || {
+            |attempt| {
                 let admission = admission.take();
                 async move {
                     if let Some(images) = admission {
@@ -63,9 +103,16 @@ impl AgentSession {
                             }
                         }
                     } else {
-                        self.drop_trailing_assistant(TrailingAssistantFilter::Any)
-                            .await;
-                        self.agent.continue_run().await?;
+                        match attempt {
+                            TurnAttempt::ContinueAfterOutputLimit => {
+                                self.continue_after_output_limit().await?;
+                            }
+                            TurnAttempt::First | TurnAttempt::Retry => {
+                                self.drop_trailing_assistant(TrailingAssistantFilter::Any)
+                                    .await;
+                                self.agent.continue_run().await?;
+                            }
+                        }
                     }
                     self.agent.wait_for_idle().await;
                     let reply = self

@@ -40,6 +40,18 @@ pub fn track_deleted_child_usage_captured(client: &TelemetryClient, source: &str
     client.track("daemon event", properties);
 }
 
+/// Track the tool calls a revived session answered because the lifetime that ran them ended
+/// first (`daemon event`, kind `interrupted_call_reported`): `class` is `outcome_unknown` (every
+/// such call) or an effect a call's code names (`program`, `file`, `subagent`, `network`).
+/// Class and count only, never the call's code.
+pub fn track_interrupted_calls_reported(client: &TelemetryClient, class: &str, count: u64) {
+    let mut properties = base_properties("daemon");
+    properties.set("kind", Value::from("interrupted_call_reported"));
+    properties.set("source", Value::from(class));
+    properties.set("count", Value::from(count));
+    client.track("daemon event", properties);
+}
+
 /// Track a daemon model-allowlist refusal (`model refused`, schema v1): a daemon model
 /// resolution refused a model outside the settings `allowedModels` allowlist. Categories and
 /// surface only — never the refused selector, pattern content, or session payload.

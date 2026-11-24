@@ -79,7 +79,7 @@ async fn transient_failure_is_retried_until_success_with_events() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -156,7 +156,7 @@ async fn exhausted_retries_surface_the_final_error() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -205,7 +205,7 @@ async fn a_retry_budget_above_the_episode_ceiling_gives_up_at_the_ceiling() {
         &policy,
         0,
         None,
-        || {
+        |_| {
             attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async { Ok(error_message(Some("server_error"), None, None)) }
         },
@@ -248,7 +248,7 @@ async fn throttled_retries_do_not_grow_the_backoff() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let next = script.next().expect("scripted attempt");
             async move { Ok(next) }
         },
@@ -319,7 +319,7 @@ async fn stream_drop_retries_until_the_turn_completes() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -380,7 +380,7 @@ async fn stream_drop_exhausts_retries_surfacing_the_class() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -432,7 +432,7 @@ async fn permanent_failures_never_retry_but_disclose() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -481,7 +481,7 @@ async fn payment_failures_settle_once_with_the_disclosure() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -525,7 +525,7 @@ async fn safety_failures_are_permanent_never_retry_but_disclose() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -574,7 +574,7 @@ async fn context_overflow_never_enters_the_retry_loop() {
         &fast_policy(),
         200_000,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -612,7 +612,7 @@ async fn cancelled_wait_aborts_with_retry_cancelled() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             attempts += 1;
             async { Ok(error_message(Some("server_error"), None, None)) }
         },
@@ -650,7 +650,7 @@ async fn aborted_signal_racing_failure_stops_aborted() {
         &fast_policy(),
         0,
         Some(&controller.signal()),
-        || async { Ok(error_message(Some("server_error"), None, None)) },
+        |_| async { Ok(error_message(Some("server_error"), None, None)) },
         |_| async { Ok(()) },
         |_| async { true },
         None,
@@ -674,7 +674,7 @@ async fn a_quota_reset_beyond_the_cap_fails_at_once_with_the_raw_error() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -752,7 +752,7 @@ async fn an_armed_quota_fallback_retries_once_at_once_then_fails_with_its_note()
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -825,7 +825,7 @@ async fn disabled_policy_never_retries_but_discloses() {
         &policy,
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -863,7 +863,7 @@ async fn attempt_errors_propagate() {
         &fast_policy(),
         0,
         None,
-        || async { Err(anyhow::anyhow!("turn crashed")) },
+        |_| async { Err(anyhow::anyhow!("turn crashed")) },
         |_| async { Ok(()) },
         |_| async { true },
         None,
@@ -887,7 +887,7 @@ async fn unsupported_tool_failures_surface_with_the_disclosure() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -944,7 +944,7 @@ async fn an_auth_rejection_whose_recovery_ends_the_turn_never_retries() {
         &fast_policy(),
         0,
         None,
-        || {
+        |_| {
             let attempts = Arc::clone(&attempts);
             async move {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

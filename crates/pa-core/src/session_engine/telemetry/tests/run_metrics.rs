@@ -93,3 +93,39 @@ async fn the_live_seams_feed_the_harness_metrics() {
         })
     );
 }
+
+/// A reply cut off at the output limit and continued stays one run, which
+/// counts the continuation.
+#[tokio::test]
+async fn an_output_limit_continuation_rides_the_run() {
+    let fixture = fixture();
+    let telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    emit(
+        &fixture,
+        AgentEvent::MessageStart {
+            message: user_message(),
+        },
+    );
+    let mut cut = assistant_message();
+    cut.stop_reason = StopReason::Length;
+    attempt(&fixture, cut);
+    telemetry.note_output_limit_continuation();
+    attempt(&fixture, assistant_message());
+    telemetry.end().await.unwrap();
+
+    let runs = event_properties(&fixture.mock, "agent run completed").await;
+    let counts: Vec<(&serde_json::Value, &serde_json::Value)> = runs
+        .iter()
+        .map(|run| {
+            (
+                &run["output_limit_continuation_count"],
+                &run["model_call_count"],
+            )
+        })
+        .collect();
+    assert_eq!(counts, vec![(&serde_json::json!(1), &serde_json::json!(2))]);
+}

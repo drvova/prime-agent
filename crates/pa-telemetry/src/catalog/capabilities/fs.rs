@@ -120,8 +120,8 @@ pub(in crate::catalog) const AGENT_PREFETCH: EventRule = EventRule {
 /// an edit matched or missed: edits applied by each step of its normalization ladder (exact,
 /// trailing whitespace ignored, indentation ignored, Unicode punctuation folded, literal escapes
 /// unescaped), and edits refused for an `old-str` carrying `fs-read` anchor prefixes, failed as
-/// ambiguous (the first step to find it found it more than once), or failed as not found.
-/// Counts only: never a path, a string, or file content.
+/// ambiguous (the first step to find it found it more than once), failed as not found, or failed
+/// as not found while `new-str` is in the file once (the edit looks already applied). Counts only: never a path, a string, or file content.
 pub(in crate::catalog) const AGENT_EDIT_MATCHES: EventRule = EventRule {
     name: "agent edit matches",
     since: 2,
@@ -135,5 +135,6 @@ pub(in crate::catalog) const AGENT_EDIT_MATCHES: EventRule = EventRule {
         ("edit_anchor_prefix_refused_count", required(count())),
         ("edit_ambiguous_count", required(count())),
         ("edit_not_found_count", required(count())),
+        ("edit_already_applied_count", required(count())),
     ],
 };

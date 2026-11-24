@@ -297,6 +297,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let request_timing_settings = settings.get_request_timing();
     // The stream loop guard's level (`loopGuard`), read once like the flag above.
     let loop_guard_level = settings.get_loop_guard();
+    // `nestedContextFiles`, read once like the loop guard.
+    let nested_context_files = settings.get_nested_context_files();
     // Captured before `settings` moves into the resource loader: the
     // factory host bridge's preflight facts (the daemon `allowedModels`
     // pin), like the request-timing snapshot above.
@@ -1354,6 +1356,18 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         },
         agent_stream_fn,
     );
+    // A subdirectory's AGENTS.md joins the conversation after the first cell that works there.
+    let nested_context = nested_context_files.then(|| {
+        std::sync::Arc::new(super::nested_context::NestedContext::new(
+            &cwd,
+            &resources.agents_files,
+            std::sync::Arc::clone(&session_counters),
+        ))
+    });
+    let repeat_call_guard =
+        (loop_guard_level != Some(pa_agent::types::LoopGuardLevel::Off)).then(|| {
+            super::loop_guard::repeat_call_guard(std::sync::Arc::clone(&repeat_nudge_telemetry))
+        });
     let agent = Agent::new(AgentOptions {
         // Every request in the session carries this identity: providers key prompt caching
         // (`prompt_cache_key`), session headers, and WebSocket/`previous_response_id` reuse on it
@@ -1399,9 +1413,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             }))
         },
         should_stop_before_turn: config.queued_steering_probe.clone(),
-        after_tool_call: (loop_guard_level != Some(pa_agent::types::LoopGuardLevel::Off)).then(
-            || super::loop_guard::repeat_call_guard(std::sync::Arc::clone(&repeat_nudge_telemetry)),
-        ),
+        after_tool_call: match &nested_context {
+            Some(nested) => Some(nested.after_tool_call(repeat_call_guard)),
+            None => repeat_call_guard,
+        },
         steering_mode: config.steering_mode,
         follow_up_mode: config.follow_up_mode,
         ..Default::default()
@@ -1409,6 +1424,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
 
     let agent = Arc::new(agent);
     let _ = thinning_agent.set(Arc::downgrade(&agent));
+    if let Some(nested) = &nested_context {
+        nested.bind(&agent);
+    }
     // The in-process bash-notice sinks bind their agent late: their
     // handlers registered before the agent existed.
     *bash_notice_agent

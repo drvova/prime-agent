@@ -2,8 +2,10 @@
 //! and the same-provider retry policy application.
 use super::{
     aborted_message, drop_trailing_assistant, retry_event_to_engine_event, AgentSessionEngine,
-    EngineEvent, StopReason, TurnAdmission, TurnOnce, TurnPrompt, TurnResult,
+    EngineEvent, RunStart, StopReason, TurnAdmission, TurnOnce, TurnPrompt, TurnResult,
 };
+
+use pa_core::session_engine::auto_retry::TurnAttempt;
 
 impl AgentSessionEngine {
     /// Drive one admitted prompt through the retry-driver model loop and
@@ -160,10 +162,11 @@ impl AgentSessionEngine {
             Some(route) => route.target.model.context_window,
             None => model.context_window,
         };
-        // A final reply that cannot end the turn (cut off at the output
-        // limit, or no visible text where an answer is owed) becomes a
-        // retryable failure for the retry driver. Custom-row turns (harness
-        // notices, agent messages) owe no answer: silence acknowledges them.
+        // A final reply that cannot end the turn becomes a failure for the
+        // retry driver: one cut off at the output limit is continued, one
+        // with no visible text where an answer is owed is retried once.
+        // Custom-row turns (harness notices, agent messages) owe no answer:
+        // silence acknowledges them.
         let owes_answer = matches!(prompt, TurnPrompt::User { .. });
         let settle = move |assistant: pa_agent::types::AssistantMessage| {
             pa_core::session_engine::provider_retry::settle_final_reply(
@@ -177,7 +180,7 @@ impl AgentSessionEngine {
                 &policy,
                 overflow_window,
                 None,
-                || {
+                |attempt| {
                     let mut emit = emit_cell.borrow_mut();
                     let first = first_attempt.get();
                     first_attempt.set(false);
@@ -187,17 +190,28 @@ impl AgentSessionEngine {
                     async move {
                         // A retry re-issues the failed turn: the failed
                         // assistant message leaves the loop context first
-                        // (TS `messages.slice(0, -1)`), then `continue`.
-                        if !first {
-                            drop_trailing_assistant(&agent).await;
-                        }
-                        let mut admit_prompt = first;
+                        // (TS `messages.slice(0, -1)`), then `continue`. A
+                        // reply cut off at the output limit stays, and the
+                        // run continues behind the guiding row.
+                        let mut start = if first {
+                            RunStart::Prompt
+                        } else {
+                            match attempt {
+                                TurnAttempt::ContinueAfterOutputLimit => {
+                                    RunStart::ContinueAfterOutputLimit
+                                }
+                                TurnAttempt::First | TurnAttempt::Retry => {
+                                    drop_trailing_assistant(&agent).await;
+                                    RunStart::Continue
+                                }
+                            }
+                        };
                         loop {
                             let assistant = match self
                                 .run_turn_once(
                                     &agent,
                                     &prompt,
-                                    admit_prompt,
+                                    start,
                                     boundary_passed,
                                     aborted,
                                     &mut **emit,
@@ -267,7 +281,7 @@ impl AgentSessionEngine {
                             }
                             // Continue the tool run without dropping its successful assistant
                             // or inserting another copy of the admitted user prompt.
-                            admit_prompt = false;
+                            start = RunStart::Continue;
                         }
                     }
                 },

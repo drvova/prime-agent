@@ -320,6 +320,43 @@ async fn a_unique_string_is_replaced_and_a_miss_says_where_it_diverges() {
     );
 }
 
+/// An `edit` replaces its file whole, as `fs-write` and `fs-edit` do: a
+/// temp file beside it is renamed onto it, so a daemon that dies mid-write
+/// leaves the old text or the new, never part of either. A hard link made
+/// before the edit still names the old file, and no temp file is left.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_replaces_its_file_whole_and_never_rewrites_it_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "one\ntwo\n").unwrap();
+    std::fs::hard_link(&file, dir.path().join("before.txt")).unwrap();
+    let kernel = kernel_over(HostRequestHandlers::new(), dir.path()).await;
+    let edited = value(
+        kernel.as_ref(),
+        r#"(hash-ref (edit "notes.txt" "two" "TWO") 'start-line)"#,
+    )
+    .await;
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        (
+            edited,
+            std::fs::read_to_string(&file).unwrap(),
+            std::fs::read_to_string(dir.path().join("before.txt")).unwrap(),
+            names,
+        ),
+        (
+            Ok(json!(2)),
+            "one\nTWO\n".to_string(),
+            "one\ntwo\n".to_string(),
+            vec!["before.txt".to_string(), "notes.txt".to_string()],
+        )
+    );
+}
+
 /// Near misses an exact `edit` refuses: each normalization of the ladder
 /// finds its one place and says so, a normalized match found twice fails as
 /// ambiguous, and text pasted with `fs-read`'s anchors is refused with the
@@ -439,9 +476,106 @@ async fn a_near_miss_edit_matches_by_the_first_normalization_that_finds_one_plac
     );
 }
 
+/// A miss past the whole ladder (one word of `old-str` changed, on its first
+/// line) shows the file's lines where `old-str` most likely meant, found by
+/// the lines that do match, and the first line pair that differs; an edit
+/// whose `new-str` is already in the file, once, says it looks applied.
+/// Neither writes anything.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_miss_shows_the_closest_lines_or_that_the_edit_looks_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = kernel_over(HostRequestHandlers::new(), dir.path()).await;
+    let total = "// totals\n\nfn total(price: u32, count: u32) -> u32 {\n    let subtotal = price * count;\n    let tax = subtotal / 10;\n    subtotal + tax\n}\n";
+    let applied = "fn f() -> u32 {\n    let answer = compute(41) + 1;\n    answer\n}\n";
+    std::fs::write(dir.path().join("total.rs"), total).unwrap();
+    std::fs::write(dir.path().join("f.rs"), applied).unwrap();
+    let near = value(
+        kernel.as_ref(),
+        r#"(edit "total.rs" "    let subtotal = price * quantity;\n    let tax = subtotal / 10;\n    subtotal + tax" "    price * quantity")"#,
+    )
+    .await;
+    let again = value(
+        kernel.as_ref(),
+        r#"(edit "f.rs" "    let answer = compute(41);" "    let answer = compute(41) + 1;")"#,
+    )
+    .await;
+    assert_eq!(
+        (
+            near,
+            again,
+            std::fs::read_to_string(dir.path().join("total.rs")).unwrap(),
+            std::fs::read_to_string(dir.path().join("f.rs")).unwrap(),
+        ),
+        (
+            Err("Error: Generic: edit: string not found in total.rs: old-str matches its first 27 of 84 characters \
+                 and diverges at line 4, column 28:\n  file continues    \"count;\\n    let tax = subtotal / 10;\\n    subtotal + tax\\n}\\n\"\n  \
+                 old-str continues \"quantity;\\n    let tax = subtotal / 10;\\n    subtotal + tax\"\n\
+                 closest lines in the file (lines 3-7; the numbers are not part of the file):\n  \
+                 3: fn total(price: u32, count: u32) -> u32 {\n  \
+                 4:     let subtotal = price * count;\n  \
+                 5:     let tax = subtotal / 10;\n  \
+                 6:     subtotal + tax\n  \
+                 7: }\n\
+                 first difference, at line 4:\n  \
+                 file    \"    let subtotal = price * count;\"\n  \
+                 old-str \"    let subtotal = price * quantity;\""
+                .to_string()),
+            Err("Error: Generic: edit: string not found in f.rs, but new-str is, once, at line 2: this edit looks \
+                 already applied; read the file before editing it again"
+                .to_string()),
+            total.to_string(),
+            applied.to_string(),
+        )
+    );
+}
+
+/// The closest-lines search stays bounded on a large file: a 100,000-line
+/// file with a near miss at its end answers well inside the stated bound
+/// (5 s for the whole cell in a debug build; see the report's measurement),
+/// with the right region.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_closest_lines_of_a_100k_line_file_come_back_in_bounded_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = kernel_over(HostRequestHandlers::new(), dir.path()).await;
+    let lines: Vec<String> = (1..=100_000)
+        .map(|n| format!("let value_{n} = compute({n}) + {n};"))
+        .collect();
+    std::fs::write(dir.path().join("big.rs"), lines.join("\n") + "\n").unwrap();
+    let old = format!(
+        "{}\\nlet value_99991 = compite(99991) + 99991;\\n{}",
+        lines[99_989], lines[99_991]
+    );
+    let started = Instant::now();
+    let missed = value(
+        kernel.as_ref(),
+        &format!(r#"(edit "big.rs" "{old}" "gone")"#),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    eprintln!("closest lines over 100,000 lines: {elapsed:?}");
+    let hint = missed
+        .unwrap_err()
+        .split_once("\nclosest lines in the file")
+        .map(|(_, hint)| hint.to_string());
+    assert_eq!(
+        (hint, elapsed < Duration::from_secs(5)),
+        (
+            Some(format!(
+                " (lines 99989-99993; the numbers are not part of the file):\n  \
+                 99989: {}\n  99990: {}\n  99991: {}\n  99992: {}\n  99993: {}\n\
+                 first difference, at line 99991:\n  \
+                 file    \"let value_99991 = compute(99991) + 99991;\"\n  \
+                 old-str \"let value_99991 = compite(99991) + 99991;\"",
+                lines[99_988], lines[99_989], lines[99_990], lines[99_991], lines[99_992]
+            )),
+            true,
+        )
+    );
+}
+
 /// Each `edit` reaches the session's count by how it matched or why it did
 /// not (`edit.fact`): every step of the ladder, a pasted `fs-read` anchor,
-/// an ambiguous match and a miss. A failure that is no match at all (a
+/// an ambiguous match, a miss, and an edit that looks already applied. A failure that is no match at all (a
 /// missing file) counts nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn each_edit_is_counted_by_how_it_matched() {
@@ -463,6 +597,7 @@ async fn each_edit_is_counted_by_how_it_matched() {
         ("c.txt", "say \"hi\"\n"),
         ("d.txt", "one\ntwo\n"),
         ("e.txt", "same\nsame\n"),
+        ("f.txt", "the quick brown fox jumps\n"),
     ] {
         std::fs::write(dir.path().join(name), text).unwrap();
     }
@@ -476,6 +611,7 @@ async fn each_edit_is_counted_by_how_it_matched() {
         r#"(edit "d.txt" "1:abc|1" "x")"#,
         r#"(edit "e.txt" "same" "other")"#,
         r#"(edit "e.txt" "absent" "other")"#,
+        r#"(edit "f.txt" "the slow brown fox" "the quick brown fox jumps")"#,
         // Not counted: the next outcome heard is the exact match after it.
         r#"(edit "missing.txt" "x" "y")"#,
         r#"(edit "a.txt" "ALPHA" "alpha")"#,
@@ -503,6 +639,7 @@ async fn each_edit_is_counted_by_how_it_matched() {
             EditMatch::AnchorPrefix,
             EditMatch::Ambiguous,
             EditMatch::NotFound,
+            EditMatch::AlreadyApplied,
             EditMatch::Exact,
         ]
     );

@@ -156,6 +156,9 @@ pub struct RunMetrics {
     pub bash_waits_yielded: u64,
     /// Admitted subagent spawns; `None` where the feed cannot see them.
     pub subagent_spawns: Option<u64>,
+    /// Replies cut off at the output limit that the run continued behind a
+    /// guiding row (`AgentSession::continue_after_output_limit`).
+    pub output_limit_continuations: u64,
     pub compactions: Vec<CompactionPoint>,
     pub end_reason: TurnEndReason,
     /// Live: `agent_start` to `agent_end`. Offline: the run's first message
@@ -189,6 +192,7 @@ struct RunTally {
     bash_waits_completed: u64,
     bash_waits_yielded: u64,
     subagent_spawns: u64,
+    output_limit_continuations: u64,
     compactions: Vec<CompactionPoint>,
     end_reason: Option<TurnEndReason>,
 }
@@ -333,6 +337,11 @@ impl MetricsMeter {
         self.run.subagent_spawns += 1;
     }
 
+    /// One reply cut off at the output limit, continued behind a guiding row.
+    pub fn output_limit_continuation(&mut self) {
+        self.run.output_limit_continuations += 1;
+    }
+
     /// Close the open run: its metrics, and fresh tallies for the next one.
     pub fn finish_run(&mut self, wall_ms: u64) -> RunMetrics {
         let run = std::mem::take(&mut self.run);
@@ -357,6 +366,7 @@ impl MetricsMeter {
                 SpawnVisibility::Observed => Some(run.subagent_spawns),
                 SpawnVisibility::NotRecorded => None,
             },
+            output_limit_continuations: run.output_limit_continuations,
             compactions: run.compactions,
             end_reason: run.end_reason.unwrap_or(TurnEndReason::Unknown),
             wall_ms,

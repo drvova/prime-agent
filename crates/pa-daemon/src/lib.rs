@@ -69,6 +69,7 @@ pub mod hold_refusal;
 mod idle_eviction;
 pub(crate) mod image_route;
 pub mod input_pause_lease;
+mod interrupted_calls;
 pub mod journal;
 pub mod keeper;
 pub mod lease;

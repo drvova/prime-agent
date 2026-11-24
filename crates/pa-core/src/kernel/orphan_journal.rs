@@ -245,14 +245,16 @@ pub fn reap_kernel_orphan_processes(kernel_pid: i32) {
 /// journaled, then clear the journal (TS `recoverUncertainWorkerOperations`'
 /// orphan sweep, owner-scoped to the worker's own pid). The journal is
 /// kept only when a kill failed and every record carried an identity, so
-/// the next recovery pass can safely retry.
-pub fn reap_worker_orphan_processes(path: &Path, worker_pid: i32) {
+/// the next recovery pass can safely retry. Answers how many it killed.
+#[must_use]
+pub fn reap_worker_orphan_processes(path: &Path, worker_pid: i32) -> usize {
     if worker_pid <= 0 {
-        return;
+        return 0;
     }
     let Ok(orphans) = read_active_orphan_processes(path, i64::from(worker_pid)) else {
-        return;
+        return 0;
     };
+    let mut killed = 0;
     let mut reap_failed = false;
     let mut retry_is_safe = true;
     for orphan in orphans {
@@ -262,13 +264,16 @@ pub fn reap_worker_orphan_processes(path: &Path, worker_pid: i32) {
         if !should_reap(&orphan) {
             continue;
         }
-        if !kill_orphan_process(orphan.pid) {
+        if kill_orphan_process(orphan.pid) {
+            killed += 1;
+        } else {
             reap_failed = true;
         }
     }
     if !reap_failed || !retry_is_safe {
         let _ = std::fs::remove_file(path);
     }
+    killed
 }
 
 #[cfg(test)]
@@ -330,7 +335,7 @@ mod tests {
                 active[0].process_start_id.as_deref(),
                 record["processStartId"].as_str()
             );
-            reap_worker_orphan_processes(&path, owner as i32);
+            let _killed = reap_worker_orphan_processes(&path, owner as i32);
             assert!(
                 !path.exists(),
                 "the journal is spent, not kept for a blind retry"

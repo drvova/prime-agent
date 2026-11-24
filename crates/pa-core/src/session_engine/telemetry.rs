@@ -40,9 +40,9 @@ use super::run_metrics::{MetricsMeter, SpawnVisibility};
 mod track;
 pub use track::{
     track_catalog_refresh, track_compaction_abort_declared, track_daemon_event_summary,
-    track_deleted_child_usage_captured, track_model_refused, track_provider_oauth_login,
-    track_session_crashed, track_sessions_imported, track_worker_adoption,
-    track_worker_children_closed, OAuthLoginSurface,
+    track_deleted_child_usage_captured, track_interrupted_calls_reported, track_model_refused,
+    track_provider_oauth_login, track_session_crashed, track_sessions_imported,
+    track_worker_adoption, track_worker_children_closed, OAuthLoginSurface,
 };
 
 mod classify;
@@ -285,9 +285,10 @@ struct ActiveRun {
     usage: UsageTotals,
     last_assistant: Option<AssistantMessage>,
     /// An auto-retry started after this run's
-    /// failed attempt: the retried attempt's `AgentStart` continues this
-    /// run instead of starting a new one (TS: one run per turn, retries
-    /// counted in `retry_count`).
+    /// failed attempt, or an output-limit continuation after its cut reply:
+    /// the next attempt's `AgentStart` continues this run instead of
+    /// starting a new one (TS: one run per turn, retries counted in
+    /// `retry_count`).
     retry_pending: bool,
     // v2 (#2117) per-run tracking:
     /// The run's uuid.
@@ -410,6 +411,8 @@ struct CounterValues {
     cache_warm_sent_count: u64,
     cache_warm_skipped_count: u64,
     cache_warm_cost_usd: f64,
+    /// Subdirectory context files appended to the conversation (`session_engine::nested_context`).
+    nested_context_file_count: u64,
     /// Net prompt-cache saving over the session's real requests: what the
     /// cache reads saved against uncached input, less the write premium.
     cache_savings_usd: f64,
@@ -1065,6 +1068,11 @@ impl SessionCounters {
         self.with(|values| values.cache_warm_skipped_count += 1);
     }
 
+    /// One subdirectory context file joined the conversation (a count: never its path).
+    pub(crate) fn note_nested_context_file(&self) {
+        self.with(|values| values.nested_context_file_count += 1);
+    }
+
     /// One real request's prompt-cache saving in dollars (negative when its
     /// cache writes cost more than its reads saved).
     pub(crate) fn note_cache_savings(&self, savings_usd: f64) {
@@ -1165,6 +1173,13 @@ impl SessionCounters {
                 properties.set(
                     "cache_savings_usd",
                     Value::from(values.cache_savings_usd.max(0.0)),
+                );
+            }
+            // Sessions that loaded no nested context file keep their ended event unchanged.
+            if values.nested_context_file_count > 0 {
+                properties.set(
+                    "nested_context_file_count",
+                    Value::from(values.nested_context_file_count),
                 );
             }
             for (key, count) in &values.feature_outcomes {
@@ -1374,6 +1389,28 @@ impl SessionTelemetry {
         }
         if let Some(run) = state.active_run.as_mut() {
             run.loop_guard.tool_repeat_nudges += 1;
+        }
+    }
+
+    /// The run's final reply was cut off at the output limit and the run
+    /// continues behind the guiding row
+    /// (`AgentSession::continue_after_output_limit`): the continuation
+    /// counts toward the active run, which the continued attempt keeps.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the telemetry state mutex is poisoned.
+    pub fn note_output_limit_continuation(&self) {
+        let mut state = self.state.lock().expect("telemetry state poisoned");
+        if !state.recording {
+            sever_off_period_run(&mut state);
+            return;
+        }
+        if state.active_run.is_some() {
+            state.meter.output_limit_continuation();
+        }
+        if let Some(run) = state.active_run.as_mut() {
+            run.retry_pending = true;
         }
     }
 
@@ -2224,6 +2261,10 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
     // uncached split already.
     properties.set("end_reason", Value::from(metrics.end_reason.as_str()));
     properties.set("eval_cell_count", Value::from(metrics.eval_cells));
+    properties.set(
+        "output_limit_continuation_count",
+        Value::from(metrics.output_limit_continuations),
+    );
     properties.set("eval_cell_duration_ms", Value::from(metrics.eval_cell_ms));
     if let Some(spawns) = metrics.subagent_spawns {
         properties.set("subagent_spawn_count", Value::from(spawns));

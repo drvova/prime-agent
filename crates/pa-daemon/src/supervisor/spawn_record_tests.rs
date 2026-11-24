@@ -214,7 +214,7 @@ async fn a_relaunch_spawn_record_serves_the_durable_persist() {
     );
     let retained = b"replacement-owned journal records\n";
     std::fs::write(replacement_path, retained).expect("replacement journal");
-    pa_core::kernel::orphan_journal::reap_worker_orphan_processes(
+    let _killed = pa_core::kernel::orphan_journal::reap_worker_orphan_processes(
         Path::new(&first_path),
         i32::try_from(persisted.pid).expect("worker pid"),
     );

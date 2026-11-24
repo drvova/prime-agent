@@ -71,6 +71,9 @@ pub const PROVIDER_RETRY_OUTCOME_CUSTOM_TYPE: &str = "provider_retry_outcome";
 /// One acceptance-check round's row. Wire twin of
 /// `pa_core::session_engine::messages::BETTER_CHECKS_CUSTOM_TYPE`.
 pub const BETTER_CHECKS_CUSTOM_TYPE: &str = "better_acceptance_checks";
+/// A subdirectory's AGENTS.md appended to the conversation. Wire twin of
+/// `pa_core::session_engine::messages::NESTED_CONTEXT_CUSTOM_TYPE`.
+pub const NESTED_CONTEXT_CUSTOM_TYPE: &str = "nested_context_file";
 /// Wire twin of `pa_core::prompts::model_prompts::MODEL_PROMPT_ERROR_CUSTOM_TYPE`.
 pub const MODEL_PROMPT_ERROR_CUSTOM_TYPE: &str = "model_prompt_error";
 
@@ -236,6 +239,14 @@ pub fn custom_message_entries(message: &Value) -> Vec<ChatEntry> {
             } else {
                 crate::chat::StatusKind::Warning
             },
+        }],
+        // One line naming the file (the model reads its text, the user can open it).
+        NESTED_CONTEXT_CUSTOM_TYPE => vec![ChatEntry::Status {
+            text: match details.get("path").and_then(Value::as_str) {
+                Some(path) => format!("Loaded {path}"),
+                None => content,
+            },
+            kind: crate::chat::StatusKind::Info,
         }],
         MODEL_PROMPT_ERROR_CUSTOM_TYPE => vec![ChatEntry::Status {
             text: content,
@@ -563,6 +574,23 @@ mod tests {
             }));
             assert!(entries.is_empty(), "{custom_type} rendered {entries:?}");
         }
+    }
+
+    #[test]
+    fn a_nested_context_file_renders_one_line_naming_it() {
+        assert_eq!(
+            decoded(&json!({
+                "role": "custom",
+                "customType": NESTED_CONTEXT_CUSTOM_TYPE,
+                "content": "[nested-context crates/foo/AGENTS.md]\n\nFoo rules.",
+                "display": true,
+                "details": { "path": "crates/foo/AGENTS.md", "truncated": false },
+            })),
+            vec![ChatEntry::Status {
+                text: "Loaded crates/foo/AGENTS.md".to_string(),
+                kind: StatusKind::Info,
+            }]
+        );
     }
 
     #[test]

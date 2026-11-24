@@ -30,17 +30,19 @@ impl OrphanGeneration {
 
     /// The caller has observed this generation exit; no resident lookup or
     /// fallible liveness recheck may substitute a different process here.
-    async fn reap(&self) {
+    /// Answers how many programs it stopped.
+    async fn reap(&self) -> usize {
         let generation = self.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            if let Ok(pid) = i32::try_from(generation.pid) {
+        tokio::task::spawn_blocking(move || {
+            i32::try_from(generation.pid).map_or(0, |pid| {
                 pa_core::kernel::orphan_journal::reap_worker_orphan_processes(
                     std::path::Path::new(&generation.path),
                     pid,
-                );
-            }
+                )
+            })
         })
-        .await;
+        .await
+        .unwrap_or(0)
     }
 }
 
@@ -192,7 +194,7 @@ impl Supervisor {
                 let status = child.session.wait().await;
                 // The session's runtime is gone: the processes it started
                 // have no owner left, and its lease names a dead lifetime.
-                child.orphan_generation.reap().await;
+                let reaped_programs = child.orphan_generation.reap().await;
                 let agent_dir = self.options.agent_dir.clone();
                 let _ = tokio::task::spawn_blocking(move || {
                     crate::lease::reclaim_dead_owner_leases(&agent_dir)
@@ -217,6 +219,7 @@ impl Supervisor {
                             &resident,
                             &crash,
                             super::crash::InterruptedTurn::Settle,
+                            reaped_programs,
                         )
                         .await;
                     }
@@ -588,6 +591,25 @@ impl Supervisor {
                     response.error.unwrap_or_default()
                 ),
             });
+        }
+        // The calls the rebuilt session answered because the lifetime that ran them
+        // ended first, by class (counts only).
+        if let Some(Value::Object(calls)) = response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("interruptedCalls"))
+        {
+            if self.telemetry_recording_on() {
+                if let Some(client) = &*self.telemetry.lock().unwrap() {
+                    for (class, count) in calls {
+                        pa_core::session_engine::telemetry::track_interrupted_calls_reported(
+                            client,
+                            class,
+                            count.as_u64().unwrap_or(0),
+                        );
+                    }
+                }
+            }
         }
         // The create replay consumed the terminal record only when the disclosure it
         // carried is durable; a replay whose persist failed keeps the record pending.

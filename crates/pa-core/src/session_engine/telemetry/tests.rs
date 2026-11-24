@@ -687,6 +687,27 @@ async fn context_thinning_folds_into_session_ended() {
     );
 }
 
+/// The nested context files a session appended ride `agent session ended` as one count.
+#[tokio::test]
+async fn nested_context_files_fold_into_session_ended() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_nested_context_file();
+    counters.note_nested_context_file();
+    telemetry.end().await.unwrap();
+    let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
+    assert_eq!(
+        ended.get("nested_context_file_count"),
+        Some(&serde_json::json!(2))
+    );
+}
+
 /// Prompt-cache prefix breaks ride `agent run completed` (beside its cache
 /// read and write tokens) as a count and the bytes the breaking requests
 /// did not keep.

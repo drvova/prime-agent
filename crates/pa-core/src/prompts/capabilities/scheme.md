@@ -5,6 +5,7 @@ The kernel is one Steel Scheme engine per session (mostly R5RS). It is not Pytho
 Cells and values
 
 - A cell is the forms of one `eval` call, evaluated in order. Top-level `define`s persist for the session, across compaction too; they are lost only when the kernel restarts.
+- A cell that was running when its session crashed or the daemon stopped is never run again: its result says its outcome is unknown and what is known of it. Check its effects before you run it again.
 - A `define` of a name that already exists makes a new binding, and functions defined in earlier cells keep the one they were compiled against: after a later `(define (helper) ...)`, an earlier `(define (caller) (helper))` still calls the old `helper`. Define `caller` again too: resend every definition that uses the one you changed. `(set! helper ...)` changes it for earlier callers only where the compiler had not inlined it, which it does with a small function or a constant defined in the same cell as its caller, so do not rely on it. Keep what is meant to change in a box, which every reader sees: `(define handler (box f))`, `((unbox handler) x)`, `(set-box! handler g)`.
 - The cell's result is the value of its last form, printed as data: a string in quotes with escapes, a hash as `#<hashmap {...}>`. Print with `(displayln x ...)` or `(display x)` to read text as it is: `(displayln (hash-ref (fs-read "a.rs") 'text))`.
 - Numbers: `(/ 7 2)` is the exact `7/2`; use `quotient`, `exact->inexact`, `(exact (round x))`.

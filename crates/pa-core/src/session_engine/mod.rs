@@ -69,6 +69,7 @@ pub mod turn_boundary;
 mod admission;
 mod compaction_arms;
 mod loop_guard;
+mod nested_context;
 mod prompt_retry;
 mod wiring;
 
@@ -172,8 +173,9 @@ pub struct AgentSession {
     pending_next_turn_rows: std::sync::Arc<std::sync::Mutex<Vec<pa_types::session::CustomMessage>>>,
     /// The skill inventory `/skill:<name>` submissions expand against.
     skills: Vec<crate::skills::Skill>,
-    /// The telemetry handle for the `skill_use_count` counter the prompt
-    /// path owns (`None` in sessions without telemetry).
+    /// The telemetry handle for the counters the prompt path owns
+    /// (`skill_use_count`, output-limit continuations; `None` in sessions
+    /// without telemetry).
     skill_telemetry: Option<std::sync::Arc<telemetry::SessionTelemetry>>,
     /// Counts each `/skill:<name>` use in the reuse ledger (`None` when
     /// the session has no agent dir to keep one in).
