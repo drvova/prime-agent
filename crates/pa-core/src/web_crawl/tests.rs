@@ -123,13 +123,27 @@ impl Site {
                         Some((content_type, body)) => (200, *content_type, body.clone()),
                         None => (404, "text/plain", "not found".to_string()),
                     };
-                    // A `redirect` page sends its body as the Location.
-                    let (status, location) = match content_type {
-                        "redirect" => (302, format!("Location: {body}\r\n")),
-                        _ => (status, String::new()),
-                    };
+                    // A `redirect` page sends its body as the Location; with
+                    // an `!auth` entry every page needs that Authorization.
+                    let mut extra = String::new();
+                    let mut status = status;
+                    if content_type == "redirect" {
+                        status = 302;
+                        extra = format!("Location: {body}\r\n");
+                    }
+                    if let Some((_, credentials)) =
+                        pages.get("!auth").filter(|_| path != "/robots.txt")
+                    {
+                        if !head
+                            .to_ascii_lowercase()
+                            .contains(&format!("authorization: {credentials}").to_ascii_lowercase())
+                        {
+                            status = 401;
+                            extra = "WWW-Authenticate: Basic realm=\"fixture\"\r\n".to_string();
+                        }
+                    }
                     let head = format!(
-                        "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\n{location}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len()
                     );
                     let _ = socket.write_all(head.as_bytes()).await;
@@ -455,6 +469,7 @@ async fn a_stopped_cell_stops_its_crawl() {
         engine: Arc::new(WebCrawlEngine::direct()),
         store: None,
         observer: None,
+        capture_observer: None,
         settings: None,
     }
     .register(&mut handlers);
@@ -603,6 +618,7 @@ async fn the_users_settings_change_what_the_next_crawl_presents() {
         engine: Arc::new(WebCrawlEngine::direct()),
         store: None,
         observer: None,
+        capture_observer: None,
         settings: Some({
             let settings = Arc::clone(&settings);
             Arc::new(move || settings.lock().unwrap().clone()) as CrawlSettings
@@ -702,5 +718,152 @@ async fn a_crawl_goes_through_its_proxies_in_turn() {
     assert_eq!(
         (crawl.pages.len(), through(&first), through(&second)),
         (6, true, true)
+    );
+}
+
+/// A rendered crawl with `#:block`, `#:init-script`, `#:locale` and
+/// `#:timezone`: the browser never asks for the blocked image, runs the init
+/// script first, and shows the page the locale and time zone asked for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rendered_crawl_blocks_injects_and_emulates() {
+    const CHROMIUM: &str = "/opt/pw-browsers/chromium";
+    if !std::path::Path::new(CHROMIUM).exists() {
+        eprintln!("skipped: no Chromium at {CHROMIUM} to render with");
+        return;
+    }
+    let site = Site::serving(
+        HashMap::from([
+            (
+                "/",
+                (
+                    "text/html",
+                    "<!doctype html><html><head><title>Seen</title></head><body><main id=\"m\"></main><img src=\"/pixel.png\"><script>document.getElementById('m').innerHTML='<h1>Seen</h1><p>The page saw the init marker '+window.__initMarker+', the locale '+Intl.DateTimeFormat().resolvedOptions().locale+' and the time zone '+Intl.DateTimeFormat().resolvedOptions().timeZone+'.</p>';</script></body></html>".to_string(),
+                ),
+            ),
+            ("/pixel.png", ("image/png", "not really a png".to_string())),
+        ]),
+        false,
+    )
+    .await;
+    let scope = pa_types::session_scope::SessionScope::new(
+        "render-options".to_string(),
+        std::env::temp_dir(),
+        BTreeMap::from([(browser::BROWSER_PATH_VAR.to_string(), CHROMIUM.to_string())]),
+        BTreeSet::new(),
+    );
+    let crawl = {
+        let _scope = pa_types::session_scope::enter(Some(scope));
+        let request = parse_request(&json!({
+            "url": format!("{}/", site.base),
+            "render": true,
+            "maxPages": 1,
+            "block": ["images"],
+            "initScript": "window.__initMarker = 'early-bird';",
+            "locale": "de-DE",
+            "timezone": "Asia/Tokyo",
+        }))
+        .unwrap();
+        WebCrawlEngine::direct()
+            .crawl(&request, &Identity::default(), None)
+            .await
+    }
+    .unwrap();
+    let markdown = crawl.pages[0]["markdown"].as_str().unwrap_or_default();
+    assert_eq!(
+        (
+            markdown.contains(
+                "The page saw the init marker early-bird, the locale de-DE and the time zone Asia/Tokyo."
+            ),
+            site.hits().contains("/pixel.png"),
+            browsers_left().await,
+        ),
+        (true, false, Vec::new())
+    );
+}
+
+/// `web-screenshot` writes a PNG of the page and `web-pdf` a PDF, each
+/// under the session's working directory, and neither leaves a browser.
+#[tokio::test(flavor = "multi_thread")]
+async fn captures_write_a_png_and_a_pdf_and_leave_no_browser() {
+    const CHROMIUM: &str = "/opt/pw-browsers/chromium";
+    if !std::path::Path::new(CHROMIUM).exists() {
+        eprintln!("skipped: no Chromium at {CHROMIUM} to render with");
+        return;
+    }
+    let site = Site::serving(
+        HashMap::from([("/", ("text/html", page("Captured", &[])))]),
+        false,
+    )
+    .await;
+    let dir = std::env::temp_dir().join(format!("web-capture-{}", std::process::id()));
+    let scope = pa_types::session_scope::SessionScope::new(
+        "capture".to_string(),
+        dir.clone(),
+        BTreeMap::from([(browser::BROWSER_PATH_VAR.to_string(), CHROMIUM.to_string())]),
+        BTreeSet::new(),
+    );
+    let (png, pdf) = {
+        let _scope = pa_types::session_scope::enter(Some(scope));
+        let png = capture::parse_request(&json!({
+            "url": format!("{}/", site.base), "path": "shots/home.png", "kind": "png", "fullPage": true,
+        }))
+        .unwrap();
+        let pdf = capture::parse_request(&json!({
+            "url": format!("{}/", site.base), "path": "home.pdf", "kind": "pdf", "background": true,
+        }))
+        .unwrap();
+        (
+            capture::capture(&png, &Identity::default()).await.unwrap(),
+            capture::capture(&pdf, &Identity::default()).await.unwrap(),
+        )
+    };
+    let head = |path: &str| {
+        std::fs::read(dir.join(path))
+            .map(|bytes| bytes[..bytes.len().min(5)].to_vec())
+            .unwrap_or_default()
+    };
+    let heads = (head("shots/home.png"), head("home.pdf"));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        (
+            heads,
+            png["title"].clone(),
+            pdf["path"].clone(),
+            browsers_left().await,
+        ),
+        (
+            (b"\x89PNG\r".to_vec(), b"%PDF-".to_vec()),
+            json!("Captured"),
+            json!(dir.join("home.pdf").display().to_string()),
+            Vec::new(),
+        )
+    );
+}
+
+/// The user's `web.crawl.auth` opens a site behind HTTP Basic
+/// authentication on a plain crawl.
+#[tokio::test(flavor = "multi_thread")]
+async fn basic_credentials_open_a_protected_site() {
+    let mut protected = pages();
+    // base64("ada:lovelace")
+    protected.insert("!auth", ("", "Basic YWRhOmxvdmVsYWNl".to_string()));
+    let site = Site::serving(protected, false).await;
+    let identity = Identity::from_settings(
+        &serde_json::from_value(json!({"auth": {"username": "ada", "password": "lovelace"}}))
+            .unwrap(),
+    )
+    .unwrap();
+    let crawl = WebCrawlEngine::direct()
+        .crawl(&request(&site, &json!({"maxDepth": 2})), &identity, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (paths(&crawl), crawl.failed),
+        (
+            ["/", "/a", "/a/deep", "/b", "/docs/one", "/docs/two"]
+                .map(str::to_string)
+                .to_vec(),
+            Vec::new()
+        )
     );
 }

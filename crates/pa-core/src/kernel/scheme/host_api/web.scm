@@ -75,7 +75,10 @@
 ;; #:retry (0-3). With #:render only: #:wait-idle / #:wait-delay (seconds),
 ;; #:wait-selector / #:wait-dom (CSS), #:viewport (width height),
 ;; #:javascript #f, #:actions (a hash of URL or path to automation steps),
-;; #:scripts (a hash of URL or path to JavaScript to evaluate).
+;; #:scripts (a hash of URL or path to JavaScript to evaluate), #:block (kinds
+;; 'images 'stylesheets 'scripts 'analytics 'ads and URL patterns the browser
+;; refuses to load), #:init-script (JavaScript run in every document first),
+;; #:locale ("de-DE"), #:timezone ("Europe/Berlin").
 (define (web-crawl source
                    #:max-pages [max-pages #f]
                    #:max-depth [max-depth #f]
@@ -98,7 +101,11 @@
                    #:viewport [viewport #f]
                    #:javascript [javascript #t]
                    #:actions [actions #f]
-                   #:scripts [scripts #f])
+                   #:scripts [scripts #f]
+                   #:block [block #f]
+                   #:init-script [init-script #f]
+                   #:locale [locale #f]
+                   #:timezone [timezone #f])
   (%host-call "web.crawl"
               (%options (hash 'url
                               (cond
@@ -130,4 +137,64 @@
                         'viewport viewport
                         'noJavascript (not javascript)
                         'actions actions
-                        'scripts scripts)))
+                        'scripts scripts
+                        'block (and block (%block "web-crawl" block))
+                        'initScript init-script
+                        'locale locale
+                        'timezone timezone)))
+
+;; #:block as a list of strings: a kind symbol or a URL pattern, or a list
+;; of them.
+(define (%block who value)
+  (let ([entry (lambda (one)
+                 (cond
+                   [(symbol? one) (symbol->string one)]
+                   [(string? one) one]
+                   [else (error (string-append who ": #:block takes kind symbols and URL pattern strings"))]))])
+    (if (list? value) (map entry value) (list (entry value)))))
+
+;; `source` as a trimmed URL: a string, or anything carrying one under 'url.
+(define (%capture-url who source)
+  (cond
+    [(string? source) (trim source)]
+    [(and (hash? source) (string? (hash-try-get source 'url))) (trim (hash-ref source 'url))]
+    [else (error (string-append who ": the source must be a URL or carry one under 'url"))]))
+
+;; Load `source` in a local headless Chrome and save a PNG of it at `path`
+;; (relative: under the session's working directory): {url, finalUrl, title,
+;; path, bytes}. #:full-page #t captures the whole page, not the viewport;
+;; #:viewport (width height); #:wait (seconds after the load); #:init-script;
+;; #:timeout (seconds, default 30). The user's web.crawl identity applies.
+(define (web-screenshot source path
+                        #:full-page [full-page #f]
+                        #:viewport [viewport #f]
+                        #:wait [wait #f]
+                        #:init-script [init-script #f]
+                        #:timeout [timeout #f])
+  (%host-call "web.capture"
+              (%options (hash 'url (%capture-url "web-screenshot" source) 'path path 'kind "png")
+                        'fullPage full-page
+                        'viewport viewport
+                        'waitSeconds wait
+                        'initScript init-script
+                        'timeoutSeconds (and timeout (%seconds "web-screenshot" timeout)))))
+
+;; Load `source` in a local headless Chrome and print it to a PDF at `path`:
+;; {url, finalUrl, title, path, bytes}. #:landscape #t; #:background #t
+;; prints background colours and images; #:viewport, #:wait, #:init-script
+;; and #:timeout as for web-screenshot.
+(define (web-pdf source path
+                 #:landscape [landscape #f]
+                 #:background [background #f]
+                 #:viewport [viewport #f]
+                 #:wait [wait #f]
+                 #:init-script [init-script #f]
+                 #:timeout [timeout #f])
+  (%host-call "web.capture"
+              (%options (hash 'url (%capture-url "web-pdf" source) 'path path 'kind "pdf")
+                        'landscape landscape
+                        'background background
+                        'viewport viewport
+                        'waitSeconds wait
+                        'initScript init-script
+                        'timeoutSeconds (and timeout (%seconds "web-pdf" timeout)))))

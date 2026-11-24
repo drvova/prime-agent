@@ -46,7 +46,10 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 # `#:render #t`; the browser process itself is started by `web_crawl`.
 # `ua_generator` (real browser user agents) and `socks` (SOCKS5 proxies) serve
 # only the user's `web.crawl.rotateUserAgent` and `web.crawl.proxies` settings.
-spider = { version = "=2.54.2", default-features = false, features = ["sync", "regex", "headers", "sitemap", "chrome", "ua_generator", "socks"] }
+# `chrome_intercept` and `adblock` (spider's built-in filter list; not
+# `adblock_easylist`, which downloads EasyList at build time) serve a rendered
+# crawl's `#:block` and the `web.crawl.auth` credentials.
+spider = { version = "=2.54.2", default-features = false, features = ["sync", "regex", "headers", "sitemap", "chrome", "chrome_intercept", "adblock", "ua_generator", "socks"] }
 # Checks `web-crawl`'s include and exclude patterns as spider will compile them.
 regex = "1"
 tar = "0.4"

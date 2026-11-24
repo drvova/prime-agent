@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail};
 use serde_json::Value;
 use spider::configuration::{Viewport, WaitForDelay, WaitForIdleNetwork, WaitForSelector};
-use spider::features::chrome_common::WebAutomation;
+use spider::features::chrome_common::{RequestInterceptConfiguration, WebAutomation};
 use spider::hashbrown::HashMap;
 use spider::website::Website;
 
@@ -54,6 +54,82 @@ pub(crate) struct Browsing {
     pub(crate) actions: Vec<(String, Vec<WebAutomation>)>,
     /// JavaScript to evaluate per URL or path.
     pub(crate) scripts: Vec<(String, String)>,
+    /// The requests the browser refuses to make.
+    pub(crate) block: Option<Blocking>,
+    /// JavaScript run in every document before the page's own scripts.
+    pub(crate) init_script: Option<String>,
+    /// The locale the pages see (`de-DE`).
+    pub(crate) locale: Option<String>,
+    /// The time zone the pages see (`Europe/Berlin`).
+    pub(crate) timezone: Option<String>,
+}
+
+/// What a rendered crawl's browser refuses to load: kinds of resources,
+/// first-party or not, and URLs matching patterns.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct Blocking {
+    pub(crate) kinds: std::collections::BTreeSet<BlockKind>,
+    /// URL patterns (substrings or `*` globs) blocked outright.
+    pub(crate) patterns: Vec<String>,
+}
+
+/// A kind of resource a rendered crawl can refuse to load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum BlockKind {
+    /// Images, media and fonts.
+    Images,
+    Stylesheets,
+    Scripts,
+    /// Analytics and tracking requests.
+    Analytics,
+    /// Requests spider's ad-block engine (its built-in filter list) matches.
+    Ads,
+}
+
+impl Blocking {
+    /// The `block` option: a list of kinds (`images`, `stylesheets`,
+    /// `scripts`, `analytics`, `ads`) and URL patterns.
+    ///
+    /// # Errors
+    ///
+    /// An entry that is neither a known kind nor a pattern.
+    fn parse(value: &Value) -> anyhow::Result<Blocking> {
+        let entries = match value {
+            Value::String(one) => vec![Value::String(one.clone())],
+            Value::Array(many) => many.clone(),
+            _ => bail!("web.crawl block must be a kind, a URL pattern, or a list of them"),
+        };
+        let mut blocking = Blocking::default();
+        for entry in entries {
+            let Value::String(entry) = entry else {
+                bail!("web.crawl block takes kinds and URL patterns as strings");
+            };
+            match entry.as_str() {
+                "images" => {
+                    blocking.kinds.insert(BlockKind::Images);
+                }
+                "stylesheets" => {
+                    blocking.kinds.insert(BlockKind::Stylesheets);
+                }
+                "scripts" => {
+                    blocking.kinds.insert(BlockKind::Scripts);
+                }
+                "analytics" => {
+                    blocking.kinds.insert(BlockKind::Analytics);
+                }
+                "ads" => {
+                    blocking.kinds.insert(BlockKind::Ads);
+                }
+                pattern if pattern.contains(['/', '.', '*']) => {
+                    blocking.patterns.push(pattern.to_string());
+                }
+                unknown => bail!(
+                    "web.crawl block: {unknown:?} is not a kind (images, stylesheets, scripts, analytics, ads) or a URL pattern"
+                ),
+            }
+        }
+        Ok(blocking)
+    }
 }
 
 impl Reach {
@@ -172,7 +248,11 @@ impl Browsing {
     /// A browser option on a crawl without `render`, an option of the wrong
     /// shape or out of range, or an automation step spider does not know.
     pub(crate) fn parse(data: &Value, rendered: bool) -> anyhow::Result<Browsing> {
-        const OPTIONS: [&str; 8] = [
+        const OPTIONS: [&str; 12] = [
+            "block",
+            "initScript",
+            "locale",
+            "timezone",
             "waitIdleSeconds",
             "waitSelector",
             "waitDom",
@@ -276,6 +356,13 @@ impl Browsing {
             no_javascript: flag(data, "noJavascript"),
             actions,
             scripts,
+            block: match data.get("block") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(Blocking::parse(value)?),
+            },
+            init_script: text(data, "initScript"),
+            locale: text(data, "locale"),
+            timezone: text(data, "timezone"),
         })
     }
 
@@ -308,6 +395,29 @@ impl Browsing {
         if !self.scripts.is_empty() {
             website.with_execution_scripts(Some(self.scripts.iter().cloned().collect()));
         }
+        if let Some(block) = &self.block {
+            let blocks = |kind| block.kinds.contains(&kind);
+            // Nothing the blocking names is let through for being first-party.
+            website.with_chrome_intercept(RequestInterceptConfiguration {
+                enabled: true,
+                block_visuals: blocks(BlockKind::Images),
+                block_stylesheets: blocks(BlockKind::Stylesheets),
+                block_javascript: blocks(BlockKind::Scripts),
+                block_analytics: blocks(BlockKind::Analytics),
+                block_ads: blocks(BlockKind::Ads),
+                allow_first_party_visuals: !blocks(BlockKind::Images),
+                allow_first_party_stylesheets: !blocks(BlockKind::Stylesheets),
+                allow_first_party_javascript: !blocks(BlockKind::Scripts),
+                blacklist_patterns: (!block.patterns.is_empty()).then(|| block.patterns.clone()),
+                ..RequestInterceptConfiguration::default()
+            });
+        }
+        if let Some(script) = &self.init_script {
+            website.with_evaluate_on_new_document(Some(Box::new(script.clone())));
+        }
+        website
+            .with_locale(self.locale.clone())
+            .with_timezone_id(self.timezone.clone());
     }
 }
 

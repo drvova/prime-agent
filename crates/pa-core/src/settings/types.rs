@@ -345,6 +345,17 @@ pub struct WebCrawlSettings {
     pub stealth: Option<bool>,
     /// A rendered crawl presents a consistent real-browser fingerprint.
     pub fingerprint: Option<bool>,
+    /// HTTP Basic credentials a plain crawl sends to the crawled site's
+    /// hosts.
+    pub auth: Option<WebCrawlCredentials>,
+}
+
+/// `web.crawl.auth`: a username and password.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebCrawlCredentials {
+    pub username: String,
+    pub password: String,
 }
 
 /// `cacheRetention`: the prompt-cache lifetime requested from providers with

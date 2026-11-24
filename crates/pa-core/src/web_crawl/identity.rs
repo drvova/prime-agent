@@ -33,12 +33,14 @@ pub(crate) struct Identity {
     respect_robots: bool,
     user_agent: UserAgent,
     /// The extra headers, without the cookies.
-    headers: HeaderMap,
-    cookies: Option<String>,
-    /// The extra headers with the cookies as a `Cookie` header: what a
-    /// plain request to the site's hosts adds.
+    pub(crate) headers: HeaderMap,
+    pub(crate) cookies: Option<String>,
+    /// The extra headers with the cookies as a `Cookie` header and the
+    /// Basic credentials as an `Authorization` one: what a plain request to
+    /// the site's hosts adds. A browser is never given these: it would send
+    /// them to every host a page loads from.
     pub(crate) site_headers: HeaderMap,
-    proxies: Vec<String>,
+    pub(crate) proxies: Vec<String>,
     stealth: bool,
     fingerprint: bool,
 }
@@ -95,6 +97,7 @@ pub(crate) fn changes(settings: &WebCrawlSettings) -> Vec<&'static str> {
         ),
         (set(&settings.stealth), "stealth"),
         (set(&settings.fingerprint), "a browser fingerprint"),
+        (settings.auth.is_some(), "HTTP Basic credentials"),
     ]
     .into_iter()
     .filter_map(|(on, name)| on.then_some(name))
@@ -139,6 +142,14 @@ impl Identity {
         let mut site_headers = headers.clone();
         if let Some(cookies) = &cookies {
             site_headers.insert(reqwest::header::COOKIE, header_value("cookies", cookies)?);
+        }
+        if let Some(auth) = &settings.auth {
+            use base64::Engine as _;
+            let encoded = base64::engine::general_purpose::STANDARD
+                .encode(format!("{}:{}", auth.username, auth.password));
+            let mut value = header_value("auth", &format!("Basic {encoded}"))?;
+            value.set_sensitive(true);
+            site_headers.insert(reqwest::header::AUTHORIZATION, value);
         }
         let proxies = settings
             .proxies

@@ -20,6 +20,7 @@
 //! session's spill store under an `out:` handle instead.
 
 mod browser;
+mod capture;
 mod host;
 mod identity;
 mod options;
@@ -36,7 +37,7 @@ use serde_json::{json, Value};
 use spider::fetch_engine::{EngineError, EngineRequest, EngineResponse, HttpFetchEngine};
 use url::Url;
 
-pub(crate) use host::{CrawlObserver, CrawlSettings, WebCrawlHost};
+pub(crate) use host::{CaptureObserver, CrawlObserver, CrawlSettings, WebCrawlHost};
 pub(crate) use identity::{changes as identity_changes, Identity};
 
 use crate::kernel::spill::{SpillCopy, SpillStore};
@@ -113,6 +114,14 @@ pub(crate) struct CrawlOutcome {
     pub(crate) elapsed: Duration,
     /// The user's `web.crawl` settings changed what the crawl presents.
     pub(crate) identity: bool,
+}
+
+/// What adoption telemetry learns of one `web-screenshot` or `web-pdf`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CaptureOutcome {
+    /// A PDF rather than a screenshot.
+    pub(crate) pdf: bool,
+    pub(crate) ok: bool,
 }
 
 /// A finished crawl.
@@ -214,12 +223,19 @@ impl WebCrawlEngine {
         request.reach.apply(&mut website, request.max_pages);
         request.browsing.apply(&mut website);
         let mut notes = Vec::new();
+        if request.render == Render::Browser
+            && identity
+                .site_headers
+                .contains_key(reqwest::header::AUTHORIZATION)
+        {
+            notes.push("web.crawl.auth is sent on plain crawls only: a browser would send it to every host a page loads from".to_string());
+        }
         // Kept until the crawl's end: dropping it kills the browser.
         let browser = match request.render {
             Render::Http => None,
             Render::Browser => {
                 let program = browser::find().ok_or_else(|| anyhow!(browser::NO_BROWSER))?;
-                let started = browser::Browser::start(&program).await?;
+                let started = browser::Browser::start(&program, &[]).await?;
                 website.with_chrome_connection(Some(started.endpoint.clone()));
                 Some(started)
             }
