@@ -35,10 +35,13 @@ pub trait EventBusController: Send + Sync {
 pub struct NoEventBus;
 
 impl EventBusController for NoEventBus {
-    async fn request(&self, _request: EventBusRequest) -> anyhow::Result<Value> {
-        Err(anyhow!(
+    fn request(
+        &self,
+        _request: EventBusRequest,
+    ) -> impl Future<Output = anyhow::Result<Value>> + Send {
+        std::future::ready(Err(anyhow!(
             "the event bus runs in the Prime Agent daemon; this session runs without one"
-        ))
+        )))
     }
 }
 

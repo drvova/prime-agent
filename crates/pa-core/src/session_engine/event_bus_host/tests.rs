@@ -24,9 +24,12 @@ const NO_OPTIONS: KernelExecuteOptions<'static> = KernelExecuteOptions {
 struct Recording(Mutex<Vec<EventBusRequest>>);
 
 impl EventBusController for Recording {
-    async fn request(&self, request: EventBusRequest) -> anyhow::Result<Value> {
+    fn request(
+        &self,
+        request: EventBusRequest,
+    ) -> impl std::future::Future<Output = anyhow::Result<Value>> + Send {
         self.0.lock().unwrap().push(request);
-        Ok(json!({ "ok": true }))
+        std::future::ready(Ok(json!({ "ok": true })))
     }
 }
 
