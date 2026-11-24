@@ -20,6 +20,7 @@ properties = [
   "web_crawl_smart_count",
   "web_crawl_page_count",
   "web_crawl_identity_count",
+  "web_crawl_warc_count",
   "web_crawl_max_ms",
   "web_screenshot_count",
   "web_pdf_count",

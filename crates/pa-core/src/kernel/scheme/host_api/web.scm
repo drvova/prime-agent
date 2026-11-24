@@ -74,7 +74,8 @@
 ;; Reach: #:budget (a hash of path prefix to pages, "*" for all),
 ;; #:external-domains (hosts crawled as part of the site), #:full-resources
 ;; #t (PDFs, JSON and text the pages link, not only HTML), #:normalize #t,
-;; #:retry (0-3). With #:render only: #:wait-idle / #:wait-delay (seconds),
+;; #:retry (0-3), #:throttle 'auto (pace each host by its latency), #:warc
+;; "path" (append every response to a WARC file). With #:render only: #:wait-idle / #:wait-delay (seconds),
 ;; #:wait-selector / #:wait-dom (CSS), #:viewport (width height),
 ;; #:javascript #f, #:actions (a hash of URL or path to automation steps),
 ;; #:scripts (a hash of URL or path to JavaScript to evaluate), #:block (kinds
@@ -97,6 +98,8 @@
                    #:full-resources [full-resources #f]
                    #:normalize [normalize #f]
                    #:retry [retry #f]
+                   #:throttle [throttle #f]
+                   #:warc [warc #f]
                    #:wait-idle [wait-idle #f]
                    #:wait-delay [wait-delay #f]
                    #:wait-selector [wait-selector #f]
@@ -138,6 +141,12 @@
                         'fullResources full-resources
                         'normalize normalize
                         'retry (and retry (%integer "web-crawl" "#:retry" retry))
+                        'throttle (cond
+                                    [(not throttle) #f]
+                                    [(symbol? throttle) (symbol->string throttle)]
+                                    [(string? throttle) throttle]
+                                    [else (error "web-crawl: #:throttle is 'fixed or 'auto")])
+                        'warc warc
                         'waitIdleSeconds wait-idle
                         'waitDelaySeconds wait-delay
                         'waitSelector wait-selector

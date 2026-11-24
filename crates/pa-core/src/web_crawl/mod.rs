@@ -32,7 +32,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, Context};
 use serde_json::{json, Value};
 use spider::fetch_engine::{EngineError, EngineRequest, EngineResponse, HttpFetchEngine};
 use url::Url;
@@ -94,6 +94,8 @@ pub(crate) struct CrawlRequest {
     pub(crate) reach: options::Reach,
     /// What the browser does on each page of a rendered crawl.
     pub(crate) browsing: options::Browsing,
+    /// A WARC file every response the crawl received is appended to.
+    pub(crate) warc: Option<std::path::PathBuf>,
 }
 
 /// How pages are loaded.
@@ -118,6 +120,8 @@ pub(crate) struct CrawlOutcome {
     pub(crate) elapsed: Duration,
     /// The user's `web.crawl` settings changed what the crawl presents.
     pub(crate) identity: bool,
+    /// The crawl wrote a WARC file.
+    pub(crate) archived: bool,
 }
 
 /// What adoption telemetry learns of one `web-screenshot` or `web-pdf`.
@@ -143,6 +147,8 @@ pub(crate) struct Crawl {
     pub(crate) truncated: bool,
     pub(crate) notes: Vec<String>,
     pub(crate) elapsed: Duration,
+    /// The WARC file written and the records in it.
+    pub(crate) warc: Option<(String, u64)>,
 }
 
 /// The crawler: the client shared with `web.read`, and where test sites
@@ -255,6 +261,20 @@ impl WebCrawlEngine {
         // Room for every page the limit allows plus its failures.
         let mut pages_rx = website.subscribe(request.max_pages as usize * 2 + 16);
         let mut collected = Collected::new(request, store);
+        if let Some(path) = &request.warc {
+            pa_types::session_scope::ensure_live()?;
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            collected.warc = Some((
+                tokio::fs::File::create(path)
+                    .await
+                    .with_context(|| format!("creating the WARC file {}", path.display()))?,
+                0,
+            ));
+        }
         let deadline_hit = {
             let run = async {
                 let crawl = async {
@@ -307,6 +327,19 @@ impl WebCrawlEngine {
                 request.max_pages
             ));
         }
+        let warc = match collected.warc.take() {
+            Some((mut file, records)) => {
+                use tokio::io::AsyncWriteExt as _;
+                if let Err(error) = file.flush().await {
+                    notes.push(format!("the WARC file could not be finished: {error}"));
+                }
+                request
+                    .warc
+                    .as_ref()
+                    .map(|path| (path.display().to_string(), records))
+            }
+            None => None,
+        };
         notes.append(&mut collected.notes);
         if collected.pages.is_empty() && collected.failed.is_empty() && !deadline_hit {
             bail!(
@@ -322,6 +355,7 @@ impl WebCrawlEngine {
             failed: collected.failed,
             notes,
             elapsed: started.elapsed(),
+            warc,
         })
     }
 }
@@ -337,6 +371,9 @@ struct Collected<'a> {
     chars: usize,
     /// Pages the broadcast dropped before they were taken.
     missed: u64,
+    /// The WARC file and the records written to it; `None` once a write
+    /// failed (with a note).
+    warc: Option<(tokio::fs::File, u64)>,
 }
 
 impl<'a> Collected<'a> {
@@ -349,6 +386,7 @@ impl<'a> Collected<'a> {
             notes: Vec::new(),
             chars: 0,
             missed: 0,
+            warc: None,
         }
     }
 
@@ -356,6 +394,26 @@ impl<'a> Collected<'a> {
     async fn take(&mut self, page: &spider::page::Page) {
         if self.pages.len() >= self.request.max_pages as usize {
             return;
+        }
+        if let Some((file, records)) = &mut self.warc {
+            use tokio::io::AsyncWriteExt as _;
+            let written = match (
+                pa_types::session_scope::ensure_live(),
+                spider::utils::warc::serialize_page(page),
+            ) {
+                (Ok(()), Some(record)) => file.write_all(&record).await,
+                (Ok(()), None) => Ok(()),
+                (Err(error), Some(_) | None) => Err(error),
+            };
+            match written {
+                Ok(()) => *records += 1,
+                Err(error) => {
+                    self.notes.push(format!(
+                        "the WARC file stopped at {records} records: {error}"
+                    ));
+                    self.warc = None;
+                }
+            }
         }
         let status = page.status_code.as_u16();
         if !page.status_code.is_success() {
@@ -511,6 +569,7 @@ impl Crawl {
             "failed": self.failed,
             "truncated": self.truncated,
             "notes": self.notes,
+            "warc": self.warc.as_ref().map(|(path, records)| json!({"path": path, "records": records})),
             "text": self.text(),
         })
     }
@@ -680,5 +739,17 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
         timeout,
         reach: options::Reach::parse(data)?,
         browsing: options::Browsing::parse(data, render != Render::Http)?,
+        warc: data
+            .get("warc")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(|path| {
+                let path = std::path::PathBuf::from(path);
+                match (path.is_absolute(), pa_types::session_scope::current_dir()) {
+                    (false, Ok(cwd)) => cwd.join(path),
+                    (true, _) | (false, Err(_)) => path,
+                }
+            }),
     })
 }

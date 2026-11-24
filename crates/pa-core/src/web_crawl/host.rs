@@ -102,6 +102,7 @@ impl WebCrawlHost {
                 pages: crawled.as_ref().ok().map(|crawl| crawl.pages.len()),
                 elapsed: started.elapsed(),
                 identity: !identity::changes(&settings).is_empty(),
+                archived: crawled.as_ref().is_ok_and(|crawl| crawl.warc.is_some()),
             });
         }
         crawled.map(|crawl| crawl.to_json())

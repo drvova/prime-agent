@@ -34,6 +34,9 @@ pub(crate) struct Reach {
     /// Treat URLs that differ only in a trailing slash and the like as one.
     pub(crate) normalize: bool,
     pub(crate) retry: u8,
+    /// Pace each host by its measured latency (spider's `auto_throttle`),
+    /// never faster than the polite fixed delay.
+    pub(crate) auto_throttle: bool,
 }
 
 /// What the browser does on each page of a rendered crawl.
@@ -186,6 +189,11 @@ impl Reach {
             full_resources: flag(data, "fullResources"),
             normalize: flag(data, "normalize"),
             retry,
+            auto_throttle: match data.get("throttle").and_then(Value::as_str) {
+                None | Some("fixed") => false,
+                Some("auto") => true,
+                Some(other) => bail!("web.crawl throttle must be fixed or auto; got {other:?}"),
+            },
         })
     }
 
@@ -229,6 +237,15 @@ impl Reach {
             .with_full_resources(self.full_resources)
             .with_normalize(self.normalize)
             .with_retry(self.retry);
+        if self.auto_throttle {
+            website.configuration.with_auto_throttle(
+                spider::utils::auto_throttle::AutoThrottleConfig {
+                    min_delay_ms: super::DELAY_MS,
+                    max_delay_ms: 10_000,
+                    ..Default::default()
+                },
+            );
+        }
     }
 
     /// Whether `host` is one of the crawl's other hosts.

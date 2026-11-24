@@ -951,3 +951,44 @@ async fn a_smart_crawl_renders_only_the_page_that_needs_it() {
         )
     );
 }
+
+/// `#:warc` appends one WARC response record per response the crawl
+/// received, under the session's working directory, and the result says
+/// where and how many.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crawl_archives_every_response_to_its_warc_file() {
+    let site = Site::start(false).await;
+    let dir = std::env::temp_dir().join(format!("web-crawl-warc-{}", std::process::id()));
+    let scope = pa_types::session_scope::SessionScope::new(
+        "warc".to_string(),
+        dir.clone(),
+        BTreeMap::new(),
+        BTreeSet::new(),
+    );
+    let crawl = {
+        let _scope = pa_types::session_scope::enter(Some(scope));
+        WebCrawlEngine::direct()
+            .crawl(
+                &request(&site, &json!({"maxDepth": 2, "warc": "archive/site.warc"})),
+                &Identity::default(),
+                None,
+            )
+            .await
+            .unwrap()
+    };
+    let archive = std::fs::read_to_string(dir.join("archive/site.warc")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut archived: Vec<String> = archive
+        .lines()
+        .filter_map(|line| line.strip_prefix("WARC-Target-URI: "))
+        .map(|uri| Url::parse(uri.trim()).unwrap().path().to_string())
+        .collect();
+    archived.sort();
+    assert_eq!(
+        (archived, crawl.warc.clone()),
+        (
+            paths(&crawl),
+            Some((dir.join("archive/site.warc").display().to_string(), 6))
+        )
+    );
+}

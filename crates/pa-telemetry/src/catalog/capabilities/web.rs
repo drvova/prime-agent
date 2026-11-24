@@ -25,7 +25,8 @@ pub(in crate::catalog) const AGENT_WEB_READS: EventRule = EventRule {
 /// Kernel `web.crawl` adoption for one session, emitted at session end beside `agent web reads`
 /// only when the session crawled a site: crawls, crawls that failed outright, plain, rendered
 /// (a local browser) and smart (HTTP first, the browser when a page needs it) crawls, pages returned, crawls whose identity the user's `web.crawl` settings
-/// changed (robots.txt, user agent, headers, cookies, proxies, stealth), the slowest crawl, and
+/// changed (robots.txt, user agent, headers, cookies, proxies, stealth), crawls that wrote a WARC
+/// archive, the slowest crawl, and
 /// `web-screenshot` / `web-pdf` captures and their failures.
 /// Counts only: never a URL, a pattern, a title, a setting's value, or content.
 pub(in crate::catalog) const AGENT_WEB_CRAWLS: EventRule = EventRule {
@@ -40,6 +41,7 @@ pub(in crate::catalog) const AGENT_WEB_CRAWLS: EventRule = EventRule {
         ("web_crawl_smart_count", required(count())),
         ("web_crawl_page_count", required(count())),
         ("web_crawl_identity_count", required(count())),
+        ("web_crawl_warc_count", required(count())),
         ("web_crawl_max_ms", required(duration())),
         ("web_screenshot_count", required(count())),
         ("web_pdf_count", required(count())),
