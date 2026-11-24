@@ -25,9 +25,12 @@ const BUSY_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 /// error instead of hanging the caller.
 const BUSY_RETRY_DEADLINE: Duration = Duration::from_secs(10);
 
-/// A listening named-pipe endpoint. One instance waits for the next client at all times; `accept`
-/// connects that instance and has already created its replacement, so the pipe name stays
-/// connectable - the named-pipe equivalent of a backlog.
+/// A listening named-pipe endpoint. Exactly one instance listens at a time (tokio's documented
+/// server loop): a client may connect to it before `accept` waits, and `accept` hands that
+/// client out. Two listening instances would let a lone client connect to the one no `accept`
+/// waits on yet, which is only handed out on the following accept. While the connected
+/// instance's replacement is being created a client sees the pipe busy and waits
+/// ([`connect`]).
 pub(crate) struct NamedPipeListener {
     name: String,
     /// The instance currently listening for the next client.
@@ -48,17 +51,24 @@ impl NamedPipeListener {
         })
     }
 
-    /// Hand the next client a connected server instance. The next instance is created before
-    /// waiting, so a creation failure surfaces first; two instances listen while this call waits,
-    /// keeping clients off the busy path.
+    /// Hand the next client a connected server instance, then create the one that listens
+    /// after it. The listening instance stays in its slot while this call waits, so an accept
+    /// dropped mid-wait (a timeout) leaves it listening for the next one. A replacement that
+    /// cannot be created leaves the slot empty, and the next accept creates it, failing there.
     pub(crate) async fn accept(&self) -> io::Result<NamedPipeServer> {
         let mut pending = self.pending.lock().await;
-        let next = ServerOptions::new().create(&self.name)?;
-        let server = pending
-            .replace(next)
-            .expect("a listening instance is always kept ready");
-        server.connect().await?;
-        Ok(server)
+        let listening = match pending.take() {
+            Some(listening) => listening,
+            None => ServerOptions::new().create(&self.name)?,
+        };
+        if let Err(error) = pending.insert(listening).connect().await {
+            // A client that came and went leaves the instance unusable.
+            *pending = None;
+            return Err(error);
+        }
+        let replacement = ServerOptions::new().create(&self.name).ok();
+        Ok(std::mem::replace(&mut *pending, replacement)
+            .expect("the slot holds the instance that just connected"))
     }
 }
 
@@ -234,6 +244,28 @@ mod tests {
         let mut buf = [0u8; 4];
         server_read.read_exact(&mut buf).await.expect("server read");
         assert_eq!(&buf, b"pong");
+    }
+
+    /// A client that connects while an accept waits is the one that accept hands out, round
+    /// after round: one instance listens, so no client lands on an instance no accept waits on.
+    #[tokio::test]
+    async fn the_waiting_accept_hands_out_the_client_that_connects_then() {
+        use std::future::Future as _;
+        let name = test_pipe("one-listening").to_string_lossy().into_owned();
+        let listener = super::NamedPipeListener::bind(&name).expect("bind");
+        for round in 0..4 {
+            let mut accept = std::pin::pin!(listener.accept());
+            let first_poll =
+                std::future::poll_fn(|cx| std::task::Poll::Ready(accept.as_mut().poll(cx))).await;
+            assert!(first_poll.is_pending(), "round {round}: no client yet");
+            let _client = super::ClientOptions::new().open(&name).expect("connect");
+            tokio::time::timeout(Duration::from_secs(5), accept)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("round {round}: the waiting accept never got the client")
+                })
+                .expect("accept");
+        }
     }
 
     #[tokio::test]
