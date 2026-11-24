@@ -429,6 +429,7 @@ mod tests {
 
     /// The exact field shape lsof 4.95 prints on Linux: the name carries the socket type, and a
     /// pathless connected socket names only its type.
+    #[cfg(unix)] // lsof and the unix socket paths it lists exist only on unix
     #[test]
     fn parse_lsof_listeners_drops_the_linux_socket_type_suffix() {
         let sample = "p123\nn/tmp/agent/daemon.sock type=STREAM\nntype=STREAM\n";

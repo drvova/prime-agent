@@ -261,6 +261,7 @@ fn keeps_a_dismissed_timeout_burst_hidden_when_a_later_timeout_is_isolated() {
     ));
 }
 
+#[cfg(unix)] // the log's file identity is unix-only (dev:ino), and the .old bridge keys on it
 #[test]
 fn surfaces_a_crash_at_the_end_of_agent_jsonl_old_without_a_trailing_newline() {
     let (_dir, logs) = agent_log_dir("incident-old-tail");
@@ -301,6 +302,7 @@ fn skips_the_old_bridge_when_a_rotation_makes_it_the_live_logs_own_generation() 
     assert_eq!(state.entries.len(), 1);
 }
 
+#[cfg(unix)] // the log's file identity is unix-only (dev:ino), and the .old bridge keys on it
 #[test]
 fn completes_the_un_consumed_tail_of_a_generation_that_rotates_out_mid_session() {
     let (_dir, logs) = agent_log_dir("incident-mid-rotation");
