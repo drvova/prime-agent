@@ -42,9 +42,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
 /// The longest deadline a call may ask for.
 const MAX_TIMEOUT: Duration = Duration::from_mins(10);
 /// One model request's deadline.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// The longest goal or extraction prompt.
-const MAX_PROMPT_CHARS: usize = 8_000;
+pub(super) const MAX_PROMPT_CHARS: usize = 8_000;
 /// Characters of the final page's markdown returned unless asked otherwise.
 const DEFAULT_MAX_CHARS: usize = 8_000;
 /// What the key reads as wherever it would have appeared.
@@ -123,7 +123,7 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<AutomateRequest> {
 }
 
 /// A provider credential, never printed.
-struct ApiKey(String);
+pub(super) struct ApiKey(pub(super) String);
 
 impl std::fmt::Debug for ApiKey {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -134,9 +134,9 @@ impl std::fmt::Debug for ApiKey {
 /// The model the user's `web.crawl.ai` names, with its credential.
 #[derive(Debug)]
 pub(crate) struct Model {
-    endpoint: Url,
-    name: String,
-    key: Option<ApiKey>,
+    pub(super) endpoint: Url,
+    pub(super) name: String,
+    pub(super) key: Option<ApiKey>,
 }
 
 /// Where a provider's credential is read from: the session's auth storage.
@@ -154,7 +154,7 @@ impl Model {
         settings: Option<&WebCrawlAiSettings>,
         credentials: Option<&Credentials>,
     ) -> anyhow::Result<Model> {
-        const OFF: &str = "web-automate is off: it spends model tokens on the user's account, so only the user can turn it on, with the global web.crawl.ai setting ({\"endpoint\": an OpenAI-compatible chat-completions URL, \"model\": ..., \"keyFrom\": a configured provider id}); do the steps yourself with web-crawl #:actions instead";
+        const OFF: &str = "web-automate and web-crawl #:automate are off: they spend model tokens on the user's account, so only the user can turn them on, with the global web.crawl.ai setting ({\"endpoint\": an OpenAI-compatible chat-completions URL, \"model\": ..., \"keyFrom\": a configured provider id}); do the steps yourself with web-crawl #:actions instead";
         let Some(settings) = settings else {
             bail!(OFF);
         };
@@ -211,12 +211,26 @@ impl Model {
     }
 
     /// `text` with the key, wherever it appears, replaced.
-    fn scrub(&self, text: &str) -> String {
+    pub(super) fn scrub(&self, text: &str) -> String {
         match &self.key {
             Some(ApiKey(key)) if !key.is_empty() => text.replace(key.as_str(), REDACTED),
             Some(_) | None => text.to_string(),
         }
     }
+}
+
+/// The client the model requests go out on: pa-core's (`pa_ai::utils::tls`:
+/// the session's proxies and CA bundle), never `spider_agent`'s static one.
+///
+/// # Errors
+///
+/// The client could not be built.
+pub(super) fn client() -> anyhow::Result<reqwest::Client> {
+    pa_ai::utils::tls::http_client_builder()
+        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(Duration::from_secs(15))
+        .build()
+        .context("building the automation's client")
 }
 
 /// What adoption telemetry learns of one `web-automate`: counts only.
@@ -252,11 +266,7 @@ pub(crate) async fn automate(
 ) -> (anyhow::Result<Value>, AutomateOutcome) {
     let (mut steps, mut calls) = (0, 0);
     let reply = async {
-        let client = pa_ai::utils::tls::http_client_builder()
-            .timeout(REQUEST_TIMEOUT)
-            .connect_timeout(Duration::from_secs(15))
-            .build()
-            .context("building the automation's client")?;
+        let client = client()?;
         let config = RemoteMultimodalConfig {
             max_rounds: request.max_steps,
             // No closing screenshot in the result: it would be a base64 image.

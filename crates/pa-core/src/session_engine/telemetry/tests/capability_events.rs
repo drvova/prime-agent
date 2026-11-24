@@ -119,6 +119,7 @@ fn drive(counters: &SessionCounters) {
                 shaped,
                 extracted,
                 session_cookies: extracted,
+                automation_calls: shaped.then_some(7),
             },
         });
     }
@@ -792,7 +793,7 @@ const EXPECTED: &[(&str, &str)] = &[
     ),
     (
         "agent web crawls",
-        r#"{"web_crawl_count":3,"web_crawl_failed_count":1,"web_crawl_plain_count":1,"web_crawl_rendered_count":1,"web_crawl_smart_count":1,"web_crawl_page_count":6,"web_crawl_identity_count":0,"web_crawl_warc_count":0,"web_crawl_transformed_count":1,"web_crawl_extract_count":2,"web_crawl_session_cookie_count":2,"web_crawl_max_ms":80,"web_screenshot_count":0,"web_pdf_count":0,"web_capture_failed_count":0,"web_capture_session_cookie_count":0,"web_extract_count":3,"web_extract_failed_count":1,"web_automate_count":2,"web_automate_failed_count":1,"web_automate_refused_count":1,"web_automate_step_count":5,"web_automate_model_call_count":5}"#,
+        r#"{"web_crawl_count":3,"web_crawl_failed_count":1,"web_crawl_plain_count":1,"web_crawl_rendered_count":1,"web_crawl_smart_count":1,"web_crawl_page_count":6,"web_crawl_identity_count":0,"web_crawl_warc_count":0,"web_crawl_transformed_count":1,"web_crawl_extract_count":2,"web_crawl_session_cookie_count":2,"web_crawl_automate_count":1,"web_crawl_automate_model_call_count":7,"web_crawl_max_ms":80,"web_screenshot_count":0,"web_pdf_count":0,"web_capture_failed_count":0,"web_capture_session_cookie_count":0,"web_extract_count":3,"web_extract_failed_count":1,"web_automate_count":2,"web_automate_failed_count":1,"web_automate_refused_count":1,"web_automate_step_count":5,"web_automate_model_call_count":5}"#,
     ),
     (
         "agent worktrees",

@@ -43,7 +43,7 @@ pub(crate) use automate::AutomateOutcome;
 pub(crate) use host::{
     AutomateObserver, CaptureObserver, CrawlObserver, CrawlSettings, ExtractObserver, WebCrawlHost,
 };
-pub(crate) use identity::{changes as identity_changes, Identity};
+pub(crate) use identity::{environment as crawl_environment, Identity};
 
 use crate::kernel::spill::{SpillCopy, SpillStore};
 use crate::web_read::{Accept, Fetched, Fetcher, HttpStatusError, ReadRequest, WebPage};
@@ -74,6 +74,8 @@ const DELAY_MS: u64 = 250;
 const PAGE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The largest page body a rendered crawl keeps.
 const RENDERED_PAGE_BYTES: f64 = 8.0 * 1024.0 * 1024.0;
+/// Model rounds `#:automate` runs on each page: a crawl multiplies them.
+const AUTOMATE_STEPS: usize = 3;
 /// What a crawl announces itself as unless the user's settings say otherwise.
 const USER_AGENT: &str =
     "Mozilla/5.0 (compatible; prime-agent web.crawl; +https://github.com/PrimeIntellect-ai/prime-agent)";
@@ -107,6 +109,9 @@ pub(crate) struct CrawlRequest {
     pub(crate) extract: Option<extract::Selectors>,
     /// Which cookies the browser starts with and keeps.
     pub(crate) cookies: CookieScope,
+    /// The goal the user's `web.crawl.ai` model works toward on each page
+    /// before it is read (`#:automate`).
+    pub(crate) automate: Option<String>,
 }
 
 /// The cookies a browser load starts with and what becomes of the ones it
@@ -180,6 +185,8 @@ pub(crate) struct PageWork {
     pub(crate) extracted: bool,
     /// The browser started with cookies the session's jar held for the site.
     pub(crate) session_cookies: bool,
+    /// Model requests `#:automate` made, over all pages; `None` without it.
+    pub(crate) automation_calls: Option<u32>,
 }
 
 /// What adoption telemetry learns of one `web-extract`.
@@ -215,6 +222,8 @@ pub(crate) struct Crawl {
     pub(crate) elapsed: Duration,
     /// The WARC file written and the records in it.
     pub(crate) warc: Option<(String, u64)>,
+    /// What `#:automate` cost over all pages: model requests and tokens.
+    pub(crate) automation: Option<(u32, u64)>,
 }
 
 /// The crawler: the client shared with `web.read`, and where test sites
@@ -246,12 +255,16 @@ impl WebCrawlEngine {
     /// the output budget into `store` when the session has one. A rendered
     /// crawl's browser pages share `jar`: each starts with the jar's cookies
     /// for its URL that the browser lacks, and the cookies the page holds
-    /// once loaded go back into it (spider's `chrome_cookie_jar`).
+    /// once loaded go back into it (spider's `chrome_cookie_jar`). With
+    /// `request.automate`, `automation`'s model works toward that goal on
+    /// each page before it is read (spider's `remote_multimodal`), its
+    /// requests on pa-core's client.
     ///
     /// # Errors
     ///
     /// An invalid include or exclude pattern, a render with no browser (or
-    /// one that would not start), or a start page that could not be read.
+    /// one that would not start), a start page that could not be read, or
+    /// `#:automate` without its model.
     #[tracing::instrument(skip_all, fields(host = request.url.host_str().unwrap_or_default()))]
     pub(crate) async fn crawl(
         &self,
@@ -259,6 +272,7 @@ impl WebCrawlEngine {
         identity: &Identity,
         store: Option<&SpillStore>,
         jar: &CookieJar,
+        automation: Option<&automate::Model>,
     ) -> anyhow::Result<Crawl> {
         let started = Instant::now();
         for pattern in request.include.iter().chain(&request.exclude) {
@@ -328,6 +342,27 @@ impl WebCrawlEngine {
                 Some(started)
             }
         };
+        match (&request.automate, automation) {
+            (Some(goal), Some(model)) => {
+                let mut configs = spider_agent::RemoteMultimodalConfigs::new(
+                    model.endpoint.as_str(),
+                    model.name.as_str(),
+                );
+                configs.api_key = model.key.as_ref().map(|automate::ApiKey(key)| key.clone());
+                configs.user_message_extra = Some(format!("The goal on this page: {goal}"));
+                configs.cfg = spider_agent::RemoteMultimodalConfig {
+                    max_rounds: AUTOMATE_STEPS,
+                    screenshot: false,
+                    automation_timeout_ms: u64::try_from(automate::REQUEST_TIMEOUT.as_millis())
+                        .ok(),
+                    ..spider_agent::RemoteMultimodalConfig::default()
+                };
+                configs.client = Some(automate::client()?);
+                website.with_remote_multimodal(Some(configs));
+            }
+            (Some(_), None) => bail!("web.crawl #:automate needs the user's web.crawl.ai model"),
+            (None, Some(_) | None) => {}
+        }
         // spider reads robots.txt and the sitemap with this one.
         website.set_http_client(clients[0].clone());
         // Room for every page the limit allows plus its failures.
@@ -428,6 +463,10 @@ impl WebCrawlEngine {
             notes,
             elapsed: started.elapsed(),
             warc,
+            automation: request
+                .automate
+                .as_ref()
+                .map(|_| (collected.model_calls, collected.model_tokens)),
         })
     }
 }
@@ -443,6 +482,9 @@ struct Collected<'a> {
     chars: usize,
     /// Pages the broadcast dropped before they were taken.
     missed: u64,
+    /// Model requests and tokens `#:automate` spent on the pages taken.
+    model_calls: u32,
+    model_tokens: u64,
     /// The WARC file and the records written to it; `None` once a write
     /// failed (with a note).
     warc: Option<(tokio::fs::File, u64)>,
@@ -458,6 +500,8 @@ impl<'a> Collected<'a> {
             notes: Vec::new(),
             chars: 0,
             missed: 0,
+            model_calls: 0,
+            model_tokens: 0,
             warc: None,
         }
     }
@@ -487,6 +531,25 @@ impl<'a> Collected<'a> {
                 }
             }
         }
+        // The model's work on the page, counted whatever becomes of it.
+        let automation = page.remote_multimodal_usage.as_ref().map(|rounds| {
+            let total = |of: fn(&spider_agent::AutomationUsage) -> u32| {
+                rounds.iter().map(of).map(u64::from).sum::<u64>()
+            };
+            let calls = total(|usage| usage.llm_calls);
+            self.model_calls = self
+                .model_calls
+                .saturating_add(u32::try_from(calls).unwrap_or(u32::MAX));
+            self.model_tokens = self
+                .model_tokens
+                .saturating_add(total(|usage| usage.total_tokens));
+            json!({
+                "llmCalls": calls,
+                "promptTokens": total(|usage| usage.prompt_tokens),
+                "completionTokens": total(|usage| usage.completion_tokens),
+                "totalTokens": total(|usage| usage.total_tokens),
+            })
+        });
         let status = page.status_code.as_u16();
         if !page.status_code.is_success() {
             self.failed
@@ -551,15 +614,24 @@ impl<'a> Collected<'a> {
             Err(error) => Err(error),
         };
         match rendered {
-            Ok(rendered) => self.keep(&rendered, extracted),
+            Ok(rendered) => self.keep(&rendered, extracted, automation),
             Err(error) => self.notes.push(format!("{}: {error:#}", read.url)),
         }
     }
 
-    /// Add `page` to the result, with what was extracted from it, or page
-    /// it out once the budget is spent (the extraction stays).
-    fn keep(&mut self, page: &WebPage, extracted: Option<anyhow::Result<Value>>) {
+    /// Add `page` to the result, with what was extracted from it and what
+    /// `#:automate`'s model spent on it, or page it out once the budget is
+    /// spent (the extraction and the usage stay).
+    fn keep(
+        &mut self,
+        page: &WebPage,
+        extracted: Option<anyhow::Result<Value>>,
+        automation: Option<Value>,
+    ) {
         let mut entry = page.to_json();
+        if let Some(usage) = automation {
+            entry["automation"] = usage;
+        }
         match extracted {
             None => {}
             Some(Ok(values)) => entry["extract"] = values,
@@ -647,6 +719,12 @@ impl Crawl {
                 failure["status"]
             ));
         }
+        if let Some((calls, tokens)) = self.automation {
+            lines.push(format!(
+                "#:automate: {calls} model request{} ({tokens} tokens), billed to the user's web.crawl.ai account",
+                if calls == 1 { "" } else { "s" }
+            ));
+        }
         lines.extend(self.notes.iter().map(|note| format!("Note: {note}")));
         lines.join("\n")
     }
@@ -669,6 +747,7 @@ impl Crawl {
             "truncated": self.truncated,
             "notes": self.notes,
             "warc": self.warc.as_ref().map(|(path, records)| json!({"path": path, "records": records})),
+            "automation": self.automation.map(|(calls, tokens)| json!({"llmCalls": calls, "totalTokens": tokens})),
             "text": self.text(),
         })
     }
@@ -810,6 +889,24 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
         }
         (Some(other), _) => bail!("web.crawl mode must be http, render or smart; got {other:?}"),
     };
+    let automate = match (data.get("automate"), render) {
+        (None | Some(Value::Null), _) => None,
+        (Some(Value::String(goal)), Render::Browser) if !goal.trim().is_empty() => {
+            if goal.chars().count() > automate::MAX_PROMPT_CHARS {
+                bail!(
+                    "web.crawl automate is longer than {} chars",
+                    automate::MAX_PROMPT_CHARS
+                );
+            }
+            Some(goal.trim().to_string())
+        }
+        (Some(Value::String(_)), Render::Http | Render::Smart) => {
+            bail!(
+                "web.crawl automate drives every page in the browser: pass render #t (mode render)"
+            )
+        }
+        (Some(_), _) => bail!("web.crawl automate is the goal, a non-empty string"),
+    };
     Ok(CrawlRequest {
         url,
         max_pages: u32::try_from(count(
@@ -853,5 +950,6 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
         shaping: crate::web_read::Shaping::parse(data, "web.crawl")?,
         extract: extract::Selectors::parse(data, "extract", "web.crawl")?,
         cookies: CookieScope::parse(data, "web.crawl")?,
+        automate,
     })
 }

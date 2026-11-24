@@ -5339,14 +5339,36 @@ pub async fn fetch_page_html_chrome_base<'h>(
                     .and_then(|mm| mm.automation_timeout())
                     .unwrap_or(base_timeout);
 
-                let multi_modal_request = run_remote_multimodal_if_enabled(
-                    remote_multimodal,
-                    page,
-                    match &url_target {
-                        Some(ut) => ut,
-                        _ => target_url,
-                    },
-                );
+                // Prime Agent: the automation runs in a task of its own, so
+                // it starts at the top of a worker's stack rather than under
+                // the crawl's whole poll chain (which, with the model's DOM
+                // reads on top, overflows a 2 MiB worker stack). The task
+                // is aborted when this future is dropped (a stopped crawl).
+                struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+                impl<T> Drop for AbortOnDrop<T> {
+                    fn drop(&mut self) {
+                        self.0.abort();
+                    }
+                }
+                let mut automation = AbortOnDrop(tokio::spawn({
+                    let (configs, page, url) = (
+                        remote_multimodal.clone(),
+                        page.clone(),
+                        match &url_target {
+                            Some(ut) => ut.to_string(),
+                            _ => target_url.to_string(),
+                        },
+                    );
+                    async move { run_remote_multimodal_if_enabled(&configs, &page, &url).await }
+                }));
+                let multi_modal_request = async move {
+                    match (&mut automation.0).await {
+                        Ok(result) => result,
+                        Err(ended) => Err(crate::features::automation::EngineError::Remote(
+                            format!("the automation task ended: {ended}"),
+                        )),
+                    }
+                };
 
                 let multimodal_success =
                     match tokio::time::timeout(automation_timeout, multi_modal_request).await {

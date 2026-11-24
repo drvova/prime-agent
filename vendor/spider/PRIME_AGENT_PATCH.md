@@ -54,6 +54,26 @@ it.
 in the session's jar exactly as a rendered crawl's pages do (domain, path,
 expiry and flags kept). Nothing else about it changes.
 
+## `src/features/automation.rs`, `src/configuration.rs`: automation on the configs' client
+
+The three places spider builds a `RemoteMultimodalEngine` from a crawl's
+`RemoteMultimodalConfigs` (`run_remote_multimodal_extraction`,
+`prefilter_urls`, `Configuration::build_remote_multimodal_engine`) hand it
+the configs' `client` (a field vendor/spider_agent adds), so every model
+request of a crawl's automation goes out on the client pa-core supplies,
+never spider_agent's static one. The per-page browser automation itself is
+built in spider_agent (`run_remote_multimodal_with_page`), patched there.
+
+## `src/utils/mod.rs`: a rendered page's automation runs in a task of its own
+
+`fetch_page_html_chrome_base` awaits a page's model-driven automation
+(`run_remote_multimodal_if_enabled`) inline, under the crawl's whole poll
+chain; with the engine's DOM reads on top, that overflowed a 2 MiB worker
+stack (the size of a session runtime's workers), which aborts the process.
+The patch spawns the automation as its own task (it starts at the top of a
+worker's stack) and aborts that task when the page's future is dropped, so a
+stopped crawl stops it.
+
 Drop the vendored copy with the spider release that declares reqwest without
 default features and makes `dynamic-versions` optional (and the runtime
 lazy), or once pa-core no longer needs spider.
