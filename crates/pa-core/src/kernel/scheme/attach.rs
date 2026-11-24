@@ -265,6 +265,7 @@ mod tests {
                     timeout_ms: None,
                     on_stream: None,
                     on_late_sent_agent_message: None,
+                    tool_call_id: None,
                 },
             )
             .await

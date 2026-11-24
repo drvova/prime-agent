@@ -702,10 +702,8 @@ fn kernel_story_script(dir: &Path, extra: &Value) -> Value {
     script
 }
 
-/// What a session's transcript under `dir` tells of its kernel, in order:
-/// each user prompt, each kernel cell's outcome, each kernel-reset notice and
-/// each crash or recovery row.
-fn kernel_story(dir: &Path) -> Vec<String> {
+/// The entries of the one session file under `dir`, in order.
+fn session_entries(dir: &Path) -> Vec<Value> {
     let file = std::fs::read_dir(dir.join("sessions"))
         .expect("sessions dir")
         .flatten()
@@ -719,6 +717,15 @@ fn kernel_story(dir: &Path) -> Vec<String> {
         .expect("read the session file")
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("entry json"))
+        .collect()
+}
+
+/// What a session's transcript under `dir` tells of its kernel, in order:
+/// each user prompt, each kernel cell's outcome, each kernel-reset notice and
+/// each crash or recovery row.
+fn kernel_story(dir: &Path) -> Vec<String> {
+    session_entries(dir)
+        .into_iter()
         .filter_map(|entry| {
             let message = &entry["message"];
             match (entry["type"].as_str(), message["role"].as_str()) {
@@ -1149,6 +1156,115 @@ fn a_cell_cut_off_by_the_daemons_death_is_answered_as_outcome_unknown_and_not_ru
     );
 }
 
+/// The command a cut-off call was waiting for is that call's own: its
+/// `[outcome-unknown]` result reports it, so the next kernel does not
+/// announce it as lost too (nor runs a turn for it). A background command
+/// the call started is announced: the result names no command.
+#[test]
+fn the_command_a_cut_off_call_waited_for_is_not_announced_again_as_lost() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let mut first = spawn_supervisor(&socket, &agent_dir);
+    let counter = dir.path().join("counter.txt");
+    let session = {
+        let mut client = Client::connect(&socket);
+        let session = client.create_attached(
+            dir.path(),
+            "lost",
+            &json!({
+                "engine": "faux",
+                "responses": [
+                    { "content": [
+                        { "type": "toolCall", "name": "eval", "arguments": {
+                            "code": "(bash \"/bin/sleep 600\" (hash 'background #t)) \
+                                     (bash \"echo hit >> counter.txt && /bin/sleep 600\" (hash 'wait-ms #f))",
+                        } },
+                    ] },
+                    { "text": "done" },
+                ],
+            }),
+            json!({}),
+        );
+        let prompted = client.request(
+            "prompt",
+            &json!({ "type": "prompt", "activeSessionId": session, "message": "run the cell" }),
+        );
+        assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while std::fs::read_to_string(&counter).unwrap_or_default() != "hit\n" {
+            assert!(Instant::now() < deadline, "the command never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        session
+    };
+    first.child.kill().expect("kill the daemon");
+    first.child.wait().expect("reap the daemon");
+    let _ = std::fs::remove_file(&socket);
+    std::fs::write(
+        dir.path().join("lost-script.json"),
+        json!({ "engine": "faux", "responses": [
+            { "text": "continued" }, { "text": "noted" }, { "text": "after" },
+        ] })
+        .to_string(),
+    )
+    .expect("rewrite the script");
+
+    let _second = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    // The next kernel announces its predecessor's commands one after the
+    // other: once the background command's notice is saved, a notice for the
+    // waited one would already be queued ahead of the next prompt.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !session_entries(dir.path())
+        .iter()
+        .any(|entry| entry["details"]["command"] == "/bin/sleep 600")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the background command was never announced"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let after = client.request("after", &turn(&session, "after"));
+    assert_eq!(after["success"], true, "the next turn failed: {after}");
+    let entries = session_entries(dir.path());
+    let lost: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry["details"]["lost"] == true)
+        .map(|entry| entry["details"]["command"].clone())
+        .collect();
+    let results: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry["message"]["role"] == "toolResult")
+        .map(|entry| entry["message"]["details"].clone())
+        .collect();
+    let replies: Vec<Value> = entries
+        .iter()
+        .filter(|entry| entry["message"]["role"] == "assistant")
+        .map(|entry| entry["message"]["content"][0]["text"].clone())
+        .collect();
+    assert_eq!(
+        (
+            std::fs::read_to_string(&counter).expect("the counter"),
+            lost,
+            results,
+            replies,
+        ),
+        (
+            "hit\n".to_string(),
+            vec![json!("/bin/sleep 600")],
+            vec![json!({ "outcome": "unknown" })],
+            vec![
+                Value::Null,
+                json!("continued"),
+                json!("noted"),
+                json!("after")
+            ],
+        )
+    );
+}
+
 #[test]
 fn a_restarted_daemon_still_marks_the_session_that_crashed_under_its_predecessor() {
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -1420,5 +1536,109 @@ fn a_cell_waiting_for_a_command_has_left_before_its_crashed_session_is_torn_down
         (panics, crashes),
         (vec!["injected fault"], vec![json!("injected fault")]),
         "session log: {session_log}"
+    );
+}
+
+/// The rows the session engine adds to a turn itself (a subdirectory's
+/// context file after the cell that read below it, a skill whose Scheme
+/// source failed to load, a broken per-model prompt map) are what the model
+/// was shown: each is saved in the session file once, where a rebuild or a
+/// resume reads it, and each reaches the attached client.
+#[test]
+fn the_rows_the_engine_adds_to_a_turn_are_saved_and_sent_to_the_client() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let nested = dir.path().join("crates").join("foo");
+    std::fs::create_dir_all(&nested).expect("nested dir");
+    std::fs::write(nested.join("AGENTS.md"), "Run the foo tests.\n").expect("nested AGENTS.md");
+    std::fs::write(nested.join("notes.txt"), "notes\n").expect("nested file");
+    let skill = agent_dir.join("skills").join("broken");
+    std::fs::create_dir_all(&skill).expect("skill dir");
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: broken\ndescription: A skill whose Scheme source does not parse.\n---\n",
+    )
+    .expect("SKILL.md");
+    std::fs::write(skill.join("skill.scm"), "(define (broken-x").expect("skill.scm");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    std::fs::write(agent_dir.join("model-prompts.toml"), "not = [toml").expect("model prompts");
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    let session = client.create_attached(
+        dir.path(),
+        "rows",
+        &json!({
+            "engine": "faux",
+            "responses": [
+                { "content": [
+                    { "type": "toolCall", "name": "eval", "arguments": {
+                        "code": "(fs-read \"crates/foo/notes.txt\")",
+                    } },
+                ] },
+                { "text": "read" },
+                { "text": "again" },
+            ],
+        }),
+        json!({}),
+    );
+    // A kernel that starts inside the first turn tells of its skills before
+    // the second.
+    for (id, message) in [("first", "read the notes"), ("second", "again")] {
+        let done = client.request(id, &turn(&session, message));
+        assert_eq!(done["success"], true, "{id} failed: {done}");
+    }
+    let added = [
+        "model_prompt_error",
+        "nested_context_file",
+        "scheme_skills_unavailable",
+    ];
+    let sent: Vec<Value> = added
+        .iter()
+        .map(|custom_type| {
+            client.read_until(custom_type, |frame| {
+                frame["type"] == "session_event"
+                    && frame["activeSessionId"] == session.as_str()
+                    && frame["event"]["type"] == "message_end"
+                    && frame["event"]["message"]["customType"] == *custom_type
+            })["event"]["message"]["details"]
+                .clone()
+        })
+        .collect();
+    let session_file = std::fs::read_dir(dir.path().join("sessions"))
+        .expect("sessions dir")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .expect("the session file");
+    let mut saved: Vec<Value> = std::fs::read_to_string(session_file)
+        .expect("read the session file")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("entry json"))
+        .filter(|entry| {
+            entry["type"] == "custom_message"
+                && added.contains(&entry["customType"].as_str().unwrap_or_default())
+        })
+        .map(|entry| json!([entry["customType"], entry["details"]]))
+        .collect();
+    saved.sort_by_key(|row| row[0].as_str().unwrap_or_default().to_string());
+    let details = [
+        Value::Null,
+        json!({ "path": "crates/foo/AGENTS.md", "truncated": false }),
+        json!({ "skills": ["broken"] }),
+    ];
+    assert_eq!(
+        (saved, sent),
+        (
+            added
+                .iter()
+                .zip(&details)
+                .map(|(custom_type, details)| json!([custom_type, details]))
+                .collect::<Vec<_>>(),
+            details.to_vec(),
+        )
     );
 }

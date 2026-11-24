@@ -186,6 +186,34 @@ fn list_running(list: &std::path::Path, record: &serde_json::Value) {
     }
 }
 
+/// List `job` again, as the command the model's tool call `call` waits for
+/// and owns, or with no call once none does (its wait handed it to the
+/// background). A command still running when its kernel ends is then known
+/// as its call's own: the session answers that call (in the daemon, as of
+/// unknown outcome), and the host need not announce the command as lost on
+/// top of it. Nothing is written once the job's group has ended, so the line
+/// its end wrote stays its last.
+pub(super) fn list_waiter(session: &Session, job: &Job, call: Option<&str>) {
+    let Some(list) = &session.running_list else {
+        return;
+    };
+    // Under the table's lock, which the end's line is written under too.
+    let table = lock(&session.table);
+    if table.closed || lock(&job.state).reaped {
+        return;
+    }
+    let mut record = serde_json::json!({
+        "job": job.id,
+        "pid": job.pid,
+        "command": super::capped(&job.command),
+        "running": true,
+    });
+    if let Some(call) = call {
+        record["call"] = serde_json::json!(call);
+    }
+    list_running(list, &record);
+}
+
 /// Held by the task that watches a job, until the job's group is known to be
 /// gone. Dropped before then, it kills the whole group.
 pub(super) struct GroupHold(pub(super) Arc<Job>);

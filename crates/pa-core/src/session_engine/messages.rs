@@ -310,14 +310,24 @@ pub fn create_async_bash_completion_message(
 /// ended: the `[bash-lost pid:N]` header, the JSON-encoded command, and what
 /// became of it. It rides the `[bash-done]` row type, so it queues, wakes
 /// and renders as a completion does; its details carry `lost` in place of an
-/// exit code.
+/// exit code, and `toolCallId` when the model's call `call` was waiting for
+/// the command.
 #[must_use]
 pub fn create_async_bash_lost_message(
     pid: u32,
     command: &str,
+    call: Option<&str>,
     timestamp: u64,
 ) -> pa_types::session::CustomMessage {
     let encoded_command = serde_json::to_string(command).unwrap_or_default();
+    let mut details = serde_json::json!({
+        "pid": pid,
+        "command": command,
+        "lost": true,
+    });
+    if let Some(call) = call {
+        details["toolCallId"] = serde_json::json!(call);
+    }
     pa_types::session::CustomMessage {
         custom_type: ASYNC_BASH_COMPLETION_CUSTOM_TYPE.to_string(),
         content: UserContent::Text(format!(
@@ -327,11 +337,7 @@ pub fn create_async_bash_lost_message(
              was killed and has no result. Start it again if you still need it."
         )),
         display: true,
-        details: Some(serde_json::json!({
-            "pid": pid,
-            "command": command,
-            "lost": true,
-        })),
+        details: Some(details),
         timestamp,
         rest: serde_json::Map::default(),
     }

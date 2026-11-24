@@ -19,6 +19,7 @@ async fn cell(provisioner: &SchemeKernelProvisioner, code: &str) -> Result<Strin
                 timeout_ms: None,
                 on_stream: None,
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         )
         .await
@@ -244,6 +245,7 @@ async fn a_looping_macro_body_stops_with_its_cell() {
                 timeout_ms: Some(200),
                 on_stream: None,
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         )
         .await

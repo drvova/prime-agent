@@ -24,6 +24,7 @@ pub fn create_scheme_tool_definition(options: KernelToolOptions) -> ToolDefiniti
     let options = Arc::new(options);
     let execute: ExecuteFn = Arc::new(move |tool_call_id, params, signal, on_update| {
         let options = Arc::clone(&options);
+        let call = tool_call_id.to_string();
         let on_late_sent_agent_message =
             options.on_late_sent_agent_message.as_ref().map(|handler| {
                 let handler = Arc::clone(handler);
@@ -67,6 +68,7 @@ pub fn create_scheme_tool_definition(options: KernelToolOptions) -> ToolDefiniti
                 .to_string();
             execute_kernel_cell(
                 &options,
+                &call,
                 &code,
                 timeout_arg_ms(&params),
                 signal,

@@ -58,6 +58,9 @@
 //! killed, or the process hosting the session died) is announced by the
 //! session's next kernel, once, through the same request with `lost` set
 //! (the `[bash-lost]` notice); only a saved session keeps the list for it.
+//! A command the model's call was waiting for is listed under that call, and
+//! the notice names it (`toolCallId`): a host that answers the cut-off call
+//! itself drops the notice of the call's own command.
 //! Background commands that have all written nothing for a while are
 //! reported through `bash.quiet` (the `[bash-quiet]` notice, `bash_quiet.rs`).
 
@@ -248,6 +251,8 @@ struct Cells {
     current: u64,
     /// When the running cell is interrupted, if it has a time limit.
     deadline: Option<Instant>,
+    /// The model's tool call the running cell runs for, if it has one.
+    call: Option<String>,
 }
 
 /// One session's commands: its jobs, cells, cache, and host.
@@ -274,18 +279,25 @@ pub(super) struct Session {
 pub(in crate::kernel::scheme) struct BashJobs(Arc<Session>);
 
 impl BashJobs {
-    /// A cell starts on the engine; it is interrupted at `deadline` when it
-    /// has a time limit that stops it.
-    pub(in crate::kernel::scheme) fn cell_started(&self, deadline: Option<Instant>) {
+    /// A cell starts on the engine, for the model's tool call `call` when it
+    /// has one; it is interrupted at `deadline` when it has a time limit that
+    /// stops it.
+    pub(in crate::kernel::scheme) fn cell_started(
+        &self,
+        deadline: Option<Instant>,
+        call: Option<String>,
+    ) {
         let mut cells = lock(&self.0.cells);
         cells.current += 1;
         cells.deadline = deadline;
+        cells.call = call;
     }
 
     /// The running cell ended: jobs it left unread are announced from now on.
     pub(in crate::kernel::scheme) fn cell_finished(&self) {
         let mut cells = lock(&self.0.cells);
         cells.deadline = None;
+        cells.call = None;
         self.0.cell_ended.send_replace(cells.current);
     }
 
@@ -668,15 +680,18 @@ pub(super) fn open(
             let handler = handler.clone();
             session.runtime.spawn(async move {
                 for (_, record) in lost {
+                    let mut data = json!({
+                        "pid": record.get("pid"),
+                        "command": record.get("command"),
+                        "lost": true,
+                    });
+                    // The call that was waiting for it, which the host may
+                    // already have answered for it.
+                    if let Some(call) = record.get("call") {
+                        data["toolCallId"] = call.clone();
+                    }
                     // A refused notice is lost with the command it names.
-                    let _ = handler(HostRequestPayload {
-                        data: json!({
-                            "pid": record.get("pid"),
-                            "command": record.get("command"),
-                            "lost": true,
-                        }),
-                    })
-                    .await;
+                    let _ = handler(HostRequestPayload { data }).await;
                 }
             });
         }
@@ -799,7 +814,12 @@ fn wait(
         }
     });
     match (end, ownership) {
-        (End::Yielded, _) => {
+        (End::Yielded, ownership) => {
+            // Handed to the background: no call waits for it any more.
+            match ownership {
+                Ownership::Owned => job::list_waiter(session, job, /*call*/ None),
+                Ownership::Shared => {}
+            }
             show(CellRecord::BashWait { completed: false });
             let waited = window.unwrap_or_default().as_secs_f64();
             let wired = session
@@ -1074,6 +1094,11 @@ pub(super) fn call(
             let ownership = if persistent {
                 Ownership::Shared
             } else {
+                // The model's call waits for this command: it is the call's own.
+                let call = lock(&session.cells).call.clone();
+                if let Some(call) = call {
+                    job::list_waiter(session, &job, Some(&call));
+                }
                 Ownership::Owned
             };
             wait(session, &job, session.window(&requested), limit, ownership)

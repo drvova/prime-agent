@@ -77,13 +77,15 @@ impl KernelNotice {
     }
 
     /// The `[bash-lost]` notice for one command that was still running when
-    /// its kernel ended: it was killed, and no result will come.
+    /// its kernel ended: it was killed, and no result will come. `call` is
+    /// the model's tool call that was waiting for it, if one was.
     #[must_use]
-    pub fn bash_lost(pid: u32, command: &str) -> Self {
+    pub fn bash_lost(pid: u32, command: &str, call: Option<&str>) -> Self {
         Self {
             row: messages::create_async_bash_lost_message(
                 pid,
                 command,
+                call,
                 crate::autonomous::now_millis(),
             ),
             preview_label: ASYNC_BASH_COMPLETION_PREVIEW_LABEL,
@@ -342,7 +344,12 @@ pub fn register_kernel_notice_host_handlers(
 fn validate_completion(data: &Value) -> anyhow::Result<KernelNotice> {
     let (pid, command) = bash_job(data)?;
     if data.get("lost") == Some(&Value::Bool(true)) {
-        return Ok(KernelNotice::bash_lost(pid, &command));
+        let call = match data.get("toolCallId") {
+            None => None,
+            Some(Value::String(call)) if !call.is_empty() => Some(call.as_str()),
+            Some(_) => anyhow::bail!("bash.completed toolCallId must be a non-empty string"),
+        };
+        return Ok(KernelNotice::bash_lost(pid, &command, call));
     }
     let exit_code = data
         .get("exitCode")

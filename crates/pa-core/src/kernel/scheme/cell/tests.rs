@@ -35,6 +35,7 @@ async fn run(kernel: &dyn KernelExecutor, code: &str) -> ExecuteResult {
                 timeout_ms: None,
                 on_stream: None,
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         )
         .await
@@ -54,6 +55,7 @@ async fn run_to_its_end(kernel: &dyn KernelExecutor, code: &str) -> ExecuteResul
                 timeout_ms: Some(PATIENCE.as_millis() as u64),
                 on_stream: None,
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         )
         .await
@@ -276,6 +278,7 @@ async fn output_reaches_the_stream_while_the_cell_runs() {
                 timeout_ms: None,
                 on_stream: Some(&on_stream),
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         ),
     )
@@ -331,6 +334,7 @@ async fn an_abort_ends_a_waiting_host_request_and_withdraws_its_question() {
                 timeout_ms: None,
                 on_stream: None,
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         ),
     )
@@ -476,6 +480,7 @@ async fn a_stop_wakes_a_cell_whose_thread_is_parked() {
             timeout_ms: None,
             on_stream: None,
             on_late_sent_agent_message: None,
+            tool_call_id: None,
         },
     );
     let (stopped, thread) = tokio::join!(tokio::time::timeout(PATIENCE, cell), async {
@@ -523,6 +528,7 @@ async fn a_background_cells_agent_message_reaches_the_late_handler() {
                     // The test may have stopped listening.
                     let _ = late.send(message);
                 })),
+                tool_call_id: None,
             },
         )
         .await
@@ -690,6 +696,7 @@ async fn a_cell_that_outlives_its_interrupt_is_reported_to_the_sessions_host() {
             timeout_ms: None,
             on_stream: None,
             on_late_sent_agent_message: None,
+            tool_call_id: None,
         },
     );
     tokio::pin!(execute);
@@ -744,6 +751,7 @@ async fn a_stopped_cell_leaves_the_engine_whatever_it_was_waiting_in() {
                 timeout_ms: None,
                 on_stream: Some(&on_stream),
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         ),
     )
@@ -816,6 +824,7 @@ async fn a_lifetime_that_ends_under_a_running_cell_stops_it_and_its_writes() {
                 timeout_ms: None,
                 on_stream: Some(&on_stream),
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         ),
     )
@@ -893,6 +902,7 @@ fn a_thread_left_over_from_an_ended_lifetime_cannot_change_the_workspace() {
                         timeout_ms: None,
                         on_stream: Some(&on_stream),
                         on_late_sent_agent_message: None,
+                        tool_call_id: None,
                     },
                 ),
             )
@@ -1275,6 +1285,7 @@ async fn a_stop_ends_wait_until_at_once() {
                 timeout_ms: None,
                 on_stream: Some(&on_stream),
                 on_late_sent_agent_message: None,
+                tool_call_id: None,
             },
         ),
     )

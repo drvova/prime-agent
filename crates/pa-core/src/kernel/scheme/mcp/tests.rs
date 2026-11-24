@@ -22,6 +22,7 @@ const NO_OPTIONS: KernelExecuteOptions<'static> = KernelExecuteOptions {
     timeout_ms: None,
     on_stream: None,
     on_late_sent_agent_message: None,
+    tool_call_id: None,
 };
 
 /// The stdio fixture written into a temporary directory, and the log it

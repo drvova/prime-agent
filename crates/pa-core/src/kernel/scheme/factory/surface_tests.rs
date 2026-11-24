@@ -885,6 +885,7 @@ const NO_OPTIONS: KernelExecuteOptions<'static> = KernelExecuteOptions {
     timeout_ms: None,
     on_stream: None,
     on_late_sent_agent_message: None,
+    tool_call_id: None,
 };
 
 /// What a cell displayed as JSON, or the error it raised.
