@@ -1095,6 +1095,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             can_spawn: config.rlm_subagent_host.is_some(),
             generic_mcp_servers: generic_mcp_servers.clone(),
             project_card: project_card_text.clone(),
+            host: Some(crate::prompts::HostAccess::current()),
             append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
             ..Default::default()
         },

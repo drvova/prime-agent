@@ -510,6 +510,9 @@ mod tests {
         ExecuteStatus, KernelExecuteOptions, KernelExecutor, KernelProvisioner,
     };
 
+    /// How long a run in these tests may take before it fails as hung.
+    const PATIENCE: Duration = Duration::from_secs(60);
+
     /// The approach number at the end of a lane's name (`hyp-ab12-3`) or of
     /// its child's id.
     fn lane_number(name: &Value) -> Value {
@@ -802,7 +805,7 @@ mod tests {
         let (handlers, received) = host(3, Some(waiting));
         let kernel = kernel_in(&root, handlers).await;
         let signal = AbortSignal::new();
-        let running = kernel.execute(
+        let mut running = std::pin::pin!(kernel.execute(
             r#"(rlm-hypotheses "make the check pass" (list "marker" "big marker") #:check "test -f fixed.txt")"#,
             KernelExecuteOptions {
                 signal: Some(signal.clone()),
@@ -811,12 +814,20 @@ mod tests {
                 on_late_sent_agent_message: None,
                 tool_call_id: None,
             },
-        );
-        let abort = async {
-            collecting.recv().await.unwrap();
+        ));
+        // The collect's sender lives as long as the kernel, so a run that
+        // ends (or hangs) before it collects would otherwise wait here
+        // forever: it fails with what the run said instead.
+        let stopped = tokio::time::timeout(PATIENCE, async {
+            tokio::select! {
+                ended = &mut running => panic!("the run ended before it collected its children: {ended:?}"),
+                heard = collecting.recv() => heard.unwrap(),
+            }
             signal.cancel();
-        };
-        let (stopped, ()) = tokio::join!(running, abort);
+            (&mut running).await
+        })
+        .await
+        .expect("the run neither reached its collect nor ended on its signal in time");
         let aborted: Vec<Value> = received
             .lock()
             .unwrap()

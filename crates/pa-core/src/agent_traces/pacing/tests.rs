@@ -69,3 +69,28 @@ async fn a_cancel_ends_a_wait_without_a_permit() {
     );
     drop(held);
 }
+
+/// A runtime whose clock is behind the clock's first read (here: another paused runtime ten
+/// minutes ahead read first) still reads a clock that moves, so a spent token refills there.
+/// Red only when nothing else in the process read the clock first: run it on its own.
+#[test]
+fn the_clock_moves_on_a_runtime_behind_its_first_read() {
+    let paused = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap()
+    };
+    let behind = paused();
+    paused().block_on(async {
+        tokio::time::advance(std::time::Duration::from_mins(10)).await;
+        tokio_clock_ms()
+    });
+    let moved = behind.block_on(async {
+        let before = tokio_clock_ms();
+        tokio::time::advance(std::time::Duration::from_secs(12)).await;
+        tokio_clock_ms() - before
+    });
+    assert_eq!(moved, 12_000);
+}

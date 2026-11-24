@@ -22,7 +22,7 @@ use pa_core::prompts::layers::{
 };
 use pa_core::prompts::model_prompts::MODEL_PROMPTS_TOML;
 use pa_core::prompts::system_prompt::{
-    system_prompt_breakdown, BuildSystemPromptOptions, SegmentKind,
+    system_prompt_breakdown, BuildSystemPromptOptions, HostAccess, SegmentKind,
 };
 use pa_core::skills::load_skills_from_dir;
 
@@ -58,6 +58,7 @@ const DYNAMIC_ONLY_MARKERS: &[&str] = &[
     "Enabled generic MCP servers:",
     "# Project Context",
     "You are a child agent spawned by",
+    "Machine: the user's own computer",
 ];
 
 #[test]
@@ -86,6 +87,10 @@ fn cached_prefix_is_stable_across_sessions() {
         model_prompt_extras: Some("model guidance."),
         skills: sorted_bundled_skills(),
         selected_tools: Some(vec![pa_types::ai::SCHEME_TOOL_NAME]),
+        host: Some(HostAccess {
+            route: pa_types::platform::ElevationRoute::Uac,
+            elevation: pa_types::platform::Elevation::Standard,
+        }),
         ..Default::default()
     };
     let first = system_prompt_breakdown(&options);
@@ -98,6 +103,10 @@ fn cached_prefix_is_stable_across_sessions() {
     options.context_files = vec![("AGENTS.md".into(), "Never commit main.".into())];
     options.append_system_prompt = Some("And one more thing.".into());
     options.project_card = Some("# Project card\n\n- Test: `cargo test`".into());
+    options.host = Some(HostAccess {
+        route: pa_types::platform::ElevationRoute::UnixSudo,
+        elevation: pa_types::platform::Elevation::Elevated,
+    });
     let second = system_prompt_breakdown(&options);
 
     assert_eq!(first.cached_prefix_len, second.cached_prefix_len);
@@ -125,6 +134,7 @@ fn cached_prefix_is_stable_across_sessions() {
     assert!(second_tail.contains("# Project card\n\n- Test: `cargo test`"));
     assert!(second_tail.contains("Enabled generic MCP servers: `github`, `slack`."));
     assert!(second_tail.contains("Recursive agent depth: 3 (not root)"));
+    assert!(second_tail.contains("This session runs as root"));
     assert!(second_tail.contains("You are a child agent spawned by orchestrator."));
     assert!(second_tail.contains("# Project Context"));
     assert!(second_tail.ends_with("And one more thing."));
