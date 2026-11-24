@@ -478,12 +478,10 @@ pub(crate) struct SessionRegistry {
 }
 
 pub(crate) fn canonical_session_file_string(session_file: &str) -> String {
-    std::path::Path::new(session_file)
-        .canonicalize()
-        .map_or_else(
-            |_| session_file.to_string(),
-            |path| path.to_string_lossy().to_string(),
-        )
+    pa_types::platform::canonicalize(std::path::Path::new(session_file)).map_or_else(
+        |_| session_file.to_string(),
+        |path| path.to_string_lossy().to_string(),
+    )
 }
 
 impl SessionRegistry {

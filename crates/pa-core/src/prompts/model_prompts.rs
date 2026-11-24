@@ -144,8 +144,8 @@ fn resolve_layer_files(
                 continue;
             }
             let user_file = agent_dir.join(name);
-            let content = user_file.canonicalize().and_then(|resolved| {
-                let root = agent_dir.canonicalize()?;
+            let content = pa_types::platform::canonicalize(&user_file).and_then(|resolved| {
+                let root = pa_types::platform::canonicalize(agent_dir)?;
                 if !resolved.starts_with(root) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,

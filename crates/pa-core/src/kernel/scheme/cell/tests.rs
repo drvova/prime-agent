@@ -211,9 +211,7 @@ async fn a_cells_host_calls_show_on_its_result_and_end_turn_marks_it() {
             vec![sent("am_1", Some(ReceiverRole::Child)), sent("am_2", None)],
             vec![json!({"returned": 1, "first": 4, "total": 5, "roles": ["user"]})],
             vec![KernelDiffDisplay {
-                path: dir
-                    .path()
-                    .canonicalize()
+                path: pa_types::platform::canonicalize(dir.path())
                     .unwrap()
                     .join("notes.txt")
                     .to_string_lossy()

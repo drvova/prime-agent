@@ -114,7 +114,7 @@ impl SessionBindingTable {
 /// The canonical key for a session file (the registry's comparison rule:
 /// canonicalize when the path exists, keep the raw path otherwise).
 fn canonical_binding_path(path: &str) -> String {
-    Path::new(path).canonicalize().map_or_else(
+    pa_types::platform::canonicalize(Path::new(path)).map_or_else(
         |_| path.to_string(),
         |canonical| canonical.to_string_lossy().to_string(),
     )

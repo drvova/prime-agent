@@ -139,7 +139,8 @@ fn print_mode_refine_command_failure_exits_one() {
 /// Under the canonical temp root: sessions record the canonical cwd, and
 /// macOS temp dirs sit behind the /var -> /private/var symlink.
 fn isolated_home() -> tempfile::TempDir {
-    tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
+    tempfile::TempDir::new_in(pa_types::platform::canonicalize(std::env::temp_dir()).unwrap())
+        .unwrap()
 }
 
 fn run_in_home(

@@ -93,7 +93,7 @@ pub fn canonical_session_path(path: &Path) -> PathBuf {
     let mut missing = Vec::new();
     let mut existing = path;
     loop {
-        if let Ok(canonical) = existing.canonicalize() {
+        if let Ok(canonical) = pa_types::platform::canonicalize(existing) {
             return missing
                 .iter()
                 .rev()

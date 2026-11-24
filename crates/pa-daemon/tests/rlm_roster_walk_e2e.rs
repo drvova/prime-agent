@@ -369,7 +369,7 @@ fn list_all_returns_the_full_synthetic_thousand_child_roster() {
     const CHILDREN: usize = 1_000;
     let dir = tempfile::TempDir::new().expect("temp dir");
     // Canonical, so the paths the daemon reports (canonicalized) match.
-    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let root = pa_types::platform::canonicalize(dir.path()).expect("canonical temp dir");
     let socket = root.join("daemon.sock");
     let agent_dir = root.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -410,13 +410,12 @@ fn list_all_returns_the_full_synthetic_thousand_child_roster() {
     assert_eq!(
         child_row["parentSessionPath"].as_str(),
         Some(
-            agent_dir
-                .join("sessions")
-                .join("root-session-1.jsonl")
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .as_ref()
+            pa_types::platform::canonicalize(
+                agent_dir.join("sessions").join("root-session-1.jsonl")
+            )
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
         )
     );
 }
@@ -626,7 +625,7 @@ async fn subscribe_after_spawn_then_shutdown_seeds_the_passive_child() {
 fn open_resume_publishes_the_family_in_the_first_subscribe_snapshot() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     // Canonical, so the paths the daemon reports (canonicalized) match.
-    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let root = pa_types::platform::canonicalize(dir.path()).expect("canonical temp dir");
     let socket = root.join("daemon.sock");
     let agent_dir = root.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");

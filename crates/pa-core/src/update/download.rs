@@ -251,8 +251,7 @@ pub async fn stage_local_payload(
     root: &Path,
     install_source: &str,
 ) -> Result<(PathBuf, String)> {
-    let payload = payload
-        .canonicalize()
+    let payload = pa_types::platform::canonicalize(payload)
         .with_context(|| format!("read the release payload at {}", payload.display()))?;
     // Only a directory or a regular file is a payload: a device or FIFO
     // would block or exhaust the updater during staging.

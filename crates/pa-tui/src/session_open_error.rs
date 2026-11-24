@@ -216,9 +216,9 @@ pub fn decorate_interactive_refusal(
 /// The canonical form of a session path matching `pa_daemon::lease::canonical_session_path`
 /// without pa-tui depending on pa-daemon.
 fn canonical_form(path: &Path) -> std::path::PathBuf {
-    match path.canonicalize() {
+    match pa_types::platform::canonicalize(path) {
         Ok(canonical) => canonical,
-        Err(_) => match path.parent().map(Path::canonicalize) {
+        Err(_) => match path.parent().map(pa_types::platform::canonicalize) {
             Some(Ok(parent)) => parent.join(path.file_name().unwrap_or_default()),
             _ => path.to_path_buf(),
         },

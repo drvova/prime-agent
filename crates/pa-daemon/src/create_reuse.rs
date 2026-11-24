@@ -67,7 +67,7 @@ struct ReuseCandidates {
 /// The single-flight key for one session file (the registry's comparison
 /// rule: canonicalize when the path exists, keep the raw path otherwise).
 fn canonical_opening_key(path: &Path) -> String {
-    path.canonicalize().map_or_else(
+    pa_types::platform::canonicalize(path).map_or_else(
         |_| path.to_string_lossy().to_string(),
         |canonical| canonical.to_string_lossy().to_string(),
     )

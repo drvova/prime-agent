@@ -86,7 +86,7 @@ fn first_line_is_session_header(file_path: &Path) -> bool {
 pub fn repair_jsonl_damage(file_path: &Path) {
     use std::io::{BufRead, Write};
 
-    let Ok(target_path) = std::fs::canonicalize(file_path) else {
+    let Ok(target_path) = pa_types::platform::canonicalize(file_path) else {
         return;
     };
     let file_path = target_path.as_path();

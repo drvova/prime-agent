@@ -315,7 +315,7 @@ fn create_over_a_live_worker_answers_the_live_binding() {
 fn the_lease_owner_names_the_live_worker_not_a_stale_inherited_id() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     // Canonical, so the paths the daemon reports (canonicalized) match.
-    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let root = pa_types::platform::canonicalize(dir.path()).expect("canonical temp dir");
     let socket = root.join("daemon.sock");
     let agent_dir = root.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -356,7 +356,7 @@ fn the_lease_owner_names_the_live_worker_not_a_stale_inherited_id() {
 fn create_over_a_dead_workers_file_launches_and_rebinds() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     // Canonical, so the paths the daemon reports (canonicalized) match.
-    let root = dir.path().canonicalize().expect("canonical temp dir");
+    let root = pa_types::platform::canonicalize(dir.path()).expect("canonical temp dir");
     let socket = root.join("daemon.sock");
     let agent_dir = root.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");

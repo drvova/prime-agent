@@ -2425,7 +2425,9 @@ async fn the_stopped_childs_delete_removes_its_row_and_bills_the_parent() {
 #[tokio::test]
 async fn a_ledger_delete_never_tombstones_an_unrelated_edge_sharing_the_child_id() {
     let dir = tempfile::TempDir::new().unwrap();
-    let agent_dir = dir.path().canonicalize().unwrap().join("agent");
+    let agent_dir = pa_types::platform::canonicalize(dir.path())
+        .unwrap()
+        .join("agent");
     let sessions_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).unwrap();
     let supervisor = Arc::new(

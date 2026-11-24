@@ -139,7 +139,7 @@ fn resolve_with_missing(path: &Path) -> std::io::Result<PathBuf> {
     let mut missing = Vec::new();
     let mut existing = path;
     loop {
-        match fs::canonicalize(existing) {
+        match pa_types::platform::canonicalize(existing) {
             Ok(mut resolved) => {
                 resolved.extend(missing.iter().rev());
                 return Ok(resolved);

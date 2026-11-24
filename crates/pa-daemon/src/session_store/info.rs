@@ -689,11 +689,10 @@ pub fn find_most_recent_session_for_cwd(session_dir: &Path, cwd: &str) -> Option
         .into_iter()
         .find(|info| {
             !info.cwd.is_empty()
-                && Path::new(&info.cwd).canonicalize().map_or_else(
+                && pa_types::platform::canonicalize(Path::new(&info.cwd)).map_or_else(
                     |_| info.cwd == cwd,
                     |p| {
-                        p == Path::new(cwd)
-                            .canonicalize()
+                        p == pa_types::platform::canonicalize(Path::new(cwd))
                             .unwrap_or_else(|_| PathBuf::from(cwd))
                     },
                 )

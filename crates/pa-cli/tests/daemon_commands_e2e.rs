@@ -87,8 +87,10 @@ fn daemon_binary() -> PathBuf {
 /// back to the shared `/tmp/prime-agent-<uid>`, where the user's real daemon
 /// listens. Canonical so the paths the product reports compare equal.
 fn fixture_dir() -> tempfile::TempDir {
-    tempfile::tempdir_in(Path::new("/tmp").canonicalize().expect("canonical /tmp"))
-        .expect("fixture dir")
+    tempfile::tempdir_in(
+        pa_types::platform::canonicalize(Path::new("/tmp")).expect("canonical /tmp"),
+    )
+    .expect("fixture dir")
 }
 struct Daemon {
     child: Child,

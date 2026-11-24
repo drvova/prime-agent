@@ -663,7 +663,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn approaches_are_ranked_by_a_shell_check_and_only_the_winner_is_kept() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = pa_types::platform::canonicalize(dir.path()).unwrap();
         let (handlers, received) = host(3, None);
         let kernel = kernel_in(&root, handlers).await;
         let table = evaluate(
@@ -725,7 +725,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_procedure_check_decides_each_checkout_and_no_pass_keeps_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = pa_types::platform::canonicalize(dir.path()).unwrap();
         let (handlers, received) = host(3, None);
         let kernel = kernel_in(&root, handlers).await;
         let mut tables = Vec::new();
@@ -800,7 +800,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_stopped_run_aborts_its_children_and_removes_their_worktrees() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = pa_types::platform::canonicalize(dir.path()).unwrap();
         let (waiting, mut collecting) = tokio::sync::mpsc::unbounded_channel();
         let (handlers, received) = host(3, Some(waiting));
         let kernel = kernel_in(&root, handlers).await;
@@ -857,7 +857,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_run_that_cannot_have_children_is_refused_before_it_starts() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = pa_types::platform::canonicalize(dir.path()).unwrap();
         let (handlers, received) = host(1, None);
         let kernel = kernel_in(&root, handlers).await;
         let mut refused = Vec::new();

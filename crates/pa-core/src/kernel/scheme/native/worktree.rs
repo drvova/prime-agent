@@ -186,7 +186,7 @@ impl Worktrees {
             .map_err(|error| {
                 anyhow!("worktree needs a git repository at the session cwd: {error:#}")
             })?;
-        std::fs::canonicalize(&top).with_context(|| format!("could not resolve {top}"))
+        pa_types::platform::canonicalize(&top).with_context(|| format!("could not resolve {top}"))
     }
 
     /// Where this session's worktrees of `repo` and their records live.
@@ -844,7 +844,7 @@ pub(super) mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_worktrees_own_changes_are_diffed_merged_home_and_then_it_is_removed() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = pa_types::platform::canonicalize(dir.path()).unwrap();
         let repo = repository(&root);
         std::fs::write(repo.join("notes.txt"), "one\ntwo\nthree\nfour\n").unwrap();
         std::fs::write(repo.join("draft.txt"), "untracked\n").unwrap();
@@ -974,7 +974,7 @@ pub(super) mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_conflicting_merge_applies_nothing_and_the_branch_strategy_keeps_the_work() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = pa_types::platform::canonicalize(dir.path()).unwrap();
         let repo = repository(&root);
         let (kernel, _) = kernel_in(&root, &repo).await;
         let created = evaluate(

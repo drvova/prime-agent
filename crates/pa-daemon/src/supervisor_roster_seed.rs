@@ -581,7 +581,10 @@ pub(crate) mod tests {
         assert_eq!(candidate.agent_id, "/live/root.jsonl#sub-9");
         assert_eq!(
             candidate.child_file,
-            child.canonicalize().unwrap().to_string_lossy().to_string()
+            pa_types::platform::canonicalize(child)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
         );
 
         // An unreadable child file: dirname fallback plus seededCwd.
@@ -611,7 +614,7 @@ pub(crate) mod tests {
         PathBuf,
     ) {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().canonicalize().unwrap();
+        let dir = pa_types::platform::canonicalize(tmp.path()).unwrap();
         let agent_dir = dir.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();

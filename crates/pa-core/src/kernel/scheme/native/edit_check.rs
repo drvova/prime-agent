@@ -457,8 +457,8 @@ impl EditChecks {
     /// edit's result, or none when the file gets no check, its check was
     /// dropped, or it could not start.
     pub(super) fn after_edit(&self, cwd: &Path, path: &Path, cell: &AbortSignal) -> Option<String> {
-        let root = cwd.canonicalize().ok()?;
-        let target = path.canonicalize().ok()?;
+        let root = pa_types::platform::canonicalize(cwd).ok()?;
+        let target = pa_types::platform::canonicalize(path).ok()?;
         if !target.is_file() || !target.starts_with(&root) {
             return None;
         }
@@ -591,7 +591,7 @@ mod tests {
     async fn a_costly_fruitless_check_is_dropped_then_reprobed_and_what_it_learns_is_kept() {
         let dir = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = pa_types::platform::canonicalize(dir.path()).unwrap();
         std::fs::write(root.join("tsconfig.json"), "{}\n").unwrap();
         std::fs::write(root.join("app.ts"), "let total = 1\n").unwrap();
         let bin = root.join("node_modules/.bin");

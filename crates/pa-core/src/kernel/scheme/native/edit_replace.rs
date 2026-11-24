@@ -292,7 +292,7 @@ pub(super) fn replace(cwd: &Path, options: &Value) -> anyhow::Result<Replaced> {
     // Replaced whole, as `fs-write` and `fs-edit` replace theirs: a reader,
     // or a daemon that dies mid-write, sees the old text or the new.
     crate::fs_edit::replace_atomically(&file, path, content.as_bytes(), edited.as_bytes())?;
-    let file = file.canonicalize().unwrap_or(file);
+    let file = pa_types::platform::canonicalize(&file).unwrap_or(file);
     let (matched_by, how) = matched.words();
     let text = match matched {
         Matched::Exact => format!("Edited {}", file.display()),

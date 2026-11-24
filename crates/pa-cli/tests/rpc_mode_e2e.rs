@@ -208,7 +208,8 @@ fn leased_session_files(agent_dir: &std::path::Path) -> Vec<String> {
 fn is_leased(leased: &[String], session_file: &str) -> bool {
     let session_file = std::path::Path::new(session_file);
     leased.iter().any(|leased| {
-        std::fs::canonicalize(leased).ok() == std::fs::canonicalize(session_file).ok()
+        pa_types::platform::canonicalize(leased).ok()
+            == pa_types::platform::canonicalize(session_file).ok()
     })
 }
 

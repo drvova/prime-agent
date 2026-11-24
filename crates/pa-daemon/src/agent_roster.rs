@@ -453,7 +453,7 @@ impl AgentRoster {
 
 /// The canonical key for a session file: lexically normalized, falling back to the raw path.
 fn canonical_roster_path(path: &str) -> String {
-    Path::new(path).canonicalize().map_or_else(
+    pa_types::platform::canonicalize(Path::new(path)).map_or_else(
         |_| path.to_string(),
         |canonical| canonical.to_string_lossy().to_string(),
     )

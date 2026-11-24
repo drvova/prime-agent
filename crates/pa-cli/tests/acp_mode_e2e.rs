@@ -1255,8 +1255,8 @@ fn acp_session_list_and_load_restore_a_saved_session_in_a_new_process() {
         .clone();
     let cwd = row["cwd"].as_str().expect("a listed cwd");
     assert_eq!(
-        std::fs::canonicalize(cwd).unwrap(),
-        std::fs::canonicalize(&home_path).unwrap()
+        pa_types::platform::canonicalize(cwd).unwrap(),
+        pa_types::platform::canonicalize(&home_path).unwrap()
     );
     assert_eq!(row["title"], "Name a river.");
 

@@ -189,7 +189,7 @@ pub fn resolve_child_cwd(
         return Ok(session_cwd.to_path_buf());
     };
     let joined = session_cwd.join(requested);
-    match joined.canonicalize() {
+    match pa_types::platform::canonicalize(&joined) {
         Ok(cwd) if cwd.is_dir() => Ok(cwd),
         _ => bail!("{operation} cwd {} is not a directory", joined.display()),
     }

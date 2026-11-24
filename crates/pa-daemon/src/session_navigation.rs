@@ -231,7 +231,9 @@ impl SessionNavigation {
         let lease = self
             .target_lease(&target)
             .map_err(|error| response_failure(None, "import_jsonl", &error.to_string(), None))?;
-        if std::fs::canonicalize(&target).ok() != std::fs::canonicalize(resolved).ok() {
+        if pa_types::platform::canonicalize(&target).ok()
+            != pa_types::platform::canonicalize(resolved).ok()
+        {
             if let Err(error) = std::fs::copy(resolved, &target) {
                 return Err(response_failure(
                     None,

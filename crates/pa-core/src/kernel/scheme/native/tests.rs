@@ -63,7 +63,7 @@ async fn exited(pid: &str) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_command_runs_in_the_session_cwd_and_a_failing_one_is_a_result() {
     let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path().canonicalize().unwrap();
+    let cwd = pa_types::platform::canonicalize(dir.path()).unwrap();
     let kernel = kernel_in(&cwd).await;
     let shown = "(let ([r (bash command)])
                    (list (hash-ref r 'exit-code) (hash-ref r 'output) (hash-ref r 'truncated)

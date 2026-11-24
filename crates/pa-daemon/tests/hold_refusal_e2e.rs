@@ -292,7 +292,7 @@ fn a_foreign_lease_holder_rejects_the_create_with_the_hold_refusal() {
     let info_path = rejected["errorInfo"]["sessionPath"]
         .as_str()
         .expect("sessionPath in errorInfo");
-    let canonical = std::fs::canonicalize(&session_file).expect("canonicalize");
+    let canonical = pa_types::platform::canonicalize(&session_file).expect("canonicalize");
     assert_eq!(
         std::path::Path::new(info_path),
         canonical.as_path(),

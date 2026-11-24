@@ -159,7 +159,8 @@ impl FileIndex {
             self.replace(IndexState::Disabled);
             return false;
         };
-        let canonical_base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+        let canonical_base =
+            pa_types::platform::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
         drop(spawn_applier(
             Arc::downgrade(&self.shared),
             events,

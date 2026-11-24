@@ -96,13 +96,11 @@ impl RunCtx {
         Ok(Self {
             // Spawns run in the generated project directory. Resolve the
             // caller's path before changing cwd (including `make perf`).
-            binary: binary
-                .canonicalize()
+            binary: pa_types::platform::canonicalize(binary)
                 .with_context(|| format!("resolve benchmark binary {}", binary.display()))?,
             project_dir: manifest.paths.project_dir.clone(),
             agent_dir: manifest.paths.agent_dir.clone(),
-            corpus_root: corpus_root
-                .canonicalize()
+            corpus_root: pa_types::platform::canonicalize(corpus_root)
                 .with_context(|| format!("resolve corpus root {}", corpus_root.display()))?,
             manifest,
             liveness,
@@ -1281,7 +1279,7 @@ mod tests {
         let binary = Path::new("Cargo.toml");
         assert_eq!(
             ctx.binary,
-            binary.canonicalize().expect("anchor the binary")
+            pa_types::platform::canonicalize(binary).expect("anchor the binary")
         );
     }
 
@@ -1299,7 +1297,7 @@ mod tests {
         assert!(run_socket(&ctx, 0).is_absolute());
         assert_eq!(
             ctx.corpus_root,
-            dir.path().canonicalize().expect("absolute root")
+            pa_types::platform::canonicalize(dir.path()).expect("absolute root")
         );
         assert_ne!(ctx.project_dir, ctx.corpus_root);
     }

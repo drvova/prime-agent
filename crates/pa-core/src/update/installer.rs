@@ -517,7 +517,7 @@ pub fn running_installer_prefix() -> Option<PathBuf> {
     // is the \\?\ verbatim spelling, which the installer cannot take as a
     // prefix.
     #[cfg(not(windows))]
-    let exe = exe.canonicalize().ok()?;
+    let exe = pa_types::platform::canonicalize(exe).ok()?;
     installer_prefix_of(&exe)
 }
 

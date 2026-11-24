@@ -72,7 +72,7 @@ struct DiskReader;
 
 impl SourceReader for DiskReader {
     fn canonical(&self, path: &Path) -> std::io::Result<PathBuf> {
-        std::fs::canonicalize(path)
+        pa_types::platform::canonicalize(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<String> {

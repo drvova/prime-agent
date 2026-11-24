@@ -324,7 +324,10 @@ fn cold_reopen_uses_saved_cwd_unless_explicitly_overridden() {
         assert_eq!(pwd["success"], true, "{pwd}");
         assert_eq!(
             pwd["data"]["output"].as_str().unwrap().trim(),
-            expected.canonicalize().unwrap().to_str().unwrap()
+            pa_types::platform::canonicalize(expected)
+                .unwrap()
+                .to_str()
+                .unwrap()
         );
     }
     client.send_command("shutdown", &serde_json::json!({"type": "shutdown"}));
@@ -375,7 +378,7 @@ fn missing_saved_cwd_requires_an_explicit_fallback() {
     assert_eq!(fresh["success"], true, "{fresh}");
     assert_eq!(
         fresh["data"]["cwd"],
-        serde_json::json!(dir.path().canonicalize().unwrap())
+        serde_json::json!(pa_types::platform::canonicalize(dir.path()).unwrap())
     );
     client.send_command("shutdown", &serde_json::json!({"type": "shutdown"}));
     assert_eq!(client.read_response("shutdown")["success"], true);
@@ -441,7 +444,10 @@ fn cold_reopen_kernel_uses_saved_cwd_and_explicit_override() {
             .expect("the kernel's command wrote its relative-path cwd probe");
         assert_eq!(
             observed.trim_end(),
-            expected.canonicalize().unwrap().to_str().unwrap()
+            pa_types::platform::canonicalize(expected)
+                .unwrap()
+                .to_str()
+                .unwrap()
         );
     }
     client.send_command("shutdown", &serde_json::json!({"type": "shutdown"}));

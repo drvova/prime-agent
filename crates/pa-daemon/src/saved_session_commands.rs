@@ -1134,8 +1134,7 @@ mod tombstone_usage_tests {
     fn a_non_regular_session_path_captures_nothing() {
         // A short canonical root: the socket path must fit SUN_LEN, and the
         // capture reports the canonical path.
-        let root = Path::new("/tmp")
-            .canonicalize()
+        let root = pa_types::platform::canonicalize(Path::new("/tmp"))
             .unwrap()
             .join(format!("pa-fifo-del-{}", uuid::Uuid::new_v4()));
         let agent_dir = root.join("agent");

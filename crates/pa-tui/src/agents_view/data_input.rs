@@ -95,8 +95,8 @@ impl AgentsViewMode {
                                 && (saved.components().eq(folder.components())
                                     || matches!(
                                         (
-                                            std::fs::canonicalize(saved),
-                                            std::fs::canonicalize(&folder)
+                                            pa_types::platform::canonicalize(saved),
+                                            pa_types::platform::canonicalize(&folder)
                                         ),
                                         (Ok(saved), Ok(folder)) if saved == folder
                                     ))

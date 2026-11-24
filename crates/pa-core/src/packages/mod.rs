@@ -67,7 +67,7 @@ pub fn exe_dir_of(exe: &std::path::Path) -> Option<PathBuf> {
     let is_symlink =
         std::fs::symlink_metadata(exe).is_ok_and(|metadata| metadata.file_type().is_symlink());
     let resolved = if is_symlink {
-        exe.canonicalize().ok()?
+        pa_types::platform::canonicalize(exe).ok()?
     } else {
         exe.to_path_buf()
     };

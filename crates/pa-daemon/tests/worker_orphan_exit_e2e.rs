@@ -236,7 +236,7 @@ fn read_exact_timeout(
 #[test]
 fn the_orphan_exit_preserves_the_session_and_allows_dead_owner_lease_reclaim() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let canonical_dir = std::fs::canonicalize(dir.path()).expect("canonical dir");
+    let canonical_dir = pa_types::platform::canonicalize(dir.path()).expect("canonical dir");
     let supervisor_socket = dir.path().join("never-bound-supervisor.sock");
     let mut worker = spawn_worker_with_window(dir.path(), &supervisor_socket, "4000", None);
     let worker_socket = dir.path().join("worker.sock");
@@ -295,7 +295,7 @@ fn the_orphan_exit_preserves_the_session_and_allows_dead_owner_lease_reclaim() {
 #[test]
 fn an_orphaned_worker_waits_for_a_running_user_bash() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let canonical_dir = std::fs::canonicalize(dir.path()).expect("canonical dir");
+    let canonical_dir = pa_types::platform::canonicalize(dir.path()).expect("canonical dir");
     let supervisor_socket = dir.path().join("never-bound-supervisor.sock");
     let mut worker = spawn_worker_with_window(dir.path(), &supervisor_socket, "4000", None);
     let worker_socket = dir.path().join("worker.sock");
@@ -351,7 +351,7 @@ fn an_orphaned_worker_waits_for_a_running_user_bash() {
 #[test]
 fn the_orphan_exit_writes_a_current_info_sidecar() {
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let canonical_dir = std::fs::canonicalize(dir.path()).expect("canonical dir");
+    let canonical_dir = pa_types::platform::canonicalize(dir.path()).expect("canonical dir");
     let script = dir.path().join("faux-script.json");
     std::fs::write(
         &script,

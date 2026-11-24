@@ -711,7 +711,10 @@ pub(super) fn cp(invocation: &mut Invocation<'_>) -> Outcome {
                 "cp: -r not specified; omitting directory {}",
                 quoted(&source)
             )),
-            Ok(_) if std::fs::canonicalize(&from).ok() == std::fs::canonicalize(&target).ok() => {
+            Ok(_)
+                if pa_types::platform::canonicalize(&from).ok()
+                    == pa_types::platform::canonicalize(&target).ok() =>
+            {
                 Err(format!(
                     "cp: {} and {} are the same file",
                     quoted(&source),
@@ -892,13 +895,14 @@ pub(super) fn realpath(invocation: &mut Invocation<'_>) -> Outcome {
     let mut status = 0;
     for operand in operands {
         let path = invocation.shell.path(operand);
-        let resolved =
-            std::fs::canonicalize(&path).or_else(|error| match (path.parent(), path.file_name()) {
+        let resolved = pa_types::platform::canonicalize(&path).or_else(|error| {
+            match (path.parent(), path.file_name()) {
                 (Some(parent), Some(last)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(std::fs::canonicalize(parent)?.join(last))
+                    Ok(pa_types::platform::canonicalize(parent)?.join(last))
                 }
                 (_, _) => Err(error),
-            });
+            }
+        });
         match resolved {
             Ok(resolved) => {
                 let text = resolved.to_string_lossy();

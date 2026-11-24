@@ -56,7 +56,7 @@ fn resolve_skill_path(path: &str, cwd: &Path) -> PathBuf {
 /// canonicalizePath: realpath on success, the input path otherwise.
 #[must_use]
 pub fn canonicalize_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    pa_types::platform::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn is_under_path(target: &Path, root: &Path) -> bool {

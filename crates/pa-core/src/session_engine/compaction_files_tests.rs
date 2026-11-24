@@ -57,7 +57,9 @@ fn view(cwd: &Path, name: &str) -> serde_json::Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn after_a_compaction_the_recent_files_are_shown_with_fresh_anchors() {
     let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path().canonicalize().unwrap().join("project");
+    let cwd = pa_types::platform::canonicalize(dir.path())
+        .unwrap()
+        .join("project");
     std::fs::create_dir_all(&cwd).unwrap();
     let numbered = |prefix: &str, count: usize| {
         (1..=count).fold(String::new(), |mut text, line| {

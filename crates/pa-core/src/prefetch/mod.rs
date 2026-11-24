@@ -384,15 +384,12 @@ impl Inner {
             let mut found: Vec<(PathBuf, Why)> = Vec::new();
             // An import can climb with `..` or pass through a link: a candidate
             // counts as inside the workspace by where it really is.
-            let real_root = self
-                .root
-                .canonicalize()
-                .unwrap_or_else(|_| self.root.clone());
+            let real_root =
+                pa_types::platform::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
             let mut add = |path: PathBuf, why: Why| {
                 if path != file
                     && path.starts_with(&self.root)
-                    && path
-                        .canonicalize()
+                    && pa_types::platform::canonicalize(&path)
                         .is_ok_and(|real| real.starts_with(&real_root))
                     && path.is_file()
                     && !found.iter().any(|(known, _)| *known == path)

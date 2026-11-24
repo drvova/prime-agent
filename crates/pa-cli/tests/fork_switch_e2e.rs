@@ -199,7 +199,7 @@ impl World {
             .prefix("pa-fork-switch-")
             .tempdir()
             .expect("world root");
-        let root = dir.path().canonicalize().expect("canonical root");
+        let root = pa_types::platform::canonicalize(dir.path()).expect("canonical root");
         let home = root.join("home");
         std::fs::create_dir_all(home.join(".prime/agent/sessions")).expect("home");
         let www = root.join("www");
