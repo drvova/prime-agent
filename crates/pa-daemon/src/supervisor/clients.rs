@@ -149,7 +149,12 @@ impl Supervisor {
         self.wait_for_boot_reap().await;
 
         let mut reader = BufReader::new(reader);
-        let mut line = String::new();
+        // The command line being read. The read arm below loses its `select!`
+        // race whenever another arm is ready first, so a long line arrives over
+        // several polls: `read_until` keeps the bytes each cancelled poll took
+        // here (`read_line` would drop them), and the buffer empties only once
+        // a whole line was taken out of it.
+        let mut line = Vec::new();
         let mut events = self.events.subscribe();
         // A history import already running: this client hears its started frame now (the
         // finished one rides the broadcast it just subscribed to).
@@ -186,15 +191,19 @@ impl Supervisor {
         // The loop yields the connection's result; a write failure parks the
         // error and falls through the shared exit tail below.
         let served: Result<()> = 'serve: loop {
-            line.clear();
             tokio::select! {
                 biased;
-                read = reader.read_line(&mut line), if dispatch_slots.available_permits() > 0 => {
+                read = reader.read_until(b'\n', &mut line), if dispatch_slots.available_permits() > 0 => {
                     let Ok(read) = read else { break 'serve Ok(()) };
-                    if read == 0 {
+                    if read == 0 && line.is_empty() {
                         break 'serve Ok(());
                     }
-                    let trimmed = line.trim().to_string();
+                    // A line that is not UTF-8 ends the connection, as the
+                    // `read_line` error it replaces did.
+                    let Ok(text) = String::from_utf8(std::mem::take(&mut line)) else {
+                        break 'serve Ok(());
+                    };
+                    let trimmed = text.trim().to_string();
                     if trimmed.is_empty() {
                         continue;
                     }
@@ -1694,5 +1703,78 @@ mod tests {
         })
         .await;
         assert!(stopped.is_ok(), "the owned worker was never stopped");
+    }
+
+    /// A command line still arriving when an event is written to the client
+    /// keeps every byte read before the event: the read arm loses the
+    /// `select!` race to the event, and the line it had begun must not be
+    /// dropped with it (a large `prompt` line read across several polls on a
+    /// busy daemon went unanswered).
+    #[tokio::test]
+    async fn a_command_line_split_by_an_event_write_is_answered() {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+        let dir = tempfile::TempDir::new().unwrap();
+        let supervisor = std::sync::Arc::new(
+            crate::supervisor::Supervisor::new(crate::supervisor::SupervisorOptions {
+                socket_path: dir.path().join("daemon.sock"),
+                agent_dir: dir.path().join("agent"),
+            })
+            .expect("supervisor"),
+        );
+        // The duplex holds 4096 bytes: a longer write returns only once the
+        // connection has read part of it.
+        let (client_side, server_side) = tokio::io::duplex(4096);
+        let connection = {
+            let supervisor = std::sync::Arc::clone(&supervisor);
+            let stream: Box<dyn pa_types::platform::transport::TransportStream> =
+                Box::new(crate::supervisor::accept_loop::tests::DuplexTransport(
+                    std::sync::Mutex::new(server_side),
+                ));
+            tokio::spawn(async move { supervisor.handle_client(stream).await })
+        };
+        let (client_read, mut client_write) = tokio::io::split(client_side);
+        let mut client = tokio::io::BufReader::new(client_read);
+        let mut hello = String::new();
+        client.read_line(&mut hello).await.expect("hello line");
+        // The hello is written before the loop subscribes to the event ring.
+        while supervisor.events.receiver_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        let id = format!("long-{}", "x".repeat(16 * 1024));
+        let envelope = serde_json::json!({
+            "type": "command",
+            "id": id,
+            "protocol": {"name": "prime-agent.daemon", "version": 7},
+            "command": {"type": "roster_unsubscribe", "id": id},
+        });
+        let line = serde_json::to_string(&envelope).unwrap() + "\n";
+        let (begun, rest) = line.as_bytes().split_at(8 * 1024);
+        tokio::time::timeout(Duration::from_secs(5), client_write.write_all(begun))
+            .await
+            .expect("the connection reads the line's first part")
+            .expect("write the line's first part");
+        let _ = supervisor.events.send((
+            super::ClientRouting::Broadcast,
+            std::sync::Arc::new(serde_json::json!({ "type": "heartbeats_changed" })),
+        ));
+        let mut event = String::new();
+        client.read_line(&mut event).await.expect("the event line");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&event).expect("event json"),
+            serde_json::json!({ "type": "heartbeats_changed" })
+        );
+        client_write.write_all(rest).await.expect("write the rest");
+        let mut answer = String::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_line(&mut answer))
+            .await
+            .expect("the line is answered")
+            .expect("answer line");
+        let answer: serde_json::Value = serde_json::from_str(&answer).expect("answer json");
+        assert_eq!(
+            (&answer["id"], &answer["success"]),
+            (&serde_json::json!(id), &serde_json::json!(true)),
+            "{answer}"
+        );
+        connection.abort();
     }
 }

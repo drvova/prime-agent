@@ -108,7 +108,7 @@ pub(super) async fn serve(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::VecDeque;
     use std::io;
     use std::sync::atomic::Ordering;
@@ -176,8 +176,11 @@ mod tests {
     }
 
     /// A duplex end as a [`TransportStream`]: a plain memory stream has no `into_split`, so
-    /// the halves come from the shared-lock split (the `Mutex` carries `Sync`).
-    struct DuplexTransport(Mutex<tokio::io::DuplexStream>);
+    /// the halves come from the shared-lock split (the `Mutex` carries `Sync`). The client
+    /// connection tests drive a connection through one too.
+    pub(in crate::supervisor) struct DuplexTransport(
+        pub(in crate::supervisor) Mutex<tokio::io::DuplexStream>,
+    );
 
     impl TransportStream for DuplexTransport {
         fn split(self: Box<Self>) -> (Box<dyn AsyncReadHalf>, Box<dyn AsyncWriteHalf>) {
