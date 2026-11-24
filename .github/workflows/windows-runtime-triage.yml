@@ -154,6 +154,15 @@ jobs:
           test -n "${WINDOWS_RUNTIME_TRIAGE_DUMP_DIR}" \
             || { echo "::error::WINDOWS_RUNTIME_TRIAGE_DUMP_DIR is unset"; exit 1; }
           cargo test --locked -p pa-cli --test windows_runtime_triage_e2e -- --test-threads=1 --nocapture
+      # `(bash cmd (hash 'elevated #t))` through the session's elevated
+      # helper, which UAC's `runas` starts. The runner is elevated with UAC
+      # off, so the tests turn the already-elevated shortcut off (a debug
+      # seam) and the helper starts with no prompt.
+      - name: The elevated helper battery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p pa-cli --test windows_elevation_e2e -- --nocapture
       # Renderer evidence only: these frames do not validate console glyphs.
       - name: Upload the pane dumps
         if: always()

@@ -78,6 +78,10 @@ use crate::platform;
 
 /// How long the helper is kept with no elevated command running.
 const IDLE: Duration = Duration::from_secs(600);
+/// In debug builds, a session variable that sets [`IDLE`] in milliseconds,
+/// so a test sees the helper end.
+#[cfg(debug_assertions)]
+const IDLE_VARIABLE: &str = "PRIME_AGENT_ELEVATION_IDLE_MS";
 /// How long a consented helper has to connect, and then to say hello.
 const CONNECT_WAIT: Duration = Duration::from_secs(60);
 const HELLO_WAIT: Duration = Duration::from_secs(10);
@@ -349,6 +353,12 @@ impl Helper {
         write_frame(&mut pipe, &Message::Welcome { protocol: PROTOCOL })
             .await
             .map_err(|error| unavailable("the helper's pipe", &error))?;
+        #[cfg(debug_assertions)]
+        let idle = super::session_var(session, IDLE_VARIABLE)
+            .and_then(|ms| ms.parse().ok())
+            .map_or(IDLE, Duration::from_millis);
+        #[cfg(not(debug_assertions))]
+        let idle = IDLE;
         let (outgoing, to_send) = mpsc::unbounded_channel();
         let helper = Helper {
             outgoing,
@@ -362,6 +372,7 @@ impl Helper {
             Arc::clone(&helper.runs),
             Arc::clone(&helper.settled),
             session.killed.clone(),
+            idle,
         ));
         Ok(helper)
     }
@@ -410,13 +421,14 @@ async fn helper(session: &Arc<Session>) -> Result<Arc<Helper>, NoHelper> {
 /// Carry one helper connection until it ends: send what the session's
 /// commands send, hand each message of the helper to its run, and close the
 /// pipe (which ends the helper) when the kernel is killed, the helper
-/// misbehaves, or no command has run for [`IDLE`].
+/// misbehaves, or no command has run for `idle_for` ([`IDLE`]).
 async fn serve(
     pipe: NamedPipeServer,
     mut to_send: mpsc::UnboundedReceiver<Message>,
     runs: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<Message>>>>,
     settled: Arc<Notify>,
     killed: crate::tools::tool_definition::AbortSignal,
+    idle_for: Duration,
 ) {
     let (mut reader, mut writer) = tokio::io::split(pipe);
     // Reading runs on its own: a frame read half-way is never abandoned.
@@ -452,7 +464,7 @@ async fn serve(
         tokio::select! {
             () = killed.cancelled() => break,
             _ = &mut reading => break,
-            () = tokio::time::sleep(IDLE), if idle => break,
+            () = tokio::time::sleep(idle_for), if idle => break,
             () = settled.notified() => {}
             message = to_send.recv() => match message {
                 Some(message) => {
@@ -465,6 +477,9 @@ async fn serve(
         }
     }
     // Closing ends the helper; every run still waiting hears its sender go.
+    // The reader holds the pipe too: the pipe closes only once both halves
+    // are gone, and a reader left waiting would keep the helper alive.
+    reading.abort();
     to_send.close();
     lock(&runs).clear();
 }
