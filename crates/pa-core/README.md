@@ -381,7 +381,9 @@ public API.
 Kernel API reference (`prompts::layers`): one doc file per topic under `src/prompts/capabilities/`
 documents every model-facing function of the Scheme kernel. The core prompt layer splices each
 function's call form from them, and the kernel serves a function's full entry on demand through
-`(api-help ...)`. `tests/prompt_guards.rs` holds the reference equal to the functions the kernel's
+`(api-help ...)`, and `(api-search query)` ranks its passages (function entries, bullets,
+paragraphs) against a query with BM25 (`prompts/layers/reference.rs`), so a cell finds a function
+by what it does. `tests/prompt_guards.rs` holds the reference equal to the functions the kernel's
 sources define. Public surface: `API_DOCS`, `documented_calls`, `CORE_LAYER`.
 
 Session resource reload and settings view (`session_engine::resource_reload`,

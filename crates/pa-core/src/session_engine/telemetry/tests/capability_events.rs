@@ -24,7 +24,7 @@ fn drive(counters: &SessionCounters) {
     use crate::kernel::elevation_runs::{ConsentRoute, ElevationOutcome, ElevationRun};
     use crate::kernel::error_context::EnrichmentFact;
     use crate::kernel::hypotheses::HypothesesRun;
-    use crate::kernel::shared::{BackgroundCellFact, CellWaitFact};
+    use crate::kernel::shared::{BackgroundCellFact, CellWaitFact, ReferenceLookupFact};
     use crate::kernel::shell_runs::ShellRun;
     use crate::kernel::spill::host::CtxRead;
     use crate::kernel::spill::{PreviewFact, SpillFact};
@@ -268,6 +268,14 @@ fn drive(counters: &SessionCounters) {
         CellWaitFact::TimedOut,
     ] {
         counters.note_cell_wait(fact);
+    }
+    for fact in [
+        ReferenceLookupFact::Help,
+        ReferenceLookupFact::Help,
+        ReferenceLookupFact::SearchFound,
+        ReferenceLookupFact::SearchMissed,
+    ] {
+        counters.note_reference_lookup(fact);
     }
     for fact in [
         BetterTelemetryFact::Run,
@@ -701,6 +709,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent kernel waits",
         r#"{"wait_until_count":3,"wait_until_met_count":1,"wait_until_timed_out_count":1}"#,
+    ),
+    (
+        "agent kernel reference lookups",
+        r#"{"api_help_count":2,"api_search_count":2,"api_search_miss_count":1}"#,
     ),
     (
         "agent kernel login and recall",

@@ -82,6 +82,21 @@ pub enum CellWaitFact {
 /// Receives each [`CellWaitFact`] the kernel reports.
 pub type CellWaitObserver = Arc<dyn Fn(CellWaitFact) + Send + Sync>;
 
+/// One read of the kernel API reference from a cell, for adoption counts
+/// (never a topic, a query, or what was printed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceLookupFact {
+    /// An `api-help` call.
+    Help,
+    /// An `api-search` call that printed at least one passage.
+    SearchFound,
+    /// An `api-search` call that matched nothing.
+    SearchMissed,
+}
+
+/// Receives each [`ReferenceLookupFact`] the kernel reports.
+pub type ReferenceLookupObserver = Arc<dyn Fn(ReferenceLookupFact) + Send + Sync>;
+
 /// Callback receiving an agent message sent late by the kernel.
 pub type LateSentAgentMessageCallback = Arc<dyn Fn(KernelSentAgentMessage) + Send + Sync>;
 

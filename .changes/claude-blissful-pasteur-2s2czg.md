@@ -1,0 +1,1 @@
+- The kernel gains `(api-search query)`: it ranks the API reference with BM25 and prints the entries and details that best match a plain description, so the model can find a function without knowing its name or topic.

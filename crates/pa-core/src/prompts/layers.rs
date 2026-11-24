@@ -13,6 +13,9 @@ use std::sync::LazyLock;
 
 use anyhow::{bail, ensure, Context};
 
+mod reference;
+pub(crate) use reference::api_search;
+
 /// The core layer's hand-written text, with one slot per API topic (see [`splice_core_layer`]).
 pub(crate) const CORE_TEMPLATE: &str = include_str!("layers/core.md");
 
@@ -116,23 +119,8 @@ pub(crate) fn api_help(topic: &str) -> String {
     if let Some((_, doc)) = API_DOCS.iter().find(|(name, _)| *name == topic) {
         return (*doc).to_string();
     }
-    let entry = API_DOCS.iter().find_map(|(_, doc)| {
-        let mut lines = doc.lines().skip_while(|line| {
-            documented_calls(line)
-                .next()
-                .and_then(|call| call.split(' ').next())
-                != Some(topic)
-        });
-        let bullet = lines.next()?;
-        Some(
-            std::iter::once(bullet)
-                .chain(lines.take_while(|line| line.starts_with("  ")))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-    });
-    if let Some(entry) = entry {
-        return format!("{entry}\n");
+    if let Some(entry) = reference::function_entry(topic) {
+        return format!("{}\n", entry.text);
     }
     let unknown = if topic.is_empty() {
         String::new()
