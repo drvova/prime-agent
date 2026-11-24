@@ -348,7 +348,8 @@ pub fn summarize(trials: &[Trial], prices: &Prices, options: Bootstrap) -> Summa
             | TurnEndReason::Error
             | TurnEndReason::Aborted
             | TurnEndReason::Unknown
-            | TurnEndReason::LoopGuard => false,
+            | TurnEndReason::LoopGuard
+            | TurnEndReason::ContextUnreducible => false,
         })
         .count();
     Summary {

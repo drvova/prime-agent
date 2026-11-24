@@ -222,3 +222,28 @@ fn a_session_file_yields_the_metrics_of_each_run() {
         ]
     );
 }
+
+/// The row with which automatic compaction stopped ends its run as
+/// `context_unreducible`, even mid tool round, and the next user message
+/// opens a run of its own.
+#[test]
+fn an_unreducible_compaction_stop_ends_its_run() {
+    let usage = r#""usage":{"input":200,"output":10,"cacheRead":0,"cacheWrite":0,"totalTokens":210,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}"#;
+    let transcript = [
+        r#"{"type":"message","id":"1","timestamp":"2026-11-01T10:00:00.000Z","message":{"role":"user","content":"go","timestamp":0}}"#.to_string(),
+        format!(r#"{{"type":"message","id":"2","timestamp":"2026-11-01T10:00:01.000Z","message":{{"role":"assistant","content":[{{"type":"toolCall","id":"c","name":"eval","arguments":{{}}}}],"api":"a","provider":"p","model":"m",{usage},"stopReason":"toolUse","timestamp":0}}}}"#),
+        r#"{"type":"compaction","id":"3","timestamp":"2026-11-01T10:00:02.000Z","summary":"s","firstKeptEntryId":"2","tokensBefore":1}"#.to_string(),
+        r#"{"type":"custom_message","id":"4","timestamp":"2026-11-01T10:00:03.000Z","customType":"compaction_outcome","content":"stopped","display":true,"details":{"reason":"threshold","outcome":"unreducible"}}"#.to_string(),
+        r#"{"type":"message","id":"5","timestamp":"2026-11-01T10:01:00.000Z","message":{"role":"user","content":"again","timestamp":0}}"#.to_string(),
+        format!(r#"{{"type":"message","id":"6","timestamp":"2026-11-01T10:01:01.000Z","message":{{"role":"assistant","content":[{{"type":"text","text":"done"}}],"api":"a","provider":"p","model":"m",{usage},"stopReason":"stop","timestamp":0}}}}"#),
+    ]
+    .join("\n");
+    let ends: Vec<_> = transcript_run_metrics(&transcript)
+        .into_iter()
+        .map(|run| run.end_reason)
+        .collect();
+    assert_eq!(
+        ends,
+        [TurnEndReason::ContextUnreducible, TurnEndReason::Stop]
+    );
+}

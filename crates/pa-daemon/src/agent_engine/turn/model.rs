@@ -271,6 +271,11 @@ impl AgentSessionEngine {
                             {
                                 return Ok(aborted_message(&model));
                             }
+                            // Compaction cannot reduce the context: the run
+                            // loop ends the turn with the stop.
+                            if outcome == crate::auto_compaction::AutoCompactionRun::Unreducible {
+                                return Ok(settle(assistant));
+                            }
                             if self
                                 .config
                                 .queued_steering_probe
