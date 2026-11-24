@@ -24,6 +24,16 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   (define, remove, publish, subscribe, unsubscribe, list), the delivery mode, and the source and
   subscription records the daemon's bus keeps and lists. pa-core's kernel functions build the
   requests and pa-daemon's supervisor answers them.
+- `event_log`: the vocabulary of the event-driven core (being built beside the daemon; it
+  replaces `events`): `Event`/`NewEvent` with `Trust` (owner or untrusted, only ever lowered
+  along a chain of causes) and a cause chain bounded by `MAX_HOPS`; `Topic` and `TopicFilter`
+  (MQTT `+`/`#` wildcards) and `TopicTrie`, which matches a topic against every filter in time
+  proportional to its depth; `Subscription` (scope, filter, `when` predicate by JSON Pointer,
+  throttle and debounce, `Route`: set, publish, call, agent) and the `Task` an agent route queues
+  in its session's lane, ordered by `Priority`.
+- `wire2`: the event wire between clients and the runtime: `ClientFrame` (hello, subscribe with
+  a replay start, unsubscribe, publish, query, call) and `ServerFrame` (welcome, event,
+  backfilled, reply, closing), versioned by `WIRE2_VERSION`.
 - `daemon::plane`: the session/control command-plane table (worker-side peer gating and client-side socket routing both read it).
 - `daemon::{DaemonPeerTransportTicket, DaemonWorkerPeerGrant, DaemonPeerCommand}`: the direct-transport ticket and grant wire shapes.
 - `goal`: the thread-goal wire state (`GoalState`/`GoalStatus`) shared by the
