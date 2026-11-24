@@ -142,21 +142,6 @@ pub struct ChromeState {
     /// Hide the splash `cwd` line (the scoped agents view keeps its
     /// metadata rows centered against the logo).
     pub splash_hide_cwd: bool,
-    /// The daemon's elevation, from its hello: an elevated daemon's sessions run every command
-    /// as Administrator (Windows) or root, and the top bar says so at its left edge for as long
-    /// as the window is open. `None` (an older daemon) reads as not elevated.
-    pub elevation: Option<pa_types::platform::Elevation>,
-}
-
-impl ChromeState {
-    /// Take the elevation a daemon's hello reports (`elevation`), at the first connect and at
-    /// every reconnect; a hello without one reads as not elevated.
-    pub fn note_daemon_hello(&mut self, hello: &Value) {
-        self.elevation = hello
-            .get("elevation")
-            .cloned()
-            .and_then(|elevation| serde_json::from_value(elevation).ok());
-    }
 }
 
 /// Which actionable group owns the dock's selection. Every group is
@@ -523,24 +508,8 @@ pub fn render_top_bar(state: &ChromeState, theme: &Theme, width: usize) -> Line 
         .replace(char::is_whitespace, " ")
         .trim()
         .to_string();
-    // An elevated session's badge (` Administrator ` / ` root `) holds the bar's left edge.
-    let badge = match state.elevation {
-        Some(pa_types::platform::Elevation::Elevated) => Some(Span::styled(
-            format!(
-                " {} ",
-                pa_types::platform::ElevationRoute::CURRENT.elevated_account()
-            ),
-            theme
-                .fg_style(ThemeColor::Warning)
-                .add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::REVERSED),
-        )),
-        Some(pa_types::platform::Elevation::Standard) | None => None,
-    };
-    let badge_width = badge
-        .as_ref()
-        .map_or(0, |badge| str_width(&badge.content) + 1);
     if name.is_empty() {
-        return badge.into_iter().collect();
+        return Vec::new();
     }
     let text = theme.fg_style(ThemeColor::Text);
     let dim = theme.fg_style(ThemeColor::Dim);
@@ -585,21 +554,14 @@ pub fn render_top_bar(state: &ChromeState, theme: &Theme, width: usize) -> Line 
     // The bar is one row: a name longer than the room beside the profile and the spend ends in
     // `…`, and the centering gives way before the tail is pushed off the row.
     let tail_width = line_width(&tail);
-    let name = truncate_to_width(
-        &name,
-        width.saturating_sub(tail_width + badge_width).max(1),
-        "\u{2026}",
-    );
+    let name = truncate_to_width(&name, width.saturating_sub(tail_width).max(1), "\u{2026}");
     let name_width = str_width(&name);
-    let start = (width.saturating_sub(name_width) / 2)
-        .min(width.saturating_sub(name_width + tail_width))
-        .max(badge_width);
-    let mut line: Line = badge.into_iter().collect();
-    line.push(Span::styled(
-        " ".repeat(start - line_width(&line)),
-        Style::default(),
-    ));
-    line.push(Span::styled(name, text));
+    let start =
+        (width.saturating_sub(name_width) / 2).min(width.saturating_sub(name_width + tail_width));
+    let mut line: Line = vec![
+        Span::styled(" ".repeat(start), Style::default()),
+        Span::styled(name, text),
+    ];
     line.extend(tail);
     truncate_line(&line, width, "\u{2026}")
 }

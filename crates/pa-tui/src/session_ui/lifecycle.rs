@@ -355,8 +355,6 @@ impl SessionUi {
                 }),
             },
             RecoveryKind::Lost | RecoveryKind::Shutdown => {
-                // The restarted daemon's own elevation, not the one this window started with.
-                view.chrome.note_daemon_hello(self.client.hello());
                 // TS `formatDaemonReconnectBanner`: the recovered window reports the restart
                 // version-honestly.
                 let daemon_version = self

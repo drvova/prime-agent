@@ -290,11 +290,6 @@ pub enum DaemonOutbound {
         /// does. Rust-only extension.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keeper_pid: Option<u64>,
-        /// The daemon process's elevation: every session it hosts runs its commands as
-        /// Administrator (Windows) or root when `elevated`, and the TUI shows it. Absent from an
-        /// older daemon, which reads as not elevated. Rust-only extension.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        elevation: Option<crate::platform::Elevation>,
         client_id: DaemonClientId,
         server_capabilities: Vec<DaemonServerCapability>,
         #[serde(flatten)]

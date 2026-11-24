@@ -29,7 +29,6 @@ pub(crate) mod daemon_discovery;
 pub(crate) mod daemon_mode;
 pub(crate) mod daemon_session_list;
 pub(crate) mod descriptor_login;
-pub(crate) mod elevated_launch;
 pub(crate) mod factory_command;
 pub(crate) mod file_processor;
 pub(crate) mod global_flags;
@@ -166,8 +165,6 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     if public_command.handled {
         return Ok(public_command.exit_code.unwrap_or(0));
     }
-    // An elevated relaunch repeats the arguments as the user typed them.
-    let launch_args = args;
     let args = public_command.args;
 
     if args.first().map(String::as_str) == Some("config") {
@@ -218,15 +215,6 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     if parsed.help {
         println!("{}", command_registry::format_top_level_help());
         return Ok(0);
-    }
-    // `--elevated` decides before anything reads or creates state: a launch that is not elevated
-    // yet either starts again elevated, in a window of its own, or is refused.
-    if let Some(code) = elevated_launch::launch(
-        parsed.elevated,
-        launch_args,
-        app_mode == mode::AppMode::Interactive,
-    )? {
-        return Ok(code);
     }
 
     crate::config::require_agent_dir()?;
