@@ -703,6 +703,10 @@ impl SessionCounters {
                 "web_crawl_extract_count",
                 u64::from(outcome.per_page.extracted),
             );
+            counts.add(
+                "web_crawl_session_cookie_count",
+                u64::from(outcome.per_page.session_cookies),
+            );
             counts.raise(
                 "web_crawl_max_ms",
                 u64::try_from(outcome.elapsed.as_millis()).unwrap_or(u64::MAX),
@@ -723,6 +727,10 @@ impl SessionCounters {
                 1,
             );
             counts.add("web_capture_failed_count", u64::from(!outcome.ok));
+            counts.add(
+                "web_capture_session_cookie_count",
+                u64::from(outcome.session_cookies),
+            );
         });
     }
 

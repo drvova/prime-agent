@@ -743,6 +743,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             std::sync::Arc::new(move || settings.reopen().get_web_crawl_settings())
                 as crate::web_crawl::CrawlSettings
         }),
+        // The session's cookies for its rendered crawls and captures: in
+        // memory, gone with the session.
+        cookies: crate::web_crawl::CookieJar::default(),
     }
     .register(&mut handlers);
     // `fs.symbol`: the project's symbol index, built in the background from

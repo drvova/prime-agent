@@ -105,7 +105,10 @@
 ;; #:scripts (a hash of URL or path to JavaScript to evaluate), #:block (kinds
 ;; 'images 'stylesheets 'scripts 'analytics 'ads and URL patterns the browser
 ;; refuses to load), #:init-script (JavaScript run in every document first),
-;; #:locale ("de-DE"), #:timezone ("Europe/Berlin").
+;; #:locale ("de-DE"), #:timezone ("Europe/Berlin"). #:cookies 'session (the
+;; default) starts the browser with the cookies this session's earlier
+;; rendered crawls and captures of the site left and keeps the ones this
+;; crawl's pages end with; #:cookies #f starts empty and keeps nothing.
 (define (web-crawl source
                    #:max-pages [max-pages #f]
                    #:max-depth [max-depth #f]
@@ -138,7 +141,8 @@
                    #:timezone [timezone #f]
                    #:format [format #f]
                    #:transform [transform #f]
-                   #:extract [extract #f])
+                   #:extract [extract #f]
+                   #:cookies [cookies 'session])
   (%host-call "web.crawl"
               (%options (hash 'url
                               (cond
@@ -188,7 +192,8 @@
                         'timezone timezone
                         'format (and format (%format "web-crawl" format))
                         'transform (and transform (%transform "web-crawl" transform))
-                        'extract (and extract (%selectors "web-crawl" "#:extract" extract)))))
+                        'extract (and extract (%selectors "web-crawl" "#:extract" extract))
+                        'cookies (%cookies "web-crawl" cookies))))
 
 ;; A selectors map: names to a CSS selector or XPath expression, or a list of them.
 (define (%selectors who name value)
@@ -201,11 +206,13 @@
 ;; list of what its selectors found. `source` is a URL, anything carrying one
 ;; under 'url, or HTML text (starting with "<"). A URL is read as a one-page
 ;; crawl (robots.txt and the user's web.crawl identity apply); #:render #t or
-;; #:mode 'render / 'smart loads it in the browser; #:timeout in seconds.
+;; #:mode 'render / 'smart loads it in the browser; #:timeout in seconds;
+;; #:cookies as for web-crawl.
 (define (web-extract source selectors
                      #:render [render #f]
                      #:mode [mode #f]
-                     #:timeout [timeout #f])
+                     #:timeout [timeout #f]
+                     #:cookies [cookies 'session])
   (let ([text (cond
                 [(string? source) (trim source)]
                 [(and (hash? source) (string? (hash-try-get source 'url))) (trim (hash-ref source 'url))]
@@ -221,7 +228,16 @@
                                   [(symbol? mode) (symbol->string mode)]
                                   [(string? mode) mode]
                                   [else (error "web-extract: #:mode is 'http, 'render or 'smart")])
-                          'timeoutSeconds (and timeout (%seconds "web-extract" timeout))))))
+                          'timeoutSeconds (and timeout (%seconds "web-extract" timeout))
+                          'cookies (%cookies "web-extract" cookies)))))
+
+;; #:cookies as the host's `cookies`: 'session (the session's jar) or
+;; #f / 'none (an empty jar, kept by nothing).
+(define (%cookies who value)
+  (cond
+    [(not value) "none"]
+    [(memq value '(session none)) (symbol->string value)]
+    [else (error (string-append who ": #:cookies is 'session or #f"))]))
 
 ;; #:block as a list of strings: a kind symbol or a URL pattern, or a list
 ;; of them.
@@ -244,32 +260,36 @@
 ;; (relative: under the session's working directory): {url, finalUrl, title,
 ;; path, bytes}. #:full-page #t captures the whole page, not the viewport;
 ;; #:viewport (width height); #:wait (seconds after the load); #:init-script;
-;; #:timeout (seconds, default 30). The user's web.crawl identity applies.
+;; #:timeout (seconds, default 30). The user's web.crawl identity applies;
+;; #:cookies as for web-crawl.
 (define (web-screenshot source path
                         #:full-page [full-page #f]
                         #:viewport [viewport #f]
                         #:wait [wait #f]
                         #:init-script [init-script #f]
-                        #:timeout [timeout #f])
+                        #:timeout [timeout #f]
+                        #:cookies [cookies 'session])
   (%host-call "web.capture"
               (%options (hash 'url (%capture-url "web-screenshot" source) 'path path 'kind "png")
                         'fullPage full-page
                         'viewport viewport
                         'waitSeconds wait
                         'initScript init-script
-                        'timeoutSeconds (and timeout (%seconds "web-screenshot" timeout)))))
+                        'timeoutSeconds (and timeout (%seconds "web-screenshot" timeout))
+                        'cookies (%cookies "web-screenshot" cookies))))
 
 ;; Load `source` in a local headless Chrome and print it to a PDF at `path`:
 ;; {url, finalUrl, title, path, bytes}. #:landscape #t; #:background #t
 ;; prints background colours and images; #:viewport, #:wait, #:init-script
-;; and #:timeout as for web-screenshot.
+;; #:timeout and #:cookies as for web-screenshot.
 (define (web-pdf source path
                  #:landscape [landscape #f]
                  #:background [background #f]
                  #:viewport [viewport #f]
                  #:wait [wait #f]
                  #:init-script [init-script #f]
-                 #:timeout [timeout #f])
+                 #:timeout [timeout #f]
+                 #:cookies [cookies 'session])
   (%host-call "web.capture"
               (%options (hash 'url (%capture-url "web-pdf" source) 'path path 'kind "pdf")
                         'landscape landscape
@@ -277,4 +297,5 @@
                         'viewport viewport
                         'waitSeconds wait
                         'initScript init-script
-                        'timeoutSeconds (and timeout (%seconds "web-pdf" timeout)))))
+                        'timeoutSeconds (and timeout (%seconds "web-pdf" timeout))
+                        'cookies (%cookies "web-pdf" cookies))))

@@ -8,7 +8,9 @@
 //! drops the browser). The page sees the user's `web.crawl` identity: its
 //! user agent, headers, cookies (for the page's URL) and first proxy; never
 //! the Basic credentials, which a browser would send to every host. A relative `path` is
-//! taken under the session's working directory.
+//! taken under the session's working directory. The page starts with the
+//! session jar's cookies for its URL and leaves the cookies it then holds
+//! in the jar, as a rendered crawl's pages do ([`super::CookieJar`]).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -18,7 +20,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use spider::chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use spider::chromiumoxide::cdp::browser_protocol::network::{
-    CookieParam, Headers, SetExtraHttpHeadersParams,
+    CookieParam, Headers, SetCookiesParams, SetExtraHttpHeadersParams,
 };
 use spider::chromiumoxide::cdp::browser_protocol::page::{
     CaptureScreenshotFormat, PrintToPdfParams,
@@ -28,6 +30,7 @@ use url::Url;
 
 use super::browser;
 use super::identity::Identity;
+use super::{CookieJar, CookieScope};
 
 /// A capture's default deadline.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -64,6 +67,8 @@ pub(crate) struct CaptureRequest {
     /// JavaScript run in the document before the page's own scripts.
     pub(crate) init_script: Option<String>,
     pub(crate) timeout: Duration,
+    /// Which cookies the page starts with and keeps.
+    pub(crate) cookies: CookieScope,
 }
 
 /// Parse a `web.capture` payload.
@@ -137,12 +142,14 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CaptureRequest> {
         wait: seconds("waitSeconds", MAX_WAIT)?,
         init_script: text("initScript").map(str::to_string),
         timeout: seconds("timeoutSeconds", MAX_TIMEOUT)?.unwrap_or(DEFAULT_TIMEOUT),
+        cookies: CookieScope::parse(data, "web.capture")?,
     })
 }
 
-/// Load `request.url` in a fresh headless browser with `identity`, and
-/// write what `request.kind` asks for to `request.path`. Replies `{url,
-/// finalUrl, title, path, bytes}`.
+/// Load `request.url` in a fresh headless browser with `identity` and the
+/// cookies `jar` holds for it, and write what `request.kind` asks for to
+/// `request.path`; the page's cookies then go back into `jar`. Replies
+/// `{url, finalUrl, title, path, bytes}`.
 ///
 /// # Errors
 ///
@@ -152,6 +159,7 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CaptureRequest> {
 pub(crate) async fn capture(
     request: &CaptureRequest,
     identity: &Identity,
+    jar: &CookieJar,
 ) -> anyhow::Result<Value> {
     let program = browser::find().ok_or_else(|| anyhow!(browser::NO_BROWSER))?;
     let proxy: Vec<String> = identity
@@ -173,6 +181,34 @@ pub(crate) async fn capture(
         page.set_user_agent(identity.user_agent())
             .await
             .context("setting the user agent")?;
+        // The session's cookies for the URL first, so the user's own
+        // settings win, each set for the page's URL.
+        let mut cookies = spider::features::chrome::cookie_params_from_jar(jar, &request.url)
+            .map_err(|error| anyhow!("reading the session's cookies: {error}"))?;
+        cookies.extend(
+            identity
+                .cookies
+                .iter()
+                .flat_map(|cookies| cookies.split(';'))
+                .filter_map(|pair| pair.split_once('='))
+                .filter_map(|(name, value)| {
+                    CookieParam::builder()
+                        .name(name.trim())
+                        .value(value.trim())
+                        .url(request.url.as_str())
+                        .path("/")
+                        .build()
+                        .ok()
+                }),
+        );
+        // `Network.setCookies` itself: chromey's `set_cookies` refuses every
+        // cookie while the page is still `about:blank`, even one that names
+        // its URL.
+        if !cookies.is_empty() {
+            page.execute(SetCookiesParams::new(cookies))
+                .await
+                .context("setting the cookies")?;
+        }
         // The browser sends the headers on the page's own requests, to
         // whichever host each goes; the cookies are the page's URL's.
         if !identity.headers.is_empty() {
@@ -186,23 +222,6 @@ pub(crate) async fn capture(
             ))))
             .await
             .context("setting the request headers")?;
-        }
-        if let Some(cookies) = &identity.cookies {
-            let cookies = cookies
-                .split(';')
-                .filter_map(|pair| pair.split_once('='))
-                .filter_map(|(name, value)| {
-                    CookieParam::builder()
-                        .name(name.trim())
-                        .value(value.trim())
-                        .url(request.url.as_str())
-                        .build()
-                        .ok()
-                })
-                .collect();
-            page.set_cookies(cookies)
-                .await
-                .context("setting the cookies")?;
         }
         if let Some((width, height)) = request.viewport {
             page.emulate_viewport(SetDeviceMetricsOverrideParams::new(
@@ -250,6 +269,16 @@ pub(crate) async fn capture(
                 .await
                 .context("printing to PDF")?,
         };
+        // What the page holds now, flags and expiry kept, for the next load.
+        for cookie in page
+            .get_cookies()
+            .await
+            .context("reading the page's cookies")?
+        {
+            if let Some((line, url)) = spider::utils::browser_cookie_to_set_cookie(&cookie) {
+                jar.add_cookie_str(&line, &url);
+            }
+        }
         let title = page.get_title().await.ok().flatten();
         let final_url = page.url().await.ok().flatten();
         anyhow::Ok((bytes, title, final_url))

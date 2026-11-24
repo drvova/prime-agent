@@ -11,9 +11,11 @@ use std::time::Instant;
 use anyhow::{anyhow, bail};
 use serde_json::{json, Value};
 
+use reqwest::cookie::CookieStore as _;
+
 use super::{
-    capture, extract, identity, parse_request, CaptureOutcome, CrawlOutcome, ExtractOutcome,
-    Identity, WebCrawlEngine,
+    capture, extract, identity, parse_request, CaptureOutcome, CookieJar, CookieScope,
+    CrawlOutcome, ExtractOutcome, Identity, Render, WebCrawlEngine,
 };
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
 use crate::kernel::spill::SpillStore;
@@ -47,6 +49,8 @@ pub(crate) struct WebCrawlHost {
     pub(crate) extract_observer: Option<ExtractObserver>,
     /// The user's settings; `None` crawls with the honest defaults.
     pub(crate) settings: Option<CrawlSettings>,
+    /// The session's cookie jar for its rendered crawls and captures.
+    pub(crate) cookies: CookieJar,
 }
 
 impl WebCrawlHost {
@@ -86,6 +90,14 @@ impl WebCrawlHost {
         );
     }
 
+    /// The jar a load with `scope` uses: the session's, or a fresh one.
+    fn jar(&self, scope: CookieScope) -> CookieJar {
+        match scope {
+            CookieScope::Session => Arc::clone(&self.cookies),
+            CookieScope::None => CookieJar::default(),
+        }
+    }
+
     /// The user's identity settings, read now.
     fn settings(&self) -> WebCrawlSettings {
         self.settings
@@ -116,9 +128,13 @@ impl WebCrawlHost {
             "timeoutSeconds": data.get("timeoutSeconds"),
             "maxPages": 1,
             "extract": data.get("selectors"),
+            "cookies": data.get("cookies"),
         }))?;
         let identity = Identity::from_settings(&self.settings())?;
-        let crawl = self.engine.crawl(&request, &identity, None).await?;
+        let crawl = self
+            .engine
+            .crawl(&request, &identity, None, &self.jar(request.cookies))
+            .await?;
         match (crawl.pages.first(), crawl.failed.first()) {
             (Some(page), _) => page.get("extract").cloned().ok_or_else(|| {
                 anyhow!(
@@ -138,10 +154,12 @@ impl WebCrawlHost {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn capture(&self, data: &Value) -> anyhow::Result<Value> {
+    pub(super) async fn capture(&self, data: &Value) -> anyhow::Result<Value> {
         let request = capture::parse_request(data)?;
         let identity = Identity::from_settings(&self.settings())?;
-        let captured = capture::capture(&request, &identity).await;
+        let jar = self.jar(request.cookies);
+        let session_cookies = jar.cookies(&request.url).is_some();
+        let captured = capture::capture(&request, &identity, &jar).await;
         if let Some(observer) = &self.capture_observer {
             observer(CaptureOutcome {
                 pdf: match request.kind {
@@ -149,6 +167,7 @@ impl WebCrawlHost {
                     capture::CaptureKind::Pdf { .. } => true,
                 },
                 ok: captured.is_ok(),
+                session_cookies,
             });
         }
         captured
@@ -160,9 +179,14 @@ impl WebCrawlHost {
         let settings = self.settings();
         let identity = Identity::from_settings(&settings)?;
         let started = Instant::now();
+        let jar = self.jar(request.cookies);
+        let session_cookies = match request.render {
+            Render::Http => false,
+            Render::Browser | Render::Smart => jar.cookies(&request.url).is_some(),
+        };
         let crawled = self
             .engine
-            .crawl(&request, &identity, self.store.as_ref())
+            .crawl(&request, &identity, self.store.as_ref(), &jar)
             .await;
         if let Some(observer) = &self.observer {
             observer(CrawlOutcome {
@@ -174,6 +198,7 @@ impl WebCrawlHost {
                 per_page: super::PageWork {
                     shaped: !request.shaping.is_default(),
                     extracted: request.extract.is_some(),
+                    session_cookies,
                 },
             });
         }

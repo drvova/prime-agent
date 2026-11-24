@@ -103,7 +103,43 @@ pub(crate) struct CrawlRequest {
     pub(crate) shaping: crate::web_read::Shaping,
     /// What to extract from each HTML page (`extract` on its entry).
     pub(crate) extract: Option<extract::Selectors>,
+    /// Which cookies the browser starts with and keeps.
+    pub(crate) cookies: CookieScope,
 }
+
+/// The cookies a browser load starts with and what becomes of the ones it
+/// ends with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum CookieScope {
+    /// The session's jar: the cookies earlier rendered crawls and captures
+    /// of the site left, and this load's added to them (a browser's way
+    /// within one session).
+    #[default]
+    Session,
+    /// An empty jar, dropped when the load ends.
+    None,
+}
+
+impl CookieScope {
+    /// The `cookies` option of a `who` payload: `session` (the default) or
+    /// `none`.
+    ///
+    /// # Errors
+    ///
+    /// Any other value.
+    pub(crate) fn parse(data: &Value, who: &str) -> anyhow::Result<CookieScope> {
+        match data.get("cookies").and_then(Value::as_str) {
+            None | Some("session") => Ok(CookieScope::Session),
+            Some("none") => Ok(CookieScope::None),
+            Some(other) => bail!("{who} cookies must be session or none; got {other:?}"),
+        }
+    }
+}
+
+/// A session's cookie jar for its rendered crawls and captures: in memory
+/// only (never written to disk, never in a result), one per session, gone
+/// with it.
+pub(crate) type CookieJar = Arc<reqwest::cookie::Jar>;
 
 /// How pages are loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +176,8 @@ pub(crate) struct PageWork {
     pub(crate) shaped: bool,
     /// An `#:extract`.
     pub(crate) extracted: bool,
+    /// The browser started with cookies the session's jar held for the site.
+    pub(crate) session_cookies: bool,
 }
 
 /// What adoption telemetry learns of one `web-extract`.
@@ -154,6 +192,8 @@ pub(crate) struct CaptureOutcome {
     /// A PDF rather than a screenshot.
     pub(crate) pdf: bool,
     pub(crate) ok: bool,
+    /// The browser started with cookies the session's jar held for the page.
+    pub(crate) session_cookies: bool,
 }
 
 /// A finished crawl.
@@ -201,7 +241,10 @@ impl WebCrawlEngine {
     }
 
     /// Crawl `request.url` within the request's deadline, paging pages past
-    /// the output budget into `store` when the session has one.
+    /// the output budget into `store` when the session has one. A rendered
+    /// crawl's browser pages share `jar`: each starts with the jar's cookies
+    /// for its URL that the browser lacks, and the cookies the page holds
+    /// once loaded go back into it (spider's `chrome_cookie_jar`).
     ///
     /// # Errors
     ///
@@ -213,6 +256,7 @@ impl WebCrawlEngine {
         request: &CrawlRequest,
         identity: &Identity,
         store: Option<&SpillStore>,
+        jar: &CookieJar,
     ) -> anyhow::Result<Crawl> {
         let started = Instant::now();
         for pattern in request.include.iter().chain(&request.exclude) {
@@ -274,6 +318,8 @@ impl WebCrawlEngine {
         let browser = match request.render {
             Render::Http => None,
             Render::Browser | Render::Smart => {
+                website.cookie_jar = Arc::clone(jar);
+                website.with_chrome_cookie_jar(true);
                 let program = browser::find().ok_or_else(|| anyhow!(browser::NO_BROWSER))?;
                 let started = browser::Browser::start(&program, &[]).await?;
                 website.with_chrome_connection(Some(started.endpoint.clone()));
@@ -804,5 +850,6 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
             }),
         shaping: crate::web_read::Shaping::parse(data, "web.crawl")?,
         extract: extract::Selectors::parse(data, "extract", "web.crawl")?,
+        cookies: CookieScope::parse(data, "web.crawl")?,
     })
 }

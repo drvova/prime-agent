@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde_json::json;
 
 use super::*;
-use crate::web_crawl::{WebCrawlEngine, WebCrawlHost};
+use crate::web_crawl::{CookieJar, WebCrawlEngine, WebCrawlHost};
 
 /// A page with the usual furniture, and an inline SVG with a namespaced
 /// attribute (which XML readers reject unless the page is made XML first).
@@ -81,6 +81,7 @@ async fn web_extract_reads_given_html_from_a_cell() {
         capture_observer: None,
         extract_observer: None,
         settings: None,
+        cookies: CookieJar::default(),
     }
     .register(&mut handlers);
     let kernel = crate::kernel::scheme::SchemeKernelProvisioner::new(handlers, "/")

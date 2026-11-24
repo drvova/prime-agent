@@ -199,6 +199,7 @@ async fn a_crawl_stays_on_site_obeys_robots_and_stops_at_its_depth() {
             &request(&site, &json!({"maxDepth": 2})),
             &Identity::default(),
             None,
+            &CookieJar::default(),
         )
         .await
         .unwrap();
@@ -230,6 +231,7 @@ async fn a_crawl_stops_at_its_page_limit() {
             &request(&site, &json!({"maxPages": 2})),
             &Identity::default(),
             None,
+            &CookieJar::default(),
         )
         .await
         .unwrap();
@@ -255,6 +257,7 @@ async fn include_and_exclude_patterns_pick_the_followed_links() {
             ),
             &Identity::default(),
             None,
+            &CookieJar::default(),
         )
         .await
         .unwrap();
@@ -275,6 +278,7 @@ async fn a_crawled_page_has_web_reads_shape() {
             &request(&site, &json!({"maxDepth": 1, "maxPages": 1})),
             &Identity::default(),
             None,
+            &CookieJar::default(),
         )
         .await
         .unwrap();
@@ -357,6 +361,7 @@ async fn rendering_without_a_browser_says_how_to_get_one() {
             &request(&site, &json!({"render": true})),
             &Identity::default(),
             None,
+            &CookieJar::default(),
         )
         .await
         .unwrap_err();
@@ -439,7 +444,7 @@ async fn a_rendered_crawl_reads_the_scripted_page_and_leaves_no_browser() {
         })
         .unwrap();
         WebCrawlEngine::direct()
-            .crawl(&request, &identity, None)
+            .crawl(&request, &identity, None, &CookieJar::default())
             .await
     }
     .unwrap();
@@ -476,6 +481,7 @@ async fn a_stopped_cell_stops_its_crawl() {
         capture_observer: None,
         extract_observer: None,
         settings: None,
+        cookies: CookieJar::default(),
     }
     .register(&mut handlers);
     let kernel = crate::kernel::scheme::SchemeKernelProvisioner::new(handlers, "/")
@@ -525,6 +531,7 @@ async fn a_path_budget_caps_its_section() {
             &request(&site, &json!({"maxDepth": 5, "budget": {"/a": 1, "*": 20}})),
             &Identity::default(),
             None,
+            &CookieJar::default(),
         )
         .await
         .unwrap();
@@ -567,7 +574,12 @@ async fn full_resources_keep_the_linked_documents() {
     };
     let engine = WebCrawlEngine::direct();
     let pages_only = engine
-        .crawl(&request(&site, &json!({})), &Identity::default(), None)
+        .crawl(
+            &request(&site, &json!({})),
+            &Identity::default(),
+            None,
+            &CookieJar::default(),
+        )
         .await
         .unwrap();
     let everything = engine
@@ -575,6 +587,7 @@ async fn full_resources_keep_the_linked_documents() {
             &request(&site, &json!({"fullResources": true})),
             &Identity::default(),
             None,
+            &CookieJar::default(),
         )
         .await
         .unwrap();
@@ -629,6 +642,7 @@ async fn the_users_settings_change_what_the_next_crawl_presents() {
             let settings = Arc::clone(&settings);
             Arc::new(move || settings.lock().unwrap().clone()) as CrawlSettings
         }),
+        cookies: CookieJar::default(),
     };
     let payload = json!({"url": format!("{}/", site.base), "maxDepth": 2});
     host.handle(&payload).await.unwrap();
@@ -687,7 +701,12 @@ async fn site_headers_never_follow_a_redirect_off_the_site() {
     })
     .unwrap();
     let _ = WebCrawlEngine::direct()
-        .crawl(&request(&site, &json!({"maxDepth": 1})), &identity, None)
+        .crawl(
+            &request(&site, &json!({"maxDepth": 1})),
+            &identity,
+            None,
+            &CookieJar::default(),
+        )
         .await;
     let (asked, followed) = (heads_for(&site, "/"), heads_for(&elsewhere, "/landing"));
     assert_eq!(
@@ -711,7 +730,7 @@ async fn a_crawl_goes_through_its_proxies_in_turn() {
     .unwrap();
     let request = parse_request(&json!({"url": "http://docs.invalid/", "maxDepth": 2})).unwrap();
     let crawl = WebCrawlEngine::direct()
-        .crawl(&request, &identity, None)
+        .crawl(&request, &identity, None, &CookieJar::default())
         .await
         .unwrap();
     let through = |site: &Site| {
@@ -770,7 +789,7 @@ async fn a_rendered_crawl_blocks_injects_and_emulates() {
         }))
         .unwrap();
         WebCrawlEngine::direct()
-            .crawl(&request, &Identity::default(), None)
+            .crawl(&request, &Identity::default(), None, &CookieJar::default())
             .await
     }
     .unwrap();
@@ -819,8 +838,12 @@ async fn captures_write_a_png_and_a_pdf_and_leave_no_browser() {
         }))
         .unwrap();
         (
-            capture::capture(&png, &Identity::default()).await.unwrap(),
-            capture::capture(&pdf, &Identity::default()).await.unwrap(),
+            capture::capture(&png, &Identity::default(), &CookieJar::default())
+                .await
+                .unwrap(),
+            capture::capture(&pdf, &Identity::default(), &CookieJar::default())
+                .await
+                .unwrap(),
         )
     };
     let head = |path: &str| {
@@ -860,7 +883,12 @@ async fn basic_credentials_open_a_protected_site() {
     )
     .unwrap();
     let crawl = WebCrawlEngine::direct()
-        .crawl(&request(&site, &json!({"maxDepth": 2})), &identity, None)
+        .crawl(
+            &request(&site, &json!({"maxDepth": 2})),
+            &identity,
+            None,
+            &CookieJar::default(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -917,7 +945,7 @@ async fn a_smart_crawl_renders_only_the_page_that_needs_it() {
         let request =
             parse_request(&json!({"url": format!("{}/", site.base), "mode": "smart"})).unwrap();
         WebCrawlEngine::direct()
-            .crawl(&request, &Identity::default(), None)
+            .crawl(&request, &Identity::default(), None, &CookieJar::default())
             .await
     }
     .unwrap();
@@ -978,6 +1006,7 @@ async fn a_crawl_archives_every_response_to_its_warc_file() {
                 &request(&site, &json!({"maxDepth": 2, "warc": "archive/site.warc"})),
                 &Identity::default(),
                 None,
+                &CookieJar::default(),
             )
             .await
             .unwrap()
@@ -1012,6 +1041,7 @@ async fn a_crawl_formats_and_extracts_every_page() {
             ),
             &Identity::default(),
             None,
+            &CookieJar::default(),
         )
         .await
         .unwrap();
@@ -1041,5 +1071,91 @@ async fn a_crawl_formats_and_extracts_every_page() {
             page("B", "B", "/"),
             page("Home", "Home", "/a"),
         ]
+    );
+}
+
+/// A cookie a page sets in one rendered crawl reaches the site from the
+/// session's next rendered crawl, a capture's cookie reaches the crawl
+/// after it, and a crawl with `#:cookies #f` starts with the user's own
+/// cookies only: the session's jar, through its host, across separate
+/// calls. The capture sends the user's `web.crawl.cookies` too (it used to
+/// fail setting them on its blank page).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sessions_cookies_carry_across_its_rendered_crawls_and_captures() {
+    const CHROMIUM: &str = "/opt/pw-browsers/chromium";
+    if !std::path::Path::new(CHROMIUM).exists() {
+        eprintln!("skipped: no Chromium at {CHROMIUM} to render with");
+        return;
+    }
+    let setter = |name: &str| {
+        format!("<!doctype html><html><head><title>Set {name}</title></head><body><main><p>This page sets a cookie for the rest of the site.</p></main><script>document.cookie='{name}; path=/';</script></body></html>")
+    };
+    let site = Site::serving(
+        HashMap::from([
+            ("/set", ("text/html", setter("sid=s1"))),
+            ("/set-too", ("text/html", setter("seen=c2"))),
+            ("/need", ("text/html", page("Need", &[]))),
+        ]),
+        false,
+    )
+    .await;
+    let dir = std::env::temp_dir().join(format!("web-cookies-{}", std::process::id()));
+    let scope = pa_types::session_scope::SessionScope::new(
+        "cookies".to_string(),
+        dir.clone(),
+        BTreeMap::from([(browser::BROWSER_PATH_VAR.to_string(), CHROMIUM.to_string())]),
+        BTreeSet::new(),
+    );
+    let host = WebCrawlHost {
+        engine: Arc::new(WebCrawlEngine::direct()),
+        store: None,
+        observer: None,
+        capture_observer: None,
+        extract_observer: None,
+        settings: Some(Arc::new(|| crate::settings::WebCrawlSettings {
+            cookies: Some("pref=dark".to_string()),
+            ..Default::default()
+        }) as CrawlSettings),
+        cookies: CookieJar::default(),
+    };
+    {
+        let _scope = pa_types::session_scope::enter(Some(scope));
+        let crawl = |path: &str, cookies: &str| json!({"url": format!("{}{path}", site.base), "render": true, "maxPages": 1, "cookies": cookies});
+        host.handle(&crawl("/set", "session")).await.unwrap();
+        host.handle(&crawl("/need", "session")).await.unwrap();
+        host.capture(&json!({
+            "url": format!("{}/set-too", site.base), "path": "shot.png", "kind": "png",
+        }))
+        .await
+        .unwrap();
+        host.handle(&crawl("/need", "session")).await.unwrap();
+        host.handle(&crawl("/need", "none")).await.unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    // Each request's cookies, in a stable order.
+    let cookies = |path: &str| -> Vec<BTreeSet<String>> {
+        heads_for(&site, path)
+            .iter()
+            .map(|head| {
+                head.lines()
+                    .filter_map(|line| line.strip_prefix("cookie: "))
+                    .flat_map(|cookies| cookies.split("; "))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .collect()
+    };
+    let set = |pairs: &[&str]| pairs.iter().map(|pair| (*pair).to_string()).collect();
+    assert_eq!(
+        (cookies("/need"), cookies("/set-too"), browsers_left().await),
+        (
+            vec![
+                set(&["pref=dark", "sid=s1"]),
+                set(&["pref=dark", "seen=c2", "sid=s1"]),
+                set(&["pref=dark"]),
+            ],
+            vec![set(&["pref=dark", "sid=s1"])],
+            Vec::new()
+        )
     );
 }
