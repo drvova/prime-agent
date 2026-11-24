@@ -82,6 +82,8 @@ mod tests;
 #[cfg(windows)]
 #[path = "bash_winjob.rs"]
 mod winjob;
+#[cfg(windows)]
+pub(crate) use winjob::JobObject;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

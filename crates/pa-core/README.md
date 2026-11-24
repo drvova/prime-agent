@@ -91,6 +91,20 @@ or a code view's line range. Bodies, redirects and the whole read are
 bounded; adoption counts ride the `agent web reads` event. Non-goals: a
 browser (no JavaScript rendering), crawling, and caching.
 
+Site crawling (`web_crawl`, crate-internal): the `web.crawl` host request
+the kernel's `web-crawl` reaches. The `spider` crate (vendored, see
+`vendor/spider/PRIME_AGENT_PATCH.md`) keeps the frontier — robots.txt
+(always honoured), same host, depth, page limit, include/exclude regexes,
+sitemap, a polite delay and concurrency — and hands each URL to
+`web_read`'s bounded fetcher; each page is rendered by `web_read`'s
+renderer into the same object `web.read` returns. `#:render` drives a local
+headless Chrome that `web_crawl::browser` starts under the session's
+program rules (own process group or Windows job, orphan journal, killed
+with the crawl). Results are bounded (200 pages, a per-page cut, a total
+budget past which pages page out to the spill store); adoption counts ride
+the `agent web crawls` event. Non-goals: stealth, fingerprint or user-agent
+spoofing, proxy rotation, ignoring robots.txt, and remote crawl services.
+
 Native file search (`fs_search`, crate-internal): the `fs.grep`/`fs.glob`/
 `fs.find` host requests the kernel's `rlm.fs` client reaches — ripgrep's
 library crates in process (`ignore` for the parallel `.gitignore`-aware

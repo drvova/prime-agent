@@ -1,0 +1,228 @@
+/// Base css selector to use for getting valid web pages.
+pub(crate) const BASE_CSS_SELECTORS: &str = concat!(
+    "a[href]",
+    ":not([aria-hidden=\"true\"])",
+    ":not([href$=\".jpg\"])",
+    ":not([href$=\".jpeg\"])",
+    ":not([href$=\".png\"])",
+    ":not([href$=\".gif\"])",
+    ":not([href$=\".svg\"])",
+    ":not([href$=\".webp\"])",
+    ":not([href$=\".mp4\"])",
+    ":not([href$=\".avi\"])",
+    ":not([href$=\".mov\"])",
+    ":not([href$=\".wmv\"])",
+    ":not([href$=\".flv\"])",
+    ":not([href$=\".mp3\"])",
+    ":not([href$=\".wav\"])",
+    ":not([href$=\".wma\"])",
+    ":not([href$=\".wpl\"])",
+    ":not([href$=\".mpa\"])",
+    ":not([href$=\".ogg\"])",
+    ":not([href$=\".woff\"])",
+    ":not([href$=\".woff2\"])",
+    ":not([href$=\".ttf\"])",
+    ":not([href$=\".otf\"])",
+    ":not([href$=\".swf\"])",
+    ":not([href$=\".xap\"])",
+    ":not([href$=\".ico\"])",
+    ":not([href$=\".eot\"])",
+    ":not([href$=\".bmp\"])",
+    ":not([href$=\".psd\"])",
+    ":not([href$=\".tiff\"])",
+    ":not([href$=\".tif\"])",
+    ":not([href$=\".heic\"])",
+    ":not([href$=\".heif\"])",
+    ":not([href$=\".mkv\"])",
+    ":not([href$=\".webm\"])",
+    ":not([href$=\".m4v\"])",
+    ":not([href$=\".aac\"])",
+    ":not([href$=\".flac\"])",
+    ":not([href$=\".m4a\"])",
+    ":not([href$=\".aiff\"])",
+    ":not([href$=\".pdf\"])",
+    ":not([href$=\".rtf\"])",
+    ":not([href$=\".eps\"])",
+    ":not([href$=\".yaml\"])",
+    ":not([href$=\".yml\"])",
+    ":not([href$=\".xml\"])",
+    ":not([href$=\".css\"])",
+    ":not([href$=\".js\"])",
+    ":not([href$=\".txt\"])",
+    ":not([href$=\".tar\"])",
+    ":not([href$=\".doc\"])",
+    ":not([href$=\".docx\"])",
+    ":not([href$=\".zip\"])",
+    ":not([href$=\".deb\"])",
+    ":not([href$=\".pkg\"])",
+    ":not([href$=\".tar.gz\"])",
+    ":not([href$=\".rpm\"])",
+    ":not([href$=\".z\"])",
+    ":not([href$=\".7z\"])",
+    ":not([href$=\".arj\"])",
+    ":not([href$=\".rar\"])",
+    ":not([href$=\".bin\"])",
+    ":not([href$=\".msi\"])",
+    ":not([href$=\".sh\"])",
+    ":not([href$=\".bat\"])",
+    ":not([href$=\".dmg\"])",
+    ":not([href$=\".iso\"])",
+    ":not([href$=\".toast\"])",
+    ":not([href$=\".vcd\"])",
+    ":not([href$=\".csv\"])",
+    ":not([href$=\".log\"])",
+    ":not([href$=\".sql\"])",
+    ":not([href$=\".db\"])",
+    ":not([href$=\".exe\"])",
+    ":not([href$=\".rss\"])",
+    ":not([href$=\".key\"])",
+    ":not([href$=\".odp\"])",
+    ":not([href$=\".pps\"])",
+    ":not([href$=\".ptt\"])",
+    ":not([href$=\".pptx\"])",
+    ":not([href$=\".dump\"])",
+);
+
+// Pre-compiled selector for BASE_CSS_SELECTORS. Lock-free after first init
+// (single atomic Acquire load on the fast path). Avoids re-parsing the 80+
+// :not() CSS selector on every page.
+static COMPILED_BASE_SELECTOR: std::sync::OnceLock<lol_html::Selector> = std::sync::OnceLock::new();
+
+// Pre-compiled selector for BASE_CSS_SELECTORS_WITH_XML.
+static COMPILED_BASE_XML_SELECTOR: std::sync::OnceLock<lol_html::Selector> =
+    std::sync::OnceLock::new();
+
+// Pre-compiled selector for the <base> element.
+static COMPILED_BASE_ELEMENT_SELECTOR: std::sync::OnceLock<lol_html::Selector> =
+    std::sync::OnceLock::new();
+
+/// Get the pre-compiled link extraction selector (non-XML).
+#[inline]
+pub(crate) fn compiled_selector() -> &'static lol_html::Selector {
+    COMPILED_BASE_SELECTOR.get_or_init(|| BASE_CSS_SELECTORS.parse().unwrap())
+}
+
+/// Get the pre-compiled link extraction selector (XML variant).
+#[inline]
+pub(crate) fn compiled_xml_selector() -> &'static lol_html::Selector {
+    COMPILED_BASE_XML_SELECTOR.get_or_init(|| BASE_CSS_SELECTORS_WITH_XML.parse().unwrap())
+}
+
+/// Get the pre-compiled `<base>` element selector.
+#[inline]
+pub(crate) fn compiled_base_element_selector() -> &'static lol_html::Selector {
+    COMPILED_BASE_ELEMENT_SELECTOR.get_or_init(|| "base".parse().unwrap())
+}
+
+// Pre-compiled selectors for the three page-metadata handlers. These run on
+// every page, and `lol_html::element!`/`text!` parse their selector string on
+// every call, so without these the crawler re-parsed three selectors per page.
+static COMPILED_HEAD_TITLE_SELECTOR: std::sync::OnceLock<lol_html::Selector> =
+    std::sync::OnceLock::new();
+static COMPILED_META_DESCRIPTION_SELECTOR: std::sync::OnceLock<lol_html::Selector> =
+    std::sync::OnceLock::new();
+static COMPILED_META_OG_IMAGE_SELECTOR: std::sync::OnceLock<lol_html::Selector> =
+    std::sync::OnceLock::new();
+
+/// Get the pre-compiled `head title` selector.
+#[inline]
+pub(crate) fn compiled_head_title_selector() -> &'static lol_html::Selector {
+    COMPILED_HEAD_TITLE_SELECTOR.get_or_init(|| "head title".parse().unwrap())
+}
+
+/// Get the pre-compiled `meta[name="description"]` selector.
+#[inline]
+pub(crate) fn compiled_meta_description_selector() -> &'static lol_html::Selector {
+    COMPILED_META_DESCRIPTION_SELECTOR
+        .get_or_init(|| r#"meta[name="description"]"#.parse().unwrap())
+}
+
+/// Get the pre-compiled `meta[property="og:image"]` selector.
+#[inline]
+pub(crate) fn compiled_meta_og_image_selector() -> &'static lol_html::Selector {
+    COMPILED_META_OG_IMAGE_SELECTOR.get_or_init(|| r#"meta[property="og:image"]"#.parse().unwrap())
+}
+
+/// Base css selector to use for getting valid web pages including xml files. We may remove this for general xml including links always.
+pub(crate) const BASE_CSS_SELECTORS_WITH_XML: &str = concat!(
+    "a[href]",
+    ":not([aria-hidden=\"true\"])",
+    ":not([href$=\".jpg\"])",
+    ":not([href$=\".jpeg\"])",
+    ":not([href$=\".png\"])",
+    ":not([href$=\".gif\"])",
+    ":not([href$=\".svg\"])",
+    ":not([href$=\".webp\"])",
+    ":not([href$=\".mp4\"])",
+    ":not([href$=\".avi\"])",
+    ":not([href$=\".mov\"])",
+    ":not([href$=\".wmv\"])",
+    ":not([href$=\".flv\"])",
+    ":not([href$=\".mp3\"])",
+    ":not([href$=\".wav\"])",
+    ":not([href$=\".wma\"])",
+    ":not([href$=\".wpl\"])",
+    ":not([href$=\".mpa\"])",
+    ":not([href$=\".ogg\"])",
+    ":not([href$=\".woff\"])",
+    ":not([href$=\".woff2\"])",
+    ":not([href$=\".ttf\"])",
+    ":not([href$=\".otf\"])",
+    ":not([href$=\".swf\"])",
+    ":not([href$=\".xap\"])",
+    ":not([href$=\".ico\"])",
+    ":not([href$=\".eot\"])",
+    ":not([href$=\".bmp\"])",
+    ":not([href$=\".psd\"])",
+    ":not([href$=\".tiff\"])",
+    ":not([href$=\".tif\"])",
+    ":not([href$=\".heic\"])",
+    ":not([href$=\".heif\"])",
+    ":not([href$=\".mkv\"])",
+    ":not([href$=\".webm\"])",
+    ":not([href$=\".m4v\"])",
+    ":not([href$=\".aac\"])",
+    ":not([href$=\".flac\"])",
+    ":not([href$=\".m4a\"])",
+    ":not([href$=\".aiff\"])",
+    ":not([href$=\".pdf\"])",
+    ":not([href$=\".rtf\"])",
+    ":not([href$=\".eps\"])",
+    ":not([href$=\".yaml\"])",
+    ":not([href$=\".yml\"])",
+    ":not([href$=\".css\"])",
+    ":not([href$=\".js\"])",
+    ":not([href$=\".txt\"])",
+    ":not([href$=\".tar\"])",
+    ":not([href$=\".doc\"])",
+    ":not([href$=\".docx\"])",
+    ":not([href$=\".zip\"])",
+    ":not([href$=\".deb\"])",
+    ":not([href$=\".pkg\"])",
+    ":not([href$=\".tar.gz\"])",
+    ":not([href$=\".rpm\"])",
+    ":not([href$=\".z\"])",
+    ":not([href$=\".7z\"])",
+    ":not([href$=\".arj\"])",
+    ":not([href$=\".rar\"])",
+    ":not([href$=\".bin\"])",
+    ":not([href$=\".msi\"])",
+    ":not([href$=\".sh\"])",
+    ":not([href$=\".bat\"])",
+    ":not([href$=\".dmg\"])",
+    ":not([href$=\".iso\"])",
+    ":not([href$=\".toast\"])",
+    ":not([href$=\".vcd\"])",
+    ":not([href$=\".csv\"])",
+    ":not([href$=\".log\"])",
+    ":not([href$=\".sql\"])",
+    ":not([href$=\".db\"])",
+    ":not([href$=\".exe\"])",
+    ":not([href$=\".rss\"])",
+    ":not([href$=\".key\"])",
+    ":not([href$=\".odp\"])",
+    ":not([href$=\".pps\"])",
+    ":not([href$=\".ptt\"])",
+    ":not([href$=\".pptx\"])",
+    ":not([href$=\".dump\"])",
+);

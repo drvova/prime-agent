@@ -59,6 +59,8 @@ mod tests;
 mod worktree;
 
 pub(super) use bash::BashJobs;
+#[cfg(windows)]
+pub(crate) use bash::JobObject;
 pub(crate) use files::FileReads;
 pub(super) use reuse::watch_skill_files;
 

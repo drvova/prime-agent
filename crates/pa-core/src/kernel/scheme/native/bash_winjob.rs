@@ -127,7 +127,7 @@ impl Drop for OpenedProcess {
 
 /// One kill-on-close job. Dropping it closes the handle, which ends
 /// whatever is still in the job (but see [`JobObject::terminate`]).
-pub(super) struct JobObject(Handle);
+pub(crate) struct JobObject(Handle);
 
 // SAFETY: a job handle is a process-wide kernel object reference; the Win32
 // calls made on it here are safe from any thread.
@@ -137,7 +137,7 @@ unsafe impl Sync for JobObject {}
 
 impl JobObject {
     /// A new, empty kill-on-close job, or `None` when the system refuses one.
-    pub(super) fn create() -> Option<Self> {
+    pub(crate) fn create() -> Option<Self> {
         // SAFETY: null attributes and a null name ask for an unnamed job with
         // default security.
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
@@ -184,7 +184,7 @@ impl JobObject {
 
     /// Put the process behind `process` (a handle the caller keeps open) in
     /// the job. False when the system refuses.
-    pub(super) fn assign(&self, process: std::os::windows::io::RawHandle) -> bool {
+    pub(crate) fn assign(&self, process: std::os::windows::io::RawHandle) -> bool {
         // SAFETY: both handles are open for the duration of the call.
         unsafe { AssignProcessToJobObject(self.0, process) != 0 }
     }
@@ -196,7 +196,7 @@ impl JobObject {
     /// that. When nothing in the job is beyond reach, or the job cannot be
     /// listed or keeps starting processes, the whole job is ended at once.
     /// True when that was done; false when the system refused.
-    pub(super) fn terminate(&self) -> bool {
+    pub(crate) fn terminate(&self) -> bool {
         // Ids already ended here: a process can still be listed while it ends.
         let mut ended = HashSet::new();
         let mut beyond_reach = false;

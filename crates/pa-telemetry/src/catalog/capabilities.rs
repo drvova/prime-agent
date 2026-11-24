@@ -34,6 +34,7 @@ pub const CAPABILITY_EVENTS_BEFORE_SESSION_END: &[&EventRule] =
 pub const CAPABILITY_EVENTS_AFTER_SESSION_END: &[&EventRule] = &[
     &better::AGENT_BETTER_PROMPT,
     &web::AGENT_WEB_READS,
+    &web::AGENT_WEB_CRAWLS,
     &fs::AGENT_FS_SEARCH,
     &fs::AGENT_FS_EDIT,
     &fs::AGENT_FS_REREADS,

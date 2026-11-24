@@ -24,6 +24,11 @@ crossterm = { path = "vendor/crossterm" }
 # path form everywhere so the Linux-hosted Windows cross-check compiles
 # (vendor/steel-core/PRIME_AGENT_PATCH.md).
 steel-core = { path = "vendor/steel-core" }
+# spider 2.54.2 turns on reqwest's default features (aws-lc-rs TLS, OS proxy
+# settings) for every client in the graph and builds spider_fingerprint with
+# `dynamic-versions`, whose build script downloads Chrome version lists. The
+# vendored copy's manifest drops both (vendor/spider/PRIME_AGENT_PATCH.md).
+spider = { path = "vendor/spider" }
 # brush-core 0.5.0 starts its external commands itself, listens for SIGINT, SIGTSTP and
 # SIGCHLD on behalf of the whole process, cannot be stopped from outside, and runs a compound
 # command in a pipeline to its end before the next stage starts. The vendored copy gives an
