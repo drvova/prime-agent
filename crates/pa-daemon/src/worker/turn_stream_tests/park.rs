@@ -3,10 +3,14 @@
 use super::*;
 
 /// A recording engine for the settled-child kernel release: the park arm
-/// fires the trait method; the test counts the fires.
+/// fires the trait method; the test counts the fires. With a turn's waiting
+/// prompt in `waiting`, each release also records whether that prompt had
+/// already resolved.
 struct ReleaseCountingEngine {
     releases: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     fired: std::sync::Arc<tokio::sync::Notify>,
+    waiting: Mutex<Option<oneshot::Receiver<TurnSettle>>>,
+    resolved_at_release: Mutex<Vec<bool>>,
 }
 
 impl SessionEngine for ReleaseCountingEngine {
@@ -65,6 +69,12 @@ impl SessionEngine for ReleaseCountingEngine {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         self.releases
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(waiting) = self.waiting.lock().unwrap().as_mut() {
+            self.resolved_at_release
+                .lock()
+                .unwrap()
+                .push(waiting.try_recv().is_ok());
+        }
         self.fired.notify_waiters();
         Box::pin(std::future::ready(()))
     }
@@ -83,6 +93,8 @@ async fn the_idle_park_releases_a_parent_owned_childs_kernel_only() {
         let (_tmp, runner) = burst_runner(Arc::new(ReleaseCountingEngine {
             releases: std::sync::Arc::clone(&releases),
             fired: std::sync::Arc::clone(&fired),
+            waiting: Mutex::new(None),
+            resolved_at_release: Mutex::new(Vec::new()),
         }));
         {
             let mut core = runner.core.lock().unwrap();
@@ -131,6 +143,44 @@ async fn the_idle_park_releases_a_parent_owned_childs_kernel_only() {
         0,
         "a compacting child keeps its kernel resident"
     );
+}
+
+/// A prompt sent on the reply to a parked child's turn finds its kernel
+/// released: the release runs before the waiting prompt resolves, not only at
+/// the pump's later park, which a prompt sent on the reply can overtake.
+#[tokio::test]
+async fn a_parked_childs_kernel_is_released_before_its_waiting_prompt_resolves() {
+    let (done_tx, done_rx) = oneshot::channel();
+    let engine = Arc::new(ReleaseCountingEngine {
+        releases: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        fired: std::sync::Arc::new(tokio::sync::Notify::new()),
+        waiting: Mutex::new(Some(done_rx)),
+        resolved_at_release: Mutex::new(Vec::new()),
+    });
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine) as Arc<dyn SessionEngine>);
+    runner.core.lock().unwrap().rlm_depth = 1;
+    runner
+        .run_turn(
+            Arc::clone(&engine) as Arc<dyn SessionEngine>,
+            Lane::Steering,
+            vec![QueuedItem {
+                priority: QueuePriority::Human,
+                preview: None,
+                message: "define it".to_string(),
+                custom_message: None,
+                agent_message: None,
+                queue_key: None,
+                admission_id: None,
+                images: Vec::new(),
+                done: Some(done_tx),
+                queue_visible: false,
+                policy: TurnPolicy::Direct,
+                forced_batch: false,
+            }],
+        )
+        .await;
+    // One release, while the prompt still waited.
+    assert_eq!(*engine.resolved_at_release.lock().unwrap(), vec![false]);
 }
 
 /// A recording engine for the admission-gate tests: every `run_prompt` call
