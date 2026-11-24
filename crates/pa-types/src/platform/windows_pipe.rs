@@ -2,8 +2,17 @@
 //! local-only, clients waiting while every instance is busy (Node's `net` on Windows); implements
 //! the shared [`TransportListener`] / [`TransportStream`] / [`BlockingTransportStream`] contracts.
 //! Endpoint naming lives in `pa-daemon::platform`.
+//!
+//! An elevated process's pipes are its elevated daemon's: each instance is
+//! created with [`super::elevation::pipe_security_descriptor`]'s access list
+//! (only `SYSTEM` and elevated administrators, at High integrity), the first
+//! one with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so a name another program took
+//! first fails the bind instead of being shared; and an elevated client
+//! refuses a pipe whose serving process is not elevated.
 
+use std::ffi::c_void;
 use std::io;
+use std::os::windows::io::AsRawHandle;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,12 +33,80 @@ const BUSY_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 /// Overall cap on busy-pipe waiting, so a wedged server surfaces as an
 /// error instead of hanging the caller.
 const BUSY_RETRY_DEADLINE: Duration = Duration::from_secs(10);
+/// `sddl.h` `SDDL_REVISION_1`.
+const SDDL_REVISION_1: u32 = 1;
+
+/// `SECURITY_ATTRIBUTES`.
+#[repr(C)]
+#[allow(non_snake_case)] // The Win32 fields keep their documented names.
+struct SecurityAttributes {
+    nLength: u32,
+    lpSecurityDescriptor: *mut c_void,
+    bInheritHandle: i32,
+}
+
+#[link(name = "advapi32")]
+extern "system" {
+    fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        text: *const u16,
+        revision: u32,
+        descriptor: *mut *mut c_void,
+        size: *mut u32,
+    ) -> i32;
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    fn GetNamedPipeServerProcessId(pipe: *mut c_void, process_id: *mut u32) -> i32;
+}
+
+/// A self-relative security descriptor converted from SDDL, freed on drop.
+struct PipeSecurity(*mut c_void);
+
+// SAFETY: the descriptor is memory this value alone owns and nothing writes
+// after the conversion; Windows only reads it.
+unsafe impl Send for PipeSecurity {}
+// SAFETY: as above.
+unsafe impl Sync for PipeSecurity {}
+
+impl PipeSecurity {
+    /// The descriptor `sddl` describes.
+    fn from_sddl(sddl: &str) -> io::Result<Self> {
+        let text: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: a NUL-terminated string and live out-pointers.
+        let converted = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                text.as_ptr(),
+                SDDL_REVISION_1,
+                &raw mut descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        if converted == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(PipeSecurity(descriptor))
+    }
+}
+
+impl Drop for PipeSecurity {
+    fn drop(&mut self) {
+        // SAFETY: the descriptor was allocated by the conversion and is freed
+        // once, here.
+        unsafe { LocalFree(self.0) };
+    }
+}
 
 /// A listening named-pipe endpoint. One instance waits for the next client at all times; `accept`
 /// connects that instance and has already created its replacement, so the pipe name stays
 /// connectable - the named-pipe equivalent of a backlog.
 pub(crate) struct NamedPipeListener {
     name: String,
+    /// The access list every instance is created with: an elevated daemon's
+    /// own; `None` keeps Windows' default.
+    security: Option<PipeSecurity>,
     /// The instance currently listening for the next client.
     pending: AsyncMutex<Option<NamedPipeServer>>,
 }
@@ -38,14 +115,53 @@ impl NamedPipeListener {
     /// Create the first pipe instance at `name`. `first_pipe_instance`
     /// fails when another process owns the name (a live Unix socket blocking
     /// `bind`); a stale pipe cannot exist - instances die with their process.
+    ///
+    /// For an elevated process the name is its elevated daemon's: a pipe of
+    /// that name that already exists was made by another program, and the
+    /// bind fails saying so rather than share it.
     pub(crate) fn bind(name: &str) -> io::Result<Self> {
-        let first = ServerOptions::new()
-            .first_pipe_instance(true)
-            .create(name)?;
-        Ok(Self {
+        let elevation = super::elevation::process_elevation();
+        let security = super::elevation::pipe_security_descriptor(elevation)
+            .map(PipeSecurity::from_sddl)
+            .transpose()?;
+        let mut listener = Self {
             name: name.to_string(),
-            pending: AsyncMutex::new(Some(first)),
-        })
+            security,
+            pending: AsyncMutex::new(None),
+        };
+        let first = listener
+            .create(ServerOptions::new().first_pipe_instance(true))
+            .map_err(|error| match elevation {
+                super::elevation::Elevation::Elevated => io::Error::new(
+                    error.kind(),
+                    format!(
+                        "the elevated daemon's pipe {name} could not be created ({error}): \
+                         another program may hold its name; Prime Agent does not share it"
+                    ),
+                ),
+                super::elevation::Elevation::Standard => error,
+            })?;
+        *listener.pending.get_mut() = Some(first);
+        Ok(listener)
+    }
+
+    /// Create one instance of this listener's pipe with `options` and its
+    /// access list.
+    fn create(&self, options: &ServerOptions) -> io::Result<NamedPipeServer> {
+        let Some(security) = &self.security else {
+            return options.create(&self.name);
+        };
+        let mut attributes = SecurityAttributes {
+            nLength: u32::try_from(std::mem::size_of::<SecurityAttributes>())
+                .map_err(io::Error::other)?,
+            lpSecurityDescriptor: security.0,
+            bInheritHandle: 0,
+        };
+        // SAFETY: `attributes` is a live `SECURITY_ATTRIBUTES` whose
+        // descriptor outlives the call.
+        unsafe {
+            options.create_with_security_attributes_raw(&self.name, (&raw mut attributes).cast())
+        }
     }
 
     /// Hand the next client a connected server instance. The next instance is created before
@@ -53,7 +169,7 @@ impl NamedPipeListener {
     /// keeping clients off the busy path.
     pub(crate) async fn accept(&self) -> io::Result<NamedPipeServer> {
         let mut pending = self.pending.lock().await;
-        let next = ServerOptions::new().create(&self.name)?;
+        let next = self.create(&ServerOptions::new())?;
         let server = pending
             .replace(next)
             .expect("a listening instance is always kept ready");
@@ -64,11 +180,40 @@ impl NamedPipeListener {
 
 /// Open a client connection; a busy pipe (`ERROR_PIPE_BUSY`) is retried until the server frees one
 /// (Node's clients wait the same way through libuv's connect machinery).
+///
+/// An elevated client uses the pipe only when the process serving it is
+/// elevated too: any program of the user can create a pipe of the elevated
+/// daemon's name before the daemon does.
 pub(crate) async fn connect(name: &str) -> io::Result<NamedPipeClient> {
     let deadline = tokio::time::Instant::now() + BUSY_RETRY_DEADLINE;
     loop {
         match ClientOptions::new().open(name) {
-            Ok(client) => return Ok(client),
+            Ok(client) => {
+                let client_elevation = super::elevation::process_elevation();
+                if client_elevation == super::elevation::Elevation::Standard {
+                    return Ok(client);
+                }
+                let mut server = 0;
+                // SAFETY: the client's pipe handle is open, and `server` a
+                // live DWORD.
+                if unsafe { GetNamedPipeServerProcessId(client.as_raw_handle(), &raw mut server) }
+                    == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                let server_elevation = super::elevation::process_elevation_of(server);
+                if super::elevation::trusts_pipe_server(client_elevation, server_elevation) {
+                    return Ok(client);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "pipe {name} is served by process {server}, which is not elevated: an \
+                         elevated Prime Agent uses only an elevated daemon (another program may \
+                         have taken the elevated daemon's pipe name)"
+                    ),
+                ));
+            }
             Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {}
             Err(error) => return Err(error),
         }
