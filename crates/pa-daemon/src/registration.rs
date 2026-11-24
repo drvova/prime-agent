@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use pa_types::daemon::DaemonCommand;
 use serde_json::{json, Map, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::sync::mpsc;
 
 use crate::protocol::current_protocol_info;
@@ -40,6 +40,12 @@ const BASE_BACKOFF_MS: u64 = 250;
 const MAX_BACKOFF_MS: u64 = 30_000;
 const CONNECT_TIMEOUT_MS: u64 = 1_000;
 const RESPONSE_TIMEOUT_MS: u64 = 10_000;
+
+/// The supervisor's lines on the registration connection. `Lines::next_line`
+/// is cancel safe (a line it had begun stays buffered for the next call),
+/// which the held connection relies on: its read loses a `select!` race to
+/// every registration signal, and `send_register` then reads on.
+type SupervisorLines = Lines<BufReader<Box<dyn AsyncReadHalf>>>;
 
 /// Runtime signals into the registration loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,16 +189,14 @@ impl RegistrationTask {
 
     /// Connect to the supervisor, consume its hello, and send one
     /// `worker_register` envelope. Returns the open connection on success.
-    async fn connect_and_register(
-        &self,
-    ) -> Result<(BufReader<Box<dyn AsyncReadHalf>>, Box<dyn AsyncWriteHalf>)> {
+    async fn connect_and_register(&self) -> Result<(SupervisorLines, Box<dyn AsyncWriteHalf>)> {
         let connect = connect_transport(&self.supervisor_socket_path);
         let stream = tokio::time::timeout(Duration::from_millis(CONNECT_TIMEOUT_MS), connect)
             .await
             .map_err(|_| anyhow!("registration connect timed out"))??;
         let stream: Box<dyn TransportStream> = stream;
         let (read_half, mut write_half) = stream.split();
-        let mut reader = BufReader::new(read_half);
+        let mut reader = BufReader::new(read_half).lines();
         // The supervisor writes daemon_hello before reading any command.
         let hello = read_line(&mut reader).await.context("read daemon hello")?;
         if hello.get("type").and_then(Value::as_str) != Some("daemon_hello") {
@@ -206,7 +210,7 @@ impl RegistrationTask {
 
     async fn send_register(
         &self,
-        reader: &mut BufReader<Box<dyn AsyncReadHalf>>,
+        reader: &mut SupervisorLines,
         writer: &mut Box<dyn AsyncWriteHalf>,
         session_id: Option<&str>,
     ) -> Result<()> {
@@ -262,16 +266,17 @@ impl RegistrationTask {
     /// death triggers re-registration); ends on close or a session-id signal.
     async fn hold_connection(
         &mut self,
-        mut reader: BufReader<Box<dyn AsyncReadHalf>>,
+        mut reader: SupervisorLines,
         mut writer: Box<dyn AsyncWriteHalf>,
     ) -> Result<()> {
         loop {
-            let mut watch_line = String::new();
-            let read = reader.read_line(&mut watch_line);
             tokio::select! {
-                read = read => match read {
-                    Ok(0) => bail!("supervisor closed the registration connection"),
-                    Ok(_) => {
+                // A broadcast line still arriving when a signal wins stays
+                // buffered, so the re-registration's reply read starts at
+                // the line's rest instead of parsing it as a reply.
+                read = reader.next_line() => match read {
+                    Ok(None) => bail!("supervisor closed the registration connection"),
+                    Ok(Some(_)) => {
                         // Broadcast lines (daemon_closing, session events);
                         // registration only watches for connection death.
                     }
@@ -294,12 +299,10 @@ impl RegistrationTask {
     }
 }
 
-async fn read_line(reader: &mut BufReader<Box<dyn AsyncReadHalf>>) -> Result<Value> {
-    let mut line = String::new();
-    let read = reader.read_line(&mut line).await?;
-    if read == 0 {
+async fn read_line(reader: &mut SupervisorLines) -> Result<Value> {
+    let Some(line) = reader.next_line().await? else {
         bail!("connection closed by supervisor");
-    }
+    };
     let trimmed = line.trim();
     if trimmed.is_empty() {
         bail!("empty line from supervisor");
@@ -520,6 +523,87 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(750)).await;
         let late = tokio::time::timeout(Duration::from_millis(750), listener.accept()).await;
         assert!(late.is_err(), "a retired registration never retries");
+    }
+
+    /// A re-registration signal that wins the held connection's `select!`
+    /// while a broadcast line is half read must not lose that half: the
+    /// reply read that follows would take the line's rest as the
+    /// registration reply ("invalid supervisor line") and drop a healthy
+    /// connection.
+    #[tokio::test]
+    async fn a_signal_during_a_half_read_broadcast_keeps_the_held_connection() {
+        // The duplex holds 64 bytes: a longer write returns only once the
+        // worker's side has read all but the last 64 of it.
+        let (worker_side, supervisor_side) = tokio::io::duplex(64);
+        let (worker_read, worker_write) = tokio::io::split(worker_side);
+        let worker_read: Box<dyn AsyncReadHalf> = Box::new(worker_read);
+        let worker_write: Box<dyn AsyncWriteHalf> = Box::new(worker_write);
+        let (supervisor_read, mut supervisor_write) = tokio::io::split(supervisor_side);
+        let mut supervisor_read = BufReader::new(supervisor_read);
+        let (tx, signals) = mpsc::unbounded_channel();
+        let mut task = RegistrationTask {
+            supervisor_socket_path: PathBuf::new(),
+            identity: Identity {
+                active_session_id: "abc123def456".to_string(),
+                socket_path: "worker.sock".to_string(),
+                worker_instance_id: "instance-1".to_string(),
+                token: "bootstrap-token".to_string(),
+            },
+            session_id: Arc::new(std::sync::Mutex::new(None)),
+            retired: Arc::new(tokio::sync::Notify::new()),
+            signals,
+        };
+        let held = tokio::spawn(async move {
+            task.hold_connection(BufReader::new(worker_read).lines(), worker_write)
+                .await
+        });
+
+        let broadcast = format!(
+            "{}\n",
+            json!({"type": "heartbeats_changed", "pad": "x".repeat(512)})
+        );
+        let (begun, rest) = broadcast.as_bytes().split_at(256);
+        tokio::time::timeout(Duration::from_secs(5), supervisor_write.write_all(begun))
+            .await
+            .expect("the held connection reads the broadcast's first part")
+            .expect("write the broadcast's first part");
+        tx.send(RegistrationSignal::SessionCreated {
+            session_id: "session-uuid-1".to_string(),
+        })
+        .expect("signal");
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), supervisor_read.read_line(&mut line))
+            .await
+            .expect("re-registration within bounded window")
+            .expect("read re-register");
+        let envelope: Value = serde_json::from_str(line.trim()).expect("parse re-register");
+        let response = json!({
+            "id": envelope["id"],
+            "type": "response",
+            "command": "worker_register",
+            "success": true,
+        });
+        // Written whole only if the worker kept the connection for the reply.
+        let mut tail = rest.to_vec();
+        tail.extend_from_slice(format!("{response}\n").as_bytes());
+        let responded = supervisor_write.write_all(&tail).await;
+        // The reply was taken: the connection is held until it closes.
+        drop(supervisor_write);
+        drop(supervisor_read);
+        let ended = tokio::time::timeout(Duration::from_secs(5), held)
+            .await
+            .expect("the held connection ends with the connection")
+            .expect("hold task");
+        assert_eq!(
+            (
+                ended.map_err(|error| format!("{error:#}")),
+                responded.map_err(|error| error.kind())
+            ),
+            (
+                Err("supervisor closed the registration connection".to_string()),
+                Ok(())
+            )
+        );
     }
 
     #[tokio::test]
