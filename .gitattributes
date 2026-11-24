@@ -1,0 +1,9 @@
+# Text checks out with LF on every platform. Sources compile text in with
+# `include_str!` (the prompt layers, the kernel reference, the Scheme sources,
+# test fixtures), so a CRLF checkout (git's default on Windows) changed what
+# the Windows build ships and what its tests compare.
+* text=auto eol=lf
+
+# Vendored and third-party files keep their bytes exactly as committed.
+vendor/** -text
+scripts/release/native-compat/** -text
