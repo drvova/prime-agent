@@ -402,8 +402,8 @@ async fn sessions_with_fake_child_subagents(
     SupervisorChildSessions,
     mpsc::UnboundedReceiver<Value>,
 ) {
-    // Under /tmp: the dir holds the fake supervisor's socket (SUN_LEN).
-    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    // Under the socket temp root: the dir holds the fake supervisor's socket (SUN_LEN).
+    let tmp = tempfile::tempdir_in(crate::test_support::socket_temp_root()).unwrap();
     let socket = tmp.path().join("pa-rlm-watch.sock");
     let (kill_tx, kill_rx) = mpsc::unbounded_channel();
     spawn_fake_supervisor(
@@ -503,8 +503,8 @@ async fn sessions_with_roster_peers(
     SupervisorChildSessions,
     mpsc::UnboundedReceiver<Value>,
 ) {
-    // Under /tmp: the dir holds the fake supervisor's socket (SUN_LEN).
-    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    // Under the socket temp root: the dir holds the fake supervisor's socket (SUN_LEN).
+    let tmp = tempfile::tempdir_in(crate::test_support::socket_temp_root()).unwrap();
     let socket = tmp.path().join("pa-rlm-peers.sock");
     let (kill_tx, kill_rx) = mpsc::unbounded_channel();
     spawn_fake_supervisor(

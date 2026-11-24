@@ -102,11 +102,18 @@ async fn a_failed_relaunch_accumulates_to_the_give_up_cap() {
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
-    // The relaunch fails deterministically: a file stands where the session's
-    // socket directory would go, so every hosted session ends at its bind.
-    // The session runs on its own thread in real time, so the backoff between
-    // the five attempts is real too (under eight seconds in all).
+    // The relaunch fails deterministically, so every hosted session ends at
+    // its bind: a file stands where the session's socket directory would go,
+    // and on Windows, where the endpoint is a named pipe that needs no
+    // directory, a listener this test holds owns the pipe's name. The session
+    // runs on its own thread in real time, so the backoff between the five
+    // attempts is real too (under eight seconds in all).
     std::fs::write(dir.path().join("blocked"), "not a directory").unwrap();
+    let worker_socket = dir.path().join("blocked").join("worker.sock");
+    #[cfg(windows)]
+    let _held = pa_types::platform::bind_transport(&worker_socket)
+        .await
+        .expect("hold the session's pipe name");
     let supervisor = Arc::new(
         Supervisor::new(SupervisorOptions {
             socket_path: dir.path().join("daemon.sock"),
@@ -118,7 +125,7 @@ async fn a_failed_relaunch_accumulates_to_the_give_up_cap() {
         "version": 2,
         "workerId": "w-relaunch",
         "pid": 0,
-        "socketPath": dir.path().join("blocked").join("worker.sock").to_string_lossy(),
+        "socketPath": worker_socket.to_string_lossy(),
         "recoveryJournalPath": dir.path().join("journal.jsonl").to_string_lossy(),
         "supervisorSocketPath": "/tmp/none.sock",
         "authenticationToken": "token",
@@ -1226,8 +1233,8 @@ async fn worker_probe_fails_at_the_deadline_and_names_the_worker() {
 
 #[tokio::test]
 async fn worker_probe_accepts_a_live_socket() {
-    // Under /tmp: the dir holds a bound socket (SUN_LEN).
-    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    // Under the socket temp root: the dir holds a bound socket (SUN_LEN).
+    let tmp = tempfile::tempdir_in(crate::test_support::socket_temp_root()).unwrap();
     let dir = tmp.path().to_path_buf();
     let socket = dir.join("live.sock");
     let listener = pa_types::platform::transport::bind_transport(&socket)

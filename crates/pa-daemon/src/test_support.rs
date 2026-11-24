@@ -1,5 +1,18 @@
 //! Test-only shared state: one crate-wide lock for the process env.
 
+/// Where a test makes the directory that holds its sockets: `/tmp` on unix,
+/// whose short path keeps a socket path within `SUN_LEN` wherever `TMPDIR`
+/// points; the platform temp dir elsewhere (a Windows endpoint is a named
+/// pipe, and there is no `/tmp`).
+#[cfg(test)]
+pub(crate) fn socket_temp_root() -> std::path::PathBuf {
+    if cfg!(unix) {
+        std::path::PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    }
+}
+
 /// Process-wide env reads and writes (the telemetry override vars, the
 /// live-kernel abort test's kernel vars) serialize through one lock across
 /// the crate's test modules: parallel test threads in the same binary

@@ -31,9 +31,7 @@ fn legacy_registry_probe_reads_the_header_line_bounded() {
     fs::write(&parent, content).unwrap();
     let registry = legacy_registry_path(&parent).expect("registry path");
     assert!(
-        registry
-            .to_string_lossy()
-            .ends_with("session-artifacts/p1/rlm-subagents.jsonl"),
+        registry.ends_with("session-artifacts/p1/rlm-subagents.jsonl"),
         "the header id resolves without reading the padded tail"
     );
 
@@ -60,9 +58,7 @@ fn legacy_registry_probe_resolves_a_readable_header_over_a_corrupt_tail() {
     fs::write(&parent, bytes).unwrap();
     let registry = legacy_registry_path(&parent).expect("registry path over a corrupt tail");
     assert!(
-        registry
-            .to_string_lossy()
-            .ends_with("session-artifacts/p1/rlm-subagents.jsonl"),
+        registry.ends_with("session-artifacts/p1/rlm-subagents.jsonl"),
         "a torn-write tail no longer masks the readable header"
     );
 }
@@ -362,8 +358,10 @@ fn moved_edge_paths_resolve_through_the_session_id() {
     assert!(ledger.live_edges().unwrap().is_empty());
     let raw = ledger.edges(false).unwrap();
     assert_eq!(raw.len(), 1);
-    assert_eq!(raw[0].parent, recorded_parent);
-    assert_eq!(raw[0].child, recorded_child);
+    // Recorded in their canonical spelling (on Windows a rooted path is
+    // also given its drive).
+    assert_eq!(raw[0].parent, canonical(Path::new(recorded_parent)));
+    assert_eq!(raw[0].child, canonical(Path::new(recorded_child)));
 }
 
 #[test]
@@ -690,9 +688,9 @@ fn unknown_op_records_are_skipped_forward_compatible() {
         format!(
             "{{\"v\":1,\"op\":\"meta\",\"at\":\"t\",\"sessionsDir\":\"x\"}}\n\
              {{\"v\":1,\"op\":\"future\",\"at\":\"t\"}}\n\
-             {{\"v\":1,\"op\":\"spawn\",\"at\":\"t\",\"childId\":\"sub-1\",\"parent\":\"{}\",\"child\":\"{}\",\"depth\":1,\"name\":\"w\"}}\n",
-            parent.to_string_lossy(),
-            parent.to_string_lossy().replace("p.jsonl", "c.jsonl"),
+             {{\"v\":1,\"op\":\"spawn\",\"at\":\"t\",\"childId\":\"sub-1\",\"parent\":{},\"child\":{},\"depth\":1,\"name\":\"w\"}}\n",
+            json!(parent.to_string_lossy()),
+            json!(parent.to_string_lossy().replace("p.jsonl", "c.jsonl")),
         ),
     )
     .unwrap();
@@ -719,8 +717,8 @@ fn seeds_from_legacy_registries_once_and_atomically() {
     fs::write(
         artifacts.join("rlm-subagents.jsonl"),
         format!(
-            "{{\"type\":\"rlm_subagent\",\"childId\":\"sub-9\",\"sessionName\":\"w\",\"sessionFile\":\"{}\",\"rlmDepth\":1,\"status\":\"completed\",\"createdAt\":1}}\n",
-            child.to_string_lossy()
+            "{{\"type\":\"rlm_subagent\",\"childId\":\"sub-9\",\"sessionName\":\"w\",\"sessionFile\":{},\"rlmDepth\":1,\"status\":\"completed\",\"createdAt\":1}}\n",
+            json!(child.to_string_lossy())
         ),
     )
     .unwrap();

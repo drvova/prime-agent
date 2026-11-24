@@ -82,10 +82,10 @@ pub(super) async fn answer_supervisor_frame(
 
 #[tokio::test]
 async fn handshake_channel_stays_private_until_auth_answers() {
-    // Short `/tmp` root: the socket paths must fit `SUN_LEN` everywhere.
+    // The short socket temp root: the socket paths must fit `SUN_LEN` everywhere.
     let tmp = tempfile::Builder::new()
         .prefix("pa-handshake-")
-        .tempdir_in("/tmp")
+        .tempdir_in(crate::test_support::socket_temp_root())
         .unwrap();
     let dir = tmp.path();
     let socket_path = dir.join("worker.sock");
@@ -250,10 +250,10 @@ async fn run_silent_peer_auth(cancel_connect: bool) {
 /// channel), the registration itself succeeds, and the launch completes.
 #[tokio::test]
 async fn a_mid_handshake_registration_cannot_kill_the_handshake() {
-    // Short `/tmp` root: the socket paths must fit `SUN_LEN` everywhere.
+    // The short socket temp root: the socket paths must fit `SUN_LEN` everywhere.
     let tmp = tempfile::Builder::new()
         .prefix("pa-wedge-")
-        .tempdir_in("/tmp")
+        .tempdir_in(crate::test_support::socket_temp_root())
         .unwrap();
     let dir = tmp.path();
     let socket_path = dir.join("worker.sock");
@@ -461,10 +461,10 @@ async fn an_ended_connection_never_installs_its_channel() {
 /// cannot outlive the connection it was sent on.
 #[tokio::test]
 async fn a_lost_worker_connection_fails_its_in_flight_route() {
-    // Short `/tmp` root: the socket paths must fit `SUN_LEN` everywhere.
+    // The short socket temp root: the socket paths must fit `SUN_LEN` everywhere.
     let tmp = tempfile::Builder::new()
         .prefix("pa-lost-")
-        .tempdir_in("/tmp")
+        .tempdir_in(crate::test_support::socket_temp_root())
         .unwrap();
     let dir = tmp.path();
     let socket_path = dir.join("worker.sock");

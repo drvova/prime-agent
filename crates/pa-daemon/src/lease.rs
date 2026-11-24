@@ -666,11 +666,19 @@ mod tests {
     #[test]
     fn process_start_id_reflects_the_platform_ladder() {
         // Linux answers from /proc (`proc:`); macOS/BSD answer
-        // `ps:<lstart>` - the same ladder TS `getProcessStartId` walks.
+        // `ps:<lstart>` - the same ladder TS `getProcessStartId` walks;
+        // Windows answers the process's creation time (`win:<ticks>`).
         let start = get_process_start_id(std::process::id());
         assert!(start.is_some());
         let id = start.unwrap();
-        assert!(id.starts_with("proc:") || id.starts_with("ps:"));
+        assert!(
+            if cfg!(windows) {
+                id.starts_with("win:")
+            } else {
+                id.starts_with("proc:") || id.starts_with("ps:")
+            },
+            "{id}"
+        );
         assert!(get_process_start_id(0).is_none());
     }
 

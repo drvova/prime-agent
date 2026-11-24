@@ -271,10 +271,13 @@ async fn reseed_lists_live_ledger_children_settled_and_bills_only_after_a_delive
         )
         .unwrap();
     }
+    // Encoded as JSON: a Windows path's backslashes need escaping.
     let spawn = |child_id: &str, parent: &str, child: &str| {
-        format!(
-            r#"{{"v":1,"op":"spawn","at":"2026-09-30T00:00:00Z","childId":"{child_id}","parent":"{parent}","child":"{child}","depth":1,"name":"{child_id}"}}"#
-        )
+        serde_json::json!({
+            "v": 1, "op": "spawn", "at": "2026-09-30T00:00:00Z", "childId": child_id,
+            "parent": parent, "child": child, "depth": 1, "name": child_id,
+        })
+        .to_string()
     };
     let ledger_path = crate::rlm_ledger::rlm_ledger_path(&agent, &daemon_sessions);
     std::fs::create_dir_all(ledger_path.parent().expect("ledger dir")).unwrap();
@@ -287,9 +290,11 @@ async fn reseed_lists_live_ledger_children_settled_and_bills_only_after_a_delive
             spawn("sub-b", &parent_one, &child_two).as_str(),
             spawn("sub-legacy", &parent_one, &child_legacy).as_str(),
             spawn("sub-c", &parent_one, &child_three).as_str(),
-            format!(
-                r#"{{"v":1,"op":"delete","at":"2026-09-30T00:00:01Z","childId":"sub-c","child":"{child_three}","reason":"user"}}"#
-            )
+            serde_json::json!({
+                "v": 1, "op": "delete", "at": "2026-09-30T00:00:01Z", "childId": "sub-c",
+                "child": child_three, "reason": "user",
+            })
+            .to_string()
             .as_str(),
             spawn("sub-d", &parent_two, &child_four).as_str(),
         ]
