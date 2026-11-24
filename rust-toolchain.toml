@@ -1,0 +1,7 @@
+# The compiler every cargo in this repo runs: local builds, the Makefile, CI
+# and release. It matches the dtolnay/rust-toolchain SHA the workflows pin
+# (1.98.1); a toolchain bump changes both in one PR.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
