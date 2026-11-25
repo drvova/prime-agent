@@ -1,13 +1,3 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines/casts).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-
 //! Lock-artifact compatibility through the production call sites: the backends must leave the TS
 //! `proper-lockfile` artifacts — an empty DIRECTORY at `{file}.lock` (a holder removes it on
 //! release, a crashed holder leaves it stale, a contender judges staleness) — and heal a pre-compat

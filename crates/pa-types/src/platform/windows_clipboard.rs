@@ -55,8 +55,6 @@ pub fn read_clipboard_text() -> std::io::Result<Option<String>> {
 
 #[cfg(windows)]
 mod win32 {
-    // The Win32 header names stay verbatim: the pinned-constants wall mirrors them.
-    #![allow(non_snake_case)]
 
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStringExt;

@@ -262,10 +262,7 @@ impl SessionScanState {
     // dev/ino identity at all, so it always answers false (every grown
     // file rescans whole - see the arm's own comment).
     #[cfg_attr(not(unix), allow(clippy::unused_self))]
-    fn same_file_identity(
-        &self,
-        #[cfg_attr(not(unix), allow(unused_variables))] generation: &SessionInfoGeneration,
-    ) -> bool {
+    fn same_file_identity(&self, generation: &SessionInfoGeneration) -> bool {
         #[cfg(unix)]
         {
             self.generation.dev == generation.dev && self.generation.ino == generation.ino

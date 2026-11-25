@@ -368,7 +368,6 @@ async fn run_stream(
 }
 
 /// One WebSocket attempt.
-#[allow(clippy::too_many_arguments)]
 // Long by design: mirrors the provider's stream shape.
 #[allow(clippy::too_many_lines)]
 async fn run_websocket_attempt(

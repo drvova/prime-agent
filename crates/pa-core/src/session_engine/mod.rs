@@ -251,7 +251,6 @@ impl AgentSession {
     ///
     /// Returns an error when subscribing the persistence listener fails or
     /// the initial session context cannot be read.
-    #[allow(clippy::too_many_arguments)]
     pub async fn from_session_arc(
         agent: Arc<Agent>,
         session: Arc<tokio::sync::Mutex<SessionManager>>,

@@ -85,7 +85,6 @@ impl SpawnedWorker {
     }
 
     /// End the session now and reap the processes it started.
-    #[allow(clippy::unused_async, reason = "the reap runs off the executor")]
     pub(crate) async fn kill(&mut self) -> std::io::Result<()> {
         self.session.kill().await;
         self.orphan_generation.reap().await;

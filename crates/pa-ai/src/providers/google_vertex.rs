@@ -464,8 +464,6 @@ impl Provider for GoogleVertexProvider {
     }
 }
 
-// The GoogleOptions type import is kept for callers composing native options.
-#[allow(dead_code)]
 fn _options_marker() -> Option<GoogleOptions> {
     None
 }

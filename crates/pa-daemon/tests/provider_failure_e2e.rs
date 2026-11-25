@@ -2,23 +2,8 @@
 //! failing (then healing) OpenAI-compatible mock must retry per the shared
 //! policy, surface each retry (`auto_retry_start`/`auto_retry_end`), render
 //! the failed assistant message, and end the turn with the error.
-#![allow(clippy::large_futures)]
-// 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 // Fn length is a style gate, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -200,7 +185,6 @@ fn serve(
     )
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let stderr_path = agent_dir.join("supervisor-stderr.log");
@@ -401,7 +385,6 @@ fn setup(
 }
 
 /// The shared harness with a choosable mock rejection mode (the 429 storm).
-#[allow(clippy::type_complexity)]
 fn setup_with_rejection(
     name: &str,
     failures: usize,

@@ -7,7 +7,6 @@ use std::sync::RwLock;
 use serde::{Serialize, Serializer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // full TS log surface
 pub enum LogLevel {
     Debug,
     Info,
@@ -121,7 +120,6 @@ pub struct Logger {
     component: String,
 }
 
-#[allow(dead_code)] // full TS log surface
 impl Logger {
     pub fn debug(&self, msg: &str, fields: serde_json::Value) {
         emit(LogLevel::Debug, &self.component, msg, fields);

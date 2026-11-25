@@ -1,12 +1,5 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines/casts).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// Pedantic-gate dispositions as src/lib.rs (too_many_lines).
+#![allow(clippy::too_many_lines)]
 #![cfg(unix)]
 //! The release pipeline's channel-manifest producer, gated against the update reader it feeds: run
 //! the promote job's real step code against a fixture tree, and prove the emitted manifest parses

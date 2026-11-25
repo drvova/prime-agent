@@ -1,5 +1,5 @@
 // Casts: narrowing sits at the pid boundary, where the kernel bounds the values.
-#![allow(clippy::large_futures, clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_wrap)]
 #![cfg(target_os = "linux")]
 
 //! E2E verifier for an inactive session's shells line: the open agents view follows the
@@ -30,7 +30,6 @@ impl Drop for Supervisor {
     }
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     let socket = dir.join("daemon.sock");
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
