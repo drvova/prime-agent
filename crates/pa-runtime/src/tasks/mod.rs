@@ -204,8 +204,7 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
             let queued = lanes
                 .by_session
                 .get_mut(session)
-                .map(|lane| std::mem::take(&mut lane.queued))
-                .unwrap_or_default();
+                .map_or_default(|lane| std::mem::take(&mut lane.queued));
             self.inner.busy.send_replace(lanes.busy());
             queued
         };
