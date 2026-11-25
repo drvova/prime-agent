@@ -209,7 +209,10 @@ const DAEMON: &str = env!("CARGO_BIN_EXE_pa-daemon");
 
 struct Daemon {
     child: Child,
-    #[expect(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

@@ -2,8 +2,13 @@
 //! event and the next prompt's admission never wait on the compact-trigger
 //! auto-refine review's model call (TS `_scheduleAutoRefineAfterCompaction`
 //! runs it as a background round, never between the compaction and the settle).
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the stalled-review and interrupted-compaction scenarios each read top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -97,8 +102,10 @@ const CHECKPOINT_SUMMARY: &str = "the checkpoint summary";
 
 struct Supervisor {
     child: Child,
-    // Spawn bookkeeping only: the test drives the daemon through the client port, never this field.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
@@ -335,8 +342,10 @@ fn write_sse(stream: &mut TcpStream, reply: &str, usage: &Value) -> std::io::Res
     )
 }
 
-// One Arc per captured concern keeps the mock's handlers independent.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one Arc per captured concern keeps the mock's handlers independent"
+)]
 fn serve(
     mut stream: TcpStream,
     requests: &Arc<Mutex<Vec<Value>>>,

@@ -4,8 +4,13 @@
 //! deleted running child leaves a cancel line, not a clean disappearance.
 //! The harness is the self-contained supervisor/client scaffolding this
 //! suite's e2e files each carry. Tests skip without a live kernel install.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`a_deleted_running_child_records_the_cancel_edge` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -24,7 +29,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

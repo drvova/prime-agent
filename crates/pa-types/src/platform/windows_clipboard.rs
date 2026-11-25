@@ -103,9 +103,10 @@ mod win32 {
     /// The open clipboard; closing it on drop keeps every early return balanced.
     struct OpenClipboardGuard;
 
-    // The readers take `&self` only as proof the clipboard is open: Win32 keys the open clipboard
-    // to the thread, not to a handle, so the receiver carries no data.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "the readers take `&self` only as proof the clipboard is open: Win32 keys the open clipboard to the thread, not to a handle"
+    )]
     impl OpenClipboardGuard {
         fn open() -> std::io::Result<Self> {
             for attempt in 0..OPEN_ATTEMPTS {

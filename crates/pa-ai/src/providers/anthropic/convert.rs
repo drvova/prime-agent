@@ -68,8 +68,10 @@ pub(crate) fn convert_content_blocks(content: &[UserOrToolContent]) -> Value {
     json!(blocks)
 }
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over the message history, mirroring the TS conversion"
+)]
 pub fn convert_messages(
     context: &Context,
     model: &Model,

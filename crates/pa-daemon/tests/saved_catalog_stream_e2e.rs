@@ -2,8 +2,13 @@
 //! `listSessionsFromDir`'s `onSession`/`onProgress`): rows reach the client
 //! while the scan still has work left; the stream is mtime-newest-first,
 //! so the newest session is the FIRST frame.
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`the_saved_catalog_streams_per_file_during_the_scan` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -17,7 +22,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

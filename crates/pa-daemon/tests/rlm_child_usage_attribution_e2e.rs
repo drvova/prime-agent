@@ -2,8 +2,13 @@
 //! `child_usage_attributed` row reaches the PARENT's durable transcript in the TS row
 //! shape, so live and resumed usage views fold the child's billable usage. Tests skip
 //! without a live kernel install.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`child_usage_attributed_row_reaches_the_parent_transcript` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;

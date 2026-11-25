@@ -6,7 +6,10 @@
 
 /// One decoded event-stream message.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // full decoded header surface; the provider reads event/exception types
+#[expect(
+    dead_code,
+    reason = "the struct keeps the full decoded header surface; the provider reads the event and exception types"
+)]
 pub struct EventStreamMessage {
     /// `:message-type` header value when present (`event` for data events).
     pub message_type: Option<String>,
@@ -193,12 +196,17 @@ mod tests {
     fn frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
         let mut headers = Vec::new();
         let mut push_header = |name: &str, value: &str| {
-            // The framed test headers use the fixed protocol literals (lengths < 256); the wire's length fields are u8/u16.
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the framed test headers use fixed protocol literals (lengths < 256)"
+            )]
             headers.push(name.len() as u8);
             headers.extend_from_slice(name.as_bytes());
             headers.push(7);
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the framed test headers use fixed protocol literals (lengths < 256)"
+            )]
             headers.extend_from_slice(&(value.len() as u16).to_be_bytes());
             headers.extend_from_slice(value.as_bytes());
         };
@@ -214,10 +222,15 @@ mod tests {
     fn raw_frame(headers_len: usize, body: &[u8]) -> Vec<u8> {
         let mut message = Vec::new();
         let total_len = 12 + body.len() + 4;
-        // Test frames are tiny; the event-stream wire lengths are u32.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test frames are tiny; the event-stream lengths are u32"
+        )]
         message.extend_from_slice(&(total_len as u32).to_be_bytes());
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test frames are tiny; the event-stream lengths are u32"
+        )]
         message.extend_from_slice(&(headers_len as u32).to_be_bytes());
         message.extend_from_slice(&crc32(&message[..8]).to_be_bytes());
         message.extend_from_slice(body);

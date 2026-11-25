@@ -269,9 +269,10 @@ pub struct DaemonUpdateRestartQueue {
     pub next_turn: Vec<AgentMessage>,
 }
 
-// Wire/API contract: the per-session state flags serialize as-is; reshaping
-// them into enums changes the restart-session schema.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the per-session state flags serialize as-is; reshaping them into enums changes the restart-session schema"
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonUpdateRestartSession {

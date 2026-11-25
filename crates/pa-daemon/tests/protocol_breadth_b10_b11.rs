@@ -1,10 +1,20 @@
 //! Supervisor wire-shape tests for the protocol-breadth waves (roadmap item 7): every new
 //! command rides the real supervisor + worker over the socket and answers the exact TS
 //! wire shape (success and error paths), the same harness the supervisor e2e suite uses.
-// 64-bit-only targets; narrowing casts sit at bounded OS/protocol boundaries.
-#![allow(clippy::cast_possible_truncation)]
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_truncation,
+        reason = "the pid read back from the wire is a kernel-bounded pid"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the b10 and b11 wire-shape walks each read top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -20,7 +30,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
@@ -63,7 +76,10 @@ struct Client {
     writer: UnixStream,
 }
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "this suite calls only some of the client's request helpers"
+)]
 impl Client {
     fn connect(socket: &std::path::Path) -> (Self, serde_json::Value) {
         let deadline = Instant::now() + Duration::from_secs(5);

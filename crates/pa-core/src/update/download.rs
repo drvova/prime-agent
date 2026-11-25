@@ -555,10 +555,11 @@ fn make_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-// The signature stays Result for the shared unix callers; the non-unix
-// arm has nothing to chmod (the ACLs carry the executable bit).
 #[cfg(not(unix))]
-#[allow(clippy::unnecessary_wraps)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the shared unix callers take a Result; off unix there is nothing to chmod"
+)]
 fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
 }

@@ -10,10 +10,13 @@
 //! the worker-side idle clock and park-arm gates are covered by the unit
 //! battery (`idle_passivation_window_*`), and the timed path against the
 //! real binary by the VM census (the settings-driven 1-minute threshold).
-// Pedantic-gate disposition for THIS test root: the settled-child
-// passivation flow is one intentionally linear harness script (the
-// fn-length gate is style, not correctness).
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the settled-child passivation flow is one linear harness script"
+    )
+)]
 #![cfg(unix)]
 
 mod common;

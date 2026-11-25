@@ -2,10 +2,20 @@
 //! continuation paths and its scheduled jobs, and no wake pass may revive
 //! the stopped session (TS `closeSessionOnce("killed")`); a CRASHED
 //! session's jobs survive and it revives.
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(clippy::struct_field_names)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`kill_cancels_goal_and_heartbeat_and_no_wake_revives_the_session` is one scenario"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::struct_field_names,
+        reason = "the fixture's `session_id` mirrors the wire field name"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -22,7 +32,10 @@ const OBJECTIVE: &str = "keep the lane alive until merged";
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

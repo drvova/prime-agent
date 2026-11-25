@@ -305,11 +305,10 @@ impl McpCredentialRow {
 /// (the two row classes the daemon's `get_mcp_connections` response
 /// carries).
 #[derive(Debug, Clone, PartialEq)]
-// The service card is the wide row (its catalog metadata); the credential
-// row is deliberately small. The rows are a per-open rendered list (a
-// handful of entries), never a hot data structure — boxing would spend a
-// deref on every render path for no measurable size win.
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the rows are a short per-open list, never a hot data structure; boxing adds a deref to every render"
+)]
 pub(super) enum McpRow {
     Service(McpServiceRow),
     Credential(McpCredentialRow),

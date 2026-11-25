@@ -98,8 +98,10 @@ impl TelemetryClientConfig {
     }
 }
 
-// Sinks and RetryPolicy have no Debug surface; the config rows above are the debug surface.
-#[allow(clippy::missing_fields_in_debug)]
+#[expect(
+    clippy::missing_fields_in_debug,
+    reason = "sinks and RetryPolicy have no Debug surface; the config rows above are the debug surface"
+)]
 impl std::fmt::Debug for TelemetryClientConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TelemetryClientConfig")
@@ -187,8 +189,10 @@ impl TelemetryClient {
     /// Enqueue an event. The config base properties are merged under the
     /// event properties. Never blocks; if the worker is gone the event is
     /// dropped and counted.
-    // Workspace API consumed across crates (pa-cli, pa-core); the by-value signature is fleet-wide.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "workspace API consumed across crates (pa-cli, pa-core); the by-value signature is shared"
+    )]
     pub fn track(&self, name: impl Into<String>, properties: Properties) {
         let mut merged = self.base_properties.clone();
         merged.merge(&properties);

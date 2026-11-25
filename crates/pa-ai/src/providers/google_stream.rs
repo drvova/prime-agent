@@ -60,8 +60,10 @@ impl GoogleStreamState {
     }
 
     /// Process one streamed `GenerateContentResponse` chunk.
-    // Long by design: mirrors the provider's stream shape.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one function per provider stream, mirroring the TS reference's shape"
+    )]
     pub fn handle_chunk(
         &mut self,
         chunk: &Value,

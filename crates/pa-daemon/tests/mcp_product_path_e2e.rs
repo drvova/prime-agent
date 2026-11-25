@@ -2,8 +2,13 @@
 //! kernel's MCP client through the whole product stack — settings entry ->
 //! create -> `mcp.config` host request -> fixture spawn over stdio ->
 //! `tools/list` -> `tools/call` on the real kernel.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the stdio-server round trip and the live login scenario each read top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -18,7 +23,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
