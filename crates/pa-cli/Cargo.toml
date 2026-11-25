@@ -52,7 +52,11 @@ tokio = { workspace = true, features = ["test-util"] }
 # tests' process-kill/cleanup unsafe blocks. The clippy rows mirror
 # the workspace table, and the pedantic class rides here so CI's
 # -D warnings bar enforces it on this crate too.
-pedantic = "warn"
+pedantic = { level = "warn", priority = -1 }
+# Mirrored from the workspace table: every lint exception gives its reason, and
+# `assert!(x.is_empty())` stays (assert_is_empty's fix reads worse).
+allow_attributes_without_reason = "warn"
+assert_is_empty = "allow"
 redundant_clone = "warn"
 clone_on_copy = "warn"
 assigning_clones = "warn"
