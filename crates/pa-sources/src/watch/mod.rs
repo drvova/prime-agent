@@ -103,9 +103,10 @@ impl Source for WatchSource {
         })
     }
 
-    // One start: the checks, the platform watch, and the debounce loop it
-    // feeds. Split, each part would be a helper used once (AGENTS.md).
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one start: the checks, the platform watch and the debounce loop it feeds; split, each part would be a helper used once"
+    )]
     fn start(
         &self,
         name: &str,
