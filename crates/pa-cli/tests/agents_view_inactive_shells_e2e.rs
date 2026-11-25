@@ -1,5 +1,10 @@
-// Casts: narrowing sits at the pid boundary, where the kernel bounds the values.
-#![allow(clippy::cast_possible_wrap)]
+#![cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::cast_possible_wrap,
+        reason = "`Child::id()` is a pid the kernel bounds below i32::MAX"
+    )
+)]
 #![cfg(target_os = "linux")]
 
 //! E2E verifier for an inactive session's shells line: the open agents view follows the

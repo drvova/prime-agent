@@ -482,8 +482,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (the process env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the process env stays stable"
+    )]
     async fn the_cli_candidate_logs_in_without_a_prompt() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
@@ -527,8 +529,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (the process env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the process env stays stable"
+    )]
     async fn the_manual_key_wins_the_race_and_checks_access() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
@@ -572,8 +576,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (the process env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the process env stays stable"
+    )]
     async fn the_browser_login_completes_when_the_prompt_never_answers() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
@@ -610,8 +616,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (the process env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the process env stays stable"
+    )]
     async fn a_denied_manual_key_reports_the_ts_error() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
@@ -648,8 +656,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (the process env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the process env stays stable"
+    )]
     async fn a_cancelled_prompt_stays_silent() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
@@ -671,8 +681,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (the process env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the process env stays stable"
+    )]
     async fn a_failed_browser_falls_back_to_the_paste_prompt() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");

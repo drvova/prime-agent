@@ -1,5 +1,7 @@
-// too_many_lines: style gate only.
-#![allow(clippy::too_many_lines)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "`acp_daemon_attached_config_option_pickers` is one scenario, top to bottom"
+)]
 
 //! ACP picker e2e (the TS #2455 port): `session/new` advertises the
 //! standard `model` and `thought_level` select options, and

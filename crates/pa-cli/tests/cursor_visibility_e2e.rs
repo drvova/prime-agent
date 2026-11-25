@@ -1,6 +1,17 @@
-// too_many_lines: style gate only. Casts: 64-bit targets; narrowing sits at bounded
-// OS/protocol boundaries.
-#![allow(clippy::too_many_lines, clippy::cast_possible_wrap)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`cursor_stays_hidden_and_positioned_across_mount_picker_and_suspend` is one scenario, top to bottom"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_wrap,
+        reason = "the pids passed to `kill` and `Pid::from_raw` are kernel-bounded below i32::MAX"
+    )
+)]
 
 //! Real-pty byte-stream e2e for the TUI's hardware-cursor control (the
 //! operator's "purple cursor glitching" report): the cursor sits at the focused
