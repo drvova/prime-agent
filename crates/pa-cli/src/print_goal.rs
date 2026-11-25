@@ -518,7 +518,6 @@ impl PrintGoalSurface {
     /// still ends in a terminal error fails an active goal. Returns
     /// whether any turn ran (the drive loop re-enters quiescence for
     /// whatever the turns left behind).
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn drive_boundary(
         &self,
         engine: &SessionEngine,
@@ -589,7 +588,6 @@ impl PrintGoalSurface {
 
     /// Admit a session command's scheduled continuation (a `/goal` start or resume)
     /// as the print invocation's next run, with the command surface's frame order.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_session_command_continuation(
         &self,
         engine: &SessionEngine,
@@ -630,7 +628,6 @@ impl PrintGoalSurface {
 
     /// Admit one queued goal turn as the print invocation's next run (the queue
     /// drain): the phase frames bookend the turn.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_queued_turn(
         &self,
         engine: &SessionEngine,

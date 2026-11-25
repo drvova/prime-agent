@@ -1,13 +1,3 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines/casts).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-
 //! Git context parity tests: fixture git repos drive `capture_git_context` (TS `captureGitContext`)
 //! and the session git-state lifecycle (TS `SessionManager.recordGitStateIfChanged`).
 

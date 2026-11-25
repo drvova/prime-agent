@@ -11,9 +11,6 @@
 //! client process as the window owner. Hand-declared Win32 externs, the
 //! repo's no-windows-sys policy (see `pa_types::platform`).
 
-// The Win32 header names stay verbatim.
-#![allow(non_snake_case, clippy::upper_case_acronyms)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};

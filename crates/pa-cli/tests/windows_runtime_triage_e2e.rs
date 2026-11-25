@@ -123,8 +123,6 @@ fn daemon_endpoint(dir: &Path) -> PathBuf {
 }
 
 /// Spawn the freshly-built binary as a daemon supervisor.
-// The supervisor child is killed and reaped by `Supervisor`'s Drop; the lint cannot see past the spawn site.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     // The in-process client forwards this process's env to the worker.
     support::scrub_ambient_provider_credentials();

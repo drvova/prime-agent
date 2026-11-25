@@ -2,20 +2,7 @@
 //! `/fork` must be a FULLY detached session: the worker replaces its live
 //! session file in place, and every supervisor-side route must follow that
 //! move, never crossing original and fork.
-#![allow(clippy::large_futures)]
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 #![allow(clippy::too_many_lines)]
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -38,8 +25,6 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test process exits and reaps it.
-#[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &std::path::Path, agent_dir: &std::path::Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let mut child = Command::new(binary)
@@ -845,7 +830,6 @@ fn a_restart_after_a_failed_identity_persist_serves_the_moved_session() {
 
 /// One raw supervisor child (no drop-time kill: the restart test manages the process
 /// itself). The timeout panic path cannot wait on the child; the test exits and reaps it.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor_raw(socket: &std::path::Path, agent_dir: &std::path::Path) -> Child {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)

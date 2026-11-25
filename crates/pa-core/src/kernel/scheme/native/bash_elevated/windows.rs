@@ -146,13 +146,11 @@ struct SecurityAttributes {
     bInheritHandle: i32,
 }
 
-#[allow(non_snake_case)] // The Win32 functions keep their documented names.
 #[link(name = "shell32")]
 extern "system" {
     fn ShellExecuteExW(info: *mut ShellExecuteInfo) -> i32;
 }
 
-#[allow(non_snake_case)] // The Win32 functions keep their documented names.
 #[link(name = "kernel32")]
 extern "system" {
     fn CloseHandle(handle: Handle) -> i32;
@@ -162,7 +160,6 @@ extern "system" {
     fn LocalFree(memory: *mut c_void) -> *mut c_void;
 }
 
-#[allow(non_snake_case)] // The Win32 functions keep their documented names.
 #[link(name = "advapi32")]
 extern "system" {
     fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
