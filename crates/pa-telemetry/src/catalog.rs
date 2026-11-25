@@ -27,6 +27,7 @@ pub const SCHEMA_VERSION: u64 = 2;
 
 mod capabilities;
 mod reuse_listing;
+mod transcript_store;
 mod tui_discovery;
 mod tui_keybindings;
 mod tui_model_recent;
@@ -1951,6 +1952,8 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_INLINE_IMAGES_RENDERED,
         &TUI_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,
+        &transcript_store::AGENT_TRANSCRIPTS_IMPORTED,
+        &transcript_store::AGENT_SESSIONS_EXPORTED,
         &AGENT_BILLING_MODES,
         &AGENT_MESSAGES,
         &AGENT_MESSAGE_WAITS,

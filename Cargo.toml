@@ -79,6 +79,7 @@ pa-types = { path = "crates/pa-types" }
 pa-ai = { path = "crates/pa-ai" }
 pa-agent = { path = "crates/pa-agent" }
 pa-shell = { path = "crates/pa-shell" }
+pa-log = { path = "crates/pa-log" }
 thiserror = "2"
 futures = "0.3"
 toml = "0.9"

@@ -467,6 +467,12 @@ pub struct Settings {
     /// Unset, the built-in shell is used on every platform, unless
     /// `shellPath` is set. Only global settings select it.
     pub shell: Option<String>,
+    /// Where session transcripts are kept: `"sqlite"` (the default: one
+    /// database, `<agent dir>/agent.db`, which imports the JSONL session
+    /// files on its own) or `"file"` (one JSONL file per session, as before
+    /// the database; kept for one release as the way back). Read once when
+    /// the process starts. Only global settings select it.
+    pub transcript_store: Option<String>,
     pub quiet_startup: Option<bool>,
     pub shell_command_prefix: Option<String>,
     pub npm_command: Option<Vec<String>>,

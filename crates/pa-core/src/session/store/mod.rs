@@ -9,31 +9,268 @@
 //! and appended, so a cursor into those bytes ([`TranscriptReader`] positions)
 //! means the same thing to every implementation.
 //!
-//! [`store`] is the process-wide store. It holds every session's transcript
-//! (one directory tree today, one database later), so it is process-wide by
-//! design, like the telemetry origin: no session's scope selects it, and a
+//! [`store`] is the process-wide store. It holds every session's transcript,
+//! so it is process-wide by design, like the telemetry origin: no session's
+//! scope selects it (it is chosen from the process's own agent dir), and a
 //! session reaches its own transcript only by its locator.
 //!
-//! The file store (`FileTranscriptStore`, the only one today) keeps each
-//! transcript in its own file. The window and session-info caches certify
-//! their sidecars against that store's [`TranscriptGeneration`]s; they are its
-//! internals and keep their formats.
+//! Two implementations:
+//!
+//! - The SQLite store (`SqliteTranscriptStore`, the default): every
+//!   transcript in `<agent dir>/agent.db` (`pa_log`), keyed by its canonical
+//!   locator. A JSONL file the database does not hold yet is read from the
+//!   file, imported whole on its first write, and then left in place,
+//!   read-only, as the rollback; [`import_session_trees`] imports the agent
+//!   dir's session trees in the background, and [`export_jsonl`] writes
+//!   transcripts back out as JSONL files.
+//! - The file store (`FileTranscriptStore`): each transcript in the JSONL
+//!   file at its locator. The global setting `"transcriptStore": "file"`
+//!   selects it, the escape hatch for one release.
+//!
+//! The window and session-info caches keep their sidecar files next to the
+//! locator with either store, and certify them against the store's
+//! [`TranscriptGeneration`]s, so a sidecar written under one store is never
+//! taken for the other's bytes.
 
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+mod export;
 mod file;
+mod repair;
+mod sqlite;
+
+pub use export::{export_jsonl, ExportReport, ExportSelection};
 
 use file::FileTranscriptStore;
+use sqlite::{OriginalImport, SqliteTranscriptStore};
+
+/// The database file in the agent dir.
+pub const DATABASE_FILE: &str = "agent.db";
+
+/// The store the process uses.
+enum Selected {
+    Files(FileTranscriptStore),
+    /// The store, and the agent dir whose database it opened.
+    Sqlite(SqliteTranscriptStore, PathBuf),
+}
+
+/// Which store [`store`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TranscriptStoreKind {
+    /// Every transcript in `<agent dir>/agent.db`.
+    Sqlite,
+    /// One JSONL file per transcript (`"transcriptStore": "file"`, or the
+    /// database could not be opened).
+    File,
+}
+
+fn selected() -> &'static Selected {
+    static SELECTED: OnceLock<Selected> = OnceLock::new();
+    SELECTED.get_or_init(select)
+}
+
+/// Choose the process's store from its own agent dir (never a session's):
+/// the SQLite store unless the global settings say `"transcriptStore":
+/// "file"`, and the file store when the database cannot be opened.
+fn select() -> Selected {
+    let _process = pa_types::session_scope::enter(None);
+    let Some(agent_dir) = pa_types::platform::agent_dir() else {
+        return Selected::Files(FileTranscriptStore);
+    };
+    let settings = crate::settings::SettingsManager::create(&agent_dir, &agent_dir);
+    match settings.global_settings().transcript_store.as_deref() {
+        Some("file") => return Selected::Files(FileTranscriptStore),
+        Some("sqlite") | None => {}
+        Some(other) => eprintln!(
+            "transcript store: unknown \"transcriptStore\": {other:?} (\"sqlite\" or \"file\"); \
+             using sqlite"
+        ),
+    }
+    let database = agent_dir.join(DATABASE_FILE);
+    match SqliteTranscriptStore::open(&database) {
+        Ok(store) => Selected::Sqlite(store, agent_dir),
+        Err(error) => {
+            eprintln!(
+                "transcript store: cannot open {} ({error:#}); sessions are kept as JSONL files",
+                database.display()
+            );
+            Selected::Files(FileTranscriptStore)
+        }
+    }
+}
 
 /// The process-wide transcript store.
 #[must_use]
 pub fn store() -> &'static dyn TranscriptStore {
-    static FILES: FileTranscriptStore = FileTranscriptStore;
-    &FILES
+    match selected() {
+        Selected::Files(store) => store,
+        Selected::Sqlite(store, _) => store,
+    }
+}
+
+/// Which store [`store`] is.
+#[must_use]
+pub fn store_kind() -> TranscriptStoreKind {
+    match selected() {
+        Selected::Files(_) => TranscriptStoreKind::File,
+        Selected::Sqlite(..) => TranscriptStoreKind::Sqlite,
+    }
+}
+
+/// What [`import_session_trees`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TranscriptImportReport {
+    /// Session files imported by this pass.
+    pub imported: u64,
+    /// Their bytes.
+    pub bytes: u64,
+    /// Session files the database already held.
+    pub already_stored: u64,
+    /// Files that could not be imported, and why; nothing of them is stored.
+    pub failed: Vec<(PathBuf, String)>,
+}
+
+/// Import every JSONL session file under the session trees of `agent_dir`
+/// ([`session_trees`], recursively) that the SQLite store does not hold yet;
+/// `None` when nothing ran (the file store is in use, `agent_dir` is not the
+/// one whose database the process opened, or every tree was imported
+/// completely before). Idempotent: a file
+/// already imported is left alone, so a pass that stopped part way resumes.
+/// Each file is imported whole or not at all, then made read-only and never
+/// written again. Slow on a large history: run it in the background, never
+/// on a path a client waits on (until then, the files are read as they are).
+#[must_use]
+pub fn import_session_trees(agent_dir: &Path) -> Option<TranscriptImportReport> {
+    let Selected::Sqlite(store, opened) = selected() else {
+        return None;
+    };
+    let resolved =
+        |dir: &Path| pa_types::platform::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if resolved(opened) != resolved(agent_dir) {
+        return None;
+    }
+    import_trees(store, &session_trees(agent_dir))
+}
+
+/// [`import_session_trees`] into `store`.
+fn import_trees(
+    store: &SqliteTranscriptStore,
+    roots: &[PathBuf],
+) -> Option<TranscriptImportReport> {
+    let pending: Vec<(&PathBuf, String)> = roots
+        .iter()
+        .map(|root| (root, format!("imported:{}", root.display())))
+        .filter(|(_, marker)| store.log().meta(marker).ok().flatten().is_none())
+        .collect();
+    if pending.is_empty() {
+        return None;
+    }
+    let mut report = TranscriptImportReport::default();
+    for (root, marker) in pending {
+        let failed_before = report.failed.len();
+        let mut files = Vec::new();
+        session_files(root, &mut files, &mut report.failed);
+        for file in files {
+            match store.import_original(&file) {
+                Ok(OriginalImport::Imported(bytes)) => {
+                    report.imported += 1;
+                    report.bytes += bytes;
+                }
+                Ok(OriginalImport::AlreadyStored) => report.already_stored += 1,
+                Ok(OriginalImport::NotATranscript) => {}
+                Err(error) => report.failed.push((file, error.to_string())),
+            }
+        }
+        if report.failed.len() == failed_before {
+            // A root with failures keeps no marker: the next pass retries them.
+            let stamp = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |since| since.as_millis());
+            if let Err(error) = store
+                .log()
+                .set_meta(marker, stamp.to_string())
+                .wait_blocking()
+            {
+                report
+                    .failed
+                    .push((root.clone(), format!("record the import: {error:#}")));
+            }
+        }
+    }
+    Some(report)
+}
+
+/// The `.jsonl` files under `dir`, recursively (symbolic links are not
+/// followed); a directory that cannot be listed is a failure, except a root
+/// that does not exist.
+fn session_files(dir: &Path, files: &mut Vec<PathBuf>, failed: &mut Vec<(PathBuf, String)>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(error) => {
+            failed.push((dir.to_path_buf(), error.to_string()));
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                failed.push((dir.to_path_buf(), error.to_string()));
+                continue;
+            }
+        };
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => session_files(&path, files, failed),
+            Ok(kind) if kind.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") => {
+                files.push(path);
+            }
+            Ok(_) => {}
+            Err(error) => failed.push((path, error.to_string())),
+        }
+    }
+}
+
+/// The session trees of `agent_dir` that [`import_session_trees`] and
+/// `export-jsonl --all` walk: its `sessions/` and `sessions-archive/`, and
+/// the sessions dir `PRIME_AGENT_SESSION_DIR` or the global `sessionDir`
+/// setting names. Transcripts elsewhere are imported on their first write.
+#[must_use]
+pub fn session_trees(agent_dir: &Path) -> Vec<PathBuf> {
+    let mut trees = vec![
+        agent_dir.join("sessions"),
+        agent_dir.join("sessions-archive"),
+    ];
+    let overridden = pa_types::session_scope::var_os("PRIME_AGENT_SESSION_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute());
+    let configured =
+        crate::settings::SettingsManager::create(agent_dir, agent_dir).get_session_dir();
+    for tree in overridden.into_iter().chain(configured) {
+        if !trees.contains(&tree) {
+            trees.push(tree);
+        }
+    }
+    trees
+}
+
+/// Every locator the SQLite store holds (none for the file store).
+///
+/// # Errors
+///
+/// The database could not be read.
+pub fn stored_locators() -> io::Result<Vec<PathBuf>> {
+    match selected() {
+        Selected::Files(_) => Ok(Vec::new()),
+        Selected::Sqlite(store, _) => store.locators(),
+    }
 }
 
 /// Where session transcripts are kept, and every operation on them.
@@ -44,6 +281,11 @@ pub fn store() -> &'static dyn TranscriptStore {
 /// them to a blocking thread exactly as they would a file read. A method that
 /// reports success has done all of its work; none of them defers a write past
 /// its return.
+///
+/// "Durably" is as durable as the store keeps anything: the file store
+/// fsyncs each write; the SQLite store commits it under `synchronous=NORMAL`
+/// in WAL mode, which survives a crash of the process (a power loss can drop
+/// the last commits, never corrupt the database).
 ///
 /// Behaviour every implementation keeps:
 ///
@@ -207,8 +449,10 @@ pub trait TranscriptCompletion: TranscriptReader + Write {
 
 /// The version of a transcript's bytes: equal generations mean equal bytes.
 /// The caches store it in their sidecars to prove a snapshot still describes
-/// the transcript. Its fields are the file store's (length and the file's
-/// device, inode and change times); outside this module it is opaque.
+/// the transcript. For the file store its fields are the file's length,
+/// device, inode and change times; the SQLite store mints them from the
+/// database's identity, the transcript's row id, length and change count.
+/// Outside this module it is opaque.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptGeneration {
     len: u64,
@@ -249,7 +493,8 @@ impl TranscriptGeneration {
 /// transcript is at its locator, different once it was replaced. On unix the
 /// file's device and inode; on Windows its creation time, a limited anchor
 /// (not a unique file id), which the owned-row checks of its one user (the
-/// child-usage recovery) make up for.
+/// child-usage recovery) make up for. The SQLite store's is the database's
+/// identity and the transcript's row id, on every platform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TranscriptIdentity(u64, u64);
 
@@ -316,9 +561,19 @@ pub enum TranscriptRemoval {
 /// # Errors
 ///
 /// The store's read error, or `InvalidData` when the bytes are not UTF-8.
-pub fn read_to_string(locator: &Path) -> io::Result<String> {
-    String::from_utf8(store().read(locator)?)
+pub fn read_to_string(locator: impl AsRef<Path>) -> io::Result<String> {
+    String::from_utf8(store().read(locator.as_ref())?)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// Create or replace the transcript at `locator` with `bytes`
+/// ([`TranscriptStore::create`]).
+///
+/// # Errors
+///
+/// The store's create error.
+pub fn write(locator: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+    store().create(locator.as_ref(), &mut |out| out.write_all(bytes.as_ref()))
 }
 
 /// Read the first line from `reader` when it ends within `max_bytes` bytes.
@@ -357,3 +612,6 @@ fn strip_line_return(line: &[u8]) -> Vec<u8> {
     }
     line
 }
+
+#[cfg(test)]
+mod tests;
