@@ -344,7 +344,7 @@ async fn a_print_refine_command_is_tracked_by_the_disposal_drain() {
     );
     let mut boundary = TurnBoundary::new(false);
     let global_dir = dir.path().join("global-refinement");
-    let goal = Arc::new(crate::print_goal::PrintGoalSurface::new(false));
+    let goal = Arc::new(crate::turn::goal::PrintGoalSurface::new(false));
     let autonomous = Arc::new(tokio::sync::Mutex::new(
         pa_core::autonomous::create_autonomous_runtime_state(None, None),
     ));
@@ -353,7 +353,7 @@ async fn a_print_refine_command_is_tracked_by_the_disposal_drain() {
         args: String::new(),
         text: "/refine".to_string(),
     };
-    crate::print_session_command::execute_prompt_session_command(
+    crate::turn::session_command::execute_prompt_session_command(
         &engine,
         &goal,
         &planner_model,
@@ -382,106 +382,6 @@ async fn a_print_refine_command_is_tracked_by_the_disposal_drain() {
     let rows = refine_rows(&engine).await;
     assert_eq!(rows.len(), 1, "the durable outcome row landed");
     assert_eq!(rows[0].custom_type, "refinement_outcome");
-    pa_ai::registry::unregister_api_providers(&planner_model.api);
-}
-
-/// Every print exit path runs the disposal drain: a `/refine` still planning
-/// when a later prompt fails through `?` must land its outcome row before the
-/// run returns — the session drop would abort it.
-#[tokio::test(start_paused = true)]
-async fn a_failed_print_run_still_drains_an_in_flight_refine() {
-    let (engine, dir, model) = faux_engine_with_settings(
-        json!({ "responses": [{"text": "seed"}] }),
-        json!({ "compaction": {"enabled": false}, "autoRefine": {"enabled": true, "compact": true, "cooldownMs": 0} }),
-        None,
-    )
-    .await;
-    let engine = Arc::new(engine);
-    engine
-        .session
-        .prompt("seed", pa_core::session_engine::PromptOptions::default())
-        .await
-        .unwrap();
-    engine.session.agent().wait_for_idle().await;
-    // The next run fails at its start: its prompt wait returns the error.
-    let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let listener_failed = failed.clone();
-    let _failing = engine
-        .session
-        .agent()
-        .subscribe(move |event, _signal| {
-            let failed = listener_failed.clone();
-            Box::pin(async move {
-                if matches!(event, pa_agent::types::AgentEvent::AgentStart) {
-                    failed.store(true, std::sync::atomic::Ordering::SeqCst);
-                    anyhow::bail!("listener failed");
-                }
-                Ok(())
-            })
-        })
-        .await;
-    let release = Arc::new(tokio::sync::Notify::new());
-    let planner_model = HeldPlanner::register(
-        &model,
-        Arc::new(tokio::sync::Notify::new()),
-        release.clone(),
-        r#"{"summary":"background note","edits":[]}"#,
-    );
-    let options = crate::mode::RunOptions {
-        app_mode: crate::mode::AppMode::Print,
-        config: crate::mode::RuntimeConfig {
-            cwd: dir.path().to_path_buf(),
-            agent_dir: dir.path().join("agent"),
-            ..Default::default()
-        },
-        session: crate::mode::SessionOptions::default(),
-        messages: vec!["/refine".to_string(), "next".to_string()],
-        file_args: Vec::new(),
-        daemon_socket: None,
-        list_models: None,
-        initial_message: None,
-        initial_images: Vec::new(),
-        verbose: false,
-        offline: true,
-        agents_view_requested: false,
-        attach_agent: None,
-    };
-    let root_node =
-        crate::print_rlm::root_node(&options, &SessionManager::in_memory(dir.path()), None);
-    let mut run = std::pin::pin!(crate::print_runtime::run_prompts_and_emit(
-        &engine,
-        &planner_model,
-        None,
-        &options,
-        &root_node,
-    ));
-    // The paused clock fires this sleep only once the runtime idles. Past the
-    // failed prompt nothing but the held planner can block the run, so an idle
-    // run is waiting on it in the drain and may release it. An idle before the
-    // failure would let the plan commit early, so it fails the test instead.
-    let result = tokio::select! {
-        biased;
-        result = &mut run => result,
-        () = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {
-            assert!(
-                failed.load(std::sync::atomic::Ordering::SeqCst),
-                "the run idled before the prompt failed"
-            );
-            release.notify_one();
-            run.await
-        }
-    };
-    let error = result.expect_err("the failed prompt fails the run");
-    assert!(error.contains("listener failed"), "{error}");
-    let outcomes = refine_rows(&engine)
-        .await
-        .into_iter()
-        .filter(|row| row.custom_type == "refinement_outcome")
-        .count();
-    assert_eq!(
-        outcomes, 1,
-        "the /refine outcome row landed before the run returned"
-    );
     pa_ai::registry::unregister_api_providers(&planner_model.api);
 }
 

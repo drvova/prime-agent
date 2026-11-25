@@ -4,22 +4,31 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Prime Agent's event-driven runtime: the bus, subscriptions and per-session task lanes."
+description = "Prime Agent's event-driven runtime: the bus, subscriptions, per-session task lanes and the sessions that run them."
 
 [dependencies]
 pa-types.workspace = true
 pa-log.workspace = true
+pa-core = { path = "../pa-core" }
+pa-agent.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# Session and task ids: UUIDv7, the transcript store's own session-id form.
+uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]
 # `test-util` (tokio time pause) is test-only: the throttle, debounce and
 # lane-cap tests run on paused time.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
+# The turn-driver and session-runner tests drive real engines on pa-ai's faux
+# provider, and the boundary's telemetry test reads pa-telemetry's mock sink.
+pa-ai.workspace = true
+pa-telemetry.workspace = true
+futures.workspace = true
 
 [lints]
 workspace = true

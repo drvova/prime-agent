@@ -4,6 +4,10 @@
 use super::{json, Model, PathBuf, SessionAgentMessage, SessionEngine, TurnBoundary};
 
 /// Wall-clock milliseconds (the review-cooldown stamps).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Unix milliseconds fit u64 until the year 584 million"
+)]
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -41,7 +45,8 @@ impl TurnBoundary {
 
     /// Whether a `/refine` command's background refinement failed; read after
     /// the disposal drain has awaited every report.
-    pub(crate) fn refine_command_failed(&self) -> bool {
+    #[must_use]
+    pub fn refine_command_failed(&self) -> bool {
         self.refine_command_failed
             .load(std::sync::atomic::Ordering::Acquire)
     }
@@ -71,7 +76,7 @@ impl TurnBoundary {
             match outcome {
                 Ok(Some(committed)) if json_mode => {
                     for row in committed.rows {
-                        let value = crate::headless_autonomous::custom_row_wire_value(&row);
+                        let value = crate::turn::autonomous::custom_row_wire_value(&row);
                         for event_type in ["message_start", "message_end"] {
                             sink(&json!({ "type": event_type, "message": value }));
                         }
@@ -114,7 +119,12 @@ impl TurnBoundary {
                 )
             })
             .count();
-        self.assistant_turns_since_review += settled as u32;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "one run's settled turns stay far below u32::MAX"
+        )]
+        let settled = settled as u32;
+        self.assistant_turns_since_review += settled;
         self.entry_baseline = Some(entries.len());
     }
 
@@ -128,7 +138,7 @@ impl TurnBoundary {
     /// aborts the refinement planning behind any report the drain leaves
     /// running (the first wait also clears the coalescing gate so a retained
     /// trigger is serviced at this, its last, boundary).
-    pub(crate) async fn drain_compact_auto_refine_at_disposal(
+    pub async fn drain_compact_auto_refine_at_disposal(
         &mut self,
         engine: &SessionEngine,
         model: &Model,

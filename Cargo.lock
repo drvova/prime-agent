@@ -3362,6 +3362,7 @@ dependencies = [
  "pa-ai",
  "pa-core",
  "pa-daemon",
+ "pa-runtime",
  "pa-telemetry",
  "pa-tui",
  "pa-types",
@@ -3514,13 +3515,19 @@ name = "pa-runtime"
 version = "0.10.3"
 dependencies = [
  "anyhow",
+ "futures",
+ "pa-agent",
+ "pa-ai",
+ "pa-core",
  "pa-log",
+ "pa-telemetry",
  "pa-types",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

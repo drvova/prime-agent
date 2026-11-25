@@ -1,9 +1,10 @@
 # pa-runtime
 
 Prime Agent's event-driven runtime: the bus every event goes through, the subscriptions that
-turn events into work, and the per-session task lanes that run it. Being built; nothing uses it
-yet. Storage is behind the traits defined here, with SQLite implementations over `pa-log`; the agent
-turn and the kernel come in later phases.
+turn events into work, the per-session task lanes that run it, and the sessions that run each
+task as an agent turn. Being built: the print, json and RPC modes move onto it next; until then
+they drive the turn driver here themselves. Storage is behind the traits defined here, with
+SQLite implementations over `pa-log`.
 
 ## Scope
 - **Bus** (`Bus::publish`): stores the event through an `EventStore` (which assigns id,
@@ -70,16 +71,55 @@ turn and the kernel come in later phases.
   `state` for global ones, the key itself as the `kv` key, the value stored as
   `{"value", "trust", "cause"}` JSON. No other `kv` partition starts with `state`. Writes await
   the writer's `Receipt`; reads run on Tokio's blocking pool, never on the runtime's thread.
+- **Runtime** (`Runtime::open(agent_dir, RuntimeOptions)`): the bus over the agent dir's
+  database (the transcript store's `agent.db`, `pa_core::session::store::database_path`; opened
+  on the blocking pool, no network), the task queue restored from it (a restored task whose
+  session is not open yet fails), `RuntimeOptions::spare_kernels` Scheme kernels kept built by
+  pa-core's spare pool, and one subscription installed at open: `agent/+/input` (an
+  `AgentInput`) queues a `Prompt` task in that session (`AgentTarget::Origin`; the input's own
+  `priority`, such as `steer`, when it names one). `create_session(SessionSpec)` opens a session
+  and returns its id (minted when the spec has none); `publish`, `listen`, `cancel(session)`
+  (its queued tasks, and the running one's turn is aborted: it ends `Cancelled`),
+  `idle(session)` and `shutdown`. `Call` routes are refused (`system/route_failed`): the runtime
+  makes no model calls yet.
+- **Sessions**: each on its own OS thread and current-thread Tokio runtime, entered with its
+  `pa_types::session_scope` (id, cwd, environment). The embedder's `SessionBuilder` builds the
+  engine there, so the composition root picks provider, settings and session manager; each
+  build is a fresh engine whose kernel comes from the spare pool, never a copy. A task runs the
+  turn: the pre-turn boundary, `prompt_with_auto_retry`, any steering the run did not read, then
+  the settled-turn boundary. Every agent event is published live on `agent/<id>/stream` as
+  `session_events::agent_event_json` gives it, with the boundary's compaction events and the
+  auto-retry events in the same json-stream shapes; then `agent/<id>/done` (stored, an
+  `AgentDone`: task, outcome, error) after the stream, with the task's trust. A turn whose last
+  reply is a failed model request fails its task with that error. A `Steer` task offered while
+  a turn runs is handed to the agent's steering queue and read at its next step. A panic in a
+  turn is caught at the session thread's work loop: that task fails with the panic's text, the
+  lifetime ends (its scope ended, its runtime shut down), and the next task runs on a fresh
+  engine. Events reach the bus through one ordered outbox on the runtime's own task, so nothing
+  a route sets off runs on a session's runtime.
+- **Agent routes** (`RuntimeTaskSink`): the target session is named, the event's own
+  (`Origin`), or opened for the event (`Spawn`, in its `cwd` or the runtime's, recorded as a
+  subagent of the event's session); an empty route prompt takes the event's `AgentInput`.
+- **Turn driver** (`turn/`, moved from pa-cli's print runtime unchanged): `TurnBoundary` (the
+  overflow compact-and-retry, the requested and threshold compaction arms, the auto-refine
+  reviews and the disposal drain), `PrintGoalSurface` (goal updates, queued goal turns, budget
+  steers, the backoff wake), `HeadlessAutonomous` (gate commands after each settled turn, its
+  continuations and exit contract), `wire_continuation_hook` (the natural-turn-end hook
+  composing the goal and autonomous arms; an embedding with inline subagents defers both behind
+  its `UnsettledWork` probe), `execute_prompt_session_command` (`/compact`, `/refine`, `/goal`,
+  `/autonomous`, `/better`), and `auto_retry_event_json`. Their json events go to an `EventSink`:
+  stdout in the print modes, the session's stream here.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
 
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
-`TaskStore`). No agent turn, model call, kernel or session actor (behind `TaskRunner`,
-`ModelCaller` and `TaskSink`). No event sources (`pa-sources`, publishing through `Intake`). No
-socket listener (the daemon accepts connections and hands each to `WireServer::serve`), and no
-query or call backend (behind `Handlers`). No subscription persistence or trust gate yet. Nothing bounds how wide a cascade grows within the hop limit, or how many
-events an `Intake` buffers.
+`TaskStore`). No engine assembly (the embedder's `SessionBuilder`). No model calls for `Call`
+routes yet (behind `ModelCaller`). No event sources (`pa-sources`, publishing through `Intake`).
+No socket listener (the daemon accepts connections and hands each to `WireServer::serve`), and
+no query or call backend (behind `Handlers`). No subscription persistence or trust gate yet; a
+task's `done` carries no cause chain yet. Nothing bounds how wide a cascade grows within the hop
+limit, or how many events an `Intake` or the sessions' outbox buffers.
 
 ## Public API
 - `Bus`, `BusParts`, `Published`, `Listener`, `Heard`, `Intake`, `BusClosed`,
@@ -92,5 +132,12 @@ events an `Intake` buffers.
 - `MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`, `MemoryTaskStore`.
 - `LogEventStore`, `LogTaskStore`, `LogStateStore` (each `new(Arc<pa_log::Log>)`;
   `LogStateStore::get`).
+- `Runtime` (`open`, `publish`, `listen`, `create_session`, `cancel`, `idle`, `shutdown`),
+  `RuntimeOptions`, `SessionBuilder`, `SessionSpec`, `BuiltSession`; `TaskQueue::session_idle`.
+- The turn driver: `TurnBoundary`, `PrintGoalSurface`, `EventSink`, `HeadlessAutonomous`,
+  `wire_continuation_hook`, `UnsettledWork`, `execute_prompt_session_command`,
+  `auto_retry_event_json`.
 
-Dependencies: `pa-types` and `pa-log` (the SQLite stores), among workspace crates.
+Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-core` (the session engine, the
+kernel's spare pool, the turn driver's compaction, refinement, goal and autonomous seams) and
+`pa-agent` (the agent loop's steering, abort and events), among workspace crates.

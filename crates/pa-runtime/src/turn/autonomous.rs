@@ -1,7 +1,7 @@
 //! The autonomous run state for headless print/json runs — the verifier and
 //! eval composition surface. After every settled turn the [`ShellAutonomousDriver`]
 //! runs the gate commands in the session cwd (the #98 seams, unmodified); the
-//! continuation rides the natural-turn-end hook ([`crate::print_autonomous`]),
+//! continuation rides the natural-turn-end hook ([`crate::turn::continuation`]),
 //! a stop surfaces only through the exit code and its stderr line.
 
 use std::path::PathBuf;
@@ -17,30 +17,6 @@ use pa_core::session_engine::provider_adapter::json_round_trip;
 use pa_types::ai::Model;
 use pa_types::session::CustomMessage;
 
-use crate::args::AutonomousConfig;
-
-/// The autonomous runtime config from the typed CLI flags: any
-/// autonomous flag enables the run.
-pub fn autonomous_runtime_config(config: &AutonomousConfig) -> AgentAutonomousConfig {
-    AgentAutonomousConfig {
-        enabled: Some(true),
-        max_continuations: config.max_continuations.map(u64::from),
-        max_turns: config.max_turns.map(u64::from),
-        max_tokens: config.max_tokens,
-        timeout_ms: config.timeout_ms,
-        continuation_prompt: None,
-        gates: config
-            .gates
-            .as_ref()
-            .map(|gates| pa_core::autonomous::AgentAutonomousGateConfig {
-                commands: Some(gates.commands.clone()),
-                max_retries: gates.max_retries.map(u64::from),
-                timeout_ms: gates.timeout_ms,
-            }),
-        subagent_keep_alive_ms: None,
-    }
-}
-
 /// One headless autonomous run: the runtime state plus the shell-gate driver.
 pub struct HeadlessAutonomous {
     state: Arc<tokio::sync::Mutex<AutonomousRuntimeState>>,
@@ -55,10 +31,10 @@ pub struct HeadlessAutonomous {
 }
 
 impl HeadlessAutonomous {
-    /// Build the run from the CLI flags; the gates run in the session cwd.
-    pub fn from_cli(config: &AutonomousConfig, cwd: impl Into<PathBuf>) -> Self {
-        let runtime_config = autonomous_runtime_config(config);
-        let state = create_autonomous_runtime_state(Some(&runtime_config), None);
+    /// Build the run from its configuration (the CLI's autonomous flags);
+    /// the gates run in the session cwd.
+    pub fn with_config(config: &AgentAutonomousConfig, cwd: impl Into<PathBuf>) -> Self {
+        let state = create_autonomous_runtime_state(Some(config), None);
         Self::from_state(state, cwd)
     }
 
@@ -80,7 +56,7 @@ impl HeadlessAutonomous {
 
     /// The runtime state handle (the session-command executor mutates the
     /// same state the accounting subscription and the drive loop read).
-    pub(crate) fn state_handle(&self) -> Arc<tokio::sync::Mutex<AutonomousRuntimeState>> {
+    pub fn state_handle(&self) -> Arc<tokio::sync::Mutex<AutonomousRuntimeState>> {
         Arc::clone(&self.state)
     }
 
@@ -160,10 +136,14 @@ impl HeadlessAutonomous {
     /// decided fresh from the latest settled turn and counted at the
     /// delivery, dropped behind a goal that owns the wake-up. Returns
     /// whether a held flag was consumed.
-    pub(crate) async fn deliver_rlm_continuation(
+    ///
+    /// # Errors
+    ///
+    /// A compaction, refinement or admitted turn failed; the text is its reason.
+    pub async fn deliver_rlm_continuation(
         &self,
         engine: &SessionEngine,
-        boundary: &mut crate::print_boundary::TurnBoundary,
+        boundary: &mut crate::turn::boundary::TurnBoundary,
         model: &Model,
         api_key: Option<String>,
         global_harness_dir: PathBuf,
@@ -193,10 +173,14 @@ impl HeadlessAutonomous {
     /// The settled boundary's autonomous drain: each held continuation runs as
     /// this invocation's follow-up turn; a re-crossing threshold holds the
     /// next. Returns whether any turn ran.
-    pub(crate) async fn drive_boundary(
+    ///
+    /// # Errors
+    ///
+    /// A compaction, refinement or admitted turn failed; the text is its reason.
+    pub async fn drive_boundary(
         &self,
         engine: &SessionEngine,
-        boundary: &mut crate::print_boundary::TurnBoundary,
+        boundary: &mut crate::turn::boundary::TurnBoundary,
         model: &Model,
         api_key: Option<String>,
         global_harness_dir: PathBuf,

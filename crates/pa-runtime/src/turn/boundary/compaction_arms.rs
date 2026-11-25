@@ -168,6 +168,10 @@ impl TurnBoundary {
 
     /// The shared Case-1 body: the compact-and-retry for a settled overflow error. On
     /// a retry the settled-turn arm re-issues the turn without a new user message.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the one-attempt overflow machine reads linearly, state by state"
+    )]
     pub(super) async fn overflow_recovery_attempt(
         &mut self,
         engine: &SessionEngine,

@@ -6,6 +6,8 @@
 //!   and which topics are live only (fanned out, never stored).
 //! - [`subscription`]: who listens, under which condition, and what a match
 //!   does (a [`Route`]); the [`Task`] a route queues.
+//! - [`agent`]: the payloads of a session's stored topics: what
+//!   `agent/<id>/input` carries in and `agent/<id>/done` reports out.
 //!
 //! An event's trust says where it came from. An event caused by another can
 //! only be as trusted as its cause, and a chain of causes is bounded by
@@ -14,8 +16,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod agent;
 pub mod subscription;
 pub mod topic;
+
+pub use agent::{AgentDone, AgentInput};
 
 pub use subscription::{
     AgentTarget, Predicate, Priority, Route, Scope, Subscription, Task, TaskState,

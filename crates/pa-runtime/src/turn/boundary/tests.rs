@@ -1,3 +1,8 @@
+#![expect(
+    clippy::large_futures,
+    reason = "the faux engine beds hold whole engines on the stack; boxing every call site costs clarity"
+)]
+
 use super::*;
 use pa_core::session::manager::SessionManager;
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
@@ -528,22 +533,23 @@ async fn autonomous_continuation_turns_cross_the_boundary_arms() {
     let mut boundary = TurnBoundary::new(false);
     // The autonomous run with the in-run hook wired: the seed turn mints the
     // continuation inside the same agent run.
-    let run = std::sync::Arc::new(crate::headless_autonomous::HeadlessAutonomous::from_cli(
-        &crate::args::AutonomousConfig {
+    let run = std::sync::Arc::new(crate::turn::autonomous::HeadlessAutonomous::with_config(
+        &pa_core::autonomous::AgentAutonomousConfig {
+            enabled: Some(true),
             max_continuations: Some(1),
             ..Default::default()
         },
         dir.path(),
     ));
     let _accounting = run.wire_accounting(engine.session.agent()).await;
-    let goal = std::sync::Arc::new(crate::print_goal::PrintGoalSurface::new(false));
-    crate::print_autonomous::wire_continuation_hook(
+    let goal = std::sync::Arc::new(crate::turn::goal::PrintGoalSurface::new(false));
+    crate::turn::continuation::wire_continuation_hook(
         &engine,
         engine.session.agent(),
         &model,
         &goal,
         &run,
-        /*root_node*/ None,
+        /*unsettled_work*/ None,
     );
     admit(
         &mut boundary,

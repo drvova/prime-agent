@@ -15,7 +15,7 @@ use pa_core::session_engine::slash_commands::SessionSlashCommand;
 use pa_types::ai::Model;
 use serde_json::{json, Value};
 
-use crate::print_goal::PrintGoalSurface;
+use crate::turn::goal::PrintGoalSurface;
 
 /// `/compact <args>`: the args are the summary-focus instructions.
 fn compact_custom_instructions(command: &SessionSlashCommand) -> Option<String> {
@@ -84,14 +84,14 @@ fn manual_compaction_end_unsuccessful(
     clippy::too_many_arguments,
     reason = "a session command runs against the engine, goal, model, autonomy and boundary the turn holds"
 )]
-pub(crate) async fn execute_prompt_session_command(
+pub async fn execute_prompt_session_command(
     engine: &Arc<SessionEngine>,
     goal: &Arc<PrintGoalSurface>,
     model: &Model,
     api_key: Option<String>,
     global_harness_dir: std::path::PathBuf,
     autonomous: &Arc<tokio::sync::Mutex<AutonomousRuntimeState>>,
-    boundary: &mut crate::print_boundary::TurnBoundary,
+    boundary: &mut crate::turn::boundary::TurnBoundary,
     command: &SessionSlashCommand,
     images: &[pa_agent::types::ImageContent],
 ) -> SessionCommandExecution {
@@ -174,18 +174,22 @@ pub(crate) async fn execute_prompt_session_command(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::large_futures,
+    reason = "the faux engine beds hold whole engines on the stack; boxing every call site costs clarity"
+)]
 mod tests {
     use super::*;
-    use crate::print_boundary::TurnBoundary;
-    use crate::print_goal::PrintGoalSurface;
+    use crate::turn::boundary::TurnBoundary;
+    use crate::turn::goal::PrintGoalSurface;
     use pa_core::session_engine::slash_commands::{parse_session_command, SlashCommandRegistry};
     use serde_json::json;
 
     type Frames = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
 
-    fn capture_sink() -> (Frames, crate::print_goal::EventSink) {
+    fn capture_sink() -> (Frames, crate::turn::goal::EventSink) {
         let frames: Frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink: crate::print_goal::EventSink = {
+        let sink: crate::turn::goal::EventSink = {
             let frames = Arc::clone(&frames);
             Arc::new(move |event: &Value| {
                 frames.lock().unwrap().push(event.clone());
@@ -274,7 +278,7 @@ mod tests {
         harness_dir: std::path::PathBuf,
         /// Keeps the composed hook's autonomous arm alive for the bed's lifetime (the hook holds it
         /// weakly).
-        _run: Arc<crate::headless_autonomous::HeadlessAutonomous>,
+        _run: Arc<crate::turn::autonomous::HeadlessAutonomous>,
         _dir: tempfile::TempDir,
     }
 
@@ -356,16 +360,16 @@ mod tests {
         let goal = Arc::new(PrintGoalSurface::with_sink(true, sink));
         goal.seed_publish_baseline(&engine).await;
         let _accounting = goal.wire_accounting(&engine, engine.session.agent()).await;
-        let run = Arc::new(crate::headless_autonomous::HeadlessAutonomous::disabled(
+        let run = Arc::new(crate::turn::autonomous::HeadlessAutonomous::disabled(
             dir.path(),
         ));
-        crate::print_autonomous::wire_continuation_hook(
+        crate::turn::continuation::wire_continuation_hook(
             &engine,
             engine.session.agent(),
             &model,
             &goal,
             &run,
-            /*root_node*/ None,
+            /*unsettled_work*/ None,
         );
         let autonomous = run.state_handle();
         Bed {

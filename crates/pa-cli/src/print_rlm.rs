@@ -34,8 +34,8 @@ use pa_types::session::CustomMessage;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, Notify};
 
-use crate::print_boundary::TurnBoundary;
 use crate::print_runtime::{ChildEngineOverrides, ChildLane, FauxChildQueue, HeadlessEmbedding};
+use pa_runtime::TurnBoundary;
 
 /// Everything a spawned child inherits from the print invocation: the
 /// invocation's own config (cwd, agent dir, prompt/skill paths) and the

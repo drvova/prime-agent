@@ -227,6 +227,19 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
         let _ = busy.wait_for(|busy| *busy == 0).await;
     }
 
+    /// Waits until no task of `session` is queued or running.
+    pub async fn session_idle(&self, session: &str) {
+        // Subscribed before the lanes are read: every change to a lane after
+        // the read republishes the busy count and wakes the wait. The lanes
+        // are not read inside the watch's lock, which their writers take
+        // while holding the lanes.
+        let mut busy = self.inner.busy.subscribe();
+        while lock(&self.inner.lanes).by_session.contains_key(session) {
+            // The sender lives in `self`, so the wait cannot see it closed.
+            let _ = busy.changed().await;
+        }
+    }
+
     fn enqueue(&self, task: Task) {
         let session = task.session.clone();
         let start = {

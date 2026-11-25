@@ -31,7 +31,10 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   proportional to its depth; `Topic::is_live_only` (`agent/<id>/stream` and `agent/<id>/tool`):
   events the runtime fans out but never stores, with `seq` 0; `Subscription` (scope, filter, `when` predicate by JSON Pointer,
   throttle and debounce, `Route`: set, publish, call, agent) and the `Task` an agent route queues
-  in its session's lane, ordered by `Priority`.
+  in its session's lane, ordered by `Priority`; an agent route's `AgentTarget` is a named session,
+  the event's own session (`Origin`), or a new one (`Spawn`). The payloads of a session's stored
+  topics: `AgentInput` (`agent/<id>/input`: the text a turn starts from and, optionally, its lane
+  priority; an agent route with an empty prompt starts from it) and `AgentDone` (`agent/<id>/done`: task id, outcome, error).
 - `wire2`: the event wire between clients and the runtime: `ClientFrame` (hello, subscribe with
   a replay start, unsubscribe, publish, query, call) and `ServerFrame` (welcome, event,
   backfilled, reply, closing), versioned by `WIRE2_VERSION`.

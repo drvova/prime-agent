@@ -16,9 +16,9 @@ use pa_types::session::CustomMessage;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-/// Where the boundary's json events go: stdout in the product, a captured buffer in tests (the same
-/// sink contract `print_boundary` uses).
-pub(crate) type EventSink = std::sync::Arc<dyn Fn(&Value) + Send + Sync>;
+/// Where the turn driver's json events go: stdout in the print modes, a session's stream in the
+/// runtime, a captured buffer in tests.
+pub type EventSink = std::sync::Arc<dyn Fn(&Value) + Send + Sync>;
 
 /// Collapse whitespace, cap at 160 chars with a trailing `...` (the session-action label form).
 fn compact_rlm_text(text: &str, max_length: usize) -> String {
@@ -93,7 +93,7 @@ fn custom_message_text(message: &CustomMessage) -> String {
 
 /// The print run's goal surface: the usage accounting, the armed budget
 /// steer, the threshold-held continuation, and the queue-phase frames.
-pub(crate) struct PrintGoalSurface {
+pub struct PrintGoalSurface {
     json_mode: bool,
     sink: EventSink,
     /// Whether the latest settled turn's usage crossed the goal budget (the driver consumes it).
@@ -112,7 +112,8 @@ pub(crate) struct PrintGoalSurface {
 }
 
 impl PrintGoalSurface {
-    pub(crate) fn new(json_mode: bool) -> Self {
+    #[must_use]
+    pub fn new(json_mode: bool) -> Self {
         Self {
             json_mode,
             sink: Arc::new(|event| println!("{event}")),
@@ -147,12 +148,12 @@ impl PrintGoalSurface {
     }
 
     /// Seed the publish dedupe's baseline: the state at attach time never announces itself.
-    pub(crate) async fn seed_publish_baseline(&self, engine: &SessionEngine) {
+    pub async fn seed_publish_baseline(&self, engine: &SessionEngine) {
         *self.last_published_goal.lock().await = engine.goal_state().await;
     }
 
     /// Publish the current goal state as a `goal_update` when it changed.
-    pub(crate) async fn publish_goal_update(&self, engine: &SessionEngine) {
+    pub async fn publish_goal_update(&self, engine: &SessionEngine) {
         let goal = engine.goal_state().await;
         let changed = {
             let mut last = self.last_published_goal.lock().await;
@@ -345,7 +346,7 @@ impl PrintGoalSurface {
 
     /// One durable row's `message_start`/`message_end` pair (rows appended outside the agent loop).
     pub(crate) fn emit_row_pair(&self, row: &CustomMessage) {
-        let value = crate::headless_autonomous::custom_row_wire_value(row);
+        let value = crate::turn::autonomous::custom_row_wire_value(row);
         for event_type in ["message_start", "message_end"] {
             self.emit(&json!({ "type": event_type, "message": value }));
         }
@@ -387,7 +388,7 @@ impl PrintGoalSurface {
     /// Wire the goal usage accounting onto the engine's event feed: settled
     /// non-error turns spend the budget, the crossing arms the steer, every
     /// state change publishes `goal_update`.
-    pub(crate) async fn wire_accounting(
+    pub async fn wire_accounting(
         self: &Arc<Self>,
         engine: &Arc<SessionEngine>,
         agent: &Arc<Agent>,
@@ -518,10 +519,14 @@ impl PrintGoalSurface {
     /// still ends in a terminal error fails an active goal. Returns
     /// whether any turn ran (the drive loop re-enters quiescence for
     /// whatever the turns left behind).
-    pub(crate) async fn drive_boundary(
+    ///
+    /// # Errors
+    ///
+    /// A compaction, refinement or admitted turn failed; the text is its reason.
+    pub async fn drive_boundary(
         &self,
         engine: &SessionEngine,
-        boundary: &mut crate::print_boundary::TurnBoundary,
+        boundary: &mut crate::turn::boundary::TurnBoundary,
         model: &pa_types::ai::Model,
         api_key: Option<String>,
         global_harness_dir: std::path::PathBuf,
@@ -557,8 +562,7 @@ impl PrintGoalSurface {
                 ran = true;
                 continue;
             }
-            if let Some(message) = crate::headless_autonomous::latest_assistant_error(engine).await
-            {
+            if let Some(message) = crate::turn::autonomous::latest_assistant_error(engine).await {
                 engine
                     .fail_goal_for_terminal_error(message.as_deref())
                     .await
@@ -588,10 +592,14 @@ impl PrintGoalSurface {
 
     /// Admit a session command's scheduled continuation (a `/goal` start or resume)
     /// as the print invocation's next run, with the command surface's frame order.
-    pub(crate) async fn run_session_command_continuation(
+    ///
+    /// # Errors
+    ///
+    /// A compaction, refinement or admitted turn failed; the text is its reason.
+    pub async fn run_session_command_continuation(
         &self,
         engine: &SessionEngine,
-        boundary: &mut crate::print_boundary::TurnBoundary,
+        boundary: &mut crate::turn::boundary::TurnBoundary,
         model: &pa_types::ai::Model,
         api_key: Option<String>,
         global_harness_dir: std::path::PathBuf,
@@ -613,9 +621,7 @@ impl PrintGoalSurface {
         boundary
             .run_at_settled_turn(engine, model, api_key.clone(), global_harness_dir)
             .await?;
-        if let Some(error_message) =
-            crate::headless_autonomous::latest_assistant_error(engine).await
-        {
+        if let Some(error_message) = crate::turn::autonomous::latest_assistant_error(engine).await {
             engine
                 .fail_goal_for_terminal_error(error_message.as_deref())
                 .await
@@ -628,10 +634,14 @@ impl PrintGoalSurface {
 
     /// Admit one queued goal turn as the print invocation's next run (the queue
     /// drain): the phase frames bookend the turn.
-    pub(crate) async fn run_queued_turn(
+    ///
+    /// # Errors
+    ///
+    /// A compaction, refinement or admitted turn failed; the text is its reason.
+    pub async fn run_queued_turn(
         &self,
         engine: &SessionEngine,
-        boundary: &mut crate::print_boundary::TurnBoundary,
+        boundary: &mut crate::turn::boundary::TurnBoundary,
         model: &pa_types::ai::Model,
         api_key: Option<String>,
         global_harness_dir: std::path::PathBuf,
@@ -661,6 +671,11 @@ impl PrintGoalSurface {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::large_futures,
+    clippy::too_many_lines,
+    reason = "the goal beds hold whole engines on the stack and read linearly; boxing them costs clarity"
+)]
 mod tests {
     use super::*;
     use pa_core::session_engine::provider_adapter::json_round_trip;
@@ -879,15 +894,15 @@ mod tests {
             .wire_accounting(&engine, engine.session.agent())
             .await;
         let autonomous_run = std::sync::Arc::new(
-            crate::headless_autonomous::HeadlessAutonomous::disabled(dir.path()),
+            crate::turn::autonomous::HeadlessAutonomous::disabled(dir.path()),
         );
-        crate::print_autonomous::wire_continuation_hook(
+        crate::turn::continuation::wire_continuation_hook(
             &engine,
             engine.session.agent(),
             &model,
             &surface,
             &autonomous_run,
-            /*root_node*/ None,
+            /*unsettled_work*/ None,
         );
         let harness_dir = dir.path().join("harness");
         GoalBed {
@@ -911,7 +926,7 @@ mod tests {
         _accounting: pa_agent::agent::Subscription,
         /// Keeps the composed hook's autonomous arm alive for the bed's lifetime (the hook holds it
         /// weakly).
-        _autonomous_run: Arc<crate::headless_autonomous::HeadlessAutonomous>,
+        _autonomous_run: Arc<crate::turn::autonomous::HeadlessAutonomous>,
         _dir: tempfile::TempDir,
     }
 
@@ -919,7 +934,7 @@ mod tests {
         /// Admit one prompt through the same driver path the print runtime uses
         /// (the in-loop hook runs the natural continuations inside the one run).
         async fn prompt(&self, text: &str) -> bool {
-            let mut boundary = crate::print_boundary::TurnBoundary::new(false);
+            let mut boundary = crate::turn::boundary::TurnBoundary::new(false);
             boundary
                 .run_pre_turn(&self.engine, &self.model, None)
                 .await
@@ -1490,15 +1505,15 @@ mod tests {
             .wire_accounting(&engine, engine.session.agent())
             .await;
         let autonomous_run = std::sync::Arc::new(
-            crate::headless_autonomous::HeadlessAutonomous::disabled(dir.path()),
+            crate::turn::autonomous::HeadlessAutonomous::disabled(dir.path()),
         );
-        crate::print_autonomous::wire_continuation_hook(
+        crate::turn::continuation::wire_continuation_hook(
             &engine,
             engine.session.agent(),
             &model,
             &surface,
             &autonomous_run,
-            /*root_node*/ None,
+            /*unsettled_work*/ None,
         );
         GoalBed {
             engine,
