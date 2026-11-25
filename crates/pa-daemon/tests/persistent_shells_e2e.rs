@@ -358,7 +358,7 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
         "d1",
         &json!({ "type": "delete_saved_session", "sessionPath": session_file.to_string_lossy() }),
     );
-    assert!(!session_file.exists());
+    assert!(!common::transcripts(&session_file).exists(&session_file));
     assert!(
         group_alive(pid),
         "the session delete killed its persistent shell"

@@ -551,7 +551,7 @@ impl TimedClient {
 }
 
 fn read_trace(path: &Path) -> Vec<(String, u128)> {
-    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let content = common::read_transcript(&path).unwrap_or_default();
     content
         .lines()
         .filter_map(|line| {
@@ -574,7 +574,7 @@ fn session_chain(session_dir: &Path) -> (bool, Vec<(String, String)>) {
         .map(|entry| entry.path())
         .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
         .expect("session file");
-    let content = std::fs::read_to_string(&session_file).expect("session file read");
+    let content = common::read_transcript(&session_file).expect("session file read");
     let mut has_compaction = false;
     let mut ids = std::collections::HashSet::new();
     let mut chain = Vec::new();

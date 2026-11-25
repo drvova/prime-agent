@@ -39,15 +39,25 @@ fn rewrite_keeps_the_transcript_owner_only() {
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
     session.rewrite().unwrap();
-    let mode = pa_core::platform::perms::file_mode(&path).unwrap();
-    assert_eq!(mode & 0o077, 0, "transcript mode {mode:o}");
+    match pa_core::session::store::store_kind() {
+        pa_core::session::store::TranscriptStoreKind::File => {
+            let mode = pa_core::platform::perms::file_mode(&path).unwrap();
+            assert_eq!(mode & 0o077, 0, "transcript mode {mode:o}");
+        }
+        // The transcript is in the database, which is private
+        // (pa-log's `the_database_is_private_to_the_user`).
+        pa_core::session::store::TranscriptStoreKind::Sqlite => assert!(
+            !path.exists() && pa_core::session::store::store().exists(&path),
+            "the transcript is in the database, not a file"
+        ),
+    }
 }
 
 #[test]
 fn bounded_header_rejects_a_non_json_first_line() {
     let (_tmp, dir) = temp_dir();
     let path = dir.join("bad.jsonl");
-    fs::write(&path, "truncated junk without json\n").unwrap();
+    pa_core::session::store::write(&path, "truncated junk without json\n").unwrap();
     assert_eq!(read_session_header_bounded(&path), None);
     assert!(!is_valid_session_file(&path));
 }
@@ -72,8 +82,8 @@ fn bounded_header_reads_an_unterminated_first_line() {
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
     session.rewrite().unwrap();
-    let header_line = fs::read_to_string(&path).unwrap();
-    fs::write(&path, header_line.trim_end()).unwrap();
+    let header_line = pa_core::session::store::read_to_string(&path).unwrap();
+    pa_core::session::store::write(&path, header_line.trim_end()).unwrap();
     assert_eq!(
         read_session_header_bounded(&path),
         read_session_header(&path)
@@ -87,8 +97,8 @@ fn bounded_header_strips_a_crlf_line_return() {
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
     session.rewrite().unwrap();
-    let header_line = fs::read_to_string(&path).unwrap();
-    fs::write(&path, format!("{}\r\n", header_line.trim_end())).unwrap();
+    let header_line = pa_core::session::store::read_to_string(&path).unwrap();
+    pa_core::session::store::write(&path, format!("{}\r\n", header_line.trim_end())).unwrap();
     assert_eq!(
         read_session_header_bounded(&path),
         read_session_header(&path)
@@ -99,7 +109,7 @@ fn bounded_header_strips_a_crlf_line_return() {
 fn bounded_header_treats_an_empty_file_as_headerless() {
     let (_tmp, dir) = temp_dir();
     let path = dir.join("empty.jsonl");
-    fs::write(&path, "").unwrap();
+    pa_core::session::store::write(&path, "").unwrap();
     assert_eq!(read_session_header_bounded(&path), None);
     assert!(!is_valid_session_file(&path));
 }
@@ -239,7 +249,7 @@ fn the_depth_two_chain_reports_the_folded_aggregate() {
             })
             .to_string(),
         ];
-    std::fs::write(&path, lines.join("\n")).unwrap();
+    pa_core::session::store::write(&path, lines.join("\n")).unwrap();
     let store = SessionFile::open(&path).unwrap();
     let folded = store.entry("a1").expect("the target row");
     assert_eq!(
@@ -289,7 +299,7 @@ fn marking_the_warning_persists_and_both_reopens_hydrate_it() {
     );
 
     // The durable row: the exact custom entry the lifecycle reads back.
-    let text = fs::read_to_string(&path).unwrap();
+    let text = pa_core::session::store::read_to_string(&path).unwrap();
     assert!(
         text.contains("\"customType\":\"anthropic_subscription_warning_shown\""),
         "the marker row reached the session file: {text}"
@@ -580,7 +590,7 @@ fn branch_bridged_bridges_ghost_parent_gaps() {
         .map(std::string::ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(&path, content).unwrap();
+    pa_core::session::store::write(&path, content).unwrap();
     let store = SessionFile::open(&path).unwrap();
     let strict: Vec<&str> = store
         .branch()
@@ -617,7 +627,7 @@ fn branch_bridged_skips_abandoned_chains_after_a_persisted_branch_move() {
         .map(std::string::ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(&path, content).unwrap();
+    pa_core::session::store::write(&path, content).unwrap();
     let store = SessionFile::open(&path).unwrap();
     let bridged: Vec<&str> = store
         .branch_bridged()
@@ -643,7 +653,7 @@ fn branch_bridged_matches_the_strict_walk_on_clean_files() {
         .map(std::string::ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(&path, content).unwrap();
+    pa_core::session::store::write(&path, content).unwrap();
     let store = SessionFile::open(&path).unwrap();
     let strict: Vec<&str> = store
         .branch()
@@ -1075,9 +1085,9 @@ fn listing_and_frozen_usage_agree_on_duplicate_attribution_ids() {
     });
     serde_json::from_str::<super::info::SessionInfoEntry<'_>>(&attributed.to_string()).unwrap();
     let append = || {
-        use std::io::Write;
-        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(file, "{attributed}").unwrap();
+        pa_core::session::store::store()
+            .append(&path, format!("{attributed}\n").as_bytes())
+            .unwrap();
     };
     append();
     let expected = Some(crate::session_usage::SessionUsageSummary {
@@ -1087,10 +1097,10 @@ fn listing_and_frozen_usage_agree_on_duplicate_attribution_ids() {
         billing: None,
     });
     assert_eq!(read_session_info(&path).unwrap().usage, expected);
-    let prefix_len = fs::metadata(&path).unwrap().len();
+    let prefix_len = pa_core::session::store::store().stat(&path).unwrap().len();
     // The appended duplicate must not subtract again in either scanner.
     append();
-    let grown_len = fs::metadata(&path).unwrap().len();
+    let grown_len = pa_core::session::store::store().stat(&path).unwrap().len();
     assert!(grown_len > prefix_len);
     assert_eq!(read_session_info(&path).unwrap().usage, expected);
     assert_eq!(
@@ -1115,13 +1125,13 @@ fn saved_file_with_foreign_bytes(dir: &Path) -> (PathBuf, String) {
         r#"{"type":"message","id":"m2","pa"#,
         "\n",
     );
-    fs::write(&path, prefix).unwrap();
+    pa_core::session::store::write(&path, prefix).unwrap();
     (path, prefix.to_string())
 }
 
 /// What a metadata change left after `prefix`: exactly one row, parsed.
 fn the_one_appended_row(path: &Path, prefix: &str) -> Value {
-    let written = fs::read_to_string(path).unwrap();
+    let written = pa_core::session::store::read_to_string(&path).unwrap();
     let appended = written
         .strip_prefix(prefix)
         .expect("the earlier bytes are unchanged");

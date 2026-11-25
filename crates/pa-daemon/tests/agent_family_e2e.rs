@@ -300,7 +300,7 @@ fn read_recorded(dir: &Path, name: &str) -> Value {
     let path = dir.join(name);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(content) = common::read_transcript(&path) {
             if let Ok(value) = serde_json::from_str(&content) {
                 return value;
             }
@@ -769,7 +769,7 @@ async fn family_edges_never_cross_families_end_to_end() {
             .join(&handle.rlm_child_id);
         let expected_file = artifact_dir.join(format!("{kid_session_id}.jsonl"));
         let artifact_deadline = Instant::now() + Duration::from_secs(15);
-        while !expected_file.is_file() {
+        while !common::transcripts(&expected_file).exists(&expected_file) {
             assert!(
                 Instant::now() < artifact_deadline,
                 "kid session file never appeared: {}",
@@ -778,26 +778,29 @@ async fn family_edges_never_cross_families_end_to_end() {
             std::thread::sleep(Duration::from_millis(50));
         }
         // The kid's own session file (the grandchild's durable parent edge): exactly one.
-        let kid_files: Vec<std::fs::DirEntry> = std::fs::read_dir(
-            agent_dir
-                .join("session-artifacts")
-                .join(session)
-                .join(&handle.rlm_child_id),
-        )
-        .expect("kid artifact dir")
-        .flatten()
-        // The semantic-edge ledger rides the same dir (TS: the child's
-        // rlm session dir owns it); only the durable session row counts.
-        .filter(|entry| {
-            entry.path().extension().and_then(|ext| ext.to_str()) == Some("jsonl")
-                && entry.file_name().to_string_lossy() != "semantic-edges.jsonl"
-        })
-        .collect();
+        let kid_files: Vec<std::path::PathBuf> = common::transcripts(&agent_dir)
+            .list(
+                &agent_dir
+                    .join("session-artifacts")
+                    .join(session)
+                    .join(&handle.rlm_child_id),
+            )
+            .expect("kid artifact dir")
+            .transcripts
+            .into_iter()
+            .map(|transcript| transcript.locator)
+            // The semantic-edge ledger rides the same dir (TS: the child's
+            // rlm session dir owns it); only the durable session row counts.
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name != "semantic-edges.jsonl")
+            })
+            .collect();
         assert_eq!(kid_files.len(), 1, "one kid session file: {kid_files:?}");
         kids.push((
             row.active_session_id.clone().expect("child active id"),
             row.session_id.clone().expect("child persisted id"),
-            kid_files[0].path().to_string_lossy().to_string(),
+            kid_files[0].to_string_lossy().to_string(),
         ));
     }
     let (kid_a_active, kid_a_session, kid_a_file) = &kids[0];

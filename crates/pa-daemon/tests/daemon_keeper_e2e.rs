@@ -19,7 +19,7 @@ mod common;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -263,16 +263,12 @@ fn transcripts(dir: &Path) -> String {
     let mut text = String::new();
     let mut pending = vec![dir.join("sessions")];
     while let Some(path) = pending.pop() {
-        for entry in std::fs::read_dir(&path).into_iter().flatten().flatten() {
-            let path: PathBuf = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path
-                .extension()
-                .is_some_and(|extension| extension == "jsonl")
-            {
-                text.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
-            }
+        let Ok(listing) = common::transcripts(&path).list(&path) else {
+            continue;
+        };
+        pending.extend(listing.directories);
+        for transcript in listing.transcripts {
+            text.push_str(&common::read_transcript(&transcript.locator).unwrap_or_default());
         }
     }
     text

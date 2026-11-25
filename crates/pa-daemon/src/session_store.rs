@@ -1,5 +1,6 @@
-//! Append-only session store on disk: one JSONL file per session under
-//! `<agent-dir>/sessions/<uuid>.jsonl`, first line is the `session` header,
+//! Append-only session store: one JSONL transcript per session, addressed as
+//! `<agent-dir>/sessions/<uuid>.jsonl` and kept by the transcript store
+//! (`pa_core::session::store`, the SQLite database by default), first line is the `session` header,
 //! entries form a parent-id chain (tree). Layout compatibility with the TS
 //! product is load-bearing: TUI reattach, checkpoint/resume, and external
 //! tooling read the same files.
@@ -81,6 +82,8 @@ use info::SESSION_SCAN_MAX_CACHED_STATES;
 pub(crate) use info_sidecar::persist_info_sidecar;
 
 // The inline unit battery lives in session_store::tests.
+#[cfg(test)]
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 

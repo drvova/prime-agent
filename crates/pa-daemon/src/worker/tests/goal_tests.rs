@@ -399,25 +399,29 @@ async fn goal_dispatch_worker_with_store(
         )
         .await;
     assert!(created.success, "create failed: {created:?}");
-    let file = std::fs::read_dir(&session_dir)
+    let file = pa_core::session::store::store()
+        .list(&session_dir)
         .expect("session dir readable")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
+        .next()
         .expect("session file created");
     (tmp, worker, file)
 }
 
 /// The session file's `thread_goal_state` custom rows, in order.
 fn thread_goal_state_rows(path: &std::path::Path) -> Vec<Value> {
-    crate::session_store::parse_session_entries(&std::fs::read_to_string(path).expect("read"))
-        .into_iter()
-        .filter(|entry| {
-            entry.get("type").and_then(Value::as_str) == Some("custom")
-                && entry.get("customType").and_then(Value::as_str)
-                    == Some(pa_core::goals::GOAL_STATE_CUSTOM_TYPE)
-        })
-        .collect()
+    crate::session_store::parse_session_entries(
+        &pa_core::session::store::read_to_string(&path).expect("read"),
+    )
+    .into_iter()
+    .filter(|entry| {
+        entry.get("type").and_then(Value::as_str) == Some("custom")
+            && entry.get("customType").and_then(Value::as_str)
+                == Some(pa_core::goals::GOAL_STATE_CUSTOM_TYPE)
+    })
+    .collect()
 }
 
 /// The mirror row is what a recovery rebuild replays.

@@ -244,6 +244,8 @@ fn write_padded_session_file(dir: &Path) -> PathBuf {
     ));
     session.set_path(path.clone());
     session.rewrite().expect("write session file");
+    // A saved session the worker (its own agent dir) finds as its file.
+    common::into_original_file(&path);
     path
 }
 
@@ -303,6 +305,7 @@ fn concurrent_creates_join_the_first_create() {
 
     // The join contract: exactly one creation prefix. A raced double initialization
     // appends the thinking level (and the active-state row) twice.
+    common::mirror_into_process_store(&session_path);
     let store =
         pa_daemon::session_store::SessionFile::open(&session_path).expect("reopen session file");
     let entries = store.entries();

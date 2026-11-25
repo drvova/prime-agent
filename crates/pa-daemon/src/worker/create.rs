@@ -271,7 +271,7 @@ impl Worker {
             )
         };
         let mut store = match (&session_path, no_session) {
-            (Some(path), false) if path.exists() => {
+            (Some(path), false) if pa_core::session::store::store().exists(path) => {
                 let loaded = {
                     let path = path.clone();
                     let agent_dir = self.config.agent_dir.clone();

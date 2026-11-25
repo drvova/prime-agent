@@ -463,16 +463,18 @@ fn new_session_closes_the_spawned_child_and_empties_the_roster() {
             .join("session-artifacts")
             .join(parent_session_id)
             .join(&child_id);
-        let file = std::fs::read_dir(&child_dir)
+        let file = common::transcripts(&child_dir)
+            .list(&child_dir)
             .expect("child session dir")
-            .filter_map(std::result::Result::ok)
-            .map(|entry| entry.path())
+            .transcripts
+            .into_iter()
+            .map(|transcript| transcript.locator)
             .find(|path| path.extension().and_then(|extension| extension.to_str()) == Some("jsonl"))
             .expect("one child session file");
         file
     };
     let child_session =
-        std::fs::read_to_string(&child_session_file).expect("read child session file");
+        common::read_transcript(&child_session_file).expect("read child session file");
     assert!(
         child_session.contains("\"archived\""),
         "the closed child's session must be archived: {child_session}"
@@ -772,7 +774,7 @@ fn restart_relists_child(delay_ms: u64, display_status: &str) {
     );
     let idle = client.read_response("child-idle");
     assert_eq!(idle["success"], true, "child wait_for_idle failed: {idle}");
-    let content = std::fs::read_to_string(&child_file).expect("child session file");
+    let content = common::read_transcript(&child_file).expect("child session file");
     assert!(
         content.contains("boot-ping"),
         "the send never woke the child into its session file: {content}"

@@ -114,7 +114,9 @@ fn create_target_file(command: &DaemonCommand) -> Result<Option<PathBuf>> {
         return Ok(None);
     };
     let path = crate::paths::expand_tilde(raw_path)?;
-    Ok(path.exists().then_some(path))
+    Ok(pa_core::session::store::store()
+        .exists(&path)
+        .then_some(path))
 }
 
 impl Supervisor {

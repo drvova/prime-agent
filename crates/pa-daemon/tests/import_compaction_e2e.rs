@@ -275,10 +275,12 @@ fn grown_fixture(dir: &Path, turns: usize) -> PathBuf {
 /// The durable session rows of `type`, re-read from the imported copy.
 fn session_rows(harness: &Harness, type_: &str) -> Vec<Value> {
     let session_dir = harness.dir.path().join("agent").join("sessions");
-    let file = std::fs::read_dir(&session_dir)
+    let file = common::transcripts(&session_dir)
+        .list(&session_dir)
         .expect("session dir readable")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| {
             path.extension().is_some_and(|ext| ext == "jsonl")
                 && path
@@ -287,7 +289,7 @@ fn session_rows(harness: &Harness, type_: &str) -> Vec<Value> {
                     .is_some_and(|name| name.starts_with("grown-import"))
         })
         .expect("the imported session's copy in the session dir");
-    std::fs::read_to_string(file)
+    common::read_transcript(&file)
         .expect("session file readable")
         .lines()
         .filter(|line| !line.trim().is_empty())

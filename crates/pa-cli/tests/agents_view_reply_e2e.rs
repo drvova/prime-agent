@@ -403,7 +403,11 @@ async fn reply_to_saved_session_resumes_and_sends() {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(200));
         }
-        content = std::fs::read_to_string(&fixture).unwrap_or_default();
+        content = support::saved_transcripts(&agent_dir)
+            .into_iter()
+            .find(|(locator, _)| locator.file_name() == fixture.file_name())
+            .map(|(_, bytes)| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
         content.contains("resume me")
     });
     assert!(

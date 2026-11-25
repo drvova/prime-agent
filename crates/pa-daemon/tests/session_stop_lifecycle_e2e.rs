@@ -224,7 +224,7 @@ impl Session {
 
     fn session_state(&self) -> String {
         let mut state = String::new();
-        for line in std::fs::read_to_string(self.session_file())
+        for line in common::read_transcript(self.session_file())
             .expect("session file readable")
             .lines()
         {
@@ -243,7 +243,7 @@ impl Session {
     /// The session file's `thread_goal_state` rows (the durable goal record
     /// the continuation loop writes).
     fn goal_state_rows(&self) -> usize {
-        std::fs::read_to_string(self.session_file())
+        common::read_transcript(self.session_file())
             .expect("session file readable")
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -256,7 +256,7 @@ impl Session {
     }
 
     fn file_rows(&self) -> usize {
-        std::fs::read_to_string(self.session_file())
+        common::read_transcript(self.session_file())
             .expect("session file readable")
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -308,11 +308,11 @@ fn kill_cancels_goal_and_heartbeat_and_no_wake_revives_the_session() {
         let descriptor_dir = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket);
         let found = std::fs::read_dir(&descriptor_dir)
             .expect("descriptor dir readable")
-            .filter_map(Result::ok)
+            .flatten()
             .map(|entry| entry.path())
             .find(|path| {
                 path.extension().and_then(|extension| extension.to_str()) == Some("json")
-                    && std::fs::read_to_string(path)
+                    && common::read_transcript(&path)
                         .is_ok_and(|content| content.contains(&a.session_id))
             })
             .expect("A's pre-kill worker descriptor");
@@ -406,13 +406,13 @@ fn kill_cancels_goal_and_heartbeat_and_no_wake_revives_the_session() {
     }
     for entry in std::fs::read_dir(&descriptor_dir)
         .expect("descriptor dir readable")
-        .filter_map(Result::ok)
+        .flatten()
     {
         let path = entry.path();
         if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(&path) else {
+        let Ok(content) = common::read_transcript(&path) else {
             continue;
         };
         if !content.contains(&b.session_id) {

@@ -104,7 +104,7 @@ async fn the_mark_command_persists_and_serves_the_gate() {
         let core = worker.core.lock().unwrap();
         core.store.as_ref().expect("created store").path.clone()
     };
-    let text = std::fs::read_to_string(&file).unwrap();
+    let text = pa_core::session::store::read_to_string(&file).unwrap();
     assert!(
         text.contains("anthropic_subscription_warning_shown"),
         "the marker row reached the session file: {text}"
@@ -123,7 +123,7 @@ async fn the_mark_command_persists_and_serves_the_gate() {
         .dispatch("mark_anthropic_warning_shown", &json!({}))
         .await;
     assert!(again.success, "{again:?}");
-    let text = std::fs::read_to_string(&file).unwrap();
+    let text = pa_core::session::store::read_to_string(&file).unwrap();
     assert_eq!(
         text.matches("anthropic_subscription_warning_shown").count(),
         1,

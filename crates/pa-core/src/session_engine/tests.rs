@@ -812,7 +812,7 @@ async fn prompt_persists_tool_results() {
         .join(format!("{}.jsonl", engine.session_id().await))
         .to_string_lossy()
         .to_string();
-    let lines: Vec<serde_json::Value> = std::fs::read_to_string(file)
+    let lines: Vec<serde_json::Value> = crate::session::store::read_to_string(&file)
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -972,7 +972,7 @@ async fn long_tool_call_persists_started_tick_and_duration_rows() {
         .join(format!("{}.jsonl", engine.session_id().await))
         .to_string_lossy()
         .to_string();
-    let lines: Vec<serde_json::Value> = std::fs::read_to_string(file)
+    let lines: Vec<serde_json::Value> = crate::session::store::read_to_string(&file)
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())

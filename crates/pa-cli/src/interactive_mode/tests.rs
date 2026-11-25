@@ -4,6 +4,7 @@
 use super::*;
 // The tests call the trait methods directly (the impl header alone
 // does not import them).
+use pa_core::session::store::store;
 use pa_tui::interactive::OnboardingSink;
 use serde_json::Map;
 
@@ -570,7 +571,7 @@ fn seed_session(
 }
 
 fn read_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(path)
+    pa_core::session::store::read_to_string(path)
         .expect("read session file")
         .lines()
         .map(serde_json::from_str)
@@ -586,14 +587,14 @@ fn fork_startup_selection_copies_the_source_under_a_fresh_header() {
     std::fs::create_dir_all(&cwd).expect("cwd");
     std::fs::create_dir_all(&session_dir).expect("sessions dir");
     let (source, id) = seed_session(&session_dir, &cwd, "original question");
-    let before = std::fs::read(&source).expect("read source");
+    let before = store().read(&source).expect("read source");
 
     let selection = fork_startup_selection(&id, &cwd, Some(&session_dir)).expect("fork startup");
     let SessionSelection::Resume(fork) = &selection else {
         panic!("the fork opens as a resume of the forked file, got {selection:?}");
     };
 
-    assert!(fork.is_file(), "the fork file landed on disk");
+    assert!(store().exists(fork), "the fork landed in the store");
     assert_ne!(fork, &source, "the fork is a new session file");
     assert!(
         fork.starts_with(&session_dir),
@@ -620,7 +621,7 @@ fn fork_startup_selection_copies_the_source_under_a_fresh_header() {
     assert!(texts.contains(&"original question"), "texts: {texts:?}");
     assert!(texts.contains(&"the answer"), "texts: {texts:?}");
 
-    let after = std::fs::read(&source).expect("read source");
+    let after = store().read(&source).expect("read source");
     assert_eq!(before, after, "the source file is unchanged");
 }
 
@@ -634,7 +635,7 @@ fn fork_startup_selection_imports_a_global_session_into_this_cwd() {
     std::fs::create_dir_all(&this_project).expect("this project");
     std::fs::create_dir_all(&session_dir).expect("sessions dir");
     let (source, id) = seed_session(&session_dir, &other_project, "global question");
-    let before = std::fs::read(&source).expect("read source");
+    let before = store().read(&source).expect("read source");
 
     let selection = fork_startup_selection(&id, &this_project, Some(&session_dir))
         .expect("a GLOBAL session is exactly what --fork is for");
@@ -652,7 +653,7 @@ fn fork_startup_selection_imports_a_global_session_into_this_cwd() {
         fork_entries[0]["parentSession"].as_str(),
         Some(source.display().to_string().as_str())
     );
-    let after = std::fs::read(&source).expect("read source");
+    let after = store().read(&source).expect("read source");
     assert_eq!(before, after, "the source file is unchanged");
 }
 
@@ -742,7 +743,10 @@ fn fork_startup_selection_expands_a_tilde_selector() {
     let home_sessions = home.join("sessions");
     std::fs::create_dir_all(&home_sessions).expect("home sessions dir");
     let home_file = home_sessions.join(format!("{id}.jsonl"));
-    std::fs::rename(&source, &home_file).expect("move the source under home");
+    store()
+        .import(&source, &home_file)
+        .expect("move the source under home");
+    store().remove(&source).expect("remove the moved source");
     let _env = crate::config::env_lock();
     let previous_home = std::env::var("HOME").ok();
     std::env::set_var("HOME", &home);

@@ -954,6 +954,8 @@ mod tests {
         let mut file = SessionFile::create(&gone_cwd.to_string_lossy(), None, 0);
         file.set_path(gone.clone());
         file.rewrite().unwrap();
+        // The import reads a JSONL file the user names.
+        crate::session_store::test_support::into_original_file(&gone);
         let response = worker
             .dispatch(
                 "import_jsonl",

@@ -9,7 +9,7 @@ use std::io::Write;
 /// The pre-streaming reference reader: the `read_to_string` + `lines`
 /// path the streamed open replaced.
 fn whole_file_reference(path: &std::path::Path) -> anyhow::Result<Vec<SessionEntry>> {
-    let content = std::fs::read_to_string(path)?;
+    let content = pa_core::session::store::read_to_string(&path)?;
     let mut lines = content.lines().filter(|line| !line.trim().is_empty());
     let first = lines
         .next()

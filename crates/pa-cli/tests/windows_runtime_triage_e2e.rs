@@ -355,12 +355,8 @@ async fn create_session_via_daemon(
 /// Every session file under `session_dir` with a readable header.
 fn session_files(session_dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(session_dir)
-        .expect("session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+    for (path, _) in support::session_texts(session_dir) {
+        {
             files.push(path);
         }
     }
@@ -371,12 +367,16 @@ fn session_files(session_dir: &Path) -> Vec<PathBuf> {
 /// The single session file under `session_dir` (each scenario starts with
 /// an empty store), with its header id.
 fn the_session_file(session_dir: &Path) -> (PathBuf, String) {
-    let files = session_files(session_dir);
+    let files = support::session_texts(session_dir);
     assert_eq!(files.len(), 1, "exactly one session file: {files:?}");
-    let path = files[0].clone();
-    let header = pa_daemon::session_store::read_session_header(&path)
+    let (path, text) = files[0].clone();
+    let header: serde_json::Value = text
+        .lines()
+        .next()
+        .and_then(|line| serde_json::from_str(line).ok())
         .expect("the session file carries a readable header");
-    (path, header.id)
+    let id = header["id"].as_str().expect("a header id").to_string();
+    (path, id)
 }
 
 /// Scenario (1): reopening an old session renders its old messages. The
@@ -427,10 +427,7 @@ async fn tui_reopen_renders_the_old_history() {
     // The store persisted the turns before the daemon goes away.
     let (session_path, session_id) = the_session_file(&session_dir);
     assert!(
-        std::fs::read(&session_path)
-            .expect("the session file persisted")
-            .len()
-            > 100,
+        support::saved_text(&session_path).len() > 100,
         "the session file holds the turns"
     );
 
@@ -540,10 +537,13 @@ async fn subagent_session_stays_a_distinct_store_entry() {
         .find(|path| path.as_path() != parent_path.as_path())
         .expect("the child's own file")
         .clone();
-    let parent_header =
-        pa_daemon::session_store::read_session_header(&parent_path).expect("parent header");
-    let child_header =
-        pa_daemon::session_store::read_session_header(&child_path).expect("child header");
+    // The sessions live in the daemon's database: read their headers there.
+    let header = |path: &Path| -> pa_types::session::SessionHeader {
+        let text = support::saved_text(path);
+        serde_json::from_str(text.lines().next().expect("a header line")).expect("a header")
+    };
+    let parent_header = header(&parent_path);
+    let child_header = header(&child_path);
     assert_eq!(parent_header.id, parent_id);
     assert_eq!(child_header.id, child_id);
     assert_ne!(parent_path, child_path, "separate store files");

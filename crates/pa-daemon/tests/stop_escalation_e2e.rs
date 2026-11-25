@@ -213,11 +213,11 @@ fn worker_descriptor_of(agent_dir: &Path, socket: &Path, session_id: &str) -> (P
     let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
     let found = std::fs::read_dir(&descriptor_dir)
         .expect("descriptor dir readable")
-        .filter_map(Result::ok)
+        .flatten()
         .map(|entry| entry.path())
         .find(|path| {
             path.extension().and_then(|extension| extension.to_str()) == Some("json")
-                && std::fs::read_to_string(path).is_ok_and(|content| content.contains(session_id))
+                && common::read_transcript(&path).is_ok_and(|content| content.contains(session_id))
         })
         .expect("the session worker's descriptor");
     let descriptor: Value =
@@ -229,7 +229,7 @@ fn worker_descriptor_of(agent_dir: &Path, socket: &Path, session_id: &str) -> (P
 
 fn session_state(session_file: &Path) -> String {
     let mut state = String::new();
-    for line in std::fs::read_to_string(session_file)
+    for line in common::read_transcript(&session_file)
         .expect("session file readable")
         .lines()
     {

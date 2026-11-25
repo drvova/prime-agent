@@ -11,6 +11,8 @@
 //! Every wait polls the captured pane for observable state under a deadline; nothing sleeps
 //! for a fixed time.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -167,34 +169,25 @@ fn start(dir: &Path) -> Pane {
 
 /// Every session line under `home`'s session store that records a user message.
 fn user_messages(home: &Path) -> Vec<String> {
-    fn walk(dir: &Path, found: &mut Vec<String>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, found);
-            } else if path
-                .extension()
-                .is_some_and(|extension| extension == "jsonl")
-            {
-                let text = std::fs::read_to_string(&path).unwrap_or_default();
-                found.extend(
-                    text.lines()
-                        .filter(|line| {
-                            serde_json::from_str::<serde_json::Value>(line).is_ok_and(|row| {
-                                row["type"] == "message" && row["message"]["role"] == "user"
-                            })
-                        })
-                        .map(str::to_string),
-                );
-            }
-        }
-    }
-    let mut found = Vec::new();
-    walk(&home.join(".prime/agent/sessions"), &mut found);
-    found
+    let agent_dir = home.join(".prime/agent");
+    let sessions = std::fs::canonicalize(&agent_dir)
+        .unwrap_or_else(|_| agent_dir.clone())
+        .join("sessions");
+    support::saved_transcripts(&agent_dir)
+        .into_iter()
+        .filter(|(locator, _)| locator.starts_with(&sessions))
+        .flat_map(|(_, bytes)| {
+            String::from_utf8_lossy(&bytes)
+                .lines()
+                .filter(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).is_ok_and(|row| {
+                        row["type"] == "message" && row["message"]["role"] == "user"
+                    })
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 #[test]

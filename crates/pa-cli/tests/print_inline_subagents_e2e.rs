@@ -15,6 +15,8 @@
 //! full in-process tree — spawn, child reply turns, the #2270 quiescence
 //! wait, the depth gate, and the exit disposal.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 
 /// One isolated print run: a hermetic HOME + agent dir, the faux script
@@ -92,22 +94,9 @@ impl PrintLane {
     /// The one persisted parent session file the print run wrote.
     fn parent_session_file(&self) -> PathBuf {
         let sessions = self.agent_dir.join("sessions");
-        let listing = std::fs::read_dir(&sessions).unwrap_or_else(|error| {
-            panic!(
-                "the print run persisted its session ({}): {error}; agent dir: {:?}",
-                sessions.display(),
-                std::fs::read_dir(self.home.path())
-                    .map(|entries| entries
-                        .flatten()
-                        .map(|entry| entry.path())
-                        .collect::<Vec<_>>())
-                    .unwrap_or_default()
-            )
-        });
-        let mut files: Vec<PathBuf> = listing
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        let mut files: Vec<PathBuf> = support::session_texts(&sessions)
+            .into_iter()
+            .map(|(locator, _)| locator)
             .collect();
         files.sort();
         assert_eq!(files.len(), 1, "one parent session file: {files:?}");
@@ -116,8 +105,7 @@ impl PrintLane {
 
     /// The session entries of one jsonl file.
     fn entries(path: &Path) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(path)
-            .expect("the session file is readable")
+        support::saved_text(path)
             .lines()
             .map(serde_json::from_str)
             .collect::<Result<_, _>>()
@@ -252,11 +240,9 @@ fn print_inline_subagents_wait_for_replies_and_combine_them() {
         "two child session dirs: {child_dirs:?}"
     );
     for child_dir in &child_dirs {
-        let child_files: Vec<PathBuf> = std::fs::read_dir(child_dir)
-            .expect("the child session dir")
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        let child_files: Vec<PathBuf> = support::session_texts(&child_dir)
+            .into_iter()
+            .map(|(locator, _)| locator)
             .collect();
         assert_eq!(
             child_files.len(),
@@ -354,11 +340,9 @@ fn print_inline_subagents_enforce_the_depth_limit() {
         })
         .collect();
     assert_eq!(child_dirs.len(), 1, "one child session dir: {child_dirs:?}");
-    let kid_file: Vec<PathBuf> = std::fs::read_dir(&child_dirs[0])
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+    let kid_file: Vec<PathBuf> = support::session_texts(&child_dirs[0])
+        .into_iter()
+        .map(|(locator, _)| locator)
         .collect();
     let kid_entries = PrintLane::entries(&kid_file[0]);
     let kid_text = serde_json::to_string(&kid_entries).unwrap();
@@ -1152,11 +1136,9 @@ fn print_inline_child_wakes_on_a_background_bash_completion() {
         })
         .collect();
     assert_eq!(child_dirs.len(), 1, "one child session dir: {child_dirs:?}");
-    let kid_file: Vec<PathBuf> = std::fs::read_dir(&child_dirs[0])
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+    let kid_file: Vec<PathBuf> = support::session_texts(&child_dirs[0])
+        .into_iter()
+        .map(|(locator, _)| locator)
         .collect();
     let row = bash_done_row(&PrintLane::entries(&kid_file[0]));
     assert_eq!(

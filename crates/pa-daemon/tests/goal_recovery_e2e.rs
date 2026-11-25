@@ -264,17 +264,19 @@ fn setup(name: &str) -> Harness {
 impl Harness {
     fn session_file(&self) -> PathBuf {
         let session_dir = self.dir.path().join("agent").join("sessions");
-        std::fs::read_dir(&session_dir)
+        common::transcripts(&session_dir)
+            .list(&session_dir)
             .expect("session dir readable")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
+            .transcripts
+            .into_iter()
+            .map(|transcript| transcript.locator)
             .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
             .expect("one session file")
     }
 
     /// The session file's `thread_goal_state` custom rows, in file order.
     fn goal_state_rows(&self) -> Vec<Value> {
-        std::fs::read_to_string(self.session_file())
+        common::read_transcript(self.session_file())
             .expect("session file readable")
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -584,7 +586,7 @@ fn killed_mid_goal_worker_rehydrates_the_goal_with_counts() {
     assert_eq!(idle["success"], true, "never went idle: {idle}");
     harness.client.drain_events(Duration::from_secs(1));
 
-    let compaction_rows = std::fs::read_to_string(harness.session_file())
+    let compaction_rows = common::read_transcript(harness.session_file())
         .expect("session file readable")
         .lines()
         .filter(|line| !line.trim().is_empty())

@@ -1468,7 +1468,7 @@ Reviewer instructions: record it"
         // Fail every session-file write: the path becomes a directory (the
         // harness stores live under a sibling dir and stay writable).
         let file = manager.get_session_file().unwrap().to_path_buf();
-        std::fs::remove_file(&file).unwrap();
+        crate::session::store::store().remove(&file).unwrap();
         std::fs::create_dir(&file).unwrap();
         let session = tokio::sync::Mutex::new(manager);
         let agent = Arc::new(Agent::new(AgentOptions::default()));

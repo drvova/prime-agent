@@ -256,7 +256,7 @@ fn the_orphan_exit_preserves_the_session_and_allows_dead_owner_lease_reclaim() {
     let session_path_key = session_file.to_string_lossy().to_string();
     let held_lease = std::fs::read_dir(&session_leases)
         .expect("session-leases directory")
-        .filter_map(std::result::Result::ok)
+        .flatten()
         .map(|entry| entry.path())
         .find(|path| {
             std::fs::read_to_string(path.join("owner.json"))
@@ -281,7 +281,7 @@ fn the_orphan_exit_preserves_the_session_and_allows_dead_owner_lease_reclaim() {
     reopened.release();
     assert!(!held_lease.exists(), "the new owner released its lease");
     assert!(
-        session_file.exists(),
+        common::transcripts(&session_file).exists(&session_file),
         "the session file survives the lease release"
     );
 }
@@ -318,7 +318,7 @@ fn an_orphaned_worker_waits_for_a_running_user_bash() {
         wait_exit(&mut worker.child, Duration::from_secs(40)),
         "the orphaned worker exited once the command settled"
     );
-    let rows: Vec<serde_json::Value> = std::fs::read_to_string(&session_file)
+    let rows: Vec<serde_json::Value> = common::read_transcript(&session_file)
         .expect("session file")
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
@@ -386,7 +386,8 @@ fn the_orphan_exit_writes_a_current_info_sidecar() {
         wait_exit(&mut worker.child, Duration::from_secs(40)),
         "the orphaned worker exited on the supervisor-lost window"
     );
-    let file_len = std::fs::metadata(&session_file)
+    let file_len = common::transcripts(&session_file)
+        .stat(&session_file)
         .expect("session file")
         .len();
     let sidecar = std::fs::read(session_file.with_extension("info-cache.json"))

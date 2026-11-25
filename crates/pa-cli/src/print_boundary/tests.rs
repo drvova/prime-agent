@@ -457,14 +457,13 @@ async fn stale_overflow_error_recovers_before_the_next_prompt_after_a_resume() {
 
     // Run two: a fresh boundary over the persisted session, compaction enabled;
     // the faux queue carries the summarizer then the recovered turn.
-    let session_file = dir_a
-        .path()
-        .join("sessions")
-        .read_dir()
+    let session_file = pa_core::session::store::store()
+        .list(&dir_a.path().join("sessions"))
         .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| path.extension().and_then(|extension| extension.to_str()) == Some("jsonl"))
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
+        .next()
         .expect("the run-one session file");
     let resumed = SessionManager::open(dir_a.path(), &dir_a.path().join("sessions"), &session_file);
     let (engine_b, _dir_b, model_b) = faux_engine_with_settings(
@@ -1194,14 +1193,13 @@ async fn pre_turn_threshold_arm_compacts_a_resumed_session_before_the_prompt() {
 
     // Run two: a fresh boundary over the persisted session — the pre-turn arm
     // compacts first.
-    let session_file = dir_a
-        .path()
-        .join("sessions")
-        .read_dir()
+    let session_file = pa_core::session::store::store()
+        .list(&dir_a.path().join("sessions"))
         .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| path.extension().and_then(|extension| extension.to_str()) == Some("jsonl"))
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
+        .next()
         .expect("the run-one session file");
     let resumed = SessionManager::open(dir_a.path(), &dir_a.path().join("sessions"), &session_file);
     let (engine_b, _dir_b, model_b) = faux_engine_with_settings(

@@ -248,13 +248,15 @@ impl Harness {
 
     fn session_entries(&self) -> Vec<Value> {
         let session_dir = self.dir.path().join("agent").join("sessions");
-        let file = std::fs::read_dir(&session_dir)
+        let file = common::transcripts(&session_dir)
+            .list(&session_dir)
             .expect("session dir readable")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
+            .transcripts
+            .into_iter()
+            .map(|transcript| transcript.locator)
+            .next()
             .expect("one session file");
-        std::fs::read_to_string(&file)
+        common::read_transcript(&file)
             .expect("session file readable")
             .lines()
             .filter(|line| !line.trim().is_empty())

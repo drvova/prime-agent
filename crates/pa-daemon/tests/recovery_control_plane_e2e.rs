@@ -84,7 +84,7 @@ fn wait_socket_ready(socket: &Path) {
 /// Worker ids with a registration log line at or after `since` (the log line lands
 /// after the registry records the worker — the "routable" signal).
 fn workers_registered_since(log_path: &Path, since: &str) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(log_path) else {
+    let Ok(content) = std::fs::read_to_string(&log_path) else {
         return Vec::new();
     };
     let mut ids = Vec::new();

@@ -12,6 +12,8 @@
 //! Every wait polls the captured pane for observable state under a deadline; nothing sleeps
 //! for a fixed time.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -190,30 +192,25 @@ fn start(dir: &Path) -> Pane {
 
 /// The `model_change` entries the session files under `home` recorded, as `provider/id`.
 fn recorded_switches(home: &Path) -> Vec<String> {
+    let agent_dir = home.join(".prime/agent");
+    let sessions = std::fs::canonicalize(&agent_dir)
+        .unwrap_or_else(|_| agent_dir.clone())
+        .join("sessions");
     let mut switches = Vec::new();
-    let mut pending = vec![home.join(".prime/agent/sessions")];
-    while let Some(dir) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+    for (locator, bytes) in support::saved_transcripts(&agent_dir) {
+        if !locator.starts_with(&sessions) {
             continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
-                let text = std::fs::read_to_string(&path).unwrap_or_default();
-                for line in text.lines() {
-                    let Ok(entry) = serde_json::from_str::<Value>(line) else {
-                        continue;
-                    };
-                    if entry["type"] == "model_change" {
-                        switches.push(format!(
-                            "{}/{}",
-                            entry["provider"].as_str().unwrap_or_default(),
-                            entry["modelId"].as_str().unwrap_or_default()
-                        ));
-                    }
-                }
+        }
+        for line in String::from_utf8_lossy(&bytes).lines() {
+            let Ok(entry) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if entry["type"] == "model_change" {
+                switches.push(format!(
+                    "{}/{}",
+                    entry["provider"].as_str().unwrap_or_default(),
+                    entry["modelId"].as_str().unwrap_or_default()
+                ));
             }
         }
     }

@@ -982,17 +982,14 @@ fn submitted_prompts(dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return prompts;
     };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-    paths.sort();
-    for path in paths {
-        if path.is_dir() {
-            prompts.extend(submitted_prompts(&path));
-            continue;
-        }
-        if path.extension().is_none_or(|ext| ext != "jsonl") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    dirs.sort();
+    // The sessions live in the agent dir's database.
+    for (_, text) in support::session_texts(dir) {
         for line in text.lines() {
             let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
@@ -1013,6 +1010,9 @@ fn submitted_prompts(dir: &Path) -> Vec<String> {
             };
             prompts.push(prompt);
         }
+    }
+    for dir in dirs {
+        prompts.extend(submitted_prompts(&dir));
     }
     prompts
 }

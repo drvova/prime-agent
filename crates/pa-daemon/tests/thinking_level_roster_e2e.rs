@@ -323,10 +323,12 @@ fn setup(name: &str) -> Harness {
 
 impl Harness {
     fn session_file(&self) -> PathBuf {
-        std::fs::read_dir(&self.session_dir)
+        common::transcripts(&self.session_dir)
+            .list(&self.session_dir)
             .expect("read session dir")
-            .flatten()
-            .map(|entry| entry.path())
+            .transcripts
+            .into_iter()
+            .map(|transcript| transcript.locator)
             .find(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
             .expect("the parent session file (create persists it)")
     }
@@ -497,7 +499,7 @@ fn thinking_level_changes_reach_the_roster_push() {
         "the switched parent stays idle in the roster push: {update}"
     );
 
-    let entries: Vec<Value> = std::fs::read_to_string(&session_file)
+    let entries: Vec<Value> = common::read_transcript(&session_file)
         .expect("read session file")
         .lines()
         .map(|line| serde_json::from_str(line).expect("parse entry"))

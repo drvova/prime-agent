@@ -15,6 +15,8 @@
 //! faux provider: protocol contract, core command set, daemon-mode
 //! errors, and the stdin-close lifecycle.
 
+mod support;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
@@ -764,6 +766,10 @@ fn rpc_fork_leases_the_materialized_file() {
         "the source session settles: {wait_status}"
     );
     source.spawn_stderr = None;
+    // The source lives in its own home's database: hand the fork its JSONL
+    // file, as a session from another install would come.
+    let source_text = support::saved_transcript(&source.agent_dir(), &source_file);
+    std::fs::write(&source_file, source_text).expect("the source session file");
 
     let mut forked = RpcChild::spawn(
         &["--mode", "rpc", "--fork", &source_file],
@@ -1355,7 +1361,11 @@ fn rpc_compact_flush_is_bounded_against_a_stalled_reader() {
     let row_deadline = Instant::now() + Duration::from_secs(4);
     let mut compacted_behind_the_stall = false;
     while Instant::now() < row_deadline {
-        let session = std::fs::read_to_string(&fixture).expect("session file");
+        // The child keeps the session in its own home's database.
+        let session = support::saved_transcripts(&client._home.path().join(".prime/agent"))
+            .into_values()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .collect::<String>();
         if session
             .lines()
             .any(|line| line.contains("\"type\":\"compaction\""))

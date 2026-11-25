@@ -441,7 +441,7 @@ async fn canceled_interval_keeps_identity_and_drains_new_rows_before_forget() {
     emit.abort();
     assert!(emit.await.unwrap_err().is_cancelled());
     let pending = record.lock().await.pending_usage_report.clone().unwrap();
-    let mut later: serde_json::Value = std::fs::read_to_string(&file)
+    let mut later: serde_json::Value = pa_core::session::store::read_to_string(&file)
         .unwrap()
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
@@ -1070,7 +1070,7 @@ async fn inactive_delete_finishes_a_running_record_whose_kill_already_acknowledg
 async fn close_preserves_final_usage_across_a_transient_child_file_read_failure() {
     let tmp = tempfile::tempdir().unwrap();
     let file = child_file(tmp.path());
-    let original = std::fs::read(&file).unwrap();
+    let original = pa_core::session::store::store().read(&file).unwrap();
     let parked = tmp.path().join("intact-child.jsonl");
     std::fs::rename(&file, &parked).unwrap();
     // A directory at the requested path fails open/read on all supported platforms.
@@ -1129,7 +1129,10 @@ async fn close_preserves_final_usage_across_a_transient_child_file_read_failure(
         &["sub-transient-read"]
     );
     assert_eq!(kills.load(std::sync::atomic::Ordering::Relaxed), 1);
-    assert_eq!(std::fs::read(&file).unwrap(), original);
+    assert_eq!(
+        pa_core::session::store::store().read(&file).unwrap(),
+        original
+    );
     sessions
         .close_children(ChildCloseReason::Shutdown)
         .await

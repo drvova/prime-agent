@@ -346,9 +346,13 @@ async fn daemon_roster(socket: &Path) -> Vec<(PathBuf, String)> {
         .unwrap_or_default()
 }
 
+/// A saved session's entries; `path` is a locator in `<agent dir>/sessions`.
 fn read_entries(path: &Path) -> Vec<Value> {
-    std::fs::read_to_string(path)
-        .expect("read session file")
+    let agent_dir = path
+        .parent()
+        .and_then(Path::parent)
+        .expect("a locator in the agent dir's sessions");
+    support::saved_transcript(agent_dir, path)
         .lines()
         .map(serde_json::from_str)
         .collect::<Result<_, _>>()
@@ -356,11 +360,9 @@ fn read_entries(path: &Path) -> Vec<Value> {
 }
 
 fn session_files(dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(dir)
-        .expect("read sessions dir")
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+    support::session_texts(dir)
+        .into_iter()
+        .map(|(locator, _)| locator)
         .collect()
 }
 
@@ -472,7 +474,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     // names that id.
     let active_source = make_session_active(&socket, &source, &cwd).await;
     assert!(!active_source.is_empty(), "the source hosts on a worker");
-    let source_before = std::fs::read(&source).expect("read source");
+    let source_before = support::saved_transcript(&agent_dir, &source);
 
     // The interactive launch child on a pty, forking the hosted source by
     // its id; the seam reads PRIME_AGENT_FAUX_SCRIPT as a script FILE path.
@@ -610,7 +612,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
 
     // The source is untouched and both sessions stay hosted (resident
     // sessions outlive the client).
-    let source_after = std::fs::read(&source).expect("read source");
+    let source_after = support::saved_transcript(&agent_dir, &source);
     assert_eq!(source_before, source_after, "the source file is unchanged");
     let roster = daemon_roster(&socket).await;
     let canonical: Vec<_> = roster

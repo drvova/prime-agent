@@ -483,7 +483,7 @@ async fn six_identical_cells_with_identical_results_end_the_turn() {
         .expect("a persisted session has a file")
         .to_path_buf();
     engine.dispose_kernel().await;
-    let transcript = std::fs::read_to_string(file).unwrap();
+    let transcript = crate::session::store::read_to_string(&file).unwrap();
     let results: Vec<Vec<String>> = transcript
         .lines()
         .filter_map(|line| {

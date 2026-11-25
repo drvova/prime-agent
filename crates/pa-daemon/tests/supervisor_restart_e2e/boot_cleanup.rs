@@ -148,7 +148,9 @@ fn boot_cleanup_preserves_unverifiable_journals_and_waiting_callers_status() {
     .expect("restore fixture permissions");
     for (path, bytes) in preserved {
         assert_eq!(
-            std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display())),
+            crate::common::transcripts(&path)
+                .read(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display())),
             bytes,
             "cleanup must preserve {} byte for byte",
             path.display()

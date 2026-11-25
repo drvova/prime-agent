@@ -172,3 +172,82 @@ fn process_alive(pid: u32) -> bool {
     };
     kill(Pid::from_raw(raw), None).is_ok()
 }
+
+/// The transcript store holding the transcripts under `path`: the database of
+/// the nearest agent dir above it or beside it as `agent/` (a supervisor the
+/// test started with its own agent dir keeps them there), else this
+/// process's own store (a supervisor
+/// that runs on the process's agent dir shares it).
+// Each test target compiles this module for itself, and not every one reads
+// transcripts.
+#[allow(dead_code)]
+pub fn transcripts(
+    path: &std::path::Path,
+) -> &'static dyn pa_core::session::store::TranscriptStore {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, PoisonError};
+    type Opened = HashMap<PathBuf, &'static dyn pa_core::session::store::TranscriptStore>;
+    static OPENED: Mutex<Option<Opened>> = Mutex::new(None);
+    // The tests keep the agent dir beside custom sessions dirs: `<root>/agent`.
+    let Some(database) = path
+        .ancestors()
+        .flat_map(|dir| [dir.to_path_buf(), dir.join("agent")])
+        .map(|dir| dir.join(pa_core::session::store::DATABASE_FILE))
+        .find(|database| database.is_file())
+    else {
+        return pa_core::session::store::store();
+    };
+    let mut opened = OPENED.lock().unwrap_or_else(PoisonError::into_inner);
+    *opened
+        .get_or_insert_with(HashMap::new)
+        .entry(database.clone())
+        .or_insert_with(|| {
+            Box::leak(
+                pa_core::session::store::open_database(&database).expect("open the agent database"),
+            )
+        })
+}
+
+/// The transcript at `path` as text, from the store holding it
+/// ([`transcripts`]).
+///
+/// # Errors
+///
+/// No transcript is there, or it is not UTF-8.
+#[allow(dead_code)]
+pub fn read_transcript(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
+    let path = path.as_ref();
+    String::from_utf8(transcripts(path).read(path)?)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+/// Copy the transcript at `path` from the store holding it into this
+/// process's own store at the same locator, so this process's session-store
+/// readers (`SessionFile::open` and the like) see what a supervisor with its
+/// own agent dir wrote.
+///
+/// # Panics
+///
+/// The transcript cannot be read or copied.
+#[allow(dead_code)]
+pub fn mirror_into_process_store(path: &std::path::Path) {
+    let bytes = transcripts(path).read(path).expect("read the transcript");
+    pa_core::session::store::write(path, bytes).expect("copy the transcript");
+}
+
+/// Make the transcript this process stored at `path` a JSONL file on disk
+/// instead: an original a supervisor with its own agent dir reads as it is
+/// (and imports on its first write), as it would a session from before the
+/// database.
+///
+/// # Panics
+///
+/// The transcript cannot be moved.
+#[allow(dead_code)]
+pub fn into_original_file(path: &std::path::Path) {
+    let store = pa_core::session::store::store();
+    let bytes = store.read(path).expect("read the stored transcript");
+    store.remove(path).expect("remove the stored transcript");
+    std::fs::write(path, bytes).expect("write the original file");
+}

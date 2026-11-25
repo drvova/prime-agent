@@ -199,7 +199,7 @@ fn assert_stored_memory(state: &Value, id: &str, title: &str, content: &str, sco
 }
 
 fn read_state(path: &Path) -> Value {
-    let content = std::fs::read_to_string(path).expect("read harness state");
+    let content = common::read_transcript(&path).expect("read harness state");
     serde_json::from_str(&content).expect("parse harness state")
 }
 

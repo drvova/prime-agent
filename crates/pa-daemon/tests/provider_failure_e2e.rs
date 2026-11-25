@@ -815,13 +815,15 @@ fn goal_continuation_refuses_after_the_402_corpse() {
     assert_eq!(mock.count(), 1, "no continuation loop: one request total");
 
     let session_dir = dir.path().join("agent").join("sessions");
-    let session_file = std::fs::read_dir(&session_dir)
+    let session_file = common::transcripts(&session_dir)
+        .list(&session_dir)
         .expect("session dir readable")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
         .expect("one session file");
-    let goal_rows: Vec<Value> = std::fs::read_to_string(&session_file)
+    let goal_rows: Vec<Value> = common::read_transcript(&session_file)
         .expect("session file readable")
         .lines()
         .filter(|line| !line.trim().is_empty())

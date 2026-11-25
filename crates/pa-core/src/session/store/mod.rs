@@ -113,6 +113,18 @@ pub fn store() -> &'static dyn TranscriptStore {
     }
 }
 
+/// A SQLite store over the database at `database` (another agent dir's
+/// `agent.db`, to read or export what another process keeps there), apart
+/// from the process's own [`store`]. Files it does not hold are read as they
+/// are, as the process's store reads them.
+///
+/// # Errors
+///
+/// The database cannot be opened or migrated.
+pub fn open_database(database: &Path) -> anyhow::Result<Box<dyn TranscriptStore>> {
+    Ok(Box::new(SqliteTranscriptStore::open(database)?))
+}
+
 /// Which store [`store`] is.
 #[must_use]
 pub fn store_kind() -> TranscriptStoreKind {

@@ -203,7 +203,7 @@ fn crashable_script(panic: &str) -> Value {
 fn crash_log(agent_dir: &Path, socket: &Path) -> Vec<Value> {
     let path =
         pa_daemon::descriptor::descriptor_dir(agent_dir, socket).join("session-crashes.jsonl");
-    std::fs::read_to_string(path)
+    common::read_transcript(&path)
         .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str(line).expect("crash record json"))
@@ -704,16 +704,18 @@ fn kernel_story_script(dir: &Path, extra: &Value) -> Value {
 
 /// The entries of the one session file under `dir`, in order.
 fn session_entries(dir: &Path) -> Vec<Value> {
-    let file = std::fs::read_dir(dir.join("sessions"))
+    let file = common::transcripts(&dir.join("sessions"))
+        .list(&dir.join("sessions"))
         .expect("sessions dir")
-        .flatten()
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
         })
         .expect("the session file");
-    std::fs::read_to_string(file)
+    common::read_transcript(&file)
         .expect("read the session file")
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("entry json"))
@@ -1107,16 +1109,18 @@ fn a_cell_cut_off_by_the_daemons_death_is_answered_as_outcome_unknown_and_not_ru
     let mut client = Client::connect(&socket);
     let after = client.request("after", &turn(&session, "after"));
     assert_eq!(after["success"], true, "the next turn failed: {after}");
-    let session_file = std::fs::read_dir(dir.path().join("sessions"))
+    let session_file = common::transcripts(&dir.path().join("sessions"))
+        .list(&dir.path().join("sessions"))
         .expect("sessions dir")
-        .flatten()
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
         })
         .expect("the session file");
-    let results: Vec<Value> = std::fs::read_to_string(session_file)
+    let results: Vec<Value> = common::read_transcript(&session_file)
         .expect("read the session file")
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("entry json"))
@@ -1312,10 +1316,12 @@ fn a_restarted_daemon_still_marks_the_session_that_crashed_under_its_predecessor
     let _second = spawn_supervisor(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     // Reopening the saved session makes its roster row anew.
-    let session_file = std::fs::read_dir(dir.path().join("sessions"))
+    let session_file = common::transcripts(&dir.path().join("sessions"))
+        .list(&dir.path().join("sessions"))
         .expect("sessions dir")
-        .flatten()
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
@@ -1605,16 +1611,18 @@ fn the_rows_the_engine_adds_to_a_turn_are_saved_and_sent_to_the_client() {
                 .clone()
         })
         .collect();
-    let session_file = std::fs::read_dir(dir.path().join("sessions"))
+    let session_file = common::transcripts(&dir.path().join("sessions"))
+        .list(&dir.path().join("sessions"))
         .expect("sessions dir")
-        .flatten()
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
         })
         .expect("the session file");
-    let mut saved: Vec<Value> = std::fs::read_to_string(session_file)
+    let mut saved: Vec<Value> = common::read_transcript(&session_file)
         .expect("read the session file")
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("entry json"))

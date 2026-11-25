@@ -179,13 +179,9 @@ fn print_continue_refuses_an_active_daemon_session() {
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(stdout, "first turn\n");
 
-    let session_files: Vec<PathBuf> = std::fs::read_dir(&sessions)
-        .expect("sessions")
-        .flatten()
-        .map(|entry| entry.path())
-        // The ended print session also persists its info sidecar beside the
-        // file; only the session files count here.
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+    let session_files: Vec<PathBuf> = support::saved_transcripts_in(&agent_dir, &sessions)
+        .into_iter()
+        .map(|(locator, _)| locator)
         .collect();
     assert_eq!(session_files.len(), 1, "one persisted session");
     let session_path = session_files[0].clone();
@@ -224,9 +220,8 @@ fn print_continue_refuses_an_active_daemon_session() {
     // line, then the holder's identity and the next steps.
     let first_line = format!(
         "Error: Session is already active in {active_session_id}: {}\n",
-        pa_types::platform::canonicalize(&session_path)
-            .expect("canonical")
-            .display()
+        // The export's locators are canonical already.
+        session_path.display()
     );
     assert!(
         stderr.starts_with(&first_line),

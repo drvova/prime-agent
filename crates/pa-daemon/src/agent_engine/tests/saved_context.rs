@@ -157,7 +157,7 @@ fn saved_context_windowed_falls_back_to_the_full_open_on_a_malformed_retained_ro
     file.rewrite().unwrap();
     // Corrupt one DISCARDED-PREFIX row: the walk must bail to the
     // full-open fallback, which still answers the reference exactly.
-    let content = std::fs::read_to_string(&path).unwrap();
+    let content = pa_core::session::store::read_to_string(&path).unwrap();
     let mut lines: Vec<&str> = content.lines().collect();
     assert!(lines.len() > 8, "fixture must hold a discardable prefix");
     lines[2] = "{not json}";

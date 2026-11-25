@@ -236,7 +236,7 @@ fn create_parent(
 
 /// The transcript rows of one session file, in file order.
 fn transcript_rows(path: &Path) -> Vec<Value> {
-    std::fs::read_to_string(path)
+    common::read_transcript(&path)
         .unwrap_or_else(|_| panic!("read session file {}", path.display()))
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -363,13 +363,16 @@ fn child_usage_attributed_row_reaches_the_parent_transcript() {
         .as_str()
         .expect("child session dir")
         .to_string();
-    let child_session_file = std::fs::read_dir(&child_session_dir)
+    let child_session_file = common::transcripts(std::path::Path::new(&child_session_dir))
+        .list(std::path::Path::new(&child_session_dir))
         .expect("child session dir")
-        .filter_map(std::result::Result::ok)
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| {
             path.extension().and_then(|extension| extension.to_str()) == Some("jsonl")
-                && pa_daemon::session_store::is_valid_session_file(path)
+                && common::read_transcript(path)
+                    .is_ok_and(|text| text.starts_with("{\"type\":\"session\""))
         })
         .expect("one child session file");
 
@@ -387,7 +390,7 @@ fn child_usage_attributed_row_reaches_the_parent_transcript() {
             Instant::now() < deadline,
             "the child_usage_attributed row never reached the parent transcript; parent rows: {:?}; child file: {}",
             transcript_rows(Path::new(&parent_session_file)),
-            std::fs::read_to_string(&child_session_file).unwrap_or_default(),
+            common::read_transcript(&child_session_file).unwrap_or_default(),
         );
         std::thread::sleep(Duration::from_millis(200));
     };
@@ -445,6 +448,7 @@ fn child_usage_attributed_row_reaches_the_parent_transcript() {
 
     // A fresh reopen folds the aggregate into the target assistant row —
     // the view a resumed parent replays from the file.
+    common::mirror_into_process_store(Path::new(&parent_session_file));
     let store = pa_daemon::session_store::SessionFile::open(Path::new(&parent_session_file))
         .expect("reopen parent file");
     let folded = store
