@@ -107,9 +107,7 @@ impl AgentsViewMode {
                         0 => String::new(),
                         hidden => format!(" \u{b7} +{hidden} in other folders"),
                     };
-                    let toggle = toggle
-                        .map(|key| format!(" \u{b7} {key} all folders"))
-                        .unwrap_or_default();
+                    let toggle = toggle.map_or_default(|key| format!(" \u{b7} {key} all folders"));
                     // A long folder shortens in its middle, so the count and the toggle hint
                     // always fit.
                     let lead = "Sessions \u{b7} ";
@@ -124,9 +122,7 @@ impl AgentsViewMode {
                     format!("{lead}{folder}{hidden}{toggle}")
                 }
                 FolderFilter::AllFolders => {
-                    let toggle = toggle
-                        .map(|key| format!(" \u{b7} {key} this folder"))
-                        .unwrap_or_default();
+                    let toggle = toggle.map_or_default(|key| format!(" \u{b7} {key} this folder"));
                     format!("Sessions \u{b7} all folders{toggle}")
                 }
             };

@@ -575,14 +575,12 @@ fn format_agent_cron_job(job: &Value) -> String {
     let label = job
         .get("label")
         .and_then(Value::as_str)
-        .map(|label| format!(" label=\"{label}\""))
-        .unwrap_or_default();
+        .map_or_default(|label| format!(" label=\"{label}\""));
     let next = cron_datetime(job.get("nextRunAt"));
     let last = cron_datetime(job.get("lastRunAt"));
     let skipped = job
         .get("lastSkippedAt")
-        .map(|value| format!(" skipped={}", cron_datetime(Some(value))))
-        .unwrap_or_default();
+        .map_or_default(|value| format!(" skipped={}", cron_datetime(Some(value))));
     let run_count = job
         .get("runCount")
         .and_then(Value::as_f64)
@@ -603,8 +601,7 @@ fn format_agent_cron_job(job: &Value) -> String {
     let error = job
         .get("lastError")
         .and_then(Value::as_str)
-        .map(|error| format!(" error={error}"))
-        .unwrap_or_default();
+        .map_or_default(|error| format!(" error={error}"));
     format!(
         "{id} {status}{label} next={next} last={last}{skipped} runs={run_count} schedule=\"{expression}\" prompt=\"{preview}\"{error}"
     )

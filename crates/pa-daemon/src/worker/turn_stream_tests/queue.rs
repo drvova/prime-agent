@@ -687,13 +687,12 @@ async fn abort_and_send_queued_acks_before_the_follow_up_delivery() {
         .as_ref()
         .and_then(|data| data.get("messages"))
         .and_then(Value::as_array)
-        .map(|wire| {
+        .map_or_default(|wire| {
             wire.iter()
                 .filter(|message| crate::types::message_role(message) == Some("user"))
                 .map(crate::types::message_text)
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(
         texts,
         [
@@ -736,13 +735,12 @@ async fn abort_and_send_queued_acks_before_the_follow_up_delivery() {
         .as_ref()
         .and_then(|data| data.get("messages"))
         .and_then(Value::as_array)
-        .map(|wire| {
+        .map_or_default(|wire| {
             wire.iter()
                 .filter(|message| crate::types::message_role(message) == Some("user"))
                 .map(crate::types::message_text)
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(
         texts,
         [

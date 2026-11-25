@@ -94,15 +94,13 @@ fn always_failing_verifier(home: &Path) -> String {
 
 fn session_files(home: &Path) -> Vec<PathBuf> {
     let dir = home.join(".prime/agent/sessions");
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+            .collect()
+    });
     files.sort();
     files
 }

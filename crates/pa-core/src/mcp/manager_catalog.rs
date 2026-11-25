@@ -222,8 +222,7 @@ impl McpManager {
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_millis() as u64)
-        .unwrap_or_default()
+        .map_or_default(|since| since.as_millis() as u64)
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -276,7 +275,6 @@ impl McpManager {
             let config_url = if eligibility.repair && record.is_some() {
                 eligibility
                     .endpoint
-                    .clone()
                     .expect("repair eligibility carries an endpoint")
             } else {
                 service.transport.endpoint().expect("checked").to_string()

@@ -111,7 +111,7 @@ mod tests {
             Value::Object(Map::new()),
         ];
         for value in structured {
-            p.set("bad", value.clone());
+            p.set("bad", value);
         }
         assert_eq!(p.get("bad"), None);
         assert!(p.is_empty());

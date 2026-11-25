@@ -121,7 +121,7 @@ impl Worker {
             return response_failure(None, COMMAND, "Session is still initializing", None);
         };
         let tree = self.handle_get_context_tree().await;
-        let (cost, agents) = tree.data.as_ref().map(tree_rows).unwrap_or_default();
+        let (cost, agents) = tree.data.as_ref().map_or_default(tree_rows);
         let (categories, categories_error) = match self.engine.context_categories().await {
             Ok(categories) => (categories, None),
             Err(error) => (None, Some(format!("{error:#}"))),

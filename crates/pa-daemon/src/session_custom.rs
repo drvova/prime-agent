@@ -452,27 +452,24 @@ mod tests {
 
     fn custom_entries(worker: &Worker) -> Vec<(String, Value)> {
         let core = worker.core.lock().unwrap();
-        core.store
-            .as_ref()
-            .map(|store| {
-                store
-                    .entries()
-                    .iter()
-                    .filter(|entry| entry.type_ == "custom_message")
-                    .map(|entry| {
-                        (
-                            entry
-                                .fields
-                                .get("customType")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                            entry.fields.get("content").cloned().unwrap_or(Value::Null),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        core.store.as_ref().map_or_default(|store| {
+            store
+                .entries()
+                .iter()
+                .filter(|entry| entry.type_ == "custom_message")
+                .map(|entry| {
+                    (
+                        entry
+                            .fields
+                            .get("customType")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        entry.fields.get("content").cloned().unwrap_or(Value::Null),
+                    )
+                })
+                .collect()
+        })
     }
 
     #[tokio::test]

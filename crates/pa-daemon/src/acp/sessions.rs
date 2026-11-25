@@ -256,8 +256,7 @@ pub(super) fn history_updates(
             Some("user") => {
                 let text =
                     serde_json::from_value::<pa_types::ai::UserContent>(message["content"].clone())
-                        .map(|content| content.text())
-                        .unwrap_or_default();
+                        .map_or_default(|content| content.text());
                 if !text.is_empty() {
                     updates.push(AcpSessionUpdate::UserMessageChunk {
                         content: TextBlock::new(text),

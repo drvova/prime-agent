@@ -297,7 +297,7 @@ impl Supervisor {
                 }
                 rows.push(FamilyRow {
                     id: info.id.clone(),
-                    name: info.name.clone(),
+                    name: info.name,
                     depth: 0,
                     parent_session_path: None,
                 });

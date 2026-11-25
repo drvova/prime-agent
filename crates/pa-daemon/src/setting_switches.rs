@@ -929,7 +929,7 @@ mod tests {
                 .unwrap()
                 .store
                 .as_ref()
-                .map(|store| {
+                .map_or_default(|store| {
                     store
                         .entries()
                         .iter()
@@ -937,7 +937,6 @@ mod tests {
                         .map(|entry| entry.fields.clone())
                         .collect::<Vec<serde_json::Value>>()
                 })
-                .unwrap_or_default()
         };
         let baseline = tier_rows(&worker).len();
         let response = worker

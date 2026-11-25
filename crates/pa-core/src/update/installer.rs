@@ -930,7 +930,7 @@ async fn launcher_version(prefix: &Path) -> Option<String> {
             continue;
         };
         let first = String::from_utf8_lossy(&output.stdout);
-        let version = first.lines().next().map(str::trim).unwrap_or_default();
+        let version = first.lines().next().map_or_default(str::trim);
         if running_commit(version).is_some() {
             return Some(version.to_string());
         }

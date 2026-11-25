@@ -705,8 +705,7 @@ impl Crawl {
             let chars = page["totalChars"].as_u64().unwrap_or_default();
             let handle = page["handle"]
                 .as_str()
-                .map(|handle| format!(", paged out as {handle}"))
-                .unwrap_or_default();
+                .map_or_default(|handle| format!(", paged out as {handle}"));
             lines.push(format!(
                 "{}. {title} - {url} ({chars} chars{handle})",
                 index + 1

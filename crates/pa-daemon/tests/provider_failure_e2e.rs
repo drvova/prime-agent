@@ -1125,15 +1125,12 @@ fn provider_failure_recovered_by_retry_settles_the_turn() {
         .collect();
     assert_eq!(agent_ends.len(), 3, "one agent_end per run: {types:?}");
     let roles_of = |frame: &Value| -> Vec<String> {
-        frame["messages"]
-            .as_array()
-            .map(|messages| {
-                messages
-                    .iter()
-                    .map(|message| message["role"].as_str().unwrap_or_default().to_string())
-                    .collect()
-            })
-            .unwrap_or_default()
+        frame["messages"].as_array().map_or_default(|messages| {
+            messages
+                .iter()
+                .map(|message| message["role"].as_str().unwrap_or_default().to_string())
+                .collect()
+        })
     };
     assert_eq!(
         roles_of(agent_ends[0]),
