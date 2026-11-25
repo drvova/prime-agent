@@ -9,6 +9,9 @@
     clippy::cast_sign_loss,
     clippy::cast_precision_loss
 )]
+// Unix only: these run the release workflows' shell steps, which run on Linux runners,
+// through `bash`; on Windows that name is the WSL launcher, not a bash.
+#![cfg(unix)]
 
 //! Release workflow assertion gates - the port of the TS repo's
 //! `packages/coding-agent/test/release-workflow.test.ts` (TS PR #2319 for
