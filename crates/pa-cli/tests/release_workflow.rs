@@ -1,5 +1,10 @@
-// too_many_lines: style gate only.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`the_channel_manifest_carries_the_windows_row_on_both_channels` checks both in one pass"
+    )
+)]
 // Unix only: these run the release workflows' shell steps, which run on Linux runners,
 // through `bash`; on Windows that name is the WSL launcher, not a bash.
 #![cfg(unix)]

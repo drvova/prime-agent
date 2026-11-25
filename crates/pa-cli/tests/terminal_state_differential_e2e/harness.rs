@@ -335,7 +335,10 @@ impl Termios {
 
     /// Whether the line discipline runs software flow control (IXON): the
     /// termios-process e2e needs it; this binary's routes do not (the dead-code allow).
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "the termios-process binary calls it through the shared harness; this binary's routes do not"
+    )]
     pub(crate) fn input_flow_control_on(&self) -> bool {
         self.iflag & libc::IXON != 0
     }
@@ -533,8 +536,10 @@ pub(crate) fn spawn_child(spec: &ChildSpec, socket: &Path, slave: &OwnedFd) -> C
     // and claim the pty slave as the controlling terminal.
     pub(crate) fn claim_controlling_tty(fd: i32) -> std::io::Result<()> {
         nix::unistd::setsid()?;
-        // TIOCSCTTY is already the request type on Linux and a `u32` on macOS.
-        #[allow(clippy::cast_lossless)]
+        #[allow(
+            clippy::cast_lossless,
+            reason = "TIOCSCTTY is already the request type on Linux and a `u32` on macOS, which neither CI target builds"
+        )]
         let rc = unsafe { libc::ioctl(fd, libc::TIOCSCTTY as libc::c_ulong, 0) };
         if rc < 0 {
             return Err(std::io::Error::last_os_error());

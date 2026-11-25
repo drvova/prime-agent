@@ -129,7 +129,10 @@ impl AutonomousConfig {
 }
 
 #[derive(Debug, Clone, Default)]
-#[allow(clippy::struct_excessive_bools)] // the TS `Args` surface mirrored verbatim
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the struct mirrors the TS `Args` surface flag for flag"
+)]
 pub struct Args {
     pub provider: Option<String>,
     pub model: Option<String>,
@@ -175,13 +178,18 @@ pub struct Args {
     pub goal_token_budget: Option<u32>,
     /// The `--list-models` flag's tri-state (None = absent,
     /// Some(None) = the bare flag, Some(Some(x)) = with a value).
-    #[allow(clippy::option_option)] // the CLI flag's tri-state is genuinely a double Option
+    #[expect(
+        clippy::option_option,
+        reason = "the flag's tri-state is a real double Option: absent, bare, or with a value"
+    )]
     pub list_models: Option<Option<String>>,
     pub offline: bool,
     pub verbose: bool,
     pub messages: Vec<String>,
-    #[allow(clippy::struct_field_names)]
-    // the trailing _args matches the TS `fileArgs` wire surface
+    #[expect(
+        clippy::struct_field_names,
+        reason = "`file_args` matches the TS `fileArgs` wire surface"
+    )]
     pub file_args: Vec<String>,
     pub diagnostics: Vec<Diagnostic>,
 }
