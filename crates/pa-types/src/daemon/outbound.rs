@@ -290,6 +290,11 @@ pub enum DaemonOutbound {
         /// does. Rust-only extension.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         keeper_pid: Option<u64>,
+        /// Why this daemon keeps its sessions as JSONL files although its settings ask for the
+        /// transcript database: the database could not be opened. Absent when the database is
+        /// in use or the settings chose the files. Rust-only extension.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_store_fallback: Option<String>,
         client_id: DaemonClientId,
         server_capabilities: Vec<DaemonServerCapability>,
         #[serde(flatten)]

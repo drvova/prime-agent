@@ -365,6 +365,8 @@ impl Worker {
             update_resume: None,
             daemon_death: None,
             keeper_pid: None,
+            transcript_store_fallback: pa_core::session::store::fallback_reason()
+                .map(str::to_string),
             client_id: crate::util::new_display_id(),
             server_capabilities: factory_capabilities,
             rest: Map::default(),
