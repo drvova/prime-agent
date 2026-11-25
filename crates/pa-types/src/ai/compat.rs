@@ -125,7 +125,10 @@ impl ModelCompat {
     /// Panics if serializing `kind` to a JSON value fails or if that value is not a JSON object.
     /// Both are unreachable for the current compat structs, which serialize to plain JSON objects.
     /// Workspace API consumed across crates; the by-value signature is fleet-wide.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public constructor used across crates; callers hand over the compat value they built"
+    )]
     #[must_use]
     pub fn from_kind(kind: CompatKind) -> Self {
         let value = match &kind {

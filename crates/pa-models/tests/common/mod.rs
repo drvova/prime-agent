@@ -2,8 +2,10 @@
 //! server that records every request head (headers included) and answers
 //! from a queue of raw responses. Nothing leaves loopback.
 
-// Different test binaries consume different subsets of the helpers.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "different test binaries use different subsets of these helpers"
+)]
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

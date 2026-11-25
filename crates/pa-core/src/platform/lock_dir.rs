@@ -34,9 +34,10 @@ fn probe_mtime() -> (i64, i64) {
     (seconds, 5_000_000)
 }
 
-// The `libc::timespec` field names are the syscall's own vocabulary; the struct-literal shorthand
-// below is the point.
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "the `libc::timespec` field names are the syscall's own vocabulary"
+)]
 #[cfg(unix)]
 fn set_mtime(path: &Path, tv_sec: i64, tv_nsec: i64) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
@@ -59,9 +60,10 @@ fn set_mtime(path: &Path, tv_sec: i64, tv_nsec: i64) -> io::Result<()> {
 /// Windows: set the directory's last-write time via `CreateFileW` (with
 /// `FILE_FLAG_BACKUP_SEMANTICS`, the only way to open a directory) +
 /// `SetFileTime` - the mtime probe `utimensat` performs on Unix.
-// The `libc::timespec` field names are the syscall's own vocabulary; the struct-literal shorthand
-// below is the point.
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "the `libc::timespec` field names are the syscall's own vocabulary"
+)]
 #[cfg(windows)]
 fn set_mtime(path: &Path, tv_sec: i64, tv_nsec: i64) -> io::Result<()> {
     win32::set_last_write_time(path, tv_sec, tv_nsec)
@@ -78,7 +80,10 @@ fn set_mtime(_path: &Path, _tv_sec: i64, _tv_nsec: i64) -> io::Result<()> {
 /// policy: pinned constants/externs, no windows-sys dependency).
 #[cfg(windows)]
 mod win32 {
-    #![allow(non_snake_case)]
+    #![expect(
+        non_snake_case,
+        reason = "the hand-declared kernel32 externs and structs keep their Win32 names"
+    )]
 
     use std::ffi::c_void;
     use std::io;
@@ -129,9 +134,10 @@ mod win32 {
     /// `(tv_sec, tv_nsec)` -> FILETIME. The Windows epoch trails the Unix
     /// epoch by 11644473600 seconds; the sub-second part is nanoseconds
     /// against FILETIME's 100ns ticks.
-    // `tv_sec`/`tv_nsec` are the POSIX timespec spellings the callers
-    // pass through; the pair is the domain's own vocabulary.
-    #[allow(clippy::similar_names)]
+    #[expect(
+        clippy::similar_names,
+        reason = "`tv_sec`/`tv_nsec` are the POSIX timespec spellings the callers pass through"
+    )]
     fn unix_to_filetime(tv_sec: i64, tv_nsec: i64) -> FileTime {
         const EPOCH_DELTA_TICKS: i64 = 11_644_473_600 * 10_000_000;
         let ticks = tv_sec * 10_000_000 + EPOCH_DELTA_TICKS + tv_nsec / 100;
@@ -143,7 +149,10 @@ mod win32 {
 
     /// Set the directory's last-write time. The `tv_sec`/`tv_nsec` pair
     /// is the POSIX timespec vocabulary, same as `unix_to_filetime`.
-    #[allow(clippy::similar_names)]
+    #[expect(
+        clippy::similar_names,
+        reason = "`tv_sec`/`tv_nsec` are the POSIX timespec spellings the callers pass through"
+    )]
     pub(crate) fn set_last_write_time(path: &Path, tv_sec: i64, tv_nsec: i64) -> io::Result<()> {
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
         let handle = unsafe {

@@ -362,8 +362,10 @@ pub struct CustomAgentMessage {
 }
 
 /// Agent-level message: standard messages plus custom app messages.
-// Boxing `Standard` would ripple through every consumer of the wire type.
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "boxing `Standard` would ripple through every consumer of the wire type"
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AgentMessage {
@@ -460,7 +462,10 @@ pub struct Model {
 
 /// `skip_serializing_if` predicate for [`Model::max_tokens_explicit`]: the
 /// persisted/proxied JSON stays byte-identical when the flag is unset.
-#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip predicate ABI takes the field by reference
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `skip_serializing_if` passes the field by reference"
+)]
 fn is_false(value: &bool) -> bool {
     !*value
 }

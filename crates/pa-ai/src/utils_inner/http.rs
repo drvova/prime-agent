@@ -326,7 +326,10 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
 }
 
 /// JSON POST helper used by non-streaming calls (OAuth token refresh, catalogs).
-#[allow(dead_code)] // token refresh/catalog fetches for upcoming providers
+#[expect(
+    dead_code,
+    reason = "the JSON POST helper is kept for the token refreshes and catalog fetches still to port"
+)]
 pub async fn post_json(
     url: &str,
     headers: Vec<(String, String)>,

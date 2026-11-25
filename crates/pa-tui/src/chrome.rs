@@ -406,11 +406,10 @@ pub fn session_accent(name: &str, theme: &Theme) -> Style {
     let offset = lightness - chroma / 2.0;
     let channel = |value: f64| {
         let scaled = ((value + offset) * 255.0).round().clamp(0.0, 255.0);
-        // Clamped to 0..=255 above, so the cast is exact.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
-            reason = "clamped to 0..=255"
+            reason = "clamped to 0..=255 above, so the cast is exact"
         )]
         let byte = scaled as u8;
         byte

@@ -225,8 +225,10 @@ fn batch_preview(batch: &[AgentMessage]) -> String {
 }
 
 /// One or a batch of messages queued through `steer`/`followUp`.
-// Boxing both arms would complicate every call site for no memory benefit.
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "boxing either arm would complicate every call site for no memory benefit"
+)]
 pub enum AgentMessageBatch {
     Single(AgentMessage),
     Batch(Vec<AgentMessage>),

@@ -208,8 +208,10 @@ fn push_user_turn(result: &mut Vec<Value>, mut content: Vec<Value>) {
     result.push(json!({ "role": "user", "content": content }));
 }
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over the message history, mirroring the TS conversion"
+)]
 pub fn convert_messages(
     context: &Context,
     model: &Model,
@@ -425,7 +427,10 @@ pub fn convert_tool_config(
 }
 
 /// Tool selection.
-#[allow(dead_code)] // full TS option surface; variants set by callers
+#[expect(
+    dead_code,
+    reason = "the enum keeps the TS option surface; callers set only some variants"
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum BedrockToolChoice {
     Auto,

@@ -198,9 +198,10 @@ struct WireItem {
     serving: Option<serde_json::Value>,
 }
 
-// Wire contract: the field names mirror the Prime Inference `/models`
-// pricing keys (`*_usd_per_mtok`), so the shared postfix is not renamable.
-#[allow(clippy::struct_field_names)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field names mirror the Prime Inference `/models` pricing keys (`*_usd_per_mtok`)"
+)]
 #[derive(Debug, Default, Deserialize)]
 struct WirePricing {
     #[serde(default)]
@@ -263,8 +264,10 @@ fn parse_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> 
 ///
 /// Fails when the payload carries no `data` array, on a duplicate model
 /// id, or when every entry was dropped and `allow_empty` is false.
-// TS-parity parser: entry sanitization stays one pass over each item.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "TS-parity parser: entry sanitization stays one pass over each item"
+)]
 pub fn parse_prime_inference_model_catalog(
     value: &serde_json::Value,
     allow_empty: bool,
@@ -423,8 +426,10 @@ fn default_compat() -> ModelCompat {
 /// # Panics
 ///
 /// Panics if a `ThinkingFormat` fails to serialize into JSON (unreachable: a plain string enum).
-// Entry merge/coverage is one pass over the bundled templates.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "entry merge and coverage are one pass over the bundled templates"
+)]
 pub fn build_prime_inference_models(
     bundled: &[Model],
     entries: &[PrimeInferenceEntry],
@@ -554,12 +559,11 @@ pub fn build_prime_inference_models(
             compat: Some(compat),
         });
     }
-    // Coverage gate: the float round-trip is the intended computation;
-    // `ceil()` fits `usize` for any real catalog.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        reason = "the coverage gate's float round-trip is the intended computation; `ceil()` fits usize for any real catalog"
     )]
     let minimum_models = minimum_models
         .unwrap_or_else(|| ((bundled.len() as f64) * MIN_CATALOG_COVERAGE).ceil() as usize);

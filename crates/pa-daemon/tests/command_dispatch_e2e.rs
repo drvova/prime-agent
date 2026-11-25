@@ -2,8 +2,13 @@
 //! timing out at the 10s client cap): a client command must answer fast while a turn
 //! streams (TS bar: a synchronous read on the event loop); the mock holds the turn
 //! open, so every measurement runs provably mid-flight.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`client_commands_answer_fast_while_a_turn_streams` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -27,7 +32,10 @@ const FAST_RESPONSE_MS: u64 = 2_000;
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

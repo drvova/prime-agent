@@ -67,7 +67,10 @@ impl SupervisorChildSessionsInner {
     /// child — TS runs those in-process inside the parent worker, so
     /// parity means the child inherits the parent's environment — or
     /// the minimal TS set for a depth-0 `create_session` root.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a child launch takes the parent's identity, the spawn request and the environment together"
+    )]
     pub(super) async fn create_child(
         &self,
         child_id: &str,
@@ -172,7 +175,10 @@ impl SupervisorChildSessionsInner {
 
     /// Create and promptly admit one child's task (the depth-0 resident
     /// session path: the prompt is part of the awaited admission).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a child launch takes the parent's identity, the spawn request and the environment together"
+    )]
     pub(super) async fn launch_child(
         &self,
         child_id: &str,

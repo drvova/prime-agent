@@ -2,8 +2,13 @@
 //! admitted, a child whose session crashes and is rebuilt between admission
 //! and its task prompt still receives the prompt exactly once, and no
 //! admitted child is torn down.
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`concurrent_spawns_prompt_exactly_once_across_a_session_replacement` is one scenario"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -22,7 +27,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
@@ -32,9 +40,10 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test process exits
-// immediately afterwards, reaping it.
-#[allow(clippy::zombie_processes)]
+#[expect(
+    clippy::zombie_processes,
+    reason = "the timeout panic path cannot wait on the child; the test process exits right after and reaps it"
+)]
 fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)

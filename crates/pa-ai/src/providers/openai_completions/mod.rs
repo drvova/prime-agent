@@ -30,7 +30,10 @@ pub(crate) const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning"
 
 /// Tool selection passed to the API.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)] // full TS option surface; variants set by callers
+#[expect(
+    dead_code,
+    reason = "the enum keeps the TS option surface; callers set only some variants"
+)]
 pub enum ToolChoice {
     Auto,
     None,
@@ -91,8 +94,10 @@ impl OpenAICompatCacheControl {
 }
 
 /// Fully resolved compat settings (`ResolvedOpenAICompletionsCompat`).
-// A flat capability-flag contract mirroring the upstream compat table; reshaping is an API change.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a flat capability-flag contract mirroring the upstream compat table"
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedCompat {
     pub supports_store: bool,

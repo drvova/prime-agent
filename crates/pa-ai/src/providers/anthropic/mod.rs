@@ -99,7 +99,10 @@ impl AnthropicEffort {
 
 /// Thinking display mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // full TS option surface; variants set by callers
+#[expect(
+    dead_code,
+    reason = "the enum keeps the TS option surface; callers set only some variants"
+)]
 pub enum AnthropicThinkingDisplay {
     Summarized,
     Omitted,
@@ -116,7 +119,10 @@ impl AnthropicThinkingDisplay {
 
 /// Tool selection passed to the API.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)] // full TS option surface; variants set by callers
+#[expect(
+    dead_code,
+    reason = "the enum keeps the TS option surface; callers set only some variants"
+)]
 pub enum AnthropicToolChoice {
     Auto,
     Any,

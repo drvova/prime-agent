@@ -1,5 +1,17 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines).
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "a session's futures are large by design, as in src/lib.rs"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the verifier is one scripted scenario, end to end"
+    )
+)]
 
 //! Verifier: the end-turn contract over a REAL kernel and the full
 //! session-engine tool path. One scripted `eval` turn runs

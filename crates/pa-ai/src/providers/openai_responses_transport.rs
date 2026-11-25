@@ -286,8 +286,10 @@ fn flatten_error_event(event: &mut Value) -> Option<String> {
         .map(str::to_string)
 }
 
-// Long by design: mirrors the SSE stream section of the provider.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one function for the provider's SSE stream section"
+)]
 async fn run_attempt(
     request: &WebSocketRequest<'_>,
     body: &Value,
