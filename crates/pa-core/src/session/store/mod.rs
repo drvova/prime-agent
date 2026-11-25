@@ -76,10 +76,29 @@ pub fn database_path(agent_dir: &Path) -> PathBuf {
     let Some(dir) = isolated else {
         return agent_dir.join(DATABASE_FILE);
     };
-    // Lexical, not canonical: the agent dir may not exist yet, and every
-    // process of a test spells it the same way.
-    let agent_dir = std::path::absolute(agent_dir).unwrap_or_else(|_| agent_dir.to_path_buf());
-    let digest = sha2::Sha256::digest(agent_dir.to_string_lossy().as_bytes());
+    // One spelling for every process: the nearest existing ancestor
+    // canonicalized (links resolved, Windows short names expanded) and the
+    // missing tail rejoined, so a dir named before it exists hashes as it
+    // does once created.
+    let absolute = std::path::absolute(agent_dir).unwrap_or_else(|_| agent_dir.to_path_buf());
+    let mut missing = Vec::new();
+    let mut existing = absolute.as_path();
+    let spelled = loop {
+        if let Ok(canonical) = pa_types::platform::canonicalize(existing) {
+            break missing
+                .iter()
+                .rev()
+                .fold(canonical, |joined, part| joined.join(part));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name);
+                existing = parent;
+            }
+            _ => break absolute.clone(),
+        }
+    };
+    let digest = sha2::Sha256::digest(spelled.to_string_lossy().as_bytes());
     let name = digest.iter().fold(String::new(), |mut name, byte| {
         use std::fmt::Write as _;
         let _ = write!(name, "{byte:02x}");

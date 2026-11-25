@@ -613,6 +613,9 @@ fn wave_b11_saved_sessions_wire_shapes() {
     let response = client.read_response("r1");
     assert_eq!(response["success"], true, "{response}");
     assert_eq!(response["data"], Value::Null, "{response}");
+    // The rename imported the session into the supervisor's database (its
+    // own agent dir's); this process reads its own store.
+    common::mirror_into_process_store(&saved_path);
     let info =
         pa_daemon::session_store::read_session_info(&saved_path).expect("saved session readable");
     assert_eq!(info.name.as_deref(), Some("renamed"));

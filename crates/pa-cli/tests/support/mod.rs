@@ -75,7 +75,7 @@ pub fn saved_transcripts(
             }
             let relative = path.strip_prefix(out.path()).expect("under the export");
             let locator = match relative.strip_prefix("other") {
-                Ok(absolute) => std::path::Path::new("/").join(absolute),
+                Ok(absolute) => outside_root(absolute),
                 Err(_) => agent_dir.join(relative),
             };
             transcripts.insert(
@@ -85,6 +85,21 @@ pub fn saved_transcripts(
         }
     }
     transcripts
+}
+
+/// A locator outside the agent dir from its `other/` export path: the root
+/// (on Windows, the drive export-jsonl keeps as a directory of its letter)
+/// joined with the rest.
+fn outside_root(absolute: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let mut parts = absolute.components();
+        if let Some(drive) = parts.next() {
+            return std::path::PathBuf::from(format!("{}:\\", drive.as_os_str().to_string_lossy()))
+                .join(parts.as_path());
+        }
+    }
+    std::path::Path::new("/").join(absolute)
 }
 
 /// The saved sessions' transcripts in the sessions directory `dir`, by

@@ -3,7 +3,7 @@
 //! a file comes back as that file's bytes.
 
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use super::{read_first_line_bounded, store, stored_locators, TranscriptStore};
 
@@ -108,7 +108,20 @@ fn destination(locator: &Path, base: &Path, out: &Path, selection: ExportSelecti
             Err(_) => out.join("other").join(
                 locator
                     .components()
-                    .filter(|component| matches!(component, Component::Normal(_)))
+                    .filter_map(|component| match component {
+                        Component::Normal(part) => Some(part.to_os_string()),
+                        // A Windows drive is kept as a directory of its letter.
+                        Component::Prefix(prefix) => match prefix.kind() {
+                            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                                Some(char::from(letter).to_string().into())
+                            }
+                            Prefix::Verbatim(_)
+                            | Prefix::VerbatimUNC(..)
+                            | Prefix::DeviceNS(_)
+                            | Prefix::UNC(..) => None,
+                        },
+                        Component::RootDir | Component::CurDir | Component::ParentDir => None,
+                    })
                     .collect::<PathBuf>(),
             ),
         },
