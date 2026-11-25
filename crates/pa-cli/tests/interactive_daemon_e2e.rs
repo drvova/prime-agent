@@ -1,10 +1,24 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate
-// only. Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the headless TUI runs stay on the stack; each test awaits one at a time"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "each TUI scenario in this suite reads top to bottom"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "the pids read back from the wire and passed to `kill` are kernel-bounded"
+    )
 )]
 
 //! End-to-end verifier for the interactive TUI: spawn the real supervisor

@@ -1,5 +1,10 @@
-// Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(clippy::cast_possible_wrap)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_wrap,
+        reason = "the pids passed to `kill` and `Pid::from_raw` are kernel-bounded below i32::MAX"
+    )
+)]
 
 //! The terminal-state differential: a recording mock terminal over a real
 //! pty asserts that EVERY terminal mode the TUI arms comes back off on EVERY

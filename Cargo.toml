@@ -94,6 +94,9 @@ unsafe_code = "forbid"
 # (the design-choice classes, each with its in-code justification) keep
 # their force under the manifest route.
 pedantic = "warn"
+# Every lint exception says why, in its own `reason = ".."` (an `expect` where the lint
+# fires on every build that compiles it, an `allow` only where it cannot).
+allow_attributes_without_reason = "warn"
 redundant_clone = "warn"
 clone_on_copy = "warn"
 assigning_clones = "warn"

@@ -80,7 +80,10 @@ fn manual_compaction_end_unsuccessful(
 /// contract: the execution's `error` field carries the raw failure (stderr, exit 1).
 /// A `/refine` hands its background planning to `boundary` — the same disposal
 /// drain that finishes every other in-flight refinement.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a session command runs against the engine, goal, model, autonomy and boundary the turn holds"
+)]
 pub(crate) async fn execute_prompt_session_command(
     engine: &Arc<SessionEngine>,
     goal: &Arc<PrintGoalSurface>,

@@ -1,5 +1,10 @@
-// large_futures: stack futures on hot paths by design.
-#![allow(clippy::large_futures)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the terminal-mode `run_interactive` future stays on the stack in the child process"
+    )
+)]
 
 //! Real-pty e2e for the kitty-probe window's early-typing contract: the
 //! vendored crossterm patch holds the probe's answer window in short poll
@@ -382,8 +387,10 @@ fn spawn_child(socket: &Path, slave: &OwnedFd) -> Child {
     // Runs between fork and exec: become a session leader and claim the pty slave.
     fn claim_controlling_tty(fd: i32) -> std::io::Result<()> {
         nix::unistd::setsid()?;
-        // TIOCSCTTY is already the request type on Linux and a `u32` on macOS.
-        #[allow(clippy::cast_lossless)]
+        #[allow(
+            clippy::cast_lossless,
+            reason = "TIOCSCTTY is already the request type on Linux and a `u32` on macOS, which neither CI target builds"
+        )]
         let rc = unsafe { libc::ioctl(fd, libc::TIOCSCTTY as libc::c_ulong, 0) };
         if rc < 0 {
             return Err(std::io::Error::last_os_error());

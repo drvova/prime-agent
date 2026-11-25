@@ -1,6 +1,11 @@
-// too_many_lines: style gate only. Casts: 64-bit targets; narrowing sits at bounded
-// OS/protocol boundaries.
-#![allow(clippy::too_many_lines, clippy::cast_possible_wrap)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "the wait-for-replies and budget-steer scenarios each read top to bottom"
+)]
+#![expect(
+    clippy::cast_possible_wrap,
+    reason = "`Child::id()` is a pid the kernel bounds below i32::MAX"
+)]
 
 //! End-to-end inline (daemonless) RLM subagents in print mode: the real
 //! binary, a scripted faux provider, and the real kernel drive the
