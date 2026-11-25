@@ -64,7 +64,10 @@ pub(crate) struct StructuredQuery {
 /// Which parsed features an engine's query syntax re-emits ([`format_query`]).
 /// The zero value renders plain keywords for natural-language APIs.
 #[derive(Debug, Clone, Copy, Default)]
-#[allow(clippy::struct_excessive_bools)] // one flag per independent syntax feature
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one flag per independent query syntax feature"
+)]
 pub(crate) struct QuerySyntax {
     pub(crate) phrases: bool,
     pub(crate) negation: bool,

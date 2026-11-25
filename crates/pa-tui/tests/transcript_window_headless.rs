@@ -1,8 +1,11 @@
 //! The transcript window against a paging mock: anchored scrolling through older
 //! pages, and a bounded resident run.
 #![cfg(unix)]
-// Casts: bounded fixture arithmetic.
-#![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+#![expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "bounded fixture arithmetic"
+)]
 
 mod support;
 

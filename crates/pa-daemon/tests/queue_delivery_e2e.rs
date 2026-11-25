@@ -2,8 +2,13 @@
 //! `session_action_update` BEFORE the delivered item's turn starts (TS
 //! `_pumpSessionInputs` emits at the action's `preparing` transition); a
 //! delivered message still projected renders as a stale strip row (dogfood P0).
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`queue_delivery_projects_the_active_action_phases_around_the_turn` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -89,7 +94,10 @@ impl HoldGate {
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

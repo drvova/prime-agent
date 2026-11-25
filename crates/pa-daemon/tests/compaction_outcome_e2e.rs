@@ -21,7 +21,10 @@ const SUMMARIZER_MARKER: &str = "context summarization assistant";
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

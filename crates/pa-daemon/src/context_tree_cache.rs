@@ -657,8 +657,10 @@ mod tests {
     /// and split by model (the delete's capture), and the /context grand
     /// total equals the agents-view session total (own row + live child
     /// rows + the ledger's deleted-descendant bucket).
-    // Exact binary fractions: the two totals must be the same number.
-    #[allow(clippy::float_cmp)]
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact binary fractions: the two totals must be the same number"
+    )]
     #[test]
     fn deleted_children_keep_their_spend_in_the_context_totals() {
         let tmp = tempfile::tempdir().unwrap();
@@ -861,7 +863,10 @@ mod tests {
     /// A child id may identify distinct historical files under the same
     /// parent. Each billable tombstone needs a distinct context node id.
     #[test]
-    #[allow(clippy::float_cmp)] // Exact binary fractions: the billable total must match.
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact binary fractions: the billable total must match"
+    )]
     fn deleted_context_nodes_distinguish_reused_child_ids() {
         let root = tempfile::tempdir().unwrap();
         let agent_dir = root.path();

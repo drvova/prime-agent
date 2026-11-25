@@ -100,7 +100,11 @@ impl FileSink {
     /// is legitimately await-free (the ACLs carry the restriction).
     #[cfg_attr(
         not(unix),
-        allow(clippy::unused_async, clippy::unused_async_trait_impl)
+        expect(
+            clippy::unused_async,
+            clippy::unused_async_trait_impl,
+            reason = "the non-unix arm awaits nothing: the ACLs carry the restriction, and the signature stays async for the shared call site"
+        )
     )]
     async fn set_private(&self) -> Result<()> {
         #[cfg(unix)]

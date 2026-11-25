@@ -2,8 +2,13 @@
 //! paste flow installs a token service end-to-end, and the disconnect removes
 //! it. The disk-cache path feeds the catalog (the fetch lane's snapshot
 //! envelope; the compiled fallback is covered by the pa-core verifiers).
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the catalog surface and paste-install scenario reads top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -18,7 +23,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

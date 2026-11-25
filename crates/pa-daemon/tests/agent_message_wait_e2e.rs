@@ -3,8 +3,10 @@
 //! message ends alpha's wait with a preview while the body reaches alpha's context exactly once;
 //! a wait nobody answers times out.
 #![cfg(unix)]
-// Fn length is a style gate, not correctness: the scenario reads top to bottom.
-#![allow(clippy::too_many_lines)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "the wait, cycle and timeout scenario reads top to bottom"
+)]
 
 mod common;
 

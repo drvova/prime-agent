@@ -13,7 +13,10 @@ pub const REFINEMENT_NOTICE_CUSTOM_TYPE: &str = "refinement_notice";
 
 /// The primary terminal result of a headless run.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the terminal result is built once per run; boxing the assistant message buys nothing"
+)]
 pub enum HeadlessPrimary {
     /// The final assistant message.
     Assistant(pa_types::ai::AssistantMessage),

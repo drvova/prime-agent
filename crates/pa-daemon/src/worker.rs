@@ -35,8 +35,10 @@ mod create;
 mod turn;
 
 use create::{active_session_id_of, worker_server_capabilities};
-// session_summary/SummaryInputs serve the in-crate test modules only, so allow the unused import.
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "session_summary and SummaryInputs serve the in-crate test modules only"
+)]
 pub(crate) use summary::{
     broadcast_custom_row_locked, compact_action_label, emit_worker_event_locked,
     emit_worker_event_with, persist_custom_row, push_roster_delta, session_snapshot,
@@ -55,8 +57,10 @@ pub use env::{
 use serde_json::Map;
 pub(crate) use session_core::SessionCore;
 use std::collections::VecDeque;
-// PathBuf is read only by this facade's in-file test modules (via `use super::*`).
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "only this facade's in-file test modules read PathBuf, through `use super::*`"
+)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

@@ -6,8 +6,10 @@
 use std::sync::MutexGuard;
 
 pub(crate) struct TraceEnv {
-    // Held for the guard's lifetime; the lock's value is never read.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "held for the guard's lifetime; the lock's value is never read"
+    )]
     lock: MutexGuard<'static, ()>,
     saved: [(&'static str, Option<std::ffi::OsString>); 2],
 }

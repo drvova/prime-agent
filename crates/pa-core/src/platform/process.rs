@@ -663,7 +663,10 @@ pub async fn wait_for_exit(pid: u32) -> std::io::Result<()> {
 ///
 /// Always `Unsupported`.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-#[allow(clippy::unused_async)] // one awaitable signature across the kernel-watch arms
+#[expect(
+    clippy::unused_async,
+    reason = "one awaitable signature across the kernel-watch arms; this arm has nothing to await"
+)]
 pub async fn wait_for_exit(_pid: u32) -> std::io::Result<()> {
     Err(std::io::ErrorKind::Unsupported.into())
 }

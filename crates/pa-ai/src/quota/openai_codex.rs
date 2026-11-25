@@ -49,7 +49,7 @@ pub async fn fetch_openai_codex_quota(
     parse_codex_usage(&payload, now_ms)
 }
 
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     reason = "epoch times in ms fit i64 for any date the endpoint can report"
 )]
@@ -99,7 +99,7 @@ fn parse_codex_usage(payload: &Value, now_ms: i64) -> Result<FetchedQuota, Strin
 }
 
 /// `5-hour`, `Daily`, `Weekly`, or `N-hour` / `N-day` for a window length in seconds.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "the hour count is rounded and floored at one before the cast"

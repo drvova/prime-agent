@@ -182,7 +182,10 @@ pub fn parse_incident_log_line(line: &str) -> Option<IncidentLogEntry> {
 /// whole JSON numbers reach the cast (fract filter); the saturating `as` is lenient for
 /// out-of-range
 /// pids.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the filter keeps only whole numbers, which the pid field holds"
+)]
 fn pid_number(value: &serde_json::Value) -> Option<i64> {
     value.as_i64().or_else(|| {
         value

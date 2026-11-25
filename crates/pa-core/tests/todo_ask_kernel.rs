@@ -1,5 +1,10 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures).
-#![allow(clippy::large_futures)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "a session's futures are large by design, as in src/lib.rs"
+    )
+)]
 
 //! Verifier: the kernel `todo.*` and `ask(...)` APIs over a REAL kernel and the full
 //! session-engine tool path. Session one sets and updates a todo list and asks a question a

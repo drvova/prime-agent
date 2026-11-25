@@ -1,11 +1,15 @@
-// too_many_lines: style gate only; a utility parses its options and does its
-// work in one function. Casts: 64-bit targets; narrowing sits at bounded
-// OS boundaries. struct_excessive_bools: a utility's options are flags.
-#![allow(
+#![expect(
     clippy::too_many_lines,
+    reason = "a utility parses its options and does its work in one function"
+)]
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::struct_excessive_bools
+    reason = "64-bit targets; narrowing sits at bounded OS boundaries"
+)]
+#![expect(
+    clippy::struct_excessive_bools,
+    reason = "a utility's options are flags"
 )]
 //! Prime Agent's own shell: a bash-compatible interpreter and a set of
 //! command-line utilities that run inside the process that embeds them.
