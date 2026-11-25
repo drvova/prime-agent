@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(test)]
 use std::fs;
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
