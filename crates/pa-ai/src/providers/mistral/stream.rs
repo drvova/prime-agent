@@ -223,8 +223,10 @@ fn mistral_http_error(status: u16, body: &str, headers: &HashMap<String, String>
     })
 }
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one function per provider stream, mirroring the TS reference's shape"
+)]
 async fn run_stream(
     model: &Model,
     context: &Context,
@@ -490,8 +492,10 @@ impl MistralStreamState {
     }
 
     /// Port of the `consumeChatStream` chunk loop body.
-    // Long by design: mirrors the provider's stream shape.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one function per provider stream, mirroring the TS reference's shape"
+    )]
     fn handle_chunk(
         &mut self,
         chunk: &Value,

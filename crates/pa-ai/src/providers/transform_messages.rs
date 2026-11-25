@@ -115,8 +115,10 @@ type Normalizer<'a> = dyn Fn(&str, &Model, &AssistantMessage) -> Option<String> 
 /// assistant turns (TS `transformMessages`). Unnamed tool calls already stored in a session (written
 /// before the stream dropped them) are stripped here, and their results go with them as orphans, so
 /// a session poisoned by one replays again.
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over the message history, mirroring the TS transform"
+)]
 pub fn transform_messages_with_normalizer(
     messages: &[Message],
     model: &Model,
@@ -222,8 +224,10 @@ pub fn transform_messages_with_normalizer(
     let mut result: Vec<Message> = Vec::new();
     let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
     let mut existing_tool_result_ids: HashSet<String> = HashSet::new();
-    // Epoch millis fit u64 for ~584 million years; the u128 duration's millis are the timestamp's convention.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "epoch milliseconds fit u64 for about 584 million years"
+    )]
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);

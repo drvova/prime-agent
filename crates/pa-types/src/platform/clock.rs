@@ -6,7 +6,7 @@
 /// the platform has no binding here (Windows renders no clock).
 #[cfg(unix)]
 #[must_use]
-#[allow(
+#[expect(
     clippy::useless_conversion,
     reason = "time_t is i64 here but i32 on some 32-bit unix targets"
 )]
@@ -49,7 +49,7 @@ pub struct LocalCivil {
 /// `None` when the instant is out of range or the platform has no binding here.
 #[cfg(unix)]
 #[must_use]
-#[allow(
+#[expect(
     clippy::useless_conversion,
     reason = "time_t is i64 here but i32 on some 32-bit unix targets"
 )]

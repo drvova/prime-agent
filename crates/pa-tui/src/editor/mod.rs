@@ -307,7 +307,10 @@ impl Editor {
         self.events.push(ev);
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the editor's paste lookup, kept beside the paste map it reads"
+    )]
     fn valid_paste_id(&self, id: usize) -> bool {
         self.pastes.contains_key(&id)
     }

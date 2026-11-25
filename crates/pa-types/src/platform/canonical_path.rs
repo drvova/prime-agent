@@ -31,8 +31,10 @@ const RESERVED_NAMES: [&str; 22] = [
 /// The standard library's: the path does not exist or a component cannot be
 /// resolved.
 pub fn canonicalize(path: impl AsRef<Path>) -> io::Result<PathBuf> {
-    // The one sanctioned call: every other canonicalization goes through here.
-    #[allow(clippy::disallowed_methods)]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one sanctioned call: every other canonicalization goes through here"
+    )]
     let canonical = std::fs::canonicalize(path)?;
     Ok(match canonical.to_str().and_then(plain_spelling) {
         Some(plain) => PathBuf::from(plain),

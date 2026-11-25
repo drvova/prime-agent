@@ -2,8 +2,13 @@
 //! `get_session_tree`, `set_session_entry_label`,
 //! `get_user_messages_for_forking`, `navigate_tree`, and `fork`. The wire
 //! shapes are the TS daemon-protocol contract.
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the two session-tree command walks (supervisor wire, direct link) each read as one scenario"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -16,7 +21,10 @@ use std::time::{Duration, Instant};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

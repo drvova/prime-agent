@@ -2,8 +2,13 @@
 //! the live `roster_update` pushes a turn produces (running on the busy flip,
 //! idle at settle), and the removal push when the worker stops — the real
 //! supervisor driving a scripted worker.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the roster subscribe and parent-path keying scenarios each read top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -16,7 +21,10 @@ use std::time::{Duration, Instant};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

@@ -7,10 +7,14 @@
 //! machine-wide `list_persistent_shells` lists every shell with its assignment,
 //! and `kill_persistent_shell` ends an orphan.
 #![cfg(target_os = "linux")]
-// Narrowing casts sit at OS boundaries (pid) where the kernel bounds the values.
-#![allow(clippy::cast_possible_wrap)]
-// Style gate only, not correctness: the live test is one long scenario.
-#![allow(clippy::too_many_lines)]
+#![expect(
+    clippy::cast_possible_wrap,
+    reason = "`Child::id()` is a pid the kernel bounds below i32::MAX"
+)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "the live persistent-shell test is one long scenario"
+)]
 
 mod common;
 

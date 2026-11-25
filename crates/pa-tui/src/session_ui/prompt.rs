@@ -775,7 +775,10 @@ impl SessionUi {
     /// one-rebind budget: the first attempt may re-attach and replay on
     /// the unknown-session refusal, a replay may not rebind again (the
     /// replay is the second and last attempt).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each part of one prompt submission, plus the rebind state and generation"
+    )]
     fn order_prompt_request(
         &mut self,
         text: String,

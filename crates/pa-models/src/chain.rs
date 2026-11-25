@@ -72,7 +72,10 @@ pub struct ModelCatalog {
     /// logout that predates this process's first request is still detected), then the live scope
     /// (`Some(None)` = no credentials). Both levels carry meaning (the documented three states), so
     /// nesting is the contract, not an accidental Option<Option>.
-    #[allow(clippy::option_option)]
+    #[expect(
+        clippy::option_option,
+        reason = "both Option levels carry meaning: unseen, seen without credentials, seen with them"
+    )]
     pi_scope_seen: Mutex<Option<Option<String>>>,
 }
 

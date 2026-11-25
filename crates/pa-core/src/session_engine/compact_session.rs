@@ -280,7 +280,10 @@ pub(crate) fn prepare_attempt(
 ///
 /// Returns an error when either wire call fails; `complete_summary_call`
 /// labels the unusable replies.
-#[allow(clippy::too_many_arguments)] // the call mirrors complete_summary_call's shape
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the call mirrors `complete_summary_call`'s shape"
+)]
 async fn summary_call_with_retry(
     bill: &SummaryBill,
     compaction: Option<&super::semantic_edges::SemanticCompaction>,

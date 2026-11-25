@@ -231,8 +231,10 @@ fn start_thinking_block(
     });
 }
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match over the Bedrock event types, mirroring the provider's stream"
+)]
 fn handle_content_block_delta(
     event: &Value,
     _model: &Model,

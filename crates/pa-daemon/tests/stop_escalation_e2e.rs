@@ -2,9 +2,13 @@
 //! worker that ignores the graceful stop dies inside one bounded escalation
 //! window and its session lease frees; a well-behaved worker keeps the
 //! clean stop.
-// Narrowing casts sit at OS boundaries (pid/fd/time/size) where the kernel
-// bounds the values.
-#![allow(clippy::cast_possible_truncation)]
+#![cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::cast_possible_truncation,
+        reason = "the worker pid read back from the descriptor is a kernel-bounded pid"
+    )
+)]
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -19,7 +23,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
@@ -29,9 +36,10 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test process exits
-// immediately afterwards, reaping it.
-#[allow(clippy::zombie_processes)]
+#[expect(
+    clippy::zombie_processes,
+    reason = "the timeout panic path cannot wait on the child; the test process exits right after and reaps it"
+)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))

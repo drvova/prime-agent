@@ -55,10 +55,15 @@ pub fn encode_private_frame(
     assert_frame_length("header length", header_bytes.len(), limits.max_header_bytes)?;
     assert_frame_length("payload length", payload.len(), limits.max_payload_bytes)?;
     let mut frame = Vec::with_capacity(FRAME_PREFIX_BYTES + header_bytes.len() + payload.len());
-    // Wire widths: the prefix packs lengths as u32 BE; limits asserted above.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the frame prefix packs lengths as u32 BE; the limits are asserted above"
+    )]
     let header_len = header_bytes.len() as u32;
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the frame prefix packs lengths as u32 BE; the limits are asserted above"
+    )]
     let payload_len = payload.len() as u32;
     frame.extend_from_slice(&header_len.to_be_bytes());
     frame.extend_from_slice(&payload_len.to_be_bytes());
@@ -187,11 +192,15 @@ pub async fn write_frame_segments<W: AsyncWrite + Unpin>(
     assert_frame_length("header length", header_bytes.len(), limits.max_header_bytes)?;
     assert_frame_length("payload length", payload.len(), limits.max_payload_bytes)?;
     let mut prefix = Vec::with_capacity(FRAME_PREFIX_BYTES + header_bytes.len());
-    // Wire widths: the prefix packs lengths as u32 BE, which the decoder
-    // reads back; limits were asserted just above.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the frame prefix packs lengths as u32 BE; the limits are asserted above"
+    )]
     let header_len = header_bytes.len() as u32;
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the frame prefix packs lengths as u32 BE; the limits are asserted above"
+    )]
     let payload_len = payload.len() as u32;
     prefix.extend_from_slice(&header_len.to_be_bytes());
     prefix.extend_from_slice(&payload_len.to_be_bytes());
@@ -278,8 +287,10 @@ mod tests {
 
     #[tokio::test]
     async fn segments_write_the_same_stream_as_the_buffered_frame() {
-        // `i % 251` is 0..=250: non-negative, fits u8 exactly.
-        #[allow(clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "`i % 251` is 0..=250: non-negative and fits u8 exactly"
+        )]
         let payload: Vec<u8> = (0..100_000).map(|i| (i % 251) as u8).collect();
         let mut buffered = Vec::new();
         write_frame(

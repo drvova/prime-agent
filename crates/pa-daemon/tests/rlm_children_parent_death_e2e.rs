@@ -4,11 +4,21 @@
 //! monitoring performs the close (a plain stop; grandchildren cascade). The parent is made to
 //! die by wedging a cell in a native call and aborting it: the daemon ends the session as
 //! crashed, and nothing in it gets to run.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the parent-crash and spawn-ledger scenarios each read top to bottom"
+    )
+)]
 #![cfg(unix)]
-// The SIGKILL tests are Linux-only, so their helpers are unused elsewhere.
-#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "the SIGKILL tests are Linux-only, so their helpers are unused on other unixes"
+    )
+)]
 
 mod common;
 
@@ -24,7 +34,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

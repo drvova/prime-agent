@@ -77,7 +77,10 @@ impl OpenAICodexResponsesOptions {
 
 /// `textVerbosity` request option.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // full TS option surface; variants set by callers
+#[expect(
+    dead_code,
+    reason = "the enum keeps the TS option surface; callers set only some variants"
+)]
 pub enum CodexTextVerbosity {
     Low,
     Medium,
@@ -165,8 +168,10 @@ pub fn stream_openai_codex_responses(
     reader
 }
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one function per provider stream, mirroring the TS reference's shape"
+)]
 async fn run_stream(
     model: &Model,
     context: &Context,
@@ -368,8 +373,10 @@ async fn run_stream(
 }
 
 /// One WebSocket attempt.
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one function per provider stream, mirroring the TS reference's shape"
+)]
 async fn run_websocket_attempt(
     model: &Model,
     options: &OpenAICodexResponsesOptions,
@@ -1184,8 +1191,10 @@ mod tests {
         if masked {
             socket.read_exact(&mut mask).await?;
         }
-        // The mocked client frame's wire length (u64) is the vec's usize sizing; test frames are tiny.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test frames are tiny; the u64 wire length sizes the vec"
+        )]
         let mut payload = vec![0u8; length as usize];
         socket.read_exact(&mut payload).await?;
         if masked {
@@ -1205,8 +1214,10 @@ mod tests {
         let body = serde_json::to_string(payload)?;
         let mut frame = vec![0x81u8];
         let length = body.len();
-        // The guards bound the wire length fields (< 126 for u8, < 65_536 for u16).
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the guards bound the wire length fields (< 126 for u8, < 65_536 for u16)"
+        )]
         if length < 126 {
             frame.push(length as u8);
         } else if length < 65_536 {

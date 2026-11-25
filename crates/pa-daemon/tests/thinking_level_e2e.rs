@@ -2,8 +2,13 @@
 //! `create` config's `thinking` flag must clamp to the model's supported
 //! levels (`max` -> `high` for a reasoning model without xhigh/max maps),
 //! persist the effective level, and apply it to every provider request.
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`session_summaries_carry_the_thinking_level_for_both_session_kinds` is one scenario"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -20,7 +25,10 @@ use serde_json::{json, Value};
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
@@ -254,7 +262,10 @@ struct Harness {
     agent_dir: PathBuf,
     session_dir: PathBuf,
     mock: RecordingMock,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "held so the daemon lives as long as the harness; no step reads it"
+    )]
     supervisor: Supervisor,
     client: Client,
     session_id: String,

@@ -2,8 +2,13 @@
 //! active id an attached client holds, and the supervisor resolves the
 //! superseded id through the session-binding table instead of failing with
 //! `Unknown active session`.
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`stale_active_id_rebinds_after_worker_replacement` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -16,7 +21,10 @@ use std::time::{Duration, Instant};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

@@ -521,7 +521,10 @@ impl SessionUi {
 
     /// `bash_end`: the settled run patches the running flag, completes the mounted row (or surfaces
     /// the failure when no row is mounted), and an own pane-mounted run seeds the follow-ups.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each bash_end field the wire carries, plus the view it patches"
+    )]
     pub(super) fn apply_bash_end(
         &mut self,
         exit_code: Option<i64>,

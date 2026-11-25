@@ -1,11 +1,20 @@
 //! End-to-end supervisor tests against the real `pa-daemon` binary: spawn the
 //! supervisor on a temp socket, drive it with a JSONL socket client, verify
 //! session lifecycle and streamed events with the scripted engine.
-// Narrowing casts sit at OS boundaries (pid/fd/time/size) where the kernel
-// bounds the values.
-#![allow(clippy::cast_possible_truncation)]
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_truncation,
+        reason = "the chunk budget read back from JSON is a small byte count"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "each supervisor e2e module's scripted session reads top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 #[path = "../common/mod.rs"]
@@ -30,7 +39,10 @@ mod tool_results;
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
