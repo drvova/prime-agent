@@ -19,15 +19,22 @@ use crate::runtime::{Runtime, RuntimeOptions};
 /// The prompt whose turn panics inside the model call.
 const PANIC_PROMPT: &str = "panic now";
 
-/// The prompt whose model call waits for a permit of the builder's `hold`.
+/// The prompt whose model calls wait at the builder's [`Hold`].
 const HOLD_PROMPT: &str = "hold on";
+
+/// Where a model call of a turn holding [`HOLD_PROMPT`] waits: it says it
+/// has started, then waits for one permit, which it gives back.
+struct Hold {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
 
 /// Builds every session over one faux provider of the test's own, with its
 /// transcript under `<cwd>/sessions`.
 struct FauxBuilder {
     model: pa_types::ai::Model,
     agent_dir: PathBuf,
-    hold: Arc<tokio::sync::Semaphore>,
+    hold: Arc<Hold>,
 }
 
 impl SessionBuilder for FauxBuilder {
@@ -43,7 +50,8 @@ impl SessionBuilder for FauxBuilder {
             let inner = Arc::clone(&inner);
             Box::pin(async move {
                 if let Some(gate) = gate {
-                    let _permit = gate.acquire().await?;
+                    gate.entered.notify_one();
+                    let _permit = gate.release.acquire().await?;
                 }
                 inner(model, context, options).await
             })
@@ -116,7 +124,7 @@ struct Bed<B: SessionBuilder = FauxBuilder> {
     cwd: PathBuf,
     agent_dir: PathBuf,
     model: pa_types::ai::Model,
-    hold: Arc<tokio::sync::Semaphore>,
+    hold: Arc<Hold>,
     _dir: tempfile::TempDir,
 }
 
@@ -172,7 +180,10 @@ async fn bed_with<B: SessionBuilder>(
     let cwd = dir.path().join("work");
     std::fs::create_dir_all(&cwd).unwrap();
     let model = registration.get_model();
-    let hold = Arc::new(tokio::sync::Semaphore::new(0));
+    let hold = Arc::new(Hold {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Semaphore::new(0),
+    });
     let runtime = open_runtime(
         &agent_dir,
         &cwd,
@@ -353,16 +364,17 @@ async fn an_input_runs_a_turn_that_streams_then_reports_done() {
 
 #[tokio::test]
 async fn a_steer_during_a_turn_is_read_at_its_next_step() {
-    // The first reply is held long enough for the steer to arrive while the
-    // turn runs.
+    // The first model call is held until the steer is queued: the turn is
+    // past its first read of the steering queue.
     let mut bed = bed(json!([
-        { "text": "first reply", "delayMs": 1000 },
+        { "text": "first reply" },
         { "text": "steered reply" },
     ]))
     .await;
-    bed.input("start", None).await;
-    bed.stream_event("turn_start").await;
+    bed.input(HOLD_PROMPT, None).await;
+    bed.hold.entered.notified().await;
     bed.input("change course", Some(Priority::Steer)).await;
+    bed.hold.release.add_permits(1);
     let (_, done) = bed.until_done().await;
     bed.runtime.idle(&bed.session).await;
     // Taken by the running turn, the steer has no run of its own: its
@@ -382,7 +394,7 @@ async fn a_steer_during_a_turn_is_read_at_its_next_step() {
     assert_eq!(
         bed.transcript(),
         pairs(&[
-            ("user", "start"),
+            ("user", HOLD_PROMPT),
             ("assistant", "first reply"),
             ("user", "change course"),
             ("assistant", "steered reply"),
@@ -618,7 +630,7 @@ async fn a_second_runtime_on_the_database_leaves_other_sessions_tasks_alone() {
         .into_iter()
         .map(|task| (task.state, task.prompt, task.error))
         .collect();
-    bed.hold.add_permits(1);
+    bed.hold.release.add_permits(1);
     let (_, done) = bed.until_done().await;
     assert_eq!(
         (stored, outcome(&done)),
