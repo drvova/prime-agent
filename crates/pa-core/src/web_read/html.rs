@@ -708,9 +708,7 @@ impl Renderer {
                     .or_else(|| self.pending_anchor.take())
                     .filter(|anchor| !anchor.is_empty() && !anchor.contains(char::is_whitespace));
                 self.pending_anchor = None;
-                let suffix = anchor
-                    .map(|anchor| format!(" {{#{anchor}}}"))
-                    .unwrap_or_default();
+                let suffix = anchor.map_or_default(|anchor| format!(" {{#{anchor}}}"));
                 out.push(format!("{} {text}{suffix}", "#".repeat(level)));
             }
             "pre" => {

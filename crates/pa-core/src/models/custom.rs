@@ -342,7 +342,7 @@ fn compat_from_value(value: Option<&serde_json::Value>) -> Option<ModelCompat> {
 #[must_use]
 pub fn merge_compat(base: Option<&ModelCompat>, over: Option<ModelCompat>) -> Option<ModelCompat> {
     let over = over?;
-    let mut merged = base.map(|compat| compat.raw.clone()).unwrap_or_default();
+    let mut merged = base.map_or_default(|compat| compat.raw.clone());
     for (key, value) in over.raw {
         // Routing sub-objects merge instead of replacing.
         if matches!(key.as_str(), "openRouterRouting" | "vercelGatewayRouting") {
@@ -358,7 +358,7 @@ pub fn merge_compat(base: Option<&ModelCompat>, over: Option<ModelCompat>) -> Op
                 continue;
             }
         }
-        merged.insert(key.clone(), value.clone());
+        merged.insert(key, value);
     }
     Some(ModelCompat { raw: merged })
 }

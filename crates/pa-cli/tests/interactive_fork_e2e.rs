@@ -333,7 +333,7 @@ async fn daemon_roster(socket: &Path) -> Vec<(PathBuf, String)> {
     client.close();
     list.get("sessions")
         .and_then(Value::as_array)
-        .map(|rows| {
+        .map_or_default(|rows| {
             rows.iter()
                 .filter_map(|row| {
                     let file = row.get("sessionFile")?.as_str()?;
@@ -345,7 +345,6 @@ async fn daemon_roster(socket: &Path) -> Vec<(PathBuf, String)> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// A saved session's entries; `path` is a locator in `<agent dir>/sessions`.

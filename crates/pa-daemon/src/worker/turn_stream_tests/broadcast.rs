@@ -307,15 +307,12 @@ async fn a_turn_without_a_model_turn_keeps_the_bare_fallback_frames() {
 #[tokio::test]
 async fn a_retried_turn_broadcasts_one_agent_end_per_run() {
     fn roles_of(frame: &Value) -> Vec<String> {
-        frame["messages"]
-            .as_array()
-            .map(|messages| {
-                messages
-                    .iter()
-                    .map(|message| message["role"].as_str().unwrap_or_default().to_string())
-                    .collect()
-            })
-            .unwrap_or_default()
+        frame["messages"].as_array().map_or_default(|messages| {
+            messages
+                .iter()
+                .map(|message| message["role"].as_str().unwrap_or_default().to_string())
+                .collect()
+        })
     }
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().to_path_buf();

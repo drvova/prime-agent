@@ -170,7 +170,7 @@ fn read_counts(data: &Value) -> UpdateStatusCounts {
 fn read_failures(data: &Value) -> Vec<UpdateStatusFailure> {
     data.get("failures")
         .and_then(Value::as_array)
-        .map(|rows| {
+        .map_or_default(|rows| {
             rows.iter()
                 .filter_map(|row| {
                     let session_file = row.get("sessionFile")?.as_str()?.to_string();
@@ -186,5 +186,4 @@ fn read_failures(data: &Value) -> Vec<UpdateStatusFailure> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
 }

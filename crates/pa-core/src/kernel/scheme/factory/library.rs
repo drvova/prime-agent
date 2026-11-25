@@ -510,8 +510,7 @@ fn library_files(environment: &FactoryEnvironment) -> Vec<(&'static str, Vec<Lib
     };
     let personal = environment
         .user_machines_dir()
-        .map(|directory| directory_files(&directory))
-        .unwrap_or_default();
+        .map_or_default(|directory| directory_files(&directory));
     vec![("repo", shared), ("user", personal)]
 }
 

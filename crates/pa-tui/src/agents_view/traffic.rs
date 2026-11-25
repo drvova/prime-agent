@@ -186,8 +186,7 @@ fn render_entry(theme: &Theme, entry: &AgentTrafficEntry, width: usize) -> Line 
     let relationship = entry
         .relationship
         .as_ref()
-        .map(|relationship| format!(" \u{b7} {relationship}"))
-        .unwrap_or_default();
+        .map_or_default(|relationship| format!(" \u{b7} {relationship}"));
     let head = format!("  {} \u{2192} {}{relationship}", entry.from, entry.to);
     let meta = format!(
         " \u{b7} {}{} \u{b7} {} chars  ",

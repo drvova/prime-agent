@@ -159,13 +159,13 @@ fn quota_credentials(agent_dir: &Path, now_ms: i64) -> Vec<QuotaCredential> {
                     match auth.get_api_key(provider.id()) {
                         Some(token) => QuotaCredential::Token {
                             provider,
-                            account: default_account.clone(),
+                            account: default_account,
                             token,
                             enterprise_domain: None,
                         },
                         None => QuotaCredential::Unusable {
                             provider,
-                            account: default_account.clone(),
+                            account: default_account,
                             reason: "the stored sign-in has expired; run /login".to_string(),
                         },
                     }
@@ -179,7 +179,7 @@ fn quota_credentials(agent_dir: &Path, now_ms: i64) -> Vec<QuotaCredential> {
                         ..
                     }) => QuotaCredential::Token {
                         provider,
-                        account: default_account.clone(),
+                        account: default_account,
                         token,
                         enterprise_domain: enterprise_url,
                     },
@@ -197,7 +197,7 @@ fn quota_credentials(agent_dir: &Path, now_ms: i64) -> Vec<QuotaCredential> {
                 QuotaProvider::Synthetic => match auth.get_api_key(provider.id()) {
                     Some(token) => QuotaCredential::Token {
                         provider,
-                        account: default_account.clone(),
+                        account: default_account,
                         token,
                         enterprise_domain: None,
                     },

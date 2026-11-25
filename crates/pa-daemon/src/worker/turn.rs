@@ -429,8 +429,7 @@ impl TurnRunner {
             let core = self.core.lock().unwrap();
             core.store
                 .as_ref()
-                .map(|store| store.session_id().to_string())
-                .unwrap_or_default()
+                .map_or_default(|store| store.session_id().to_string())
         };
         // The settled outcome reaches the waiting prompt only at full
         // settle: resolving at `Done` queued a follow-up behind the

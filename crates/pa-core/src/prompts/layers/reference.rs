@@ -90,7 +90,7 @@ static INDEX: LazyLock<Index> = LazyLock::new(|| {
     let mut passages_with: HashMap<String, usize> = HashMap::new();
     for passage in &passages {
         let mut passage_words = words(&passage.text);
-        passage_words.extend(passage.section.map(words).unwrap_or_default());
+        passage_words.extend(passage.section.map_or_default(words));
         if let Some(name) = passage.function {
             let name_words = words(name);
             for _ in 1..NAME_WEIGHT {

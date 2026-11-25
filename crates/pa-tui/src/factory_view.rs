@@ -340,17 +340,14 @@ fn parse_run(run: &Value) -> Option<FactoryRunSnapshot> {
     let states = machine
         .get("states")
         .and_then(Value::as_array)
-        .map(|states| states.iter().filter_map(FactoryState::parse).collect())
-        .unwrap_or_default();
+        .map_or_default(|states| states.iter().filter_map(FactoryState::parse).collect());
     let transitions = machine
         .get("transitions")
         .and_then(Value::as_array)
-        .map(|rows| rows.iter().filter_map(FactoryTransition::parse).collect())
-        .unwrap_or_default();
+        .map_or_default(|rows| rows.iter().filter_map(FactoryTransition::parse).collect());
     let last_fired = get_either(run, "last_fired", "lastFired")
         .and_then(Value::as_array)
-        .map(|rows| rows.iter().filter_map(FactoryEdge::parse).collect())
-        .unwrap_or_default();
+        .map_or_default(|rows| rows.iter().filter_map(FactoryEdge::parse).collect());
     let mut nodes = std::collections::HashMap::new();
     for node in run
         .get("nodes")
@@ -905,11 +902,7 @@ impl FactoryView {
             header.push(theme.fg_span(ThemeColor::Accent, "  ● changed"));
         }
         // The stats tail: elapsed, budget, parallel, instances.
-        let running = run
-            .usage
-            .as_ref()
-            .map(|usage| usage.running)
-            .unwrap_or_default();
+        let running = run.usage.as_ref().map_or_default(|usage| usage.running);
         let stats = vec![
             Span::raw("  "),
             theme.fg_span(ThemeColor::Muted, Self::stats_line(run, running)),

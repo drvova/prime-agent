@@ -196,8 +196,7 @@ mod tests {
             headers
                 .iter()
                 .find(|(key, _)| key == name)
-                .map(|(_, value)| value.as_str())
-                .unwrap_or_default()
+                .map_or_default(|(_, value)| value.as_str())
         };
         assert_eq!(get("Authorization"), "Bearer tok");
         assert_eq!(get("chatgpt-account-id"), "acct");
@@ -216,8 +215,7 @@ mod tests {
             headers
                 .iter()
                 .find(|(key, _)| key == name)
-                .map(|(_, value)| value.as_str())
-                .unwrap_or_default()
+                .map_or_default(|(_, value)| value.as_str())
         };
         assert_eq!(get("OpenAI-Beta"), OPENAI_BETA_RESPONSES_WEBSOCKETS);
         assert_eq!(get("session_id"), "req-1");

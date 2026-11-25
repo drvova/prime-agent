@@ -28,8 +28,7 @@ impl ModelRegistry {
     fn declared_fallback(&self, provider: &str) -> Vec<String> {
         self.provider_auth
             .get(provider)
-            .map(|descriptor| descriptor.fallback.clone())
-            .unwrap_or_default()
+            .map_or_default(|descriptor| descriptor.fallback.clone())
     }
 
     /// The identity of the credential serving `provider` now: a pinned named credential's id,

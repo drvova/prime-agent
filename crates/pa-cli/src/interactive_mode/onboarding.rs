@@ -30,11 +30,9 @@ impl StartupModelProbe {
         let all: Vec<pa_types::ai::Model> = registry.get_all().to_vec();
         let available: Vec<pa_types::ai::Model> =
             registry.get_available().into_iter().cloned().collect();
-        let scoped = self
-            .models
-            .as_deref()
-            .map(|patterns| pa_core::models::resolve_model_scope_from_models(patterns, &available))
-            .unwrap_or_default();
+        let scoped = self.models.as_deref().map_or_default(|patterns| {
+            pa_core::models::resolve_model_scope_from_models(patterns, &available)
+        });
         let startup_model =
             pa_core::models::find_initial_model(&pa_core::models::InitialModelOptions {
                 cli_provider: self.cli_provider.as_deref(),

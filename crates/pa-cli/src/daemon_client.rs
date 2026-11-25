@@ -176,8 +176,7 @@ impl DaemonClient {
                     let reason = self
                         .daemon_closing_reason
                         .as_deref()
-                        .map(|reason| format!(" Reason: {reason}."))
-                        .unwrap_or_default();
+                        .map_or_default(|reason| format!(" Reason: {reason}."));
                     return Err(anyhow!(
                         "Connection to the Prime Agent daemon closed.{reason} {}",
                         endpoint_details(&self.socket_path)

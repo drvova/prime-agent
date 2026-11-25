@@ -66,11 +66,7 @@ fn parent_keys(record: &UnifiedRecord) -> Vec<String> {
 
 /// The parent-reference keys of one record's daemon summary.
 fn parent_reference_keys(record: &UnifiedRecord) -> Vec<String> {
-    record
-        .daemon
-        .as_ref()
-        .map(summary_parent_keys)
-        .unwrap_or_default()
+    record.daemon.as_ref().map_or_default(summary_parent_keys)
 }
 
 /// The `parent` record's session file, live summary first, saved catalog

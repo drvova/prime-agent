@@ -925,8 +925,7 @@ mod loader_anchor_tests {
     fn prompts_anchor_at_their_wall_time_and_future_ones_fall_back() {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|since| since.as_millis() as u64)
-            .unwrap_or_default();
+            .map_or_default(|since| since.as_millis() as u64);
         let recent = SessionUi::loader_anchor_instant(now_ms - 2_000).expect("recent prompt");
         let rewound = std::time::Instant::now().duration_since(recent).as_millis();
         assert!(

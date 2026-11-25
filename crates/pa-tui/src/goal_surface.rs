@@ -69,9 +69,7 @@ pub fn format_goal_usage(goal: &GoalState) -> Option<String> {
 /// The status-row text for one goal state at the given terminal width.
 #[must_use]
 pub fn format_goal_status(goal: &GoalState, columns: usize) -> String {
-    let usage_text = format_goal_usage(goal)
-        .map(|usage| format!(" ({usage})"))
-        .unwrap_or_default();
+    let usage_text = format_goal_usage(goal).map_or_default(|usage| format!(" ({usage})"));
     match goal.status {
         GoalStatus::Idle => "No active goal".to_string(),
         GoalStatus::Active => match &goal.objective {
