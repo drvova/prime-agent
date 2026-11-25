@@ -916,6 +916,8 @@ fn rpc_idle_session_runs_a_turn_on_a_background_bash_completion() {
 }
 
 /// The 143 exit must not queue behind the replacement's settle.
+// Unix only: the test delivers SIGTERM with `kill`, a signal Windows has no form of.
+#[cfg(unix)]
 #[test]
 fn rpc_sigterm_during_replacement_exits_promptly() {
     let script = json!({ "responses": [ { "text": "slow", "delayMs": 30_000 } ] });
