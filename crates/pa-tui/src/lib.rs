@@ -77,6 +77,8 @@ pub mod hyperlinks;
 mod image_component;
 pub mod image_load;
 mod image_markers;
+#[cfg(debug_assertions)]
+mod inbound_recording;
 pub mod incident_notices;
 pub mod info_commands;
 pub mod info_panel;
@@ -139,6 +141,16 @@ pub mod usage_page;
 pub mod user_message_selector;
 pub mod view;
 pub mod width;
+// Stage (a) of the TUI's wire2 port: tested against the inbound goldens, wired into the
+// `daemon_client` facade by the cutover phase.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the wire2 cutover phase routes the daemon client through it"
+    )
+)]
+mod wire2_compat;
 
 use ratatui::style::Style;
 
