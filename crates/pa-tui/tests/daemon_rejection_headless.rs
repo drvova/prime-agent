@@ -164,7 +164,7 @@ impl SharedAnswers {
                 "create" => {
                     {
                         let mut requests = self.create_requests.lock().unwrap();
-                        requests.push(command.clone());
+                        requests.push(command);
                     }
                     // The scripted answer queue first: the head entry serves this create, then pops
                     // for the next; exhausted falls through.
@@ -610,7 +610,7 @@ fn dead_connection_on_prompt_keeps_the_draft_consumed_and_arms_the_reconnect() {
         1,
         "the close-after-send prompt never dispatches twice"
     );
-    let last = run.frames.last().map(String::as_str).unwrap_or_default();
+    let last = run.frames.last().map_or_default(String::as_str);
     assert!(
         !last.contains("hello"),
         "the draft stays consumed after the close:\n{last}"
@@ -644,7 +644,7 @@ fn close_after_rebind_keeps_the_outlived_prompt_consumed() {
     );
     let all = run.frames.join("\n");
     assert!(all.contains("Daemon reconnected"), "reconnected: {all}");
-    let last = run.frames.last().map(String::as_str).unwrap_or_default();
+    let last = run.frames.last().map_or_default(String::as_str);
     assert!(!last.contains("hello"), "the draft stays consumed: {last}");
 }
 

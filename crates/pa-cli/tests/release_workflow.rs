@@ -144,16 +144,12 @@ fn python3_binary(min_version: (u8, u8)) -> Option<PathBuf> {
         return None;
     }
     let version = String::from_utf8_lossy(&status.stdout).trim().to_owned();
-    let digits: Vec<u8> = version
-        .split_whitespace()
-        .nth(1)
-        .map(|rest| {
-            rest.split('.')
-                .filter_map(|part| part.parse::<u8>().ok())
-                .take(2)
-                .collect()
-        })
-        .unwrap_or_default();
+    let digits: Vec<u8> = version.split_whitespace().nth(1).map_or_default(|rest| {
+        rest.split('.')
+            .filter_map(|part| part.parse::<u8>().ok())
+            .take(2)
+            .collect()
+    });
     if digits.len() == 2 && (digits[0], digits[1]) >= min_version {
         Some(PathBuf::from("python3"))
     } else {

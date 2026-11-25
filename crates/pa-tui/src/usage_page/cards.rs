@@ -358,13 +358,8 @@ pub(crate) fn cards(
     quotas: Option<&QuotaReport>,
     spend: Option<&SpendHistory>,
 ) -> Vec<ProviderQuota> {
-    let mut cards: Vec<ProviderQuota> = quotas
-        .map(|report| report.providers.clone())
-        .unwrap_or_default();
-    for observed in spend
-        .map(|history| history.rate_limits.as_slice())
-        .unwrap_or_default()
-    {
+    let mut cards: Vec<ProviderQuota> = quotas.map_or_default(|report| report.providers.clone());
+    for observed in spend.map_or_default(|history| history.rate_limits.as_slice()) {
         if cards.iter().any(|card| card.provider == observed.provider) {
             continue;
         }
@@ -482,8 +477,7 @@ fn quota_rows(
     let pacing = quotas
         .data
         .as_ref()
-        .map(|report| report.pacing.as_slice())
-        .unwrap_or_default();
+        .map_or_default(|report| report.pacing.as_slice());
     if !pacing.is_empty() {
         rows.push(Vec::new());
         rows.push(section_title(theme, width, "Request pacing"));
@@ -620,7 +614,7 @@ impl SpendColumns {
         let show_tokens = fixed + token_cols <= width;
         let show_calls = show_tokens && fixed + token_cols + 2 + self.calls <= width;
         let mut row = self.label_cell(theme, width, &cells.label, cells.tone.label());
-        let cost = cells.cost.map(money).unwrap_or_default();
+        let cost = cells.cost.map_or_default(money);
         row.push(theme.fg_span(
             cells.tone.value(),
             format!("{cost:>width$}", width = self.cost),

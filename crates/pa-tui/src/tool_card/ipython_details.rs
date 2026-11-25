@@ -108,8 +108,7 @@ pub(crate) fn transcript_reads_summary(reads: &[TranscriptRead]) -> Option<Strin
     let agent = reads.first()?.agent.as_deref();
     let from = agent
         .filter(|_| reads.iter().all(|read| read.agent.as_deref() == agent))
-        .map(|agent| format!(" from {agent}"))
-        .unwrap_or_default();
+        .map_or_default(|agent| format!(" from {agent}"));
     match reads {
         [read] => {
             let roles = (read.roles != ["*"]).then(|| format!(" (role {})", read.roles.join("|")));
@@ -172,13 +171,12 @@ pub(crate) fn read_error_details(value: &Value) -> Option<IpythonError> {
         traceback: record
             .get("traceback")
             .and_then(Value::as_array)
-            .map(|rows| {
+            .map_or_default(|rows| {
                 rows.iter()
                     .filter_map(Value::as_str)
                     .map(str::to_string)
                     .collect()
-            })
-            .unwrap_or_default(),
+            }),
     })
 }
 
@@ -296,21 +294,19 @@ impl IpythonDetails {
             transcript_reads: record
                 .get("transcriptReads")
                 .and_then(Value::as_array)
-                .map(|reads| reads.iter().filter_map(TranscriptRead::parse).collect())
-                .unwrap_or_default(),
+                .map_or_default(|reads| reads.iter().filter_map(TranscriptRead::parse).collect()),
             todo_list: record
                 .get("todoList")
                 .and_then(|list| serde_json::from_value(list.clone()).ok()),
             questions: record
                 .get("questions")
                 .and_then(Value::as_array)
-                .map(|questions| {
+                .map_or_default(|questions| {
                     questions
                         .iter()
                         .filter_map(|question| serde_json::from_value(question.clone()).ok())
                         .collect()
-                })
-                .unwrap_or_default(),
+                }),
         }
     }
 }

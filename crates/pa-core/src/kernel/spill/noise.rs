@@ -133,17 +133,13 @@ impl Learned {
 
     fn noise(&self, family: &str) -> NoiseSet {
         NoiseSet {
-            shapes: self
-                .families
-                .get(family)
-                .map(|shapes| {
-                    shapes
-                        .iter()
-                        .filter(|(_, stats)| !stats.tainted && stats.count >= PROMOTE_AT)
-                        .map(|(shape, _)| shape.clone())
-                        .collect()
-                })
-                .unwrap_or_default(),
+            shapes: self.families.get(family).map_or_default(|shapes| {
+                shapes
+                    .iter()
+                    .filter(|(_, stats)| !stats.tainted && stats.count >= PROMOTE_AT)
+                    .map(|(shape, _)| shape.clone())
+                    .collect()
+            }),
         }
     }
 }

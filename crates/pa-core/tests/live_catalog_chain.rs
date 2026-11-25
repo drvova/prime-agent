@@ -1,6 +1,6 @@
-#![expect(
+#![allow(
     clippy::float_cmp,
-    reason = "the exact-float `assert_eq!`s check byte-identical JSON-written prices"
+    reason = "the exact-float `assert_eq!`s check byte-identical JSON-written prices; an allow, not an expect: clippy 1.100 no longer flags exact-float asserts, 1.98 does"
 )]
 
 //! Verifiers for the live catalog wiring: the credentialed refresh lands the account's private

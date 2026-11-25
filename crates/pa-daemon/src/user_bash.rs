@@ -545,7 +545,7 @@ impl OutputStream {
         }
         self.spill.write(&text);
         self.chunks.push(text.clone());
-        self.retained_bytes += self.chunks.last().map(String::len).unwrap_or_default();
+        self.retained_bytes += self.chunks.last().map_or_default(String::len);
         // The in-memory window keeps the tail (TS `maxOutputBytes`).
         while self.retained_bytes > STREAM_MAX_BYTES && self.chunks.len() > 1 {
             let removed = self.chunks.remove(0);
@@ -982,20 +982,17 @@ mod tests {
 
     fn bash_rows(worker: &Worker) -> Vec<Value> {
         let core = worker.core.lock().unwrap();
-        core.store
-            .as_ref()
-            .map(|store| {
-                store
-                    .entries()
-                    .iter()
-                    .filter(|entry| entry.type_ == "message")
-                    .filter_map(|entry| entry.fields.get("message").cloned())
-                    .filter(|message| {
-                        message.get("role").and_then(Value::as_str) == Some("bashExecution")
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        core.store.as_ref().map_or_default(|store| {
+            store
+                .entries()
+                .iter()
+                .filter(|entry| entry.type_ == "message")
+                .filter_map(|entry| entry.fields.get("message").cloned())
+                .filter(|message| {
+                    message.get("role").and_then(Value::as_str) == Some("bashExecution")
+                })
+                .collect()
+        })
     }
 
     #[tokio::test]

@@ -239,18 +239,16 @@ fn crash_session(client: &mut Client, session_id: &str) -> Value {
 
 /// The session leases held under `agent_dir` (one `.lock` directory each).
 fn held_leases(agent_dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(agent_dir.join("session-leases"))
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.extension()
-                        .is_some_and(|extension| extension == "lock")
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    std::fs::read_dir(agent_dir.join("session-leases")).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "lock")
+            })
+            .collect()
+    })
 }
 
 /// A session that was mid-turn when its daemon died is revived by the next

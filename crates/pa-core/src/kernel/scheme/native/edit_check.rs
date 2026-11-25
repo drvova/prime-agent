@@ -460,8 +460,7 @@ impl EditChecks {
                     .and_then(|path| std::fs::read(path).ok())
                     .and_then(|body| serde_json::from_slice::<Stored>(&body).ok())
                     .filter(|stored| stored.schema == SCHEMA)
-                    .map(|stored| stored.checks)
-                    .unwrap_or_default();
+                    .map_or_default(|stored| stored.checks);
                 Learned { path, checks }
             });
             let stats = learned.checks.entry(check.kind.to_string()).or_default();
