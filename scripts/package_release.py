@@ -303,11 +303,13 @@ def write_tar(stage_dir, output):
     # gzip default level 6 (the system `tar -czf` the TS packaging uses).
     with tarfile.open(output, "w:gz", compresslevel=6) as tar:
         for path in entries:
-            tar.add(path, arcname=str(path.relative_to(stage_dir)), recursive=False)
+            tar.add(path, arcname=path.relative_to(stage_dir).as_posix(), recursive=False)
     with tarfile.open(output) as tar:
         listed = sorted(name for name in tar.getnames() if name.strip())
+    # Archive member names use `/` on every platform; the staged paths use the
+    # platform's separator, so both sides compare in POSIX form.
     expected = sorted(
-        str(path.relative_to(stage_dir))
+        path.relative_to(stage_dir).as_posix()
         for path in stage_dir.rglob("*")
         if path.is_file() or path.is_dir()
     )
