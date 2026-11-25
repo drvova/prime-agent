@@ -1,5 +1,17 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate only.
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the headless `run_interactive` futures stay on the stack; each test awaits one at a time"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`the_refused_open_renders_both_ways_out_as_the_notice_panel` is one scenario, top to bottom"
+    )
+)]
 
 //! End-to-end verifier for the agents view's refusal panel: a session
 //! open refused by a live foreign lease holder (the operator's case)

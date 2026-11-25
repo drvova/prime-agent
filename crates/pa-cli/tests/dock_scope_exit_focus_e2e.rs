@@ -1,5 +1,17 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate only.
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the headless runs and the scope-opening helper stay on the stack; each test awaits one"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`scope_exit_keeps_the_subagents_item` is one scenario, top to bottom"
+    )
+)]
 
 //! End-to-end verifier for the dock's Subagents panel exit (the operator's
 //! 2026-09-26 ruling): leaving the scoped agents view reopens the scope

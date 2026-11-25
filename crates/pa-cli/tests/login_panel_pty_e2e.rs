@@ -1,5 +1,10 @@
-// too_many_lines: style gate only.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the fake login server's `serve` answers every scripted route in one loop"
+    )
+)]
 
 //! Real-terminal e2e for the inline auth panel (the `/login` Prime
 //! Inference team picker): the login flow must NEVER take the terminal

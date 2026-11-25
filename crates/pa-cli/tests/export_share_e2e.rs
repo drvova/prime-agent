@@ -1,9 +1,23 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate
-// only. Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_wrap
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the headless `run_interactive` futures stay on the stack; each test awaits one at a time"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`tui_export_and_share_surface` is one scenario, top to bottom"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_wrap,
+        reason = "the pids passed to `kill` and `Pid::from_raw` are kernel-bounded below i32::MAX"
+    )
 )]
 
 //! End-to-end verifier for the TUI export/share commands: a scripted daemon

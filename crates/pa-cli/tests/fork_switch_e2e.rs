@@ -9,9 +9,10 @@
 //! are stub scripts that log each call with the launcher's daemon-socket
 //! and agent-dir pins, so the pins are observed, not assumed.
 #![cfg(unix)]
-// too_many_lines: the switch walkthrough is one ordered scenario (each step
-// depends on the state the previous one left), the sibling e2e files' style.
-#![allow(clippy::too_many_lines)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "the switch walkthrough is one ordered scenario: each step depends on the state the last one left"
+)]
 
 use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Write as _};
