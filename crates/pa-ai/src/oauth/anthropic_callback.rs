@@ -326,15 +326,13 @@ fn escape_html(value: &str) -> String {
 /// The callback pages: a dark minimal page carrying the login's
 /// outcome; the TS flow's wording rides the messages and details.
 fn render_page(title: &str, message: &str, details: Option<&str>) -> String {
-    let details_html = details
-        .map(|details| {
-            format!(
-                r#"    <div class="details">{}</div>
+    let details_html = details.map_or_default(|details| {
+        format!(
+            r#"    <div class="details">{}</div>
 "#,
-                escape_html(details)
-            )
-        })
-        .unwrap_or_default();
+            escape_html(details)
+        )
+    });
     format!(
         r#"<!doctype html>
 <html lang="en">

@@ -90,9 +90,7 @@ impl<S: CellWindowStore> CellWindowLearner<S> {
                     Slot::Loading(pending) => std::mem::take(pending),
                     Slot::Ready(_) => Vec::new(),
                 };
-                let mut estimator = stored
-                    .map(CellDurationEstimator::from_state)
-                    .unwrap_or_default();
+                let mut estimator = stored.map_or_default(CellDurationEstimator::from_state);
                 for duration in &pending {
                     estimator.observe(*duration);
                 }

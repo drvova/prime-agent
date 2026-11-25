@@ -539,15 +539,12 @@ pub(crate) async fn summarize_attempt(
     };
     // The digest snapshot and its fingerprint attach at the commit and never flow
     // through the summarizer; the read happens after the summarizer resolved.
-    let (harness_digest, harness_state_fingerprint) = options
-        .harness_digest
-        .as_ref()
-        .map(|inputs| {
+    let (harness_digest, harness_state_fingerprint) =
+        options.harness_digest.as_ref().map_or_default(|inputs| {
             let render =
                 super::harness_digest::HarnessDigestInputs::render_with_fingerprint(inputs);
             (Some(render.digest), Some(render.state_fingerprint))
-        })
-        .unwrap_or_default();
+        });
     super::compaction_trace::trace(
         "compact.digest_rendered",
         &serde_json::json!({ "digest": harness_digest.is_some() }),

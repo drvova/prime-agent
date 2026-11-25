@@ -93,8 +93,7 @@ impl SiteServer {
                     });
                     let location = reply
                         .location
-                        .map(|location| format!("Location: {location}\r\n"))
-                        .unwrap_or_default();
+                        .map_or_default(|location| format!("Location: {location}\r\n"));
                     let head = format!(
                         "HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\n{location}Connection: close\r\n\r\n",
                         reply.status,

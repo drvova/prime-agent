@@ -204,8 +204,7 @@ pub(crate) fn render_background_completion(
             let silence = quiet_ms.map(crate::duration_text::millis);
             let quiet = silence
                 .as_deref()
-                .map(|silence| format!(" \u{b7} quiet {silence}"))
-                .unwrap_or_default();
+                .map_or_default(|silence| format!(" \u{b7} quiet {silence}"));
             // The columns left for the command: the mark's, the label's and
             // the rest's taken.
             let room =

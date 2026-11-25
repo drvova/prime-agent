@@ -246,16 +246,13 @@ impl CarriedState {
             .filter(|goal| goal.active)
             .and_then(|goal| goal.objective)
             .filter(|objective| !objective.trim().is_empty());
-        let open_todos = live
-            .todos
-            .map(|list| {
-                list.items
-                    .into_iter()
-                    .filter(|item| item.status != TodoStatus::Done)
-                    .take(MAX_OPEN_TODOS)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let open_todos = live.todos.map_or_default(|list| {
+            list.items
+                .into_iter()
+                .filter(|item| item.status != TodoStatus::Done)
+                .take(MAX_OPEN_TODOS)
+                .collect()
+        });
         Self {
             user_messages,
             user_constraints: Vec::new(),

@@ -338,7 +338,7 @@ pub fn apply_refinement_proposal(
                 edit,
                 RefinementAction::Create,
                 RefinementKind::Memory,
-                id.clone(),
+                id,
             );
             row.error = validation_error;
             applied_edits.push(row);
@@ -349,7 +349,7 @@ pub fn apply_refinement_proposal(
                 edit,
                 edit.action.unwrap_or(RefinementAction::Create),
                 kind,
-                id.clone(),
+                id,
             );
             row.error = Some(error);
             applied_edits.push(row);

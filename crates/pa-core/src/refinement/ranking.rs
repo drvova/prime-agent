@@ -261,8 +261,7 @@ pub fn digest_shown_entries(
             let entries = state
                 .entries
                 .get(&kind_for(kind))
-                .map(|entries| entries.values().cloned().collect())
-                .unwrap_or_default();
+                .map_or_default(|entries| entries.values().cloned().collect());
             ranked_entries(entries, options.query_terms.as_ref())
                 .into_iter()
                 .take(max_entries_per_kind)

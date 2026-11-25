@@ -141,7 +141,7 @@ fn frame_with<'a>(frames: &'a [String], needle: &str) -> &'a str {
         .unwrap_or_else(|| {
             panic!(
                 "no frame shows {needle:?} with the composer; the newest frame:\n{}",
-                frames.last().map(String::as_str).unwrap_or_default()
+                frames.last().map_or_default(String::as_str)
             )
         })
 }
