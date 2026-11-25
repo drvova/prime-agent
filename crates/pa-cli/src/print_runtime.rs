@@ -446,6 +446,8 @@ pub type ProviderTargetSlot = std::sync::Arc<std::sync::RwLock<Option<ProviderTa
 pub(crate) enum HeadlessEmbedding {
     Root {
         node: std::sync::Arc<crate::print_rlm::InlineSessionNode>,
+        /// The runtime session's trust gate (`pa_runtime::SessionBuilder`).
+        call_policy: Option<Arc<dyn pa_core::kernel::CallPolicy>>,
     },
     Child(Box<ChildEngineOverrides>),
     Rpc,
@@ -489,6 +491,9 @@ pub(crate) struct HeadlessEmbeddingFields {
     /// The late fire-and-forget `agent_message.send` receipt sink
     /// (#10-print); `None` for the RPC embedding (no print node).
     pub(crate) on_late_sent_agent_message: Option<pa_core::LateSentAgentMessageHandler>,
+    /// What the kernel asks before each call past it: a runtime session's
+    /// trust gate; `None` for an inline child and the RPC embedding.
+    pub(crate) call_policy: Option<Arc<dyn pa_core::kernel::CallPolicy>>,
 }
 
 /// The embedding-owned fields for one headless engine build: print
@@ -496,7 +501,7 @@ pub(crate) struct HeadlessEmbeddingFields {
 /// listens on it), the RPC mode on the built handle's notify.
 pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> HeadlessEmbeddingFields {
     let node = match embedding {
-        HeadlessEmbedding::Root { node } => Some(Arc::clone(node)),
+        HeadlessEmbedding::Root { node, .. } => Some(Arc::clone(node)),
         HeadlessEmbedding::Child(overrides) => Some(Arc::clone(&overrides.node)),
         HeadlessEmbedding::Rpc => None,
     };
@@ -540,6 +545,10 @@ pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> Headle
         bash_wake,
         rpc_bash_wake,
         on_late_sent_agent_message,
+        call_policy: match embedding {
+            HeadlessEmbedding::Root { call_policy, .. } => call_policy.clone(),
+            HeadlessEmbedding::Child(_) | HeadlessEmbedding::Rpc => None,
+        },
     }
 }
 
@@ -763,6 +772,7 @@ pub(crate) async fn build_headless_engine_with(
         bash_wake,
         rpc_bash_wake,
         on_late_sent_agent_message,
+        call_policy,
     } = headless_embedding_fields(embedding);
     let (semantic_edges, thinking_level) = match embedding {
         HeadlessEmbedding::Child(overrides) => (
@@ -843,6 +853,7 @@ pub(crate) async fn build_headless_engine_with(
             // admission fires it, and the kernel's background settle does
             // too, so the embedding's parked drive or pump re-checks.
             bash_notice_wake: Some(Arc::clone(&bash_wake)),
+            call_policy,
             on_background_work_settled: Some(bash_wake),
             queued_goal_context_purge: None,
             queued_steering_probe: None,

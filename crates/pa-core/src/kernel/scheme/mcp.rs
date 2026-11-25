@@ -182,17 +182,24 @@ pub(super) fn register(
     registry: Arc<Registry>,
     cell: CellSignal,
     refusals: super::contracts::Refusals,
+    admission: &crate::kernel::call_policy::Admission,
 ) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Handle::current();
+    let admission = admission.clone();
     engine.register_fn(
         "%mcp-call",
         move |operation: String, payload: String| -> String {
             let signal = cell.lock().unwrap_or_else(PoisonError::into_inner).clone();
-            let outcome = match serde_json::from_str::<Value>(&payload) {
-                Err(error) => Err(format!("the arguments are not plain data: {error}")),
+            let admitted = admission.admit(crate::kernel::call_policy::CallKind::Native {
+                family: crate::kernel::call_policy::NativeFamily::Mcp,
+                name: &operation,
+            });
+            let outcome = match (admitted, serde_json::from_str::<Value>(&payload)) {
+                (Err(refused), _) => Err(format!("{refused:#}")),
+                (Ok(()), Err(error)) => Err(format!("the arguments are not plain data: {error}")),
                 // The engine cannot interrupt this thread: the call itself
                 // ends when its cell is stopped.
-                Ok(payload) => runtime.block_on(async {
+                (Ok(()), Ok(payload)) => runtime.block_on(async {
                     tokio::select! {
                         biased;
                         () = signal.cancelled() => {

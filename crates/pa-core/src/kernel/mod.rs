@@ -3,6 +3,7 @@
 //! windows, error context, session-boot admission).
 
 pub mod boot_admission;
+pub mod call_policy;
 pub(crate) mod call_refusals;
 pub mod cancellation;
 #[cfg(test)]
@@ -22,6 +23,7 @@ pub(crate) mod shell_runs;
 pub mod spill;
 pub(crate) mod test_runs;
 
+pub use call_policy::{CallKind, CallPolicy, CallRefused, NativeFamily};
 pub use cancellation::AbortSignal;
 pub use rlm_runtime::{
     create_default_rlm_subagent_session_name, find_rlm_model_matches,

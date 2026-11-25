@@ -105,8 +105,10 @@ pub(super) fn register(
     engine: &mut Engine,
     registry: Arc<Registry>,
     cell: CellSignal,
+    admission: &crate::kernel::call_policy::Admission,
 ) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Handle::current();
+    let admission = admission.clone();
     engine.register_fn(
         "%rz-call",
         move |operation: String, options: SteelVal| -> SteelVal {
@@ -115,7 +117,14 @@ pub(super) fn register(
             // sends no command: the rebuilt session could not see or end
             // what it made, and a write-mode session writes to its target.
             let outcome = match (
-                pa_types::session_scope::ensure_live(),
+                pa_types::session_scope::ensure_live()
+                    .map_err(anyhow::Error::from)
+                    .and_then(|()| {
+                        admission.admit(crate::kernel::call_policy::CallKind::Native {
+                            family: crate::kernel::call_policy::NativeFamily::Rizin,
+                            name: &operation,
+                        })
+                    }),
                 crate::kernel::scheme::limits::plain_data(options),
             ) {
                 (Err(error), _) => Err(error.to_string()),

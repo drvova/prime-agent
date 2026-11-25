@@ -267,6 +267,37 @@ impl HostRequestHandlers {
         self.handlers = Arc::new(map);
     }
 
+    /// These handlers, each asking `admission`'s policy before it runs
+    /// (a refusal is the request's error); unchanged without a policy.
+    pub(crate) fn gated(self, admission: &super::call_policy::Admission) -> Self {
+        let Some(policy) = &admission.0 else {
+            return self;
+        };
+        let map = Arc::try_unwrap(self.handlers).unwrap_or_else(|shared| (*shared).clone());
+        let handlers = map
+            .into_iter()
+            .map(|(kind, handler)| {
+                let (policy, request_type) = (Arc::clone(policy), kind.clone());
+                let gated: HostHandlerFn = Arc::new(move |payload: HostRequestPayload| {
+                    let call = super::call_policy::CallKind::HostRequest {
+                        kind: &request_type,
+                        payload: &payload.data,
+                    };
+                    match policy.admit(call) {
+                        Ok(()) => handler(payload),
+                        Err(refused) => {
+                            Box::pin(std::future::ready(Err(anyhow::Error::new(refused))))
+                        }
+                    }
+                });
+                (kind, gated)
+            })
+            .collect();
+        Self {
+            handlers: Arc::new(handlers),
+        }
+    }
+
     #[must_use]
     pub fn get(&self, request_type: &str) -> Option<&HostHandlerFn> {
         self.handlers.get(request_type)

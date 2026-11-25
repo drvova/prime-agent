@@ -1,0 +1,1 @@
+- Internal: a turn the event-driven runtime starts from untrusted outside content can only read files under the session's directory, read the web, and use its own context and todo list; `bash`, file writes, spawning and every other call are refused, and its prompt reaches the model marked as outside content. Owner runs (every print and json run today) are unchanged.

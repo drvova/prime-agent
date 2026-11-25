@@ -180,6 +180,7 @@ impl FileReads {
             HostRequestHandlers::new(),
             runtime,
             /*agent_dir*/ None,
+            &crate::kernel::call_policy::Admission::default(),
         ))
     }
 
@@ -219,6 +220,7 @@ impl Files {
         session: HostRequestHandlers,
         runtime: tokio::runtime::Handle,
         agent_dir: Option<PathBuf>,
+        admission: &crate::kernel::call_policy::Admission,
     ) -> Self {
         let mut handlers = HostRequestHandlers::new();
         FsSearchHost { observer: None }.register(&mut handlers);
@@ -238,6 +240,8 @@ impl Files {
                 /*observer*/ None,
             );
         }
+        // The kernel's own handlers pass the policy as the session's do.
+        let mut handlers = handlers.gated(admission);
         handlers.merge(session.clone());
         let state_dir = agent_dir.map(|directory| directory.join("edit-checks"));
         Self {

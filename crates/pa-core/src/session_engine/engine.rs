@@ -98,6 +98,11 @@ pub struct SessionEngineConfig {
     /// row onto the session's agent and fire the wake. `None` installs nothing —
     /// the daemon keeps its worker-lane sinks via the extra handlers.
     pub bash_notice_wake: Option<super::bash_notices::BashNoticeWake>,
+    /// Asked before every call a cell makes that reaches past the kernel
+    /// (each host request, each side-effecting native) runs; a refusal is
+    /// the call's error (`crate::kernel::call_policy`). `None` admits every
+    /// call, as before there was a policy.
+    pub call_policy: Option<Arc<dyn crate::kernel::call_policy::CallPolicy>>,
     /// An externally owned MCP manager: the engine adopts it instead of
     /// building its own, so ACP-admitted servers reach the prompt's MCP gating.
     pub mcp_manager: Option<std::sync::Arc<std::sync::Mutex<crate::mcp::McpManager>>>,
@@ -944,6 +949,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     );
     let scheme_options = crate::kernel::scheme::SchemeKernelOptions {
+        call_policy: config.call_policy.clone(),
         error_context,
         host_handlers: handlers.clone(),
         cwd: cwd.clone(),

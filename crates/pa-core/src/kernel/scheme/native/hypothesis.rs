@@ -463,8 +463,10 @@ pub(super) fn register(
     engine: &mut Engine,
     handlers: HostRequestHandlers,
     worktrees: Arc<Worktrees>,
+    admission: &crate::kernel::call_policy::Admission,
 ) {
     let runtime = tokio::runtime::Handle::current();
+    let admission = admission.clone();
     let hypotheses = Hypotheses {
         handlers,
         worktrees,
@@ -478,6 +480,10 @@ pub(super) fn register(
             let outcome = serde_json::from_str::<Value>(&payload)
                 .map_err(|error| anyhow!("the payload is not JSON: {error}"))
                 .and_then(|options| {
+                    admission.admit(crate::kernel::call_policy::CallKind::Native {
+                        family: crate::kernel::call_policy::NativeFamily::Hypotheses,
+                        name: "rlm-hypotheses",
+                    })?;
                     runtime.block_on(async {
                         match operation.as_str() {
                             "run" => hypotheses.run(&stop, &options).await,

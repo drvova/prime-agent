@@ -134,6 +134,7 @@ pub(crate) async fn build_faux_engine_with(
         bash_wake,
         rpc_bash_wake,
         on_late_sent_agent_message,
+        call_policy,
     } = super::headless_embedding_fields(embedding);
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {
@@ -174,6 +175,7 @@ pub(crate) async fn build_faux_engine_with(
             // The background-bash wake pair, the same seam the real
             // provider path wires (the scripted e2es drive the wake).
             bash_notice_wake: Some(std::sync::Arc::clone(&bash_wake)),
+            call_policy,
             on_background_work_settled: Some(bash_wake),
             queued_goal_context_purge: None,
             queued_steering_probe: None,

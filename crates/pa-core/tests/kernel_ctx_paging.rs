@@ -97,6 +97,7 @@ async fn engine_for(
         prewarm_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
+        call_policy: None,
         queued_goal_context_purge: None,
         queued_steering_probe: None,
         should_stop_after_turn: None,

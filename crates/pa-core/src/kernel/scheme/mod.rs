@@ -43,6 +43,7 @@ use steel::rvals::SteelVal;
 use steel::steel_vm::engine::Engine;
 use steel::steel_vm::register_fn::RegisterFn;
 
+use crate::kernel::call_policy::CallKind;
 use crate::kernel::cell_window::CellWindow;
 use crate::kernel::shared::{
     BackgroundCellObserver, CellWaitObserver, HostRequestHandlers, HostRequestPayload,
@@ -297,6 +298,10 @@ pub struct SchemeKernelOptions {
     /// definitions go with it (see [`SchemeKernelProvisioner::release`]), so
     /// the session can tell the model.
     pub on_state_lost: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Asked before every host request reaches its handler and at the entry
+    /// of every side-effecting native (`crate::kernel::call_policy`); `None`
+    /// admits every call.
+    pub call_policy: Option<Arc<dyn crate::kernel::call_policy::CallPolicy>>,
 }
 
 /// How one start of a session's kernel went.
@@ -332,6 +337,8 @@ pub(crate) struct SessionEnvironment {
     /// Records this session's uses of stored entries; `None` without an
     /// agent dir or a session id.
     pub(crate) reuse: Option<crate::reuse::Recorder>,
+    /// What the session's calls are asked about before they run.
+    pub(crate) admission: crate::kernel::call_policy::Admission,
 }
 
 /// One session's engine and the cells it runs.
@@ -440,7 +447,10 @@ impl SchemeKernelProvisioner {
             }
         }
         env.extend(options.env);
-        let mcp = Arc::new(mcp::Registry::new(options.host_handlers.clone()));
+        let admission = crate::kernel::call_policy::Admission(options.call_policy);
+        let mcp = Arc::new(mcp::Registry::new(
+            options.host_handlers.clone().gated(&admission),
+        ));
         if let Some(agent_dir) = &options.agent_dir {
             mcp.set_agent_dir(agent_dir.clone());
         }
@@ -455,6 +465,9 @@ impl SchemeKernelProvisioner {
         if let Some((recorder, skills)) = reuse.as_ref().zip(options.visible_skills.as_ref()) {
             native::watch_skill_files(&mut handlers, recorder, skills);
         }
+        // Every request the kernel sends, a cell's or its own, passes the
+        // policy: no handler is reached around it.
+        let handlers = handlers.gated(&admission);
         let environment = Arc::new(SessionEnvironment {
             cwd: options.cwd,
             shell: options.shell,
@@ -473,6 +486,7 @@ impl SchemeKernelProvisioner {
             output_budget: options.output_budget,
             visible_skills: options.visible_skills,
             reuse,
+            admission,
         });
         SchemeKernelProvisioner {
             state: Arc::new(ProvisionerState {
@@ -598,6 +612,9 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 let controllers = confinement::controllers(&mut engine);
                 let cells =
                     cell::Cells::new(Arc::clone(&environment), handlers.clone(), controllers);
+                // The one request answered here rather than by a handler
+                // asks the policy here.
+                let admission = environment.admission.clone();
                 engine.register_fn(
                     "%host-request-json",
                     move |request_type: String, payload: String| -> String {
@@ -610,9 +627,15 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                             // The kernel's own answer, as the Python kernel's
                             // manager gave it: the running cell is marked,
                             // and its result ends the turn.
-                            (true, _, _) => match running
-                                .ok_or_else(|| {
-                                    anyhow!("rlm.end_turn has no running cell to end the turn for")
+                            (true, _, payload) => match admission
+                                .admit(CallKind::HostRequest {
+                                    kind: END_TURN_REQUEST_TYPE,
+                                    payload: payload.as_ref().unwrap_or(&Value::Null),
+                                })
+                                .and_then(|()| {
+                                    running.ok_or_else(|| {
+                                        anyhow!("rlm.end_turn has no running cell to end the turn for")
+                                    })
                                 })
                                 .and_then(|cell| cell.end_turn())
                             {
@@ -733,9 +756,10 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                     &environment,
                     refusals.clone(),
                 )?;
-                mcp::register(&mut engine, mcp_client, Arc::clone(&cell), refusals)?;
-                rizin::register(&mut engine, rizin_sessions, Arc::clone(&cell))?;
-                factory::register(&mut engine, factory.clone(), Arc::clone(&cell))?;
+                let admission = &environment.admission;
+                mcp::register(&mut engine, mcp_client, Arc::clone(&cell), refusals, admission)?;
+                rizin::register(&mut engine, rizin_sessions, Arc::clone(&cell), admission)?;
+                factory::register(&mut engine, factory.clone(), Arc::clone(&cell), admission)?;
                 skills.start(&mut engine)?;
                 let own_globals = engine
                     .globals()

@@ -1127,6 +1127,7 @@ impl AgentSessionEngine {
             prewarm_kernel: Some(true),
             on_background_work_settled,
             bash_notice_wake: None,
+            call_policy: None,
             // The worker-installed purge withdraws queued minted continuations.
             queued_goal_context_purge,
             // The steering lane owns the stop hooks (a queued steer cuts the next turn).

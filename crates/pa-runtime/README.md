@@ -114,14 +114,34 @@ SQLite implementations over `pa-log`.
   so nothing of the session runs between them, and answers `None` when that task stopped the
   run. `finish` drains the refinements the turns started and ends the subagents, answering
   whether a `/refine` command's refinement failed. Both answer behind the events they streamed. A `Steer` task offered while
-  a turn runs is handed to the agent's steering queue and read at its next step. A panic in a
+  a turn runs is handed to the agent's steering queue and read at its next step, unless it
+  carries less trust than the running task: then it runs as its own task after. A panic in a
   turn is caught at the session thread's work loop: that task fails with the panic's text, the
   lifetime ends (its scope ended, its runtime shut down), and the next task runs on a fresh
   engine. Events reach the bus through one ordered outbox on the runtime's own task, so nothing
   a route sets off runs on a session's runtime.
 - **Agent routes** (`RuntimeTaskSink`): the target session is named, the event's own
   (`Origin`), or opened for the event (`Spawn`, in its `cwd` or the runtime's, recorded as a
-  subagent of the event's session); an empty route prompt takes the event's `AgentInput`.
+  subagent of the event's session); an empty route prompt takes the event's `AgentInput`. An
+  untrusted task's prompt is queued as `<untrusted-event source="<event source>">…</untrusted-event>`
+  (the source escaped, a closing tag in the text neutralized); the system prompt is untouched.
+- **Trust gate** (`trust/`): the session's host sets the running task's trust as the task
+  starts and clears it as it ends (`Owner` between tasks: a kernel prewarm, a background
+  command's report); the builder gets a `TrustGate` over it and installs it as the engine's
+  `pa_core::kernel::CallPolicy`, so the kernel asks it before every host request and every
+  side-effecting native. An owner's task is admitted everywhere. An untrusted task is admitted
+  by the class `trust/classes.rs` gives the call: `fs.read`/`fs.grep`/`fs.glob`/`fs.find` when
+  each path in the payload (its `path` or `root`, and any `cwd`) resolves under the session's
+  directory, links followed, and a glob's pattern is relative with no `..`; the web readers
+  (`web.search`, `web.read`, `web.extract`, `web.crawl`, `web.capture`); the session's own
+  `ctx.*`, `todo.*` and `rlm.end_turn`; the kernel's reports about its own work
+  (`bash.completed`/`consumed`/`quiet`, `cell.completed`/`consumed`, `call.refused` and the
+  `*.fact`, `tests.summary`, `rizin.used`, `factory.progress` counts); and of the natives only the
+  file readers. Everything else (bash and its jobs, file writes, worktrees, hypotheses, the
+  harness store, factories, rizin, MCP, `web.automate`, spawning, messaging, scheduling,
+  settings, observing other sessions, questions) and any request the table does not list is
+  refused: "refused for an untrusted turn: <call>". The table's guard fails while pa-core
+  registers a request it does not list (the scan is pa-core's `tests/common/host_requests.rs`).
 - **Turn driver** (`turn/`, moved from pa-cli's print runtime, run by the sessions above):
   `TurnBoundary` (the overflow compact-and-retry, the requested and threshold compaction arms,
   the auto-refine reviews and the disposal drain; public, so an embedder's `InlineSubagents`
@@ -140,7 +160,7 @@ No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStor
 routes yet (behind `ModelCaller`). No event sources (`pa-sources`, publishing through `Intake`).
 No socket listener (the daemon accepts connections and hands each to `WireServer::serve`), and
 no query or call backend (behind `Handlers`). No inline-subagent host (the embedder's
-`InlineSubagents`; the print modes' lives in pa-cli). No subscription persistence or trust gate yet; a
+`InlineSubagents`; the print modes' lives in pa-cli). No subscription persistence yet; a
 task's `done` carries no cause chain yet. Nothing bounds how wide a cascade grows within the hop
 limit, or how many events an `Intake` or the sessions' outbox buffers.
 
@@ -156,7 +176,8 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 - `LogEventStore`, `LogTaskStore`, `LogStateStore` (each `new(Arc<pa_log::Log>)`;
   `LogStateStore::get`).
 - `Runtime` (`open`, `publish`, `listen`, `create_session`, `cancel`, `idle`, `settle`, `finish`,
-  `shutdown`), `RuntimeOptions`, `SessionBuilder`, `SessionSpec`, `BuiltSession`, `DriverEvents`,
+  `shutdown`), `RuntimeOptions`, `SessionBuilder` (`build(id, spec, call_policy)`: the session's
+  trust gate, which the engine must install), `SessionSpec`, `BuiltSession`, `DriverEvents`,
   `InlineSubagents`, `SettleAfter`, `Settled`, `Finished`; `TaskQueue::session_idle`.
 - The turn driver's `TurnBoundary`.
 

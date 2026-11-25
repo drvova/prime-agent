@@ -698,8 +698,13 @@ fn valid_name(name: &str) -> bool {
 /// Define `%worktree-call` in a session's engine: `(operation payload-json)`
 /// to the reply JSON its Scheme wrapper decodes. Must be called from within
 /// a tokio runtime.
-pub(super) fn register(engine: &mut Engine, worktrees: Arc<Worktrees>) {
+pub(super) fn register(
+    engine: &mut Engine,
+    worktrees: Arc<Worktrees>,
+    admission: &crate::kernel::call_policy::Admission,
+) {
     let runtime = tokio::runtime::Handle::current();
+    let admission = admission.clone();
     engine.register_fn(
         "%worktree-call",
         move |operation: String, payload: String| -> String {
@@ -709,6 +714,10 @@ pub(super) fn register(engine: &mut Engine, worktrees: Arc<Worktrees>) {
             let outcome = serde_json::from_str::<Value>(&payload)
                 .map_err(|error| anyhow!("the payload is not JSON: {error}"))
                 .and_then(|options| {
+                    admission.admit(crate::kernel::call_policy::CallKind::Native {
+                        family: crate::kernel::call_policy::NativeFamily::Worktree,
+                        name: &operation,
+                    })?;
                     let flag =
                         |name: &str| options.get(name).and_then(Value::as_bool) == Some(true);
                     let target = &options["target"];

@@ -42,6 +42,7 @@ mod session;
 mod store;
 mod subscriptions;
 mod tasks;
+mod trust;
 mod turn;
 mod wire;
 
