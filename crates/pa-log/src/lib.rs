@@ -17,6 +17,11 @@
 //!   [`Log::transcript_bytes`] and their siblings keep transcripts by
 //!   locator, byte for byte, for the transcript store in `pa-core`: a read at
 //!   any byte position goes straight to the line holding it.
+//! - [`Log::sources`], [`Log::replace_sources`], [`Log::value`],
+//!   [`Log::put_value`], [`Log::crashes`] and [`Log::append_crashes`] keep the
+//!   agent's other state (schedules, the event bus, the harness store, the
+//!   crash log) by partition, each written whole or imported once from the
+//!   file it replaces ([`Origin`]).
 //!
 //! The database runs with `journal_mode=WAL` and `synchronous=NORMAL`: a power
 //! loss can drop the last commits, but never leaves the file inconsistent.
@@ -29,12 +34,16 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 
 mod events;
+mod partitions;
 mod schema;
 mod sessions;
 mod transcripts;
 mod writer;
 
 pub use events::{EventRetention, DEFAULT_EVENT_RETENTION};
+pub use partitions::{
+    CrashRow, Origin, Partition, SourceKind, SourceRow, SourceSet, SubscriptionRow,
+};
 pub use sessions::{EntryRow, ImportOutcome, SessionRow};
 pub use transcripts::{
     AppendMode, MoveOutcome, NewTranscript, PutMode, TranscriptChunk, TranscriptRow,

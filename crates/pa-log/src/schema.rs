@@ -93,6 +93,55 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX transcript_lines_entry_id ON transcript_lines (transcript, entry_id)
         WHERE entry_id IS NOT NULL;
     ",
+    // 3: the agent's state besides transcripts, by partition: the stores
+    // that were files (schedules, heartbeats, the event bus, the harness
+    // store, the reuse ledger, the crash log). A partition's rows count once
+    // `partitions` holds it; deleting it deletes them.
+    r"
+    CREATE TABLE partitions (
+        scope         TEXT PRIMARY KEY,
+        imported_from TEXT,
+        source_sha256 TEXT,
+        held_since    INTEGER NOT NULL
+    ) WITHOUT ROWID;
+
+    CREATE TABLE sources (
+        scope    TEXT NOT NULL REFERENCES partitions (scope) ON DELETE CASCADE,
+        id       TEXT NOT NULL,
+        kind     TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        spec     TEXT NOT NULL,
+        claim    TEXT,
+        PRIMARY KEY (scope, id)
+    ) WITHOUT ROWID;
+    CREATE INDEX sources_kind ON sources (kind, scope);
+
+    CREATE TABLE subscriptions (
+        scope    TEXT NOT NULL REFERENCES partitions (scope) ON DELETE CASCADE,
+        id       TEXT NOT NULL,
+        source   TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        spec     TEXT NOT NULL,
+        PRIMARY KEY (scope, id)
+    ) WITHOUT ROWID;
+    CREATE INDEX subscriptions_source ON subscriptions (scope, source);
+
+    CREATE TABLE kv (
+        scope   TEXT NOT NULL REFERENCES partitions (scope) ON DELETE CASCADE,
+        key     TEXT NOT NULL,
+        value   TEXT NOT NULL,
+        updated INTEGER NOT NULL,
+        PRIMARY KEY (scope, key)
+    ) WITHOUT ROWID;
+
+    CREATE TABLE crashes (
+        seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope     TEXT NOT NULL REFERENCES partitions (scope) ON DELETE CASCADE,
+        stored_at INTEGER NOT NULL,
+        record    TEXT NOT NULL
+    );
+    CREATE INDEX crashes_scope ON crashes (scope, seq);
+    ",
 ];
 
 /// Bring `connection`'s database to the current schema.

@@ -297,7 +297,7 @@ fn a_newer_schema_is_refused() {
     assert_eq!(
         refused,
         Some(format!(
-            "migrate {}: the database is at schema version 99, newer than this build's 2: it \
+            "migrate {}: the database is at schema version 99, newer than this build's 3: it \
              was written by a newer Prime Agent",
             path.display()
         ))
@@ -460,6 +460,166 @@ fn transcript_appends_replaces_moves_and_removes() {
             true,
             MoveOutcome::Missing,
             (true, false, Vec::new()),
+        )
+    );
+}
+
+fn imported(from: &str) -> super::Origin {
+    super::Origin::Imported {
+        from: from.to_string(),
+        sha256: format!("sha-of-{from}"),
+    }
+}
+
+fn source(id: &str, kind: super::SourceKind, claim: Option<&str>) -> super::SourceRow {
+    super::SourceRow {
+        id: id.to_string(),
+        kind,
+        spec: format!("{{\"id\":\"{id}\"}}"),
+        claim: claim.map(str::to_string),
+    }
+}
+
+/// A partition's sources and subscriptions come back in the order they were
+/// stored; an import stores a partition only while it is not held, and a
+/// write that fails (two sources with one id) stores nothing, not even the
+/// partition's record.
+#[test]
+fn source_partitions_are_replaced_whole_and_imported_once() {
+    use super::{Origin, SourceKind, SourceSet, SubscriptionRow};
+    let dir = tempfile::tempdir().unwrap();
+    let log = open(dir.path());
+    let file_set = SourceSet {
+        sources: vec![
+            source("z", SourceKind::Timer, Some("{\"id\":\"d1\"}")),
+            source("a", SourceKind::Timer, None),
+        ],
+        subscriptions: Vec::new(),
+    };
+    let first_import = log
+        .replace_sources("cron:/a.json", file_set.clone(), imported("/a.json"))
+        .wait_blocking()
+        .unwrap();
+    let written = SourceSet {
+        sources: vec![source("a", SourceKind::Bus, None)],
+        subscriptions: vec![SubscriptionRow {
+            id: "s1".to_string(),
+            source: "a".to_string(),
+            spec: "{}".to_string(),
+        }],
+    };
+    let second_import = log
+        .replace_sources("cron:/a.json", written.clone(), imported("/a.json"))
+        .wait_blocking()
+        .unwrap();
+    let after_imports = log.sources("cron:/a.json").unwrap();
+    let write = log
+        .replace_sources("cron:/a.json", written.clone(), Origin::Written)
+        .wait_blocking()
+        .unwrap();
+    let duplicate = SourceSet {
+        sources: vec![
+            source("x", SourceKind::Timer, None),
+            source("x", SourceKind::Timer, None),
+        ],
+        subscriptions: Vec::new(),
+    };
+    let refused = log
+        .replace_sources("cron:/b.json", duplicate, Origin::Written)
+        .wait_blocking()
+        .is_err();
+    let partition = log.partition("cron:/a.json").unwrap().unwrap();
+    assert_eq!(
+        (
+            first_import,
+            second_import,
+            after_imports,
+            write,
+            log.sources("cron:/a.json").unwrap(),
+            refused,
+            log.partition("cron:/b.json").unwrap(),
+            (partition.imported_from, partition.source_sha256),
+        ),
+        (
+            true,
+            false,
+            file_set,
+            true,
+            written,
+            true,
+            None,
+            (
+                Some("/a.json".to_string()),
+                Some("sha-of-/a.json".to_string())
+            ),
+        )
+    );
+}
+
+/// Values and crash records follow the same partition rules: an import of a
+/// held partition changes nothing, a write always lands, crash records keep
+/// their order, and partitions are listed by scope prefix.
+#[test]
+fn values_and_crash_records_are_kept_by_partition() {
+    use super::Origin;
+    let dir = tempfile::tempdir().unwrap();
+    let log = open(dir.path());
+    let put = |scope: &str, value: &str, origin: Origin| {
+        log.put_value(scope, "document", value.to_string(), origin)
+            .wait_blocking()
+            .unwrap()
+    };
+    let value_answers = [
+        put("harness:/h.json", "from the file", imported("/h.json")),
+        put("harness:/h.json", "imported again", imported("/h.json")),
+        put("harness:/h.json", "written", Origin::Written),
+        put("harness:/other.json", "only written", Origin::Written),
+    ];
+    let append = |records: &[&str], origin: Origin| {
+        log.append_crashes(
+            "crashes:/c.jsonl",
+            records.iter().map(ToString::to_string).collect(),
+            origin,
+        )
+        .wait_blocking()
+        .unwrap()
+    };
+    let crash_answers = [
+        append(&["{\"n\":1}", "{\"n\":2}"], imported("/c.jsonl")),
+        append(&["{\"n\":9}"], imported("/c.jsonl")),
+        append(&["{\"n\":3}"], Origin::Written),
+    ];
+    assert_eq!(
+        (
+            value_answers,
+            log.value("harness:/h.json", "document").unwrap(),
+            log.value("harness:/h.json", "other key").unwrap(),
+            crash_answers,
+            log.crashes("crashes:/c.jsonl")
+                .unwrap()
+                .into_iter()
+                .map(|row| row.record)
+                .collect::<Vec<_>>(),
+            log.partitions("harness:")
+                .unwrap()
+                .into_iter()
+                .map(|partition| partition.scope)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            [true, false, true, true],
+            Some("written".to_string()),
+            None,
+            [true, false, true],
+            vec![
+                "{\"n\":1}".to_string(),
+                "{\"n\":2}".to_string(),
+                "{\"n\":3}".to_string()
+            ],
+            vec![
+                "harness:/h.json".to_string(),
+                "harness:/other.json".to_string()
+            ],
         )
     );
 }
