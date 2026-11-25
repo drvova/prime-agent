@@ -69,7 +69,6 @@ fn graceful_shutdown(socket: &Path) {
     let _ = reader.read_line(&mut String::new());
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     // The in-process client forwards this process's env to the worker.
     support::scrub_ambient_provider_credentials();

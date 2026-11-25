@@ -1,15 +1,3 @@
-// large_futures: stack-resident futures on hot paths by design.
-// too_many_lines: style gate. Casts: 64-bit targets; narrowing sits at
-// bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::too_many_lines
-)]
-
 //! The mode ledger: the recording mock terminal's state machine over the
 //! child's whole byte stream — nothing the child armed may still be armed
 //! at the end of the scanned range.

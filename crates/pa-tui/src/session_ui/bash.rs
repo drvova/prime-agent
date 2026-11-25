@@ -428,7 +428,6 @@ impl SessionUi {
     /// session-scoped); a discarded side run's events are swallowed, a foreign transient run
     /// renders only in its owning client's pane, and a main-thread run mounts the usual bash
     /// transcript card.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_bash_start(
         &mut self,
         command: &str,
