@@ -132,13 +132,13 @@ SQLite implementations over `pa-log`.
   side-effecting native. An owner's task is admitted everywhere. An untrusted task is admitted
   by the class `trust/classes.rs` gives the call: `fs.read`/`fs.grep`/`fs.glob`/`fs.find` when
   each path in the payload (its `path` or `root`, and any `cwd`) resolves under the session's
-  directory, links followed, and a glob's pattern is relative with no `..`; the web readers
-  (`web.search`, `web.read`, `web.extract`, `web.crawl`, `web.capture`); the session's own
+  directory, links followed, and a glob's pattern is relative with no `..`; the session's own
   `ctx.*`, `todo.*` and `rlm.end_turn`; the kernel's reports about its own work
   (`bash.completed`/`consumed`/`quiet`, `cell.completed`/`consumed`, `call.refused` and the
   `*.fact`, `tests.summary`, `rizin.used`, `factory.progress` counts); and of the natives only the
   file readers. Everything else (bash and its jobs, file writes, worktrees, hypotheses, the
-  harness store, factories, rizin, MCP, `web.automate`, spawning, messaging, scheduling,
+  harness store, factories, rizin, MCP, every `web.*` request (a URL could carry out what the
+  turn read), spawning, messaging, scheduling,
   settings, observing other sessions, questions) and any request the table does not list is
   refused: "refused for an untrusted turn: <call>". The table's guard fails while pa-core
   registers a request it does not list (the scan is pa-core's `tests/common/host_requests.rs`).

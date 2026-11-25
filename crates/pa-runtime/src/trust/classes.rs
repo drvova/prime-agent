@@ -14,8 +14,6 @@ pub(crate) enum CallClass {
     /// Reads files: admitted for an untrusted turn when every path its
     /// payload names resolves under the session's working directory.
     WorkspaceRead,
-    /// Reads the web, and nothing of the user's.
-    Web,
     /// The session's own paged-out context, its todo list, and the end of
     /// its own turn.
     OwnSession,
@@ -24,9 +22,10 @@ pub(crate) enum CallClass {
     /// owner's turn started still reports while an untrusted turn runs; what
     /// a cell could forge with one reaches only its own session.
     KernelReport,
-    /// Acts for the user, or reads past the session: runs commands, writes
-    /// files, spawns or messages agents, schedules, configures, observes
-    /// other sessions, asks the user. Refused for an untrusted turn.
+    /// Acts for the user, or reaches past the session: runs commands, writes
+    /// files, reaches the web (a URL can carry what the turn read out),
+    /// spawns or messages agents, schedules, configures, observes other
+    /// sessions, asks the user. Refused for an untrusted turn.
     Privileged,
 }
 
@@ -127,11 +126,11 @@ pub(crate) const HOST_REQUESTS: &[(&str, CallClass)] = &[
     ("usage.quotas", CallClass::Privileged),
     ("usage.session", CallClass::Privileged),
     ("web.automate", CallClass::Privileged),
-    ("web.capture", CallClass::Web),
-    ("web.crawl", CallClass::Web),
-    ("web.extract", CallClass::Web),
-    ("web.read", CallClass::Web),
-    ("web.search", CallClass::Web),
+    ("web.capture", CallClass::Privileged),
+    ("web.crawl", CallClass::Privileged),
+    ("web.extract", CallClass::Privileged),
+    ("web.read", CallClass::Privileged),
+    ("web.search", CallClass::Privileged),
     ("worktree.record", CallClass::Privileged),
 ];
 

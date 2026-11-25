@@ -10,8 +10,7 @@
 //! An owner's task, and the time between tasks (a kernel prewarm, a
 //! background command's report), is admitted everywhere. An untrusted task
 //! is admitted only for the calls [`classes`] marks as reading the session's
-//! working directory, reading the web, or touching the session's own context
-//! and todo list, and for the kernel's reports about its own work; every
+//! working directory or touching the session's own context and todo list, and for the kernel's reports about its own work; every
 //! other call, and any request the table does not list, is refused with
 //! "refused for an untrusted turn: <call>".
 
@@ -125,7 +124,7 @@ impl CallPolicy for TrustGate {
                             && named("cwd").is_none_or(under_cwd)
                             && pattern_stays
                     }
-                    CallClass::Web | CallClass::OwnSession | CallClass::KernelReport => true,
+                    CallClass::OwnSession | CallClass::KernelReport => true,
                     CallClass::Privileged => false,
                 };
                 (kind, admitted)
@@ -134,10 +133,9 @@ impl CallPolicy for TrustGate {
                 let admitted = match native_class(family) {
                     // The file reader's own `fs.*` request is checked with
                     // its paths.
-                    CallClass::WorkspaceRead
-                    | CallClass::Web
-                    | CallClass::OwnSession
-                    | CallClass::KernelReport => true,
+                    CallClass::WorkspaceRead | CallClass::OwnSession | CallClass::KernelReport => {
+                        true
+                    }
                     CallClass::Privileged => false,
                 };
                 (name, admitted)

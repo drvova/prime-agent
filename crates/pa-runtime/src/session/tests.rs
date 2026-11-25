@@ -873,4 +873,26 @@ async fn an_untrusted_steer_runs_as_its_own_task() {
     bed.runtime.shutdown().await;
 }
 
+/// An untrusted task reaches no web: a URL could carry out what it read.
+#[tokio::test]
+async fn an_untrusted_tasks_web_read_is_refused() {
+    let mut bed = bed(json!([
+        eval_cell("(web-read \"https://example.invalid/\")"),
+        { "text": "refused" },
+    ]))
+    .await;
+    bed.input_with("fetch it", None, Trust::Untrusted).await;
+    let (stream, _) = bed.until_done().await;
+    let answers = cell_answers(&stream);
+    assert_eq!(
+        (
+            answers.len(),
+            answers[0].contains("refused for an untrusted turn: web.read"),
+        ),
+        (1, true),
+        "{answers:?}"
+    );
+    bed.runtime.shutdown().await;
+}
+
 mod events;
