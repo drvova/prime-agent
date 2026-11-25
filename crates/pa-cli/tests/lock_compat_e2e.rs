@@ -1,5 +1,10 @@
-// Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(clippy::cast_possible_wrap)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_wrap,
+        reason = "`Child::id()` is a pid the kernel bounds below i32::MAX"
+    )
+)]
 
 //! Lock-convention compatibility, binary level: the TS `prime-agent` and the
 //! Rust `prime-agent` must agree on the lock artifact at `<file>.lock`. The

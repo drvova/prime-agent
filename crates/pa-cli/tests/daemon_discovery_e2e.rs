@@ -1,6 +1,17 @@
-// too_many_lines: style gate only. Casts: 64-bit targets; narrowing sits at bounded
-// OS/protocol boundaries.
-#![allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree` is one scenario, top to bottom"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_truncation,
+        reason = "the supervisor pid read back from the wire is a kernel-bounded pid"
+    )
+)]
 
 //! End-to-end containment tests for the daemon-discovery commands. Every
 //! daemon lives in a test-created fixture directory. A discovery scan or
