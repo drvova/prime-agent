@@ -95,5 +95,36 @@ class CleanupTests(unittest.TestCase):
                 self.assertEqual(scope.ownership(20, 'proc:8'), expected)
 
 
+class TranscriptTests(unittest.TestCase):
+    def test_exported_transcripts_map_back_to_their_locators(self):
+        """export-jsonl's layout (the agent dir's, `other/<absolute path>` outside it)
+        maps back to locators; only session-headed transcripts under a dir count."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            agent = Path(temp).resolve() / 'agent'
+            agent.mkdir()
+            (agent / 'agent.db').write_text('')
+            header = '{"type":"session","id":"s"}\n'
+
+            def export(command, **_kwargs):
+                out = Path(command[command.index('--out') + 1])
+                (out / 'sessions').mkdir(parents=True)
+                (out / 'sessions/a.jsonl').write_text(header)
+                (out / 'sessions/journal.jsonl').write_text('{"op":1}\n')
+                outside = out / 'other' / Path(temp).resolve().relative_to('/') / 'custom'
+                outside.mkdir(parents=True)
+                (outside / 'b.jsonl').write_text(header)
+
+            with patch('lifecycle_lib.subprocess.run', side_effect=export):
+                found = lifecycle.saved_transcripts(agent, binary='prime-agent')
+                sessions = lifecycle.session_transcripts(agent, agent / 'sessions', 'prime-agent')
+                custom = lifecycle.transcript_text(agent, Path(temp) / 'custom/b.jsonl', 'prime-agent')
+            self.assertEqual(
+                (sorted(found), [path for path, _ in sessions], custom),
+                (sorted([agent / 'sessions/a.jsonl', agent / 'sessions/journal.jsonl',
+                         Path(temp).resolve() / 'custom/b.jsonl']),
+                 [agent / 'sessions/a.jsonl'], header))
+
+
 if __name__ == '__main__':
     unittest.main()

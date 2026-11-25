@@ -35,6 +35,8 @@ fn write_revival_fixture(
     let session_file = sessions_dir.join(format!("{session_id}.jsonl"));
     session.set_path(session_file.clone());
     session.rewrite().expect("session file");
+    // A saved session the supervisor (its own agent dir) finds as its file.
+    crate::common::into_original_file(&session_file);
     let session_bytes = crate::common::transcripts(&session_file)
         .read(&session_file)
         .expect("session bytes");

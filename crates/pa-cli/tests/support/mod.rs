@@ -44,13 +44,19 @@ pub fn saved_transcripts(
     agent_dir: &std::path::Path,
 ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
     let out = tempfile::tempdir().expect("export dir");
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_prime-agent"))
+    let mut export = std::process::Command::new(env!("CARGO_BIN_EXE_prime-agent"));
+    export
         .args(["export-jsonl", "--all", "--out"])
         .arg(out.path())
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
-        .env("DO_NOT_TRACK", "1")
-        .output()
-        .expect("run export-jsonl");
+        .env("DO_NOT_TRACK", "1");
+    // A process the test did not start with this process's environment (a
+    // tmux pane's, which the tmux server gives its own) keeps the database in
+    // the agent dir itself: read that one.
+    if database_of(agent_dir).as_deref() == Some(agent_dir.join("agent.db").as_path()) {
+        export.env_remove(pa_core::session::store::DATABASE_DIR_ENV);
+    }
+    let output = export.output().expect("run export-jsonl");
     assert!(
         output.status.success(),
         "export-jsonl failed: {}",
@@ -95,6 +101,19 @@ pub fn saved_transcripts_in(
         .collect()
 }
 
+/// The transcript database a product process keeps for `agent_dir`: the
+/// test seam's (`pa_core::session::store::database_path`, the one this
+/// process's environment selects), or `<agent dir>/agent.db` (a process
+/// started without the seam); none before any process opened one.
+fn database_of(agent_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    [
+        pa_core::session::store::database_path(agent_dir),
+        agent_dir.join("agent.db"),
+    ]
+    .into_iter()
+    .find(|database| database.is_file())
+}
+
 /// The agent dir whose database holds the transcripts under `path`: the
 /// nearest ancestor whose database exists
 /// (`pa_core::session::store::database_path`), or the one a home or test
@@ -108,7 +127,7 @@ fn agent_dir_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
                 ancestor.join("agent"),
             ]
         })
-        .find(|dir| pa_core::session::store::database_path(dir).is_file())
+        .find(|dir| database_of(dir).is_some())
 }
 
 /// The saved sessions in the directory `dir` (a sessions dir, or a child

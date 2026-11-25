@@ -596,6 +596,8 @@ fn wave_b11_saved_sessions_wire_shapes() {
         ));
         session.set_path(path.clone());
         session.rewrite().expect("write saved session");
+        // A saved session the supervisor (its own agent dir) finds as its file.
+        common::into_original_file(&path);
         path
     };
 

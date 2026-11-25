@@ -15,7 +15,7 @@ import sys
 import tempfile
 import threading
 
-from lifecycle_lib import env_for, digest
+from lifecycle_lib import env_for, digest, transcripts_under
 from lifecycle_lib import OwnedProcesses, TAG, finish
 from check_restore_notice import texts, probe_from
 
@@ -152,8 +152,9 @@ def observe(binary, root, observed):
         assert process.returncode == 0, process.returncode
         assert not provider.errors, provider.errors
         started = probe_from(provider.requests, START)
-        rows = [json.loads(line) for path in (root / 'sessions').rglob('*.jsonl')
-                for line in path.read_text().splitlines()]
+        rows = [json.loads(line) for _path, text in
+                transcripts_under(root / 'agent', root / 'sessions')
+                for line in text.splitlines()]
         notices = [row for row in rows if row.get('type') == 'custom_message'
                    and row.get('customType') == 'async_bash_completion']
         finished = probe_from(provider.requests, DONE)

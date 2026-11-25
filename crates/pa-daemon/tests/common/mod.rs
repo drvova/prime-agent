@@ -193,7 +193,13 @@ pub fn transcripts(
     let Some(database) = path
         .ancestors()
         .flat_map(|dir| [dir.to_path_buf(), dir.join("agent")])
-        .map(|dir| pa_core::session::store::database_path(&dir))
+        // The seam's database, or one a process without it kept in the dir.
+        .flat_map(|dir| {
+            [
+                pa_core::session::store::database_path(&dir),
+                dir.join(pa_core::session::store::DATABASE_FILE),
+            ]
+        })
         .find(|database| database.is_file())
     else {
         return pa_core::session::store::store();

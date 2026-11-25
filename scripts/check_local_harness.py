@@ -14,7 +14,7 @@ import tempfile
 import threading
 
 from check_restore_notice import invoke, texts, Server
-from lifecycle_lib import digest
+from lifecycle_lib import digest, session_transcripts
 
 MARKER = 'LOCAL_HARNESS_PARITY='
 READ = """(define (memory-rows state)
@@ -144,13 +144,13 @@ def run_case(binary, root, observation):
             probe = current_probe(server.requests[phase], phase)
             assert len(server.requests[phase]) == 2, 'unexpected provider request sequence'
 
-            files = [p for p in sessions.rglob('*.jsonl')
-                     if json.loads(p.read_text().splitlines()[0]).get('type') == 'session']
+            saved = dict(session_transcripts(agent, sessions))
+            files = list(saved)
             if phase == 'setup':
                 assert len(files) == 1, files
                 original = files[0]
             current = original if phase != 'other' else next(p for p in files if p != original)
-            session_id = json.loads(current.read_text().splitlines()[0])['id']
+            session_id = json.loads(saved[current].splitlines()[0])['id']
             artifact = root / 'session-artifacts' / session_id
             assert probe['local_ids'] == ([] if phase == 'other' else ['parity-local']), probe
             assert probe['global_ids'] == ['parity-global'], probe

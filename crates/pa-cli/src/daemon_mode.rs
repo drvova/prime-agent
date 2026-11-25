@@ -8,6 +8,8 @@ use crate::config;
 pub fn run_daemon_mode(daemon_socket: Option<&str>) -> Result<i32> {
     let socket_path = config::resolve_daemon_socket_path(daemon_socket);
     let agent_dir = config::get_agent_dir();
+    // The daemon keeps its transcripts in this agent dir's database.
+    pa_core::session::store::use_agent_dir(&agent_dir);
     // Asked to be the restart owner: keep the daemon this command line starts instead of being
     // it. Nothing of the session engine is built on this path.
     #[cfg(unix)]

@@ -13,6 +13,7 @@ import signal
 import socket
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 import fcntl
@@ -571,6 +572,75 @@ class OwnedProcesses:
             return False
         finally:
             os.close(fd)
+
+
+def env_agent_dir(env):
+    """The agent dir a product process run with `env` resolves."""
+    if env.get("PRIME_AGENT_CODING_AGENT_DIR"):
+        return Path(env["PRIME_AGENT_CODING_AGENT_DIR"])
+    return Path(env["HOME"]) / ".prime/agent"
+
+
+def saved_transcripts(agent_dir, binary=None, timeout=60):
+    """The session transcripts the product keeps for `agent_dir`, by locator
+    (resolved), as text. Sessions live in the agent dir's database (`agent.db`),
+    not in JSONL files: `prime-agent export-jsonl --all` writes them out under the
+    agent dir's layout (`other/<absolute path>` for locators outside it), and this
+    maps each file back to its locator. `binary` defaults to `PA_RUST_BINARY`."""
+    binary = binary or os.environ["PA_RUST_BINARY"]
+    agent = Path(agent_dir).resolve()
+    env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TZ") if key in os.environ}
+    env.update(HOME=str(agent.parent), PRIME_AGENT_CODING_AGENT_DIR=str(agent), DO_NOT_TRACK="1",
+               PI_OFFLINE="1")
+    with tempfile.TemporaryDirectory() as out:
+        subprocess.run([str(binary), "export-jsonl", "--all", "--out", out], env=env,
+                       stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=timeout)
+        found = {}
+        for path in sorted(Path(out).rglob("*.jsonl")):
+            relative = path.relative_to(out)
+            if relative.parts[0] == "other":
+                locator = Path("/", *relative.parts[1:])
+            else:
+                locator = agent / relative
+            found[locator] = path.read_text()
+        return found
+
+
+def has_database(agent_dir):
+    """Whether a product process opened the transcript database of `agent_dir`
+    (before any did, its sessions can only be JSONL files)."""
+    return (Path(agent_dir) / "agent.db").is_file()
+
+
+def transcripts_under(agent_dir, directory, binary=None):
+    """Every saved transcript under `directory` (recursively), as (locator, text)
+    sorted by locator; before any process opened the agent dir's database, the
+    `.jsonl` files there as they are."""
+    root = Path(directory).resolve()
+    if has_database(agent_dir):
+        found = saved_transcripts(agent_dir, binary).items()
+    else:
+        found = [(path.resolve(), path.read_text()) for path in sorted(root.rglob("*.jsonl"))]
+    return [(locator, text) for locator, text in found if root in locator.parents]
+
+
+def session_transcripts(agent_dir, directory, binary=None):
+    """The saved sessions under `directory` (see `transcripts_under`): the
+    transcripts whose first line is a `session` header."""
+    return [(locator, text) for locator, text in transcripts_under(agent_dir, directory, binary)
+            if text.strip() and json.loads(text.splitlines()[0]).get("type") == "session"]
+
+
+def transcript_text(agent_dir, locator, binary=None):
+    """The saved session at `locator` as text (see `saved_transcripts`)."""
+    wanted = Path(locator)
+    if not has_database(agent_dir):
+        return wanted.read_text()
+    wanted = wanted.parent.resolve() / wanted.name
+    transcripts = saved_transcripts(agent_dir, binary)
+    if wanted not in transcripts:
+        raise FileNotFoundError("no saved session at %s: %s" % (locator, sorted(transcripts)))
+    return transcripts[wanted]
 
 
 def finish(scope, client, daemon, observation):

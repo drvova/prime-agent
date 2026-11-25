@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 
-from lifecycle_lib import digest
+from lifecycle_lib import digest, session_transcripts, transcript_text
 
 RESET = "Define again what you still need before you use it."
 PROBE = "RESTORE_PARITY_RESULT="
@@ -172,8 +172,7 @@ def run_case(binary, root, observation):
         setup_probe = probe_from(server.requests['setup'], 'RESTORE_PARITY_SETUP=')
         observation['setup'] = setup_probe
         assert setup_probe == {'marker': 'defined-before-resume'}, setup_probe
-        session_files = list(sessions.rglob('*.jsonl'))
-        session_files = [p for p in session_files if json.loads(p.read_text().splitlines()[0]).get('type') == 'session']
+        session_files = [path for path, _ in session_transcripts(agent, sessions)]
         assert len(session_files) == 1, 'expected one persisted session: %s' % session_files
         assert not notices_in(server.requests['setup'][0]), 'fresh session emitted a kernel-reset notice'
         server.phase = 'resume'
@@ -196,7 +195,7 @@ def run_case(binary, root, observation):
         notice = notices[0]
         assert 'is a new engine' in notice, notice
         # Persisted/renderable notice is inspected separately from the provider request.
-        entries = [json.loads(line) for line in session_files[0].read_text().splitlines()]
+        entries = [json.loads(line) for line in transcript_text(agent, session_files[0]).splitlines()]
         stored = [row for row in entries if row.get('customType') == 'ipython_state_restored']
         assert len(stored) == 1 and stored[0].get('display') is True, stored
         assert stored[0].get('details') == {'restored': False}, stored

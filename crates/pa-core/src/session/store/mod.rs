@@ -105,19 +105,39 @@ pub enum TranscriptStoreKind {
     File,
 }
 
+static SELECTED: OnceLock<Selected> = OnceLock::new();
+
 fn selected() -> &'static Selected {
-    static SELECTED: OnceLock<Selected> = OnceLock::new();
-    SELECTED.get_or_init(select)
+    SELECTED.get_or_init(|| {
+        let _process = pa_types::session_scope::enter(None);
+        match pa_types::platform::agent_dir() {
+            Some(agent_dir) => select(agent_dir),
+            None => Selected::Files(FileTranscriptStore),
+        }
+    })
 }
 
-/// Choose the process's store from its own agent dir (never a session's):
-/// the SQLite store unless the global settings say `"transcriptStore":
-/// "file"`, and the file store when the database cannot be opened.
-fn select() -> Selected {
-    let _process = pa_types::session_scope::enter(None);
-    let Some(agent_dir) = pa_types::platform::agent_dir() else {
-        return Selected::Files(FileTranscriptStore);
-    };
+/// Select the process's [`store`] for `agent_dir`: the agent dir the binary
+/// resolved for everything else it keeps (the daemon's `--agent-dir`, the
+/// CLI's configured dir), so its transcript database never follows a
+/// different resolution than its sessions dir, settings and logs. A binary
+/// calls it once at start, before any transcript is touched; without it the
+/// store resolves the process's agent dir itself on first use. Returns
+/// whether this call selected the store (false: it was in use already).
+pub fn use_agent_dir(agent_dir: &Path) -> bool {
+    let mut chose = false;
+    SELECTED.get_or_init(|| {
+        chose = true;
+        let _process = pa_types::session_scope::enter(None);
+        select(agent_dir.to_path_buf())
+    });
+    chose
+}
+
+/// Choose the process's store for `agent_dir` (never a session's): the
+/// SQLite store unless the global settings say `"transcriptStore": "file"`,
+/// and the file store when the database cannot be opened.
+fn select(agent_dir: PathBuf) -> Selected {
     let settings = crate::settings::SettingsManager::create(&agent_dir, &agent_dir);
     match settings.global_settings().transcript_store.as_deref() {
         Some("file") => return Selected::Files(FileTranscriptStore),
