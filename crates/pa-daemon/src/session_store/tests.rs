@@ -1131,7 +1131,7 @@ fn saved_file_with_foreign_bytes(dir: &Path) -> (PathBuf, String) {
 
 /// What a metadata change left after `prefix`: exactly one row, parsed.
 fn the_one_appended_row(path: &Path, prefix: &str) -> Value {
-    let written = pa_core::session::store::read_to_string(&path).unwrap();
+    let written = pa_core::session::store::read_to_string(path).unwrap();
     let appended = written
         .strip_prefix(prefix)
         .expect("the earlier bytes are unchanged");

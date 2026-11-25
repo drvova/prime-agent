@@ -7,7 +7,7 @@ use pa_core::session_engine::rlm_host::persisted_rlm_max_depth;
 /// (`rlm_host::persisted_rlm_max_depth`) must match it on every class.
 fn persisted_rlm_max_depth_reference(path: Option<&str>) -> Option<u64> {
     let path = std::path::Path::new(path?);
-    let content = pa_core::session::store::read_to_string(&path).ok()?;
+    let content = pa_core::session::store::read_to_string(path).ok()?;
     crate::session_store::parse_session_entries(&content)
         .iter()
         .rev()

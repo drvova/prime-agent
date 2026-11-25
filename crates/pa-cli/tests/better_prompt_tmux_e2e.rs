@@ -170,7 +170,7 @@ fn start(dir: &Path) -> Pane {
 /// Every session line under `home`'s session store that records a user message.
 fn user_messages(home: &Path) -> Vec<String> {
     let agent_dir = home.join(".prime/agent");
-    let sessions = std::fs::canonicalize(&agent_dir)
+    let sessions = pa_types::platform::canonicalize(&agent_dir)
         .unwrap_or_else(|_| agent_dir.clone())
         .join("sessions");
     support::saved_transcripts(&agent_dir)

@@ -246,7 +246,7 @@ fn assert_sessions_gone(agent_dir: &Path, session_sockets: &[PathBuf]) {
 }
 
 fn workers_registered_since(log_path: &Path, since: &str) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(&log_path) else {
+    let Ok(content) = std::fs::read_to_string(log_path) else {
         return Vec::new();
     };
     let mut ids = Vec::new();

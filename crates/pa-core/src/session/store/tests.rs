@@ -147,7 +147,7 @@ fn session_trees_import_once_and_leave_the_originals_untouched() {
     }
     let journal = sessions.join("recovery.jsonl");
     std::fs::write(&journal, "{\"op\":\"x\"}\n").unwrap();
-    let roots = [sessions.clone(), archive.clone()];
+    let roots = [sessions, archive];
     let first = import_trees(&store, &roots);
     let second = import_trees(&store, &roots);
     let again = store.import_original(&originals[0]).unwrap();

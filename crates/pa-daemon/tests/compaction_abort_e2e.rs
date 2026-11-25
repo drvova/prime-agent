@@ -576,7 +576,7 @@ fn abort_compaction_mid_threshold_run_records_the_cancelled_outcome() {
         .find(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
-                && common::read_transcript(&path)
+                && common::read_transcript(path)
                     .is_ok_and(|content| content.contains("compaction_outcome"))
         })
         .expect("the durable outcome row in the session file");

@@ -557,7 +557,7 @@ fn a_boot_fires_the_revived_session_due_job_and_never_resurrects_the_killed_sibl
 }
 
 fn session_rows_containing(session_file: &Path, needle: &str) -> usize {
-    common::read_transcript(&session_file).map_or(0, |content| {
+    common::read_transcript(session_file).map_or(0, |content| {
         content.lines().filter(|line| line.contains(needle)).count()
     })
 }

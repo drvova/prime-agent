@@ -56,7 +56,8 @@ pub fn saved_transcripts(
         "export-jsonl failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let agent_dir = std::fs::canonicalize(agent_dir).unwrap_or_else(|_| agent_dir.to_path_buf());
+    let agent_dir =
+        pa_types::platform::canonicalize(agent_dir).unwrap_or_else(|_| agent_dir.to_path_buf());
     let mut transcripts = std::collections::BTreeMap::new();
     let mut dirs = vec![out.path().to_path_buf()];
     while let Some(dir) = dirs.pop() {
@@ -87,7 +88,7 @@ pub fn saved_transcripts_in(
     agent_dir: &std::path::Path,
     dir: &std::path::Path,
 ) -> Vec<(std::path::PathBuf, Vec<u8>)> {
-    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let dir = pa_types::platform::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     saved_transcripts(agent_dir)
         .into_iter()
         .filter(|(locator, _)| locator.parent() == Some(dir.as_path()))
@@ -162,7 +163,7 @@ pub fn saved_transcript(
     let locator = locator.as_ref();
     let canonical = locator
         .parent()
-        .and_then(|dir| std::fs::canonicalize(dir).ok())
+        .and_then(|dir| pa_types::platform::canonicalize(dir).ok())
         .map_or_else(
             || locator.to_path_buf(),
             |dir| dir.join(locator.file_name().unwrap_or_default()),

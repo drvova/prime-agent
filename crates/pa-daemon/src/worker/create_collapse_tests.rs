@@ -99,7 +99,7 @@ fn legacy_sequence_file(
 /// `parentId` chain, the `timestamp`s); everything else must be byte-equal.
 fn masked_lines(path: &std::path::Path) -> Vec<Value> {
     let mut rows = Vec::new();
-    for line in pa_core::session::store::read_to_string(&path)
+    for line in pa_core::session::store::read_to_string(path)
         .unwrap()
         .lines()
     {

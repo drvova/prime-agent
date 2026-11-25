@@ -217,7 +217,7 @@ fn worker_descriptor_of(agent_dir: &Path, socket: &Path, session_id: &str) -> (P
         .map(|entry| entry.path())
         .find(|path| {
             path.extension().and_then(|extension| extension.to_str()) == Some("json")
-                && common::read_transcript(&path).is_ok_and(|content| content.contains(session_id))
+                && common::read_transcript(path).is_ok_and(|content| content.contains(session_id))
         })
         .expect("the session worker's descriptor");
     let descriptor: Value =
@@ -229,7 +229,7 @@ fn worker_descriptor_of(agent_dir: &Path, socket: &Path, session_id: &str) -> (P
 
 fn session_state(session_file: &Path) -> String {
     let mut state = String::new();
-    for line in common::read_transcript(&session_file)
+    for line in common::read_transcript(session_file)
         .expect("session file readable")
         .lines()
     {

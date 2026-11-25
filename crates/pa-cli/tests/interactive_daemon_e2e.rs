@@ -688,7 +688,7 @@ async fn tui_attaches_prompts_streams_lists_and_switches() {
     );
     client.close();
 
-    let persisted = support::session_texts(&session_dir).into_iter().count();
+    let persisted = support::session_texts(&session_dir).len();
     assert_eq!(persisted, 2, "two session files persisted");
     drop(supervisor);
 }
@@ -4885,8 +4885,10 @@ async fn tui_anthropic_warning_warns_once_then_a_fresh_process_reattaches_silent
     let persisted = support::session_texts(&session_dir)
         .into_iter()
         .find(|(locator, _)| locator.file_name() == file.file_name())
-        .map(|(_, text)| text)
-        .unwrap_or_else(|| panic!("the session file {} is not saved", file.display()));
+        .map_or_else(
+            || panic!("the session file {} is not saved", file.display()),
+            |(_, text)| text,
+        );
     assert!(
         persisted.contains("anthropic_subscription_warning_shown"),
         "the marker row reached the session file:\n{persisted}"

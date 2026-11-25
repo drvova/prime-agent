@@ -443,7 +443,7 @@ impl TranscriptStore for SqliteTranscriptStore {
         let row = self
             .log
             .append_transcript(
-                key.locator.clone(),
+                key.locator,
                 bytes.to_vec(),
                 AppendMode::NewLine,
                 ns(SystemTime::now()),
@@ -481,19 +481,18 @@ impl TranscriptStore for SqliteTranscriptStore {
         // transcript as it was.
         let _ = (|| -> io::Result<()> {
             let key = key(locator)?;
-            let row = match self.row(&key)? {
-                Some(row) => row,
-                None => {
-                    // An original is imported only when it needs the repair.
-                    let mut original = self.files.open(locator)?;
-                    if !repair::tail_looks_damaged(&mut *original)
-                        || !repair::first_line_is_session_header(&mut *original)
-                    {
-                        return Ok(());
-                    }
-                    drop(original);
-                    self.adopt(locator, &key)?
+            let row = if let Some(row) = self.row(&key)? {
+                row
+            } else {
+                // An original is imported only when it needs the repair.
+                let mut original = self.files.open(locator)?;
+                if !repair::tail_looks_damaged(&mut *original)
+                    || !repair::first_line_is_session_header(&mut *original)
+                {
+                    return Ok(());
                 }
+                drop(original);
+                self.adopt(locator, &key)?
             };
             self.repair_row(&key, row)
         })();

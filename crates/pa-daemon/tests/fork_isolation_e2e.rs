@@ -537,7 +537,7 @@ fn the_fork_is_a_fully_detached_session() {
 }
 
 fn fork_file_text(path: &str) -> String {
-    common::read_transcript(&path).unwrap_or_default()
+    common::read_transcript(path).unwrap_or_default()
 }
 
 /// Wait until the socket accepts connections (a restarted supervisor parks on

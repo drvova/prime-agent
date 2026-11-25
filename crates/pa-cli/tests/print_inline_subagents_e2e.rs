@@ -240,7 +240,7 @@ fn print_inline_subagents_wait_for_replies_and_combine_them() {
         "two child session dirs: {child_dirs:?}"
     );
     for child_dir in &child_dirs {
-        let child_files: Vec<PathBuf> = support::session_texts(&child_dir)
+        let child_files: Vec<PathBuf> = support::session_texts(child_dir)
             .into_iter()
             .map(|(locator, _)| locator)
             .collect();

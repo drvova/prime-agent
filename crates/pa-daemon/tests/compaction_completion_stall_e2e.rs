@@ -551,7 +551,7 @@ impl TimedClient {
 }
 
 fn read_trace(path: &Path) -> Vec<(String, u128)> {
-    let content = common::read_transcript(&path).unwrap_or_default();
+    let content = common::read_transcript(path).unwrap_or_default();
     content
         .lines()
         .filter_map(|line| {

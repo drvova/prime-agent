@@ -236,7 +236,7 @@ fn create_parent(
 
 /// The transcript rows of one session file, in file order.
 fn transcript_rows(path: &Path) -> Vec<Value> {
-    common::read_transcript(&path)
+    common::read_transcript(path)
         .unwrap_or_else(|_| panic!("read session file {}", path.display()))
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())

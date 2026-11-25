@@ -386,9 +386,7 @@ fn a_due_scheduled_job_never_boots_its_session_at_daemon_start() {
 
     let session_id = "11111111-2222-3333-4444-555555555555";
     let session_file = write_ts_era_session(&agent_dir, session_id, "the ts era session", "active");
-    let file_before = common::transcripts(&session_file)
-        .read(&session_file)
-        .expect("read before");
+    let file_before = common::read_transcript(&session_file).expect("read before");
 
     write_scheduled_jobs(
         &agent_dir,
@@ -425,9 +423,7 @@ fn a_due_scheduled_job_never_boots_its_session_at_daemon_start() {
         "a due scheduled job booted a session at daemon start: {listed:?}"
     );
 
-    let file_after = common::transcripts(&session_file)
-        .read(&session_file)
-        .expect("read after");
+    let file_after = common::read_transcript(&session_file).expect("read after");
     assert_eq!(
         file_before, file_after,
         "the not-running session's file changed at boot"

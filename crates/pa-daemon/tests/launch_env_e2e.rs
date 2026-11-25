@@ -264,8 +264,8 @@ fn read_receipt(receipt: &Path) -> String {
 /// The `rlmDepth` of a session file's header line.
 #[cfg(target_os = "linux")]
 fn session_header_depth(session_file: &Path) -> u64 {
-    let file = common::transcripts(&session_file)
-        .open(&session_file)
+    let file = common::transcripts(session_file)
+        .open(session_file)
         .expect("session file open");
     let mut first_line = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(file), &mut first_line)

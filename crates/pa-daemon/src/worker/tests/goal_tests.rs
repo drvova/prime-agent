@@ -413,7 +413,7 @@ async fn goal_dispatch_worker_with_store(
 /// The session file's `thread_goal_state` custom rows, in order.
 fn thread_goal_state_rows(path: &std::path::Path) -> Vec<Value> {
     crate::session_store::parse_session_entries(
-        &pa_core::session::store::read_to_string(&path).expect("read"),
+        &pa_core::session::store::read_to_string(path).expect("read"),
     )
     .into_iter()
     .filter(|entry| {

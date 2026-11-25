@@ -63,7 +63,7 @@ fn call(client: &mut Client, command: &Value) -> Value {
 }
 
 fn rows(session_file: &str) -> Vec<Value> {
-    crate::common::read_transcript(&session_file)
+    crate::common::read_transcript(session_file)
         .unwrap_or_default()
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())

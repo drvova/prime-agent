@@ -523,7 +523,7 @@ fn threshold_compaction_streams_summary_deltas_to_attached_clients() {
         .find(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
-                && common::read_transcript(&path)
+                && common::read_transcript(path)
                     .is_ok_and(|content| content.contains("\"type\":\"compaction\""))
         })
         .expect("the durable compaction entry in the session file");

@@ -588,7 +588,7 @@ fn assert_unsuccessful_compaction_observed(run: &FailedCompactionRun) -> (String
         .find(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
-                && common::read_transcript(&path)
+                && common::read_transcript(path)
                     .is_ok_and(|content| content.contains("compaction_outcome"))
         })
         .expect("the durable outcome row in the session file");

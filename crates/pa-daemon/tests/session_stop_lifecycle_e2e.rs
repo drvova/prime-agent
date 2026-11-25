@@ -312,7 +312,7 @@ fn kill_cancels_goal_and_heartbeat_and_no_wake_revives_the_session() {
             .map(|entry| entry.path())
             .find(|path| {
                 path.extension().and_then(|extension| extension.to_str()) == Some("json")
-                    && common::read_transcript(&path)
+                    && common::read_transcript(path)
                         .is_ok_and(|content| content.contains(&a.session_id))
             })
             .expect("A's pre-kill worker descriptor");

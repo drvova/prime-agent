@@ -193,7 +193,7 @@ fn start(dir: &Path) -> Pane {
 /// The `model_change` entries the session files under `home` recorded, as `provider/id`.
 fn recorded_switches(home: &Path) -> Vec<String> {
     let agent_dir = home.join(".prime/agent");
-    let sessions = std::fs::canonicalize(&agent_dir)
+    let sessions = pa_types::platform::canonicalize(&agent_dir)
         .unwrap_or_else(|_| agent_dir.clone())
         .join("sessions");
     let mut switches = Vec::new();

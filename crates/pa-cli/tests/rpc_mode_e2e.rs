@@ -1135,7 +1135,7 @@ struct TimedRpcChild {
     pending_stdout: Option<std::process::ChildStdout>,
     next_id: u64,
     /// Held so the tempdir (the child's cwd) outlives the child: Drop reaps first.
-    _home: tempfile::TempDir,
+    home: tempfile::TempDir,
 }
 
 impl TimedRpcChild {
@@ -1176,7 +1176,7 @@ impl TimedRpcChild {
             frames: None,
             pending_stdout: Some(stdout),
             next_id: 0,
-            _home: home,
+            home,
         }
     }
 
@@ -1362,7 +1362,7 @@ fn rpc_compact_flush_is_bounded_against_a_stalled_reader() {
     let mut compacted_behind_the_stall = false;
     while Instant::now() < row_deadline {
         // The child keeps the session in its own home's database.
-        let session = support::saved_transcripts(&client._home.path().join(".prime/agent"))
+        let session = support::saved_transcripts(&client.home.path().join(".prime/agent"))
             .into_values()
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .collect::<String>();
