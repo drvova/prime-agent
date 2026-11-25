@@ -164,8 +164,9 @@ fn key(locator: &Path) -> io::Result<Key> {
 }
 
 /// Make an imported original read-only: it is the rollback, never written
-/// again. A failure leaves the import standing and is logged.
-fn freeze_original(path: &Path) {
+/// again. A failure leaves the import standing and is logged. The agent's
+/// other state files ([`crate::agent_state`]) are frozen the same way.
+pub(crate) fn freeze_original(path: &Path) {
     let frozen = fs::metadata(path).and_then(|metadata| {
         let mut permissions = metadata.permissions();
         if permissions.readonly() {
@@ -176,7 +177,7 @@ fn freeze_original(path: &Path) {
     });
     if let Err(error) = frozen {
         eprintln!(
-            "transcript store: imported {} but could not make it read-only: {error}",
+            "agent database: imported {} but could not make it read-only: {error}",
             path.display()
         );
     }

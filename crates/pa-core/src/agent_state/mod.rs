@@ -16,10 +16,12 @@
 //! database holds a partition, the file is read as it is (a store from
 //! before the move works at once); the first write stores the whole state
 //! in the database, and the file is never read or written again.
-//! [`import_agent_state`] brings the files in off the launch path.
+//! [`import_agent_state`] brings the files in off the launch path and makes
+//! each original it imported read-only (one it skipped stays as it was).
 //!
 //! With the file transcript store (`"transcriptStore": "file"`) there is no
-//! database, and every store keeps its file as before.
+//! database, nothing is imported, and every store keeps its file, writable,
+//! as before.
 
 use std::io;
 use std::path::{Path, PathBuf};

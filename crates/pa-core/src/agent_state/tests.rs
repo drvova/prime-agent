@@ -1,7 +1,8 @@
 //! Each store's import: a file shaped as the store wrote it before the move
 //! (the store's own bytes, written out by the export) imports whole and
-//! reads back as the store kept it; a second import changes nothing; a file
-//! that does not parse is skipped and reported, and nothing of it is stored.
+//! reads back as the store kept it, its original left read-only; a second
+//! import changes nothing; a file that does not parse is skipped and
+//! reported, nothing of it is stored, and it stays writable.
 
 use std::path::{Path, PathBuf};
 
@@ -13,14 +14,21 @@ use super::{kept_bytes, process_log, StateFile};
 /// Write the bytes the store keeps for `written` as an original file at
 /// `original` (as a build before the move left it), import it twice, and
 /// import `corrupt` (written at a third path): the two answers, the corrupt
-/// import's refusal and whether its partition exists, and whether the
-/// original is still byte for byte what was written.
+/// import's refusal and whether its partition exists, whether the original
+/// is still byte for byte what was written, and whether the original and
+/// the corrupt file are read-only.
 fn import_round(
     file: StateFile,
     written: &Path,
     original: &Path,
     corrupt: &str,
-) -> (Vec<Result<StateImport, String>>, bool, bool, bool) {
+) -> (
+    Vec<Result<StateImport, String>>,
+    bool,
+    bool,
+    bool,
+    [bool; 2],
+) {
     let log = process_log().expect("the test process keeps a database");
     let bytes = kept_bytes(file, written).expect("the store kept its state");
     std::fs::create_dir_all(original.parent().unwrap()).unwrap();
@@ -36,21 +44,30 @@ fn import_round(
     std::fs::write(&damaged, corrupt).unwrap();
     let refused = import_state_file(log, file, &damaged).is_err();
     let damaged_held = log.partition(&file.scope(&damaged)).unwrap().is_some();
+    let read_only = |path: &Path| std::fs::metadata(path).unwrap().permissions().readonly();
     (
         answers,
         refused,
         damaged_held,
         std::fs::read(original).unwrap() == bytes,
+        [read_only(original), read_only(&damaged)],
     )
 }
 
 /// What every store's round answers.
-fn imported_once() -> (Vec<Result<StateImport, String>>, bool, bool, bool) {
+fn imported_once() -> (
+    Vec<Result<StateImport, String>>,
+    bool,
+    bool,
+    bool,
+    [bool; 2],
+) {
     (
         vec![Ok(StateImport::Imported), Ok(StateImport::AlreadyHeld)],
         true,
         false,
         true,
+        [true, false],
     )
 }
 

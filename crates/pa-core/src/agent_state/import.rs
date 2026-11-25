@@ -5,8 +5,9 @@
 //! while the database does not hold its partition: a second import, or one
 //! racing the store's own first write, changes nothing. A file that does not
 //! parse is skipped and reported, and stays the store's source until the
-//! store's next write (which, as it did to the file, replaces it). The
-//! originals are left as they are and never written again.
+//! store's next write (which, as it did to the file, replaces it). An
+//! imported original is left in place, made read-only (as the transcript
+//! originals are), and never written again: it is the rollback.
 
 use std::path::{Path, PathBuf};
 
@@ -118,7 +119,10 @@ pub(crate) fn import_state_file(
         }
     };
     match receipt.wait_blocking() {
-        Ok(true) => Ok(StateImport::Imported),
+        Ok(true) => {
+            crate::session::store::freeze_original(path);
+            Ok(StateImport::Imported)
+        }
         Ok(false) => Ok(StateImport::AlreadyHeld),
         Err(error) => Err(format!("{error:#}")),
     }

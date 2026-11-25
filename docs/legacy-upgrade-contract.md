@@ -266,11 +266,14 @@ The same database keeps the stores that were files besides transcripts
   imported again, and the import never overwrites what a store has written:
   a second pass changes nothing. The database records the file and the
   SHA-256 of its bytes.
-- **Originals.** Left where they were, byte for byte, and never written again.
-  A downgrade reads them as they were when they were imported; what changed
-  after that exists only in the database, and `prime-agent export-jsonl --all
-  --out <dir>` writes it back in the files' own layout (beside the session
-  files, at each file's path under the agent dir).
+- **Originals.** An imported file stays where it was, byte for byte, made
+  read-only, and is never written again; a file that was skipped stays as it
+  was, writable. A downgrade reads them as they were when they were imported;
+  what changed after that exists only in the database, and `prime-agent
+  export-jsonl --all --out <dir>` writes it back in the files' own layout
+  (beside the session files, at each file's path under the agent dir). To
+  let an older build write an imported original again, make it writable
+  again (`chmod u+w`).
 - **Failure reporting.** A file that cannot be read or does not parse (a crash
   log may end in one torn line, which is not a record) is skipped whole, in
   one transaction or not at all. The daemon log names it and the next boot

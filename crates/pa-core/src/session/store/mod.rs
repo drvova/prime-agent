@@ -49,6 +49,7 @@ mod sqlite;
 pub use export::{export_jsonl, ExportReport, ExportSelection};
 
 use file::FileTranscriptStore;
+pub(crate) use sqlite::freeze_original;
 use sqlite::{OriginalImport, SqliteTranscriptStore};
 
 /// The database file in the agent dir.
