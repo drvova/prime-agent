@@ -365,8 +365,9 @@ impl Worker {
             update_resume: None,
             daemon_death: None,
             keeper_pid: None,
-            transcript_store_fallback: pa_core::session::store::fallback_reason()
-                .map(str::to_string),
+            // The supervisor's hello reports the store; asking here would
+            // select this worker's store on the hello path.
+            transcript_store_fallback: None,
             client_id: crate::util::new_display_id(),
             server_capabilities: factory_capabilities,
             rest: Map::default(),
