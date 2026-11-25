@@ -362,7 +362,10 @@ pub struct McpLoginEligibility {
 }
 
 /// Evaluate whether a fresh login may run for one connection.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the check weighs every source of a connection's endpoint and credential at once"
+)]
 pub fn mcp_login_eligibility(
     connection_id: &str,
     service: Option<&McpServiceDescriptor>,

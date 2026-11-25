@@ -25,9 +25,13 @@ pub(crate) enum ImagePasteSource {
     /// Image data on the clipboard (a screenshot, a browser copy).
     Clipboard,
     /// An image file a clipboard file copy names (Explorer's Copy on Windows).
-    // Only the Win32 reader sees file copies; the variant stays in the shared vocabulary so the
-    // telemetry label set is the same on every platform.
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(
+        not(windows),
+        allow(
+            dead_code,
+            reason = "only the Win32 reader sees file copies; the variant stays so the telemetry labels match on every platform"
+        )
+    )]
     ClipboardFile,
     /// An image file path pasted or dragged into the prompt.
     Path,

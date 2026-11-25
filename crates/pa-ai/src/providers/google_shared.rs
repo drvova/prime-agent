@@ -8,7 +8,10 @@ use crate::providers::transform_messages::transform_messages_with_normalizer;
 use crate::types::{AssistantContent, Context, Model, ModelExt, StopReason, ThinkingBudgets, Tool};
 use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
 
-#[allow(unused_imports)]
+#[expect(
+    unused_imports,
+    reason = "re-exported for the Google providers that read the stream state"
+)]
 pub use crate::providers::google_stream::GoogleStreamState;
 
 pub const API_GOOGLE_GENERATIVE_AI: &str = "google-generative-ai";
@@ -16,7 +19,10 @@ pub const API_GOOGLE_VERTEX: &str = "google-vertex";
 
 /// Thinking level values accepted by Gemini 3 models (`GoogleThinkingLevel`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // full TS option surface; the UNSPECIFIED variant is accepted wire input
+#[expect(
+    dead_code,
+    reason = "the enum keeps the TS option surface; the UNSPECIFIED variant is accepted wire input"
+)]
 pub enum GoogleThinkingLevel {
     ThinkingLevelUnspecified,
     Minimal,
@@ -70,8 +76,10 @@ pub fn get_google_thinking_budget(
         GoogleBudgetThinkingLevel::High => custom_budgets.and_then(|b| b.high),
     };
     if let Some(custom) = custom {
-        // A custom thinking budget is a token count; the wire field is i64 and `as` is the lenient TS-number mapping.
-        #[allow(clippy::cast_possible_wrap)]
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "a custom thinking budget is a token count; the wire field is i64, as lenient as a TS number"
+        )]
         let budget = custom as i64;
         return budget;
     }
@@ -152,8 +160,10 @@ fn supports_multimodal_function_response(model_id: &str) -> bool {
 
 /// Convert internal context to Google `contents[]`, preserving replayable signatures only when
 /// protocol-valid.
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one function per provider stream, mirroring the TS reference's shape"
+)]
 pub fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
     use crate::types::{Message, UserMessageContent, UserOrToolContent};
     let mut contents: Vec<Value> = Vec::new();

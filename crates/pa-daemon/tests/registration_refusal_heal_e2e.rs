@@ -4,12 +4,17 @@
 //! registration refused and retires. A session hosted by a daemon that died, whose descriptor
 //! is gone, leaves only its lease, and the session file resumes. A session wedged in a call
 //! that never returns is ended by its owner's stop, and its file resumes.
+#![cfg_attr(
+    all(unix, target_os = "linux"),
+    expect(
+        clippy::too_many_lines,
+        reason = "each heal e2e reads top to bottom as one scenario"
+    )
+)]
 // The suite's liveness and child-discovery helpers read Linux procfs;
 // on other unixes they cannot observe processes, and the waits would
 // pass vacuously — skip the suite there instead of reporting a false
 // green.
-// Fn length is a style gate, not correctness: each e2e reads top to bottom as one scenario.
-#![allow(clippy::too_many_lines)]
 #![cfg(all(unix, target_os = "linux"))]
 
 mod common;
@@ -24,8 +29,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    // The socket path rides the struct for harness symmetry; no case reads it here.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the socket path rides the struct for harness symmetry; no case reads it"
+    )]
     socket: PathBuf,
 }
 
@@ -35,9 +42,10 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test process exits
-// immediately afterwards, reaping it.
-#[allow(clippy::zombie_processes)]
+#[expect(
+    clippy::zombie_processes,
+    reason = "the timeout panic path cannot wait on the child; the test process exits right after and reaps it"
+)]
 fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command

@@ -144,8 +144,10 @@ fn strip_symbol_keys(value: &Value) -> Value {
     }
 }
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over the message history, mirroring the TS conversion"
+)]
 fn to_chat_messages(messages: &[Message], supports_images: bool) -> Vec<Value> {
     let mut result: Vec<Value> = Vec::new();
 

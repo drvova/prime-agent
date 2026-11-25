@@ -10,7 +10,13 @@
 //! last write. The env-less session stays silent (no boot-context bleed
 //! — the TS daemon's shared-process failure mode cannot recur here) until
 //! its attach adopts the pane identity (adopt-if-absent).
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the pane-lifecycle scenario reads top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;

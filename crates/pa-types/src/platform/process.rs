@@ -124,9 +124,10 @@ pub fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
     }
     // `proc_pidpath`'s documented buffer contract is `PROC_PIDPATHINFO_MAXSIZE` (4 * MAXPATHLEN).
     let mut buffer = [0u8; 4 * libc::PATH_MAX as usize];
-    // A `PATH_MAX`-scaled constant length always fits proc_pidpath's u32
-    // size parameter.
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a `PATH_MAX`-scaled constant length always fits proc_pidpath's u32 size parameter"
+    )]
     let buffer_len = buffer.len() as u32;
     // SAFETY: writes the pid's executable path into `buffer` (at most its
     // size, NUL-terminated) and returns the byte count; 0 means the path
@@ -136,8 +137,10 @@ pub fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
     if written <= 0 {
         return None;
     }
-    // Positive by the check above, so widening to usize loses no sign.
-    #[allow(clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "positive by the check above, so widening to usize loses no sign"
+    )]
     let written = (written as usize).min(buffer.len());
     let end = buffer[..written]
         .iter()
@@ -163,8 +166,10 @@ pub fn process_executable_path(pid: u32) -> Option<std::path::PathBuf> {
     }
     let handle = winapi::open_process(winapi::PROCESS_QUERY_LIMITED_INFORMATION, pid)?;
     let mut buffer = [0u16; 1024];
-    // The buffer is a fixed [u16; 1024]: the length never exceeds u32.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the buffer is a fixed [u16; 1024]: the length never exceeds u32"
+    )]
     let mut size = buffer.len() as u32;
     // Writes the process image path into `buffer` (at most `size` wide
     // chars, NUL-terminated); a 0 return means the query failed. The
@@ -441,7 +446,10 @@ mod darwin {
 /// no windows-sys dependency - same policy as the named-pipe transport).
 #[cfg(windows)]
 mod winapi {
-    #![allow(non_snake_case)]
+    #![expect(
+        non_snake_case,
+        reason = "the hand-declared kernel32 externs keep their Win32 names"
+    )]
 
     use std::ffi::c_void;
 

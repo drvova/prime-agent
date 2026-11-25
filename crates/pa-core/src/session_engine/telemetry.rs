@@ -261,9 +261,10 @@ impl UsageTotals {
     }
 }
 
-// The run's independent lifecycle flags (ended, retry pending, trigger
-// pending, usage complete); an enum would not change the flow.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the run's lifecycle flags are independent (ended, retry pending, trigger pending, usage complete)"
+)]
 struct ActiveRun {
     started_at: u64,
     /// `AgentEnd` fired but not finalized yet: the post-run compaction drain

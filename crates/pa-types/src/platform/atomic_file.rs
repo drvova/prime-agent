@@ -230,7 +230,10 @@ fn sync_directory(target: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-#[allow(clippy::unnecessary_wraps)] // the Unix arm's signature: Windows has no directory sync
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature is the unix arm's; Windows has no directory sync"
+)]
 fn sync_directory(_target: &Path) -> io::Result<()> {
     Ok(())
 }

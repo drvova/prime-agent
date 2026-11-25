@@ -489,8 +489,10 @@ impl Supervisor {
 
     /// Handle one client command line: returns outbound lines in order and
     /// whether this client connection should stop.
-    // The per-connection stream sender rides the same context bundle (lint budget +1).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the per-connection stream sender rides the same context bundle"
+    )]
     async fn dispatch_client(
         self: &Arc<Self>,
         line: &str,
@@ -636,7 +638,10 @@ impl Supervisor {
     }
     /// The parsed-command match of [`Self::dispatch_client`], executed under
     /// the mutation-drain latch by that wrapper.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the parsed command runs with the dispatch context the wrapper already holds"
+    )]
     async fn execute_parsed_command(
         self: &Arc<Self>,
         command: &DaemonCommand,

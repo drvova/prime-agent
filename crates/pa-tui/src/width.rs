@@ -627,8 +627,10 @@ mod tests {
 /// Golden widths captured from the TS `visibleWidth` over the lane's
 /// Unicode corpus.
 #[test]
-// deliberate decomposed/non-NFC fixtures: the width engine must measure the raw sequences
-#[allow(clippy::unicode_not_nfc)]
+#[expect(
+    clippy::unicode_not_nfc,
+    reason = "deliberate decomposed (non-NFC) fixtures: the width engine must measure the raw sequences"
+)]
 fn str_width_matches_ts_golden_corpus() {
     let cases: Vec<(&str, usize)> = vec![
         ("你好世界，这是一段很长的中文文本", 32),

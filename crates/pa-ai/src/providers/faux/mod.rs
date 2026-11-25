@@ -273,11 +273,11 @@ impl FauxProviderRegistration {
 }
 
 fn estimate_tokens(text: &str) -> u64 {
-    // The faux token estimate is f64 math by design (chars/4, rounded up); ceil() makes it integral and non-negative.
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_sign_loss,
+        reason = "the faux token estimate is f64 math (chars/4, rounded up); ceil() makes it integral and non-negative"
     )]
     let tokens = (text.chars().count() as f64 / 4.0).ceil() as u64;
     tokens
@@ -499,17 +499,25 @@ fn create_aborted_message(partial: &AssistantMessage) -> AssistantMessage {
 async fn schedule_chunk(chunk: &str, tokens_per_second: Option<f64>) {
     if let Some(rate) = tokens_per_second {
         if rate > 0.0 {
-            // The streaming rate delay is f64 math (tokens / rate -> ms); Duration's unit is u64 ms.
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "the streaming delay is f64 math (tokens / rate -> ms)"
+            )]
             let delay_ms = (estimate_tokens(chunk) as f64 / rate) * 1000.0;
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the delay is non-negative milliseconds; Duration takes u64 ms"
+            )]
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
         }
     }
 }
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the faux provider scripts every response shape in one stream loop"
+)]
 async fn stream_with_deltas(
     writer: &AssistantMessageEventWriter,
     message: &AssistantMessage,
@@ -706,8 +714,10 @@ pub struct RegisterFauxProviderOptions {
 
 /// Register a faux provider and return its handle.
 #[must_use]
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the faux provider scripts every response shape in one stream loop"
+)]
 pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProviderRegistration {
     struct FauxStream {
         api: String,
@@ -723,8 +733,10 @@ pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProvi
             &self.api
         }
 
-        // Long by design: mirrors the provider's stream shape.
-        #[allow(clippy::too_many_lines)]
+        #[expect(
+            clippy::too_many_lines,
+            reason = "the faux provider scripts every response shape in one stream loop"
+        )]
         fn stream(
             &self,
             model: &Model,

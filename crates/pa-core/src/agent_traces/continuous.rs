@@ -838,9 +838,10 @@ enum RecoveryRead {
     Header,
 }
 
-// Keep fault injection at the I/O boundary so deterministic recovery tests can
-// exercise transient failures without changing filesystem permissions or users.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fault injection stays at the I/O boundary, so recovery tests need no permission changes"
+)]
 async fn recover_with_io(
     cwd: PathBuf,
     agent_dir: PathBuf,
