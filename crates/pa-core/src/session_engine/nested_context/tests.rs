@@ -117,7 +117,10 @@ async fn the_first_read_under_a_subdirectory_appends_its_agents_md_once() {
         &[
             "(begin (fs-read \"crates/foo/src/lib.rs\") \"read\")",
             "(begin (fs-read \"crates/foo/src/other.rs\") \"read\")",
-            &format!("(begin (fs-read \"{}\") \"read\")", outside.display()),
+            &format!(
+                "(begin (fs-read {:?}) \"read\")",
+                outside.display().to_string()
+            ),
             "(begin (fs-read \"vendor/dep.rs\") \"read\")",
         ],
     )

@@ -991,10 +991,17 @@ fn print_inline_delete_cancels_an_executing_child_and_removes_it() {
 (unless (string-contains? refusal "No direct RLM child matches") (error refusal))
 (bash "touch cancel-verified")
 "#;
-    let child_cell = r#"
-(bash "/bin/sleep 600 & printf %s $! > cancel-child-pid; touch cancel-child-ready; wait" (hash 'wait-ms #f))
+    // A program started by its path, so `$!` is its pid (a bare `sleep` is the shell's own).
+    #[cfg(unix)]
+    let long_program = "/bin/sleep 600";
+    #[cfg(windows)]
+    let long_program = "C:/Windows/System32/PING.EXE -n 600 127.0.0.1";
+    let child_cell = format!(
+        r#"
+(bash "{long_program} & printf %s $! > cancel-child-pid; touch cancel-child-ready; wait" (hash 'wait-ms #f))
 (bash "touch cancel-child-finished")
-"#;
+"#
+    );
     let script = serde_json::json!({
         "responses": [
             { "content": [{ "type": "toolCall", "name": "eval",
