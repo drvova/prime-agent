@@ -1,5 +1,10 @@
-// Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(clippy::cast_possible_wrap)]
+#![cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::cast_possible_wrap,
+        reason = "the pids passed to `kill` and `Pid::from_raw` are kernel-bounded below i32::MAX"
+    )
+)]
 
 //! The termios + process-tree exit audit (companion to the kitty fix and the
 //! terminal-state differential): the Ctrl+S output stop is RUNTIME state, not
@@ -8,10 +13,11 @@
 //! the pty audit walks `/proc`.
 #![cfg(target_os = "linux")]
 
-// This binary's routes use a subset of the shared module's surface,
-// so the rest is deliberately dead here.
 #[path = "terminal_state_differential_e2e/harness.rs"]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "this binary's routes use only part of the shared terminal harness"
+)]
 mod harness;
 #[path = "terminal_state_differential_e2e/ledger.rs"]
 mod ledger;

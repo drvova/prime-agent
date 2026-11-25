@@ -1,6 +1,11 @@
-// large_futures: stack futures on hot paths by design. too_many_lines:
-// style gate only.
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![expect(
+    clippy::large_futures,
+    reason = "the headless TUI runs stay on the stack; each test awaits one at a time"
+)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "`subagent_session_stays_a_distinct_store_entry` is one scenario, top to bottom"
+)]
 
 //! The Windows runtime triage battery (the operator's 2026-10-08 ask: "we
 //! need to give you an easy way to test things"): three scripted TUI
@@ -296,8 +301,10 @@ fn dump_frames(scenario: &str, frames: &[String]) {
 /// engine's responses ride the script file; a parent path + depth make
 /// the session a real subagent (the same durable create a `rlm.spawn`
 /// issues).
-// The harness mirrors the daemon Create command's own config rows; a builder struct would shadow the protocol.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the harness mirrors the daemon Create command's config rows; a builder would shadow the protocol"
+)]
 async fn create_session_via_daemon(
     socket: &Path,
     script_path: &Path,

@@ -1,5 +1,10 @@
-// too_many_lines: style gate only.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`search_matches_names_ids_and_cwd_never_transcripts` is one scenario, top to bottom"
+    )
+)]
 
 //! End-to-end verifier for the agents-view session search (Kevin's
 //! 2026-09-23 directive): queries match the session NAME, the durable

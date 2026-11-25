@@ -1,5 +1,10 @@
-// too_many_lines: the scenario is one linear script.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    windows,
+    expect(
+        clippy::too_many_lines,
+        reason = "the pseudoconsole scenario is one linear script"
+    )
+)]
 #![cfg(windows)]
 
 //! The interactive TUI's keyboard on a Windows pseudoconsole. The test plays
