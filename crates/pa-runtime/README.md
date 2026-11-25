@@ -2,8 +2,8 @@
 
 Prime Agent's event-driven runtime: the bus every event goes through, the subscriptions that
 turn events into work, and the per-session task lanes that run it. Being built; nothing uses it
-yet. This is the storage-independent core: storage, the agent turn and the kernel come in later
-phases behind the traits defined here.
+yet. Storage is behind the traits defined here, with SQLite implementations over `pa-log`; the agent
+turn and the kernel come in later phases.
 
 ## Scope
 - **Bus** (`Bus::publish`): stores the event through an `EventStore` (which assigns id,
@@ -11,13 +11,16 @@ phases behind the traits defined here.
   with `TopicTrie`, and runs the routes it sets off, breadth first.
   - **Fan-out** is a bounded broadcast. Publishing never waits for a listener; one that falls
     more than `listener_capacity` behind loses the oldest events and hears `Heard::Lagged`,
-    then catches up from the log with `EventStore::since`. Listeners see sequence order.
+    then catches up from the log with `EventStore::since`. Listeners see stored events in sequence order; live-only ones lost to lag are gone.
   - **Loops**: an event a route causes is built with `Event::cause`, so it carries at most its
     cause's and the subscription's trust, and a chain of causes ends at `MAX_HOPS`. The event
     that would pass it is replaced by one `system/loop_dropped`, itself at the end of the
     chain, so nothing it would cause is published or reported again.
   - **Route failures** (a state write, model call or task hand-off that errs) publish
     `system/route_failed`, caused by the matching event.
+  - **Live-only topics** (`Topic::is_live_only`: `agent/<id>/stream`, `agent/<id>/tool`) are
+    fanned out to listeners and never appended to the `EventStore`: `seq` 0, id `live-<n>`, no
+    route runs. They do not wait behind an append in progress.
   - **Intake**: a synchronous, non-blocking, unbounded way onto the bus for code that cannot
     await (an event source's callbacks); its task publishes in order. `pa_sources::Publisher`
     is implemented on it.
@@ -46,7 +49,8 @@ phases behind the traits defined here.
     `backfilled{through_seq}`, then live events above it. No gap and no duplicate: the
     connection's listener is registered before `welcome`, the replay reads the log only up to its
     last event at that moment, and live events at or below `through_seq` are skipped. A live-only
-    topic (none yet: the bus stores every event) has nothing to replay. A subscribe with an id in
+    event has nothing to replay: it goes to every subscription whose filter matches as it is
+    fanned out, outside the `through_seq` check, and never moves the connection's cursor. A subscribe with an id in
     use restarts it.
   - **Lag**: frames wait in a bounded per-connection queue (`WireConfig::outbound_capacity`). A
     client that stops reading stalls only its own connection: the bus drops the oldest events for
@@ -59,6 +63,13 @@ phases behind the traits defined here.
     unknown one, and runs `Handlers` on its own task, at most `IN_FLIGHT` per connection.
   - A malformed frame, a second `hello`, or an outbound frame over the frame limits ends the
     connection with `closing`.
+- **SQLite stores** (`log_stores`, over one shared `pa_log::Log`): `LogEventStore`
+  (`append_event`, `events_since`, `events_before`), `LogTaskStore` (`save_task`,
+  `unfinished_tasks`, in first-save order, which `TaskQueue::restore` replays), and
+  `LogStateStore` on `pa-log`'s `kv` table: partition `state/<session>` for a session's keys and
+  `state` for global ones, the key itself as the `kv` key, the value stored as
+  `{"value", "trust", "cause"}` JSON. No other `kv` partition starts with `state`. Writes await
+  the writer's `Receipt`; reads run on Tokio's blocking pool, never on the runtime's thread.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
 
@@ -67,8 +78,7 @@ No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStor
 `TaskStore`). No agent turn, model call, kernel or session actor (behind `TaskRunner`,
 `ModelCaller` and `TaskSink`). No event sources (`pa-sources`, publishing through `Intake`). No
 socket listener (the daemon accepts connections and hands each to `WireServer::serve`), and no
-query or call backend (behind `Handlers`). No subscription persistence, live-only topics, or
-trust gate yet. Nothing bounds how wide a cascade grows within the hop limit, or how many
+query or call backend (behind `Handlers`). No subscription persistence or trust gate yet. Nothing bounds how wide a cascade grows within the hop limit, or how many
 events an `Intake` buffers.
 
 ## Public API
@@ -80,3 +90,7 @@ events an `Intake` buffers.
   `SessionTree`, `ModelCaller`, `ModelCall`, `TaskSink`, `TaskRequest`.
 - `TaskQueue`, `TaskRunner`, `TaskOutcome`, `Steered`, `TaskStore`, `INTERRUPTED_BY_RESTART`.
 - `MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`, `MemoryTaskStore`.
+- `LogEventStore`, `LogTaskStore`, `LogStateStore` (each `new(Arc<pa_log::Log>)`;
+  `LogStateStore::get`).
+
+Dependencies: `pa-types` and `pa-log` (the SQLite stores), among workspace crates.

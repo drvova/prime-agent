@@ -5,7 +5,7 @@
 //! listener that falls more than its capacity behind loses the oldest
 //! events it has not read and is told how many ([`Heard::Lagged`]); it
 //! catches up from the log with [`EventStore::since`] from the last
-//! sequence number it saw. Listeners see events in sequence order.
+//! sequence number it saw. Listeners see stored events in sequence order.
 //!
 //! Routes run in the order their events were stored, breadth first. An
 //! event a route causes is built with `Event::cause`, so it carries at most
@@ -14,12 +14,21 @@
 //! `system/loop_dropped` is published in its place, itself at the end of the
 //! chain, so what it would cause is dropped without another report. A route
 //! that fails publishes `system/route_failed`.
+//!
+//! A live-only event (`Topic::is_live_only`: a turn's stream and tool
+//! deltas) is fanned out without being stored: it gets no sequence number
+//! (`seq` 0), an id unique among this bus's live events (`live-<n>`), and
+//! runs no route. It does not wait for a store's append in progress, so a
+//! stream is never held up behind a commit; one publisher's events still
+//! reach listeners in the order it published them.
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use pa_types::event_log::{Cause, Event, NewEvent, Route, Scope, Subscription, Topic};
+use pa_types::event_log::{Cause, Event, EventId, NewEvent, Route, Scope, Subscription, Topic};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc};
 
@@ -64,9 +73,12 @@ struct Inner<E, K, G, M, T> {
     /// order.
     appending: tokio::sync::Mutex<()>,
     fan_out: broadcast::Sender<Arc<Event>>,
+    /// How many live-only events this bus has fanned out: the next one's id.
+    live: AtomicU64,
 }
 
-/// An event as `publish` stored it, and what its routes published.
+/// An event as `publish` stored it (or, live only, fanned it out), and what
+/// its routes published.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Published {
     pub event: Event,
@@ -86,7 +98,8 @@ pub enum Heard {
     },
 }
 
-/// A live view of every event the bus stores from now on.
+/// A live view of every event the bus stores or fans out live only from now
+/// on.
 pub struct Listener {
     receiver: broadcast::Receiver<Arc<Event>>,
 }
@@ -158,6 +171,7 @@ where
                 registry: Mutex::new(Registry::default()),
                 appending: tokio::sync::Mutex::new(()),
                 fan_out,
+                live: AtomicU64::new(0),
             }),
         }
     }
@@ -186,7 +200,8 @@ where
         &self.inner.events
     }
 
-    /// A listener for every event stored from now on.
+    /// A listener for every event stored, or fanned out live only, from now
+    /// on.
     #[must_use]
     pub fn listen(&self) -> Listener {
         Listener {
@@ -218,13 +233,33 @@ where
         Intake { sender }
     }
 
-    /// Stores `event`, fans it out, and runs the routes it sets off.
+    /// Stores `event`, fans it out, and runs the routes it sets off; a
+    /// live-only event is only fanned out.
     ///
     /// # Errors
     ///
     /// The store failed to append `event` or an event a route caused.
     #[tracing::instrument(level = "debug", skip_all, fields(topic = %event.topic))]
     pub async fn publish(&self, event: NewEvent) -> anyhow::Result<Published> {
+        if event.topic.is_live_only() {
+            let live = self.inner.live.fetch_add(1, Ordering::Relaxed);
+            let event = Event {
+                id: EventId(format!("live-{live}")),
+                seq: 0,
+                ts: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |since| {
+                        u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+                    }),
+                event,
+            };
+            // No listener is not an error: nobody is watching the stream.
+            let _ = self.inner.fan_out.send(Arc::new(event.clone()));
+            return Ok(Published {
+                event,
+                caused: Vec::new(),
+            });
+        }
         let event = self.store(event).await?;
         let fires = self.matches(&event);
         let caused = self.cascade(fires).await?;

@@ -2,7 +2,8 @@
 //! topic, subscriptions turn matching events into tasks, and a task runs in
 //! its session's lane.
 //!
-//! - [`topic`]: topics, MQTT-style filters (`+`, `#`), and the matching trie.
+//! - [`topic`]: topics, MQTT-style filters (`+`, `#`), the matching trie,
+//!   and which topics are live only (fanned out, never stored).
 //! - [`subscription`]: who listens, under which condition, and what a match
 //!   does (a [`Route`]); the [`Task`] a route queues.
 //!
@@ -91,7 +92,9 @@ pub struct HopLimit {
 #[serde(rename_all = "camelCase")]
 pub struct Event {
     pub id: EventId,
-    /// The log's order: each stored event's is one more than the last's.
+    /// The log's order: each stored event's is one more than the last's,
+    /// from 1. A live-only event ([`Topic::is_live_only`]) is never stored
+    /// and has 0.
     pub seq: u64,
     /// Unix milliseconds.
     pub ts: u64,

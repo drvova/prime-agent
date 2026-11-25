@@ -8,6 +8,7 @@ description = "Prime Agent's event-driven runtime: the bus, subscriptions and pe
 
 [dependencies]
 pa-types.workspace = true
+pa-log.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
@@ -18,6 +19,7 @@ tracing.workspace = true
 # `test-util` (tokio time pause) is test-only: the throttle, debounce and
 # lane-cap tests run on paused time.
 tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
 
 [lints]
 workspace = true

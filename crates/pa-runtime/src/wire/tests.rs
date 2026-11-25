@@ -281,10 +281,10 @@ async fn a_client_of_another_wire_version_is_told_to_restart_and_closed() {
 async fn after_replays_the_matching_log_then_live_events_without_gap_or_duplicate() {
     let fixture = fixture(64, 64);
     for on in [
-        "agent/a/stream",
-        "agent/b/stream",
-        "agent/a/stream",
-        "agent/a/tool",
+        "agent/a/done",
+        "agent/b/done",
+        "agent/a/done",
+        "agent/a/inbox",
     ] {
         fixture.publish(on).await;
     }
@@ -296,13 +296,13 @@ async fn after_replays_the_matching_log_then_live_events_without_gap_or_duplicat
         .await;
 
     at_end_read.await.expect("the replay reads the log's end");
-    fixture.publish("agent/a/stream").await;
-    fixture.publish("agent/b/stream").await;
+    fixture.publish("agent/a/done").await;
+    fixture.publish("agent/b/done").await;
     read_end.send(()).expect("the replay waits");
     at_replay_read.await.expect("the replay reads the log");
-    fixture.publish("agent/a/stream").await;
+    fixture.publish("agent/a/done").await;
     read_replay.send(()).expect("the replay waits");
-    fixture.publish("agent/a/stream").await;
+    fixture.publish("agent/a/done").await;
 
     let log = fixture.stored().await;
     let expected = vec![
@@ -323,10 +323,10 @@ async fn after_replays_the_matching_log_then_live_events_without_gap_or_duplicat
 async fn tail_replays_the_last_matching_events_then_live_ones() {
     let fixture = fixture(64, 64);
     for on in [
-        "agent/a/stream",
-        "agent/a/stream",
-        "agent/b/stream",
-        "agent/a/stream",
+        "agent/a/done",
+        "agent/a/done",
+        "agent/b/done",
+        "agent/a/done",
     ] {
         fixture.publish(on).await;
     }
@@ -335,7 +335,7 @@ async fn tail_replays_the_last_matching_events_then_live_ones() {
         .subscribe("chat", "agent/a/#", Since::Tail { count: 2 })
         .await;
     let replayed = client.recv_n(3).await;
-    fixture.publish("agent/a/stream").await;
+    fixture.publish("agent/a/done").await;
     let live = client.recv().await;
 
     let log = fixture.stored().await;
@@ -351,6 +351,47 @@ async fn tail_replays_the_last_matching_events_then_live_ones() {
                 },
             ],
             Some(delivered("chat", &log[4])),
+        )
+    );
+}
+
+/// A live-only event reaches each subscription whose filter matches as it is
+/// published, between stored events, and no replay holds it.
+#[tokio::test]
+async fn a_live_only_event_is_delivered_live_and_never_replayed() {
+    let fixture = fixture(16, 16);
+    let mut client = fixture.connect("tui", 1 << 16).await;
+    client.subscribe("live", "agent/a/#", Since::Now).await;
+    let backfilled = client.recv().await;
+    let first = fixture.publish("agent/a/done").await;
+    let streamed = fixture.publish("agent/a/stream").await;
+    fixture.publish("agent/b/stream").await;
+    let last = fixture.publish("agent/a/done").await;
+    let heard = client.recv_n(3).await;
+    client
+        .subscribe("replay", "agent/a/#", Since::After { seq: 0 })
+        .await;
+    let replayed = client.recv_n(3).await;
+    assert_eq!(
+        (backfilled, heard, replayed),
+        (
+            Some(ServerFrame::Backfilled {
+                sub_id: "live".to_string(),
+                through_seq: 0,
+            }),
+            vec![
+                delivered("live", &first),
+                delivered("live", &streamed),
+                delivered("live", &last),
+            ],
+            vec![
+                delivered("replay", &first),
+                delivered("replay", &last),
+                ServerFrame::Backfilled {
+                    sub_id: "replay".to_string(),
+                    through_seq: 2,
+                },
+            ],
         )
     );
 }
@@ -373,7 +414,7 @@ async fn a_slow_client_blocks_neither_publishing_nor_other_clients_and_catches_u
 
     let mut heard_fast = Vec::new();
     for _ in 0..40 {
-        let published = fixture.publish("agent/a/stream").await;
+        let published = fixture.publish("agent/a/done").await;
         heard_fast.push((fast.recv().await, published.clone()));
     }
     let heard_slow = slow.recv_n(40).await;

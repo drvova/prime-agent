@@ -12,6 +12,14 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// The last level of a live-only topic `agent/<id>/<kind>`: the stream of a
+/// turn's deltas and its tool progress. Their events are fanned out to the
+/// bus's listeners as they happen and never stored: they have no sequence
+/// number (`Event::seq` is 0), a subscription to them replays nothing, and
+/// a listener that falls behind loses the ones it missed. What a turn ends
+/// with is published on a stored topic (`agent/<id>/done`).
+const LIVE_ONLY_KINDS: &[&str] = &["stream", "tool"];
+
 /// Most levels in a topic or filter.
 pub const MAX_TOPIC_LEVELS: usize = 16;
 /// Longest topic or filter, in bytes.
@@ -94,6 +102,17 @@ impl Topic {
     /// The topic's levels, in order.
     pub fn levels(&self) -> impl Iterator<Item = &str> {
         self.0.split('/')
+    }
+
+    /// Whether events on this topic are live only, never stored: exactly
+    /// `agent/<id>/stream` or `agent/<id>/tool`.
+    #[must_use]
+    pub fn is_live_only(&self) -> bool {
+        let mut levels = self.levels();
+        matches!(
+            (levels.next(), levels.next(), levels.next(), levels.next()),
+            (Some("agent"), Some(_), Some(kind), None) if LIVE_ONLY_KINDS.contains(&kind)
+        )
     }
 }
 

@@ -1,4 +1,4 @@
-//! Prime Agent's event-driven runtime, storage-independent core.
+//! Prime Agent's event-driven runtime.
 //!
 //! - [`Bus`]: publishes an event (stores it through an [`EventStore`], fans
 //!   it out to [`Listener`]s, matches it against subscriptions) and runs the
@@ -14,13 +14,16 @@
 //!   with gap-free replay, publishes of client input, and queries and calls
 //!   answered by [`Handlers`].
 //!
-//! Storage, the agent turn and the kernel come later, behind the traits
-//! defined here. The `Memory*` implementations are for tests and
-//! headless use.
+//! - [`LogEventStore`], [`LogTaskStore`], [`LogStateStore`]: the stores in
+//!   the agent's SQLite database (`pa_log::Log`).
+//!
+//! The agent turn and the kernel come later, behind the traits defined
+//! here. The `Memory*` implementations are for tests and headless use.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 mod bus;
+mod log_stores;
 mod routes;
 mod store;
 mod subscriptions;
@@ -28,6 +31,7 @@ mod tasks;
 mod wire;
 
 pub use bus::{Bus, BusClosed, BusParts, Heard, Intake, Listener, Published};
+pub use log_stores::{LogEventStore, LogStateStore, LogTaskStore};
 pub use routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
 pub use store::{EventStore, MemoryEventStore, MemoryStateStore, StateKey, StateStore, StateWrite};
 pub use subscriptions::{DuplicateSubscription, MemorySessionTree, SessionTree};

@@ -1,12 +1,14 @@
 # pa-log
 
-Prime Agent's SQLite store: the event log, the session transcripts and the agent's other state
-(schedules, the event bus, the harness store, the crash log), in one database file.
+Prime Agent's SQLite store: the event log, the session transcripts, the runtime's task lanes and
+the agent's other state (schedules, the event bus, the harness store, the crash log), in one
+database file.
 It is the only crate that links SQLite (`rusqlite`, built from its bundled source).
 
 It is being built beside today's file stores as part of the move onto one event log. The
 transcript store in `pa-core` (`session::store`, its SQLite store) keeps every session transcript
-in it; the event log has no user yet.
+in it. `pa-runtime` keeps its events, task lanes and state in it (`pa_runtime::LogEventStore`,
+`LogTaskStore`, `LogStateStore`).
 
 ## Scope
 
@@ -25,6 +27,8 @@ in it; the event log has no user yet.
     ends (`EventRetention`, 30 days by default).
   - `events` reads by topic filter: after a sequence number, or the last few, oldest first. The
     filter's literal prefix narrows the scan in SQL, and `TopicFilter::matches` decides.
+  - `events_since` and `events_before` read every event above a sequence number (oldest first)
+    or below one (newest first), as `pa-runtime`'s `EventStore` does; one scan serves all three.
   - `prune_events` deletes expired events.
 - **Session transcripts, line for line.** A JSONL session file is stored as its lines. Each is
   indexed by the `type`, `id` and `parentId` it names; a line that is not a JSON object, such as
@@ -68,12 +72,18 @@ in it; the event log has no user yet.
     a write changes nothing. Each write is one transaction: a partition is never half-imported.
   - `partition` and `partitions` (by scope prefix) say what is held and where it came from.
 
+- **Task lanes** (schema migration 4, `pa_types::event_log::Task`). `save_task` upserts a task
+  by id; its first save fixes its place in insertion order (`seq`), and `created`/`updated` record
+  its first and last save. `unfinished_tasks` returns the `queued` and `running` tasks in that
+  order, which is what `pa-runtime`'s `TaskQueue::restore` replays.
+
 ## Non-goals
 
 - What the lines mean: entry types, the branch tree, compaction. Those stay with the session
   code that reads them.
 - Which events are stored and which are live-only, and what a subscription does with an event.
   Those belong to the runtime.
+- What a task's states mean, and what a restart does with a running one: the runtime's.
 - What a partition's rows mean (a job, a schedule, a harness entry), and which file a partition
   replaces. Those stay with the code that owns each store.
 - Settings, auth, models, skills, the spill store and checkpoints, which stay files.
@@ -81,7 +91,7 @@ in it; the event log has no user yet.
 ## Public API
 
 - `Log::open` and `Log::path`.
-- Events: `append_event`, `events`, `prune_events`; `EventRetention`,
+- Events: `append_event`, `events`, `events_since`, `events_before`, `prune_events`; `EventRetention`,
   `DEFAULT_EVENT_RETENTION`.
 - Sessions: `import_session_file`, `export_session`, `append_entry`, `sessions`, `entries`;
   `ImportOutcome`, `SessionRow`, `EntryRow`.
@@ -92,6 +102,7 @@ in it; the event log has no user yet.
 - Partitions: `partition`, `partitions`, `sources`, `replace_sources`, `value`, `put_value`,
   `crashes`, `append_crashes`; `Partition`, `Origin`, `SourceSet`, `SourceRow`, `SourceKind`,
   `SubscriptionRow`, `CrashRow`.
+- Tasks: `save_task`, `unfinished_tasks`.
 - `Receipt`: `wait` and `wait_blocking` (which parks the thread, and so may run on a runtime's
   thread, as a blocking file write would).
 

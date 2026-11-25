@@ -1,0 +1,1 @@
+- The agent database (`agent.db`) moves to schema version 4, adding the task table the event-driven runtime keeps its queued work in; an existing database migrates when it is opened, and an older build refuses it afterwards.

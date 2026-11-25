@@ -17,7 +17,10 @@
 //!   client that does not read fills it, its connection stops reading the
 //!   bus, and the bus drops the oldest events for that connection alone
 //!   (publishing never waits); the connection then catches up from the log
-//!   in order. Live-only events (none yet) are not in the log and are lost.
+//!   in order. Live-only events (stream and tool deltas) are not in the log
+//!   and are lost.
+//! - **Live only.** A live-only event goes to each subscription whose filter
+//!   matches it as the bus fans it out, with `seq` 0; it is never replayed.
 //! - **Publish.** Only on [`CLIENT_TOPICS`] (`agent/<id>/input`), stored with
 //!   `Trust::Owner`, the client's `hello` name as `source`, and `<id>` as the
 //!   session; the reply's result is `{"seq": n}`. Publishes are handled in
