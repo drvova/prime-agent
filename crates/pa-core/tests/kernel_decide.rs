@@ -1,5 +1,10 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures).
-#![allow(clippy::large_futures)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "a session's futures are large by design, as in src/lib.rs"
+    )
+)]
 
 //! Live kernel: one cell runs a whole retry loop at kernel speed and pays a model call only at
 //! its decision points (`rlm.decide`), bounded per cell, each shown as one compact row in the

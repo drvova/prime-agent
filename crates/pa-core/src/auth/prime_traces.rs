@@ -543,8 +543,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the environment stays stable"
+    )]
     async fn the_login_reuses_an_eligible_prime_cli_key() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
@@ -576,8 +578,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the environment stays stable"
+    )]
     async fn the_browser_login_completes_the_challenge_round_trip() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
@@ -629,8 +633,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the environment stays stable"
+    )]
     async fn the_browser_key_without_traces_access_reports_the_ts_error() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
@@ -653,8 +659,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the environment stays stable"
+    )]
     async fn an_ineligible_cli_key_falls_through_to_the_browser() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");
@@ -689,8 +697,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The env lock is held across awaits by design (env must stay stable).
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the environment stays stable"
+    )]
     async fn an_expired_challenge_reports_the_ts_error() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_BASE_URL");

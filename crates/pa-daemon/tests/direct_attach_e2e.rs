@@ -4,8 +4,13 @@
 //! connection at once; the restarted daemon revives the session and a fresh
 //! ticket attaches to it again. Also verifies the peer gate (single-use
 //! grants, session-plane allowlist).
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the kill-and-reattach scenario reads top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -20,7 +25,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

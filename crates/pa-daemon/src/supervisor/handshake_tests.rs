@@ -8,9 +8,13 @@ use super::*;
 /// A worker socket the test drives by hand: it stands in for the real worker on the
 /// far side of `connect_worker`, so the oracles hold the handshake at exact points.
 pub(super) struct FakeWorkerSocket {
-    // The listener is held so the bound socket path stays owned by the
-    // test for the connection's whole lifetime.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        windows,
+        expect(
+            dead_code,
+            reason = "the listener holds the pipe for the connection's lifetime; Windows never reads it"
+        )
+    )]
     pub(super) listener: Box<dyn pa_types::platform::transport::TransportListener>,
     pub(super) read_half: Box<dyn pa_types::platform::transport::AsyncReadHalf>,
     pub(super) write_half: Box<dyn pa_types::platform::transport::AsyncWriteHalf>,

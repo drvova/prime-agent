@@ -16,7 +16,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
@@ -60,7 +63,10 @@ struct Client {
     writer: UnixStream,
 }
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "this suite calls only some of the client's request helpers"
+)]
 impl Client {
     fn connect(socket: &std::path::Path) -> (Self, serde_json::Value) {
         let deadline = Instant::now() + Duration::from_secs(5);

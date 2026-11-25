@@ -1,6 +1,7 @@
-// The exact-float `assert_eq!`s assert parsed fixture values (byte-identity
-// of JSON-written prices); an epsilon compare would weaken the assertion.
-#![allow(clippy::float_cmp)]
+#![expect(
+    clippy::float_cmp,
+    reason = "the exact-float `assert_eq!`s check byte-identical JSON-written prices"
+)]
 
 //! Verifiers for the live catalog wiring: the credentialed refresh lands the account's private
 //! `internal/*` models, the catalog-repo (layer A) entries, and live pricing; without credentials

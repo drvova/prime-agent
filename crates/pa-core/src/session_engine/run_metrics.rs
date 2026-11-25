@@ -325,8 +325,10 @@ impl MetricsMeter {
     /// A compaction counted into the run: it records how full the context
     /// was and resets the cache baseline.
     pub fn compaction(&mut self) {
-        // Token counts stay far below 2^53.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "token counts stay far below f64's 2^53 exact-integer range"
+        )]
         let context_fraction = self
             .last_context
             .take()
@@ -358,8 +360,10 @@ impl MetricsMeter {
         let run = std::mem::take(&mut self.run);
         let tokens = run.tokens;
         let prompt = tokens.uncached_input + tokens.cache_read + tokens.cache_write;
-        // Token counts stay far below 2^53.
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "token counts stay far below f64's 2^53 exact-integer range"
+        )]
         let cache_hit_rate = (prompt > 0).then(|| tokens.cache_read as f64 / prompt as f64);
         RunMetrics {
             model_requests: run.model_requests,

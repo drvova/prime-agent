@@ -1,5 +1,7 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures).
-#![allow(clippy::large_futures)]
+#![expect(
+    clippy::large_futures,
+    reason = "a session's futures are large by design, as in src/lib.rs"
+)]
 
 //! Verifier: an abort during a running kernel cell must settle the turn at once: the abort
 //! interrupts the cell and returns the loop to ready. The cell writes `started` and `finished`

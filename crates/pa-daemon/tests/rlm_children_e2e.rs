@@ -2,8 +2,13 @@
 //! spawn through the supervisor link, run in their own worker processes, appear in the
 //! supervisor roster, settle with an answer, and die on delete (`rlm.spawn`/
 //! `list_subagents`/`collect`/`delete_subagent`/`create_session`).
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the spawn, roster, collect and delete scenario reads top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -24,7 +29,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
