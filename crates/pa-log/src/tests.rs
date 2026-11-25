@@ -695,6 +695,48 @@ fn a_version_3_database_migrates_keeping_its_rows() {
     );
 }
 
+/// A receipt waited on from inside a task that has spent its coop budget
+/// (a session's turn persisting a row mid-poll) returns the committed answer
+/// instead of spinning on tokio's budget refusal.
+#[test]
+fn a_receipt_waits_inside_a_task_without_coop_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = open(dir.path());
+    let (answered, answer) = std::sync::mpsc::channel();
+    // The waiting thread spins forever without the fix, so the wait runs on
+    // its own thread and the test reads its answer with a failure bound.
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (wake, mut woken) = tokio::sync::mpsc::unbounded_channel::<()>();
+            std::future::poll_fn(|context| {
+                while tokio::task::coop::has_budget_remaining() {
+                    wake.send(()).unwrap();
+                    let _ = woken.poll_recv(context);
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let stored = log
+                .put_transcript(
+                    transcript("/sessions/a.jsonl", b"{}\n"),
+                    super::PutMode::Replace,
+                )
+                .wait_blocking()
+                .map(|row| row.map(|row| row.locator));
+            let _ = answered.send(stored.map_err(|error| error.to_string()));
+        });
+    });
+    assert_eq!(
+        answer
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the receipt answered"),
+        Ok(Some("/sessions/a.jsonl".to_string()))
+    );
+}
+
 /// Two processes opening one new database at once (a daemon and the CLI
 /// command that reads it) both open it: only one of them applies each
 /// migration, and the other finds it applied.
