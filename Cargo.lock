@@ -2067,6 +2067,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -3477,6 +3478,30 @@ dependencies = [
  "regex",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "pa-sources"
+version = "0.10.3"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "globset",
+ "hex",
+ "hmac",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "notify",
+ "pa-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
