@@ -1,0 +1,1 @@
+- The kernel's `event-*` functions work in headless runs (`--print`, `--mode json`): the run keeps its own event bus for the sessions it runs, with the daemon's rules and deliveries, and `event-subscribe` there also takes a topic filter such as `"source/+/published"`.

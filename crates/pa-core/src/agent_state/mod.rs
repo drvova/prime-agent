@@ -33,7 +33,10 @@ mod event_bus;
 mod import;
 
 pub use crash_log::{append_crash_record, crash_records};
-pub use event_bus::{held_event_bus, store_event_bus, EventBusState};
+pub use event_bus::{
+    event_delivery_message, held_event_bus, held_event_bus_in, store_event_bus, store_event_bus_in,
+    EventBusChange, EventBusState, EventRequester, TopicSubscriptions,
+};
 pub(crate) use import::import_state_file;
 pub use import::{import_agent_state, StateImportReport};
 

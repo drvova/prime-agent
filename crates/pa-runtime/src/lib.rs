@@ -35,6 +35,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 mod bus;
+mod events;
 mod log_stores;
 mod routes;
 mod runtime;
@@ -51,8 +52,8 @@ pub use log_stores::{LogEventStore, LogStateStore, LogTaskStore};
 pub use routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
 pub use runtime::{Runtime, RuntimeOptions};
 pub use session::{
-    BuiltSession, DriverEvents, Finished, InlineSubagents, SessionBuilder, SessionSpec,
-    SettleAfter, Settled,
+    BuiltSession, DriverEvents, Finished, InlineSubagents, SessionBuilder, SessionSeams,
+    SessionSpec, SettleAfter, Settled,
 };
 pub use store::{EventStore, MemoryEventStore, MemoryStateStore, StateKey, StateStore, StateWrite};
 pub use subscriptions::{DuplicateSubscription, MemorySessionTree, SessionTree};

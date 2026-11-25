@@ -16,16 +16,17 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
 use pa_core::autonomous::AgentAutonomousConfig;
-use pa_core::kernel::CallPolicy;
+use pa_core::kernel::{CallPolicy, HostRequestHandlers};
 use pa_core::session_engine::engine::SessionEngine;
 use pa_core::session_engine::headless::HeadlessTerminalResult;
 use pa_types::ai::{ImageContent, Model};
 use pa_types::event_log::{AgentDone, EventId, NewEvent, Task, TaskState, Topic};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::turn::boundary::TurnBoundary;
-
+use crate::bus::Published;
+use crate::events::BusEvents;
 use crate::lock;
+use crate::turn::boundary::TurnBoundary;
 
 mod host;
 mod runner;
@@ -163,18 +164,30 @@ pub struct Finished {
 /// its kernel comes from pa-core's spare pool), and an error fails the task
 /// that needed the engine, with the error as its reason.
 ///
-/// `call_policy` is the session's trust gate: the engine's kernel must ask
-/// it before every call a cell makes past the kernel
-/// (`SessionEngineConfig::call_policy`), or an untrusted task's cells run
-/// with an owner's reach.
+/// `seams` is what the runtime gives the engine: the engine must install
+/// both ([`SessionSeams`]).
 pub trait SessionBuilder: Send + Sync + 'static {
     /// Builds session `id`'s engine.
     fn build(
         &self,
         id: &str,
         spec: &SessionSpec,
-        call_policy: Arc<dyn CallPolicy>,
+        seams: SessionSeams,
     ) -> impl Future<Output = anyhow::Result<BuiltSession>> + Send;
+}
+
+/// What the runtime gives each engine it has built, for the engine to install.
+#[derive(Clone)]
+pub struct SessionSeams {
+    /// The session's trust gate: the engine's kernel must ask it before
+    /// every call a cell makes past the kernel
+    /// (`SessionEngineConfig::call_policy`), or an untrusted task's cells
+    /// run with an owner's reach.
+    pub call_policy: Arc<dyn CallPolicy>,
+    /// The host requests the runtime answers for the session (the kernel's
+    /// `event.*`, on the runtime's bus): merged into the engine's
+    /// (`SessionEngineConfig::extra_host_handlers`) over its defaults.
+    pub host_handlers: HostRequestHandlers,
 }
 
 /// The topics a session publishes on.
@@ -244,7 +257,7 @@ pub(crate) enum Outgoing {
     /// One event, and who waits for it to be published.
     Event {
         event: NewEvent,
-        published: Option<oneshot::Sender<anyhow::Result<()>>>,
+        published: Option<oneshot::Sender<anyhow::Result<Published>>>,
     },
     /// Runs once everything queued before it is published: an answer that
     /// must reach its caller after the events it follows.
@@ -275,8 +288,9 @@ impl Outbox {
         });
     }
 
-    /// Queues `event` and waits until it is published.
-    pub(crate) async fn publish(&self, event: NewEvent) -> anyhow::Result<()> {
+    /// Queues `event` and waits until it is published, with the routes it
+    /// set off run.
+    pub(crate) async fn publish(&self, event: NewEvent) -> anyhow::Result<Published> {
         let (published, answer) = oneshot::channel();
         self.sender
             .send(Outgoing::Event {
@@ -305,6 +319,7 @@ impl Outbox {
 pub(crate) struct Sessions<B> {
     builder: Arc<B>,
     outbox: Outbox,
+    events: Arc<BusEvents>,
     hosts: Mutex<HashMap<String, Arc<SessionHost>>>,
     /// The images of queued prompts, by task id, until their task runs: the
     /// task store keeps a prompt's text only, so a task restored after a
@@ -314,10 +329,11 @@ pub(crate) struct Sessions<B> {
 }
 
 impl<B: SessionBuilder> Sessions<B> {
-    pub(crate) fn new(builder: B, outbox: Outbox) -> Self {
+    pub(crate) fn new(builder: B, outbox: Outbox, events: Arc<BusEvents>) -> Self {
         Sessions {
             builder: Arc::new(builder),
             outbox,
+            events,
             hosts: Mutex::new(HashMap::new()),
             images: Mutex::new(HashMap::new()),
         }
@@ -356,9 +372,11 @@ impl<B: SessionBuilder> Sessions<B> {
             topics,
             Arc::clone(&self.builder),
             self.outbox.clone(),
+            Arc::clone(&self.events),
         )
         .context("start the session's host thread")?;
         hosts.insert(id.clone(), Arc::new(host));
+        self.events.opened(&id);
         Ok(id)
     }
 

@@ -6,14 +6,15 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use pa_core::kernel::CallPolicy;
 use pa_core::session::manager::SessionManager;
 use pa_types::event_log::{
     AgentDone, AgentInput, EventId, NewEvent, Priority, TaskFailure, TaskState, Topic, Trust,
 };
 use serde_json::{json, Value};
 
-use super::{BuiltSession, DriverEvents, Finished, SessionBuilder, SessionSpec, SettleAfter};
+use super::{
+    BuiltSession, DriverEvents, Finished, SessionBuilder, SessionSeams, SessionSpec, SettleAfter,
+};
 use crate::bus::{Heard, Listener};
 use crate::runtime::{Runtime, RuntimeOptions};
 
@@ -47,7 +48,7 @@ impl SessionBuilder for FauxBuilder {
         &self,
         id: &str,
         spec: &SessionSpec,
-        call_policy: Arc<dyn CallPolicy>,
+        seams: SessionSeams,
     ) -> anyhow::Result<BuiltSession> {
         let sessions = spec.cwd.join("sessions");
         let inner =
@@ -92,8 +93,8 @@ impl SessionBuilder for FauxBuilder {
                     &pa_core::session::manager::get_session_file_path(&sessions, id),
                 )),
                 extra_host_handlers: Some({
-                    // A request the trust table does not list.
-                    let mut handlers = pa_core::kernel::HostRequestHandlers::new();
+                    // The runtime's, then a request the trust table does not list.
+                    let mut handlers = seams.host_handlers;
                     handlers.register(
                         UNLISTED_REQUEST,
                         pa_core::kernel::shared::host_handler(|_payload| async {
@@ -117,7 +118,7 @@ impl SessionBuilder for FauxBuilder {
                 prewarm_kernel: Some(true),
                 on_background_work_settled: None,
                 bash_notice_wake: None,
-                call_policy: Some(call_policy),
+                call_policy: Some(seams.call_policy),
                 queued_goal_context_purge: None,
                 queued_steering_probe: None,
                 should_stop_after_turn: None,
@@ -245,11 +246,23 @@ impl<B: SessionBuilder> Bed<B> {
     /// Publishes `text` as the session's input, at `priority`, with
     /// `trust`; the input event's id.
     async fn input_with(&self, text: &str, priority: Option<Priority>, trust: Trust) -> EventId {
+        self.input_to(&self.session, text, priority, trust).await
+    }
+
+    /// Publishes `text` as `session`'s input, at `priority`, with `trust`;
+    /// the input event's id.
+    async fn input_to(
+        &self,
+        session: &str,
+        text: &str,
+        priority: Option<Priority>,
+        trust: Trust,
+    ) -> EventId {
         self.runtime
             .publish(NewEvent {
-                topic: Topic::new(format!("agent/{}/input", self.session)).unwrap(),
+                topic: Topic::new(format!("agent/{session}/input")).unwrap(),
                 source: "test".to_string(),
-                session: Some(self.session.clone()),
+                session: Some(session.to_string()),
                 payload: serde_json::to_value(AgentInput {
                     text: text.to_string(),
                     images: Vec::new(),
@@ -268,8 +281,15 @@ impl<B: SessionBuilder> Bed<B> {
 
     /// The session's stream payloads up to its next `done`, and the `done`.
     async fn until_done(&mut self) -> (Vec<Value>, AgentDone) {
-        let stream = format!("agent/{}/stream", self.session);
-        let done = format!("agent/{}/done", self.session);
+        let session = self.session.clone();
+        self.until_done_of(&session).await
+    }
+
+    /// `session`'s stream payloads up to its next `done`, and the `done`;
+    /// other sessions' events are passed over.
+    async fn until_done_of(&mut self, session: &str) -> (Vec<Value>, AgentDone) {
+        let stream = format!("agent/{session}/stream");
+        let done = format!("agent/{session}/done");
         let mut payloads = Vec::new();
         loop {
             let heard =
@@ -311,11 +331,17 @@ impl<B: SessionBuilder> Bed<B> {
     /// The (role, text) of each user and assistant message the session's
     /// transcript holds.
     fn transcript(&self) -> Vec<(String, String)> {
+        self.transcript_of(&self.session)
+    }
+
+    /// The (role, text) of each user and assistant message `session`'s
+    /// transcript holds.
+    fn transcript_of(&self, session: &str) -> Vec<(String, String)> {
         let sessions = self.cwd.join("sessions");
         let manager = SessionManager::open(
             &self.cwd,
             &sessions,
-            &pa_core::session::manager::get_session_file_path(&sessions, &self.session),
+            &pa_core::session::manager::get_session_file_path(&sessions, session),
         );
         manager
             .active_context()
@@ -512,9 +538,9 @@ impl SessionBuilder for FailingAfterSeed {
         &self,
         id: &str,
         spec: &SessionSpec,
-        call_policy: Arc<dyn CallPolicy>,
+        seams: SessionSeams,
     ) -> anyhow::Result<BuiltSession> {
-        let built = self.0.build(id, spec, call_policy).await?;
+        let built = self.0.build(id, spec, seams).await?;
         built
             .engine
             .session
@@ -605,7 +631,7 @@ impl SessionBuilder for FailingBuild {
         &self,
         _id: &str,
         _spec: &SessionSpec,
-        _call_policy: Arc<dyn CallPolicy>,
+        _seams: SessionSeams,
     ) -> impl std::future::Future<Output = anyhow::Result<BuiltSession>> + Send {
         std::future::ready(Err(anyhow::anyhow!("no engine here")))
     }
@@ -846,3 +872,5 @@ async fn an_untrusted_steer_runs_as_its_own_task() {
     );
     bed.runtime.shutdown().await;
 }
+
+mod events;

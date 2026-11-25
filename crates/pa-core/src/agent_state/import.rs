@@ -245,7 +245,7 @@ pub(super) fn render(log: &Log, file: StateFile, path: &Path) -> anyhow::Result<
             .unwrap_or_default()
             .into_bytes()),
         StateFile::EventBus => {
-            let state = event_bus::held_in(log, path)?.unwrap_or_default();
+            let state = event_bus::held_event_bus_in(log, path)?.unwrap_or_default();
             Ok(serde_json::to_string_pretty(&state)?.into_bytes())
         }
         StateFile::CrashLog => {

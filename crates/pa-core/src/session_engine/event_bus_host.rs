@@ -3,9 +3,10 @@
 //! into a typed [`EventBusRequest`] and sent through an [`EventBusController`].
 //!
 //! The bus itself lives in the daemon's supervisor (every session of the
-//! daemon shares it); a daemon worker registers its link-backed controller
-//! over the default this module's [`NoEventBus`] gives a daemonless run, which
-//! refuses every call with the reason.
+//! daemon shares it) or in a headless run's runtime (pa-runtime's, for the
+//! sessions it runs); each registers its controller over the default this
+//! module's [`NoEventBus`] gives a run with neither, which refuses every
+//! call with the reason.
 
 use std::future::Future;
 use std::sync::Arc;

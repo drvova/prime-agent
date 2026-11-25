@@ -1,6 +1,7 @@
-;; The daemon's event bus: event sources (a named service with a JSON schema
-;; for its payloads), publications, and subscriptions that wake this session
-;; with a turn when a matching event is published.
+;; The event bus (the daemon's, or a headless run's own): event sources (a
+;; named service with a JSON schema for its payloads), publications, and
+;; subscriptions that wake this session with a turn when a matching event is
+;; published.
 
 ;; Define, or redefine, an event source this session owns: its record.
 (define (event-source-define name schema #:description [description ""])
@@ -16,7 +17,8 @@
 (define (event-publish source payload)
   (%host-call "event.publish" (hash 'source source 'payload payload)))
 
-;; Subscribe this session to a source: the subscription. Each matching event
+;; Subscribe this session to a source (or, in a headless run, a topic
+;; filter): the subscription. Each matching event
 ;; starts a turn with `prompt` and the event's payload.
 (define (event-subscribe source prompt
                          #:filter [filter #f]
