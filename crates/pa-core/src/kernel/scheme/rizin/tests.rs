@@ -84,7 +84,7 @@ impl Fake {
                     if hung
                         && self
                             .unheard
-                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |unheard| {
+                            .try_update(Ordering::SeqCst, Ordering::SeqCst, |unheard| {
                                 unheard.checked_sub(1)
                             })
                             .is_err() =>

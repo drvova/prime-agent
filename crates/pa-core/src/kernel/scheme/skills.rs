@@ -344,7 +344,7 @@ impl SkillLoader {
                             controller.resume();
                         }
                         let record = Evaluated {
-                            path: path.clone(),
+                            path,
                             text,
                             error: error.clone(),
                         };

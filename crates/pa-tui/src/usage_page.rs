@@ -285,8 +285,7 @@ impl UsagePage {
             .spend
             .data
             .as_ref()
-            .map(|history| history.last_30_days.billing)
-            .unwrap_or_default();
+            .map_or_default(|history| history.last_30_days.billing);
         UsagePageSummary {
             provider_count: cards.len() as u64,
             quotas,

@@ -485,14 +485,11 @@ async fn the_first_agents_view_render_is_clean_behind_hundreds_of_dead_subagents
     let saved = client.request("s1");
     assert_eq!(saved["success"], true, "list_saved_sessions: {saved}");
     let parent_path = parent_file.to_string_lossy().to_string();
-    let children = saved["data"]["sessions"]
-        .as_array()
-        .map(|rows| {
-            rows.iter()
-                .filter(|row| row["parentSessionPath"].as_str() == Some(parent_path.as_str()))
-                .count()
-        })
-        .unwrap_or_default();
+    let children = saved["data"]["sessions"].as_array().map_or_default(|rows| {
+        rows.iter()
+            .filter(|row| row["parentSessionPath"].as_str() == Some(parent_path.as_str()))
+            .count()
+    });
     assert_eq!(children, DEAD_CHILDREN, "the dead rows stay resumable");
 
     // The first frame renders the live roster the moment the surface mounts

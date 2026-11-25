@@ -232,8 +232,7 @@ impl CompactionManager {
                 .branch()
                 .iter()
                 .find(|entry| entry.type_ == "message")
-                .map(|entry| entry.id.clone())
-                .unwrap_or_default()
+                .map_or_default(|entry| entry.id.clone())
         } else {
             let keep_recent = pa_core::settings::SettingsManager::create(&cwd, &self.agent_dir)
                 .settings()

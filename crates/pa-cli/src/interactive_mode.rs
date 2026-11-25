@@ -556,7 +556,7 @@ fn build_tui_options(
         initial_message: options.initial_message.clone(),
         show_images,
         fullscreen_mouse,
-        theme: settings.get_theme().map(str::to_string).unwrap_or_default(),
+        theme: settings.get_theme().map_or_default(str::to_string),
         // The client-settings seam the interactive commands persist
         // through (`/settings`).
         client_settings: Some(crate::client_settings::CliClientSettings::new(

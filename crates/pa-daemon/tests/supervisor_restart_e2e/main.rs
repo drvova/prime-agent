@@ -218,7 +218,7 @@ fn assert_sessions_gone(agent_dir: &Path, session_sockets: &[PathBuf]) {
         .filter(|session_socket| UnixStream::connect(session_socket).is_ok())
         .collect();
     let held_leases: Vec<PathBuf> = std::fs::read_dir(agent_dir.join("session-leases"))
-        .map(|entries| {
+        .map_or_default(|entries| {
             entries
                 .flatten()
                 .map(|entry| entry.path())
@@ -227,8 +227,7 @@ fn assert_sessions_gone(agent_dir: &Path, session_sockets: &[PathBuf]) {
                         .is_some_and(|extension| extension == "lock")
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(
         (serving, held_leases),
         (Vec::<&PathBuf>::new(), Vec::<PathBuf>::new()),

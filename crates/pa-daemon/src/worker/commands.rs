@@ -247,8 +247,7 @@ impl Worker {
         let servers: Vec<pa_core::mcp::AcpMcpServerConfig> = payload
             .get("servers")
             .cloned()
-            .map(|servers| serde_json::from_value(servers).unwrap_or_default())
-            .unwrap_or_default();
+            .map_or_default(|servers| serde_json::from_value(servers).unwrap_or_default());
         // The agent cannot adopt a different MCP tool list mid-turn (TS
         // `session.isStreaming` guard).
         if !servers.is_empty() && self.core.lock().unwrap().busy {
@@ -461,21 +460,16 @@ impl Worker {
         let capabilities = payload
             .get("capabilities")
             .and_then(Value::as_array)
-            .map(|capabilities| {
+            .map_or_default(|capabilities| {
                 capabilities
                     .iter()
                     .filter_map(Value::as_str)
                     .map(str::to_string)
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            });
         let core = self.core.lock().unwrap();
         let Some(page) = page else {
-            let mut messages = core
-                .store
-                .as_ref()
-                .map(SessionFile::messages)
-                .unwrap_or_default();
+            let mut messages = core.store.as_ref().map_or_default(SessionFile::messages);
             if crate::snapshot_stream::wants_image_elision(&capabilities) {
                 crate::snapshot_stream::elide_snapshot_image_payloads(&mut messages);
             }

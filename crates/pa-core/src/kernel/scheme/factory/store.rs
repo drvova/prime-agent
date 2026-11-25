@@ -86,8 +86,7 @@ impl FactoryEnvironment {
         };
         let entries = state
             .and_then(|mut state| state.entries.remove(&kind))
-            .map(|entries| entries.into_values().collect())
-            .unwrap_or_default();
+            .map_or_default(|entries| entries.into_values().collect());
         (entries, id)
     }
 

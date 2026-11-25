@@ -533,8 +533,7 @@ mod tests {
             .iter()
             .rev()
             .find(|d| d.is_error)
-            .map(|d| d.message.as_str())
-            .unwrap_or_default()
+            .map_or_default(|d| d.message.as_str())
     }
 
     #[test]

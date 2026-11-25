@@ -245,9 +245,9 @@ mod tests {
     }
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::float_cmp,
-        reason = "golden equality is the contract: cacheWrite must round-trip the fixture's exact 1.25"
+        reason = "golden equality is the contract: cacheWrite must round-trip the fixture's exact 1.25; an allow, not an expect: clippy 1.100 no longer flags exact-float asserts, 1.98 does"
     )]
     fn parses_a_valid_entry() {
         let parsed = parse_model_catalog(&catalog(vec![entry(&json!({}))]), InvalidEntries::Reject)

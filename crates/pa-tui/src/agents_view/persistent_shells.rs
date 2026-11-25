@@ -142,8 +142,7 @@ impl AgentsViewMode {
                     title: shell
                         .get("command")
                         .and_then(Value::as_str)
-                        .map(single_line)
-                        .unwrap_or_default(),
+                        .map_or_default(single_line),
                     model: "-".to_string(),
                     cost: 0.0,
                     age: format_duration(shell.get("durationMs").and_then(Value::as_u64)),

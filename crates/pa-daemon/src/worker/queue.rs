@@ -270,8 +270,7 @@ pub(crate) fn checkpoint_queue_recovery(
             core.active_session_id.clone(),
             core.store
                 .as_ref()
-                .map(|s| s.session_id().to_string())
-                .unwrap_or_default(),
+                .map_or_default(|s| s.session_id().to_string()),
             core.store
                 .as_ref()
                 .map(|s| s.path.to_string_lossy().to_string()),

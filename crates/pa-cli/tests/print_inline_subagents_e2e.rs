@@ -93,12 +93,10 @@ impl PrintLane {
             panic!(
                 "the print run persisted its session ({}): {error}; agent dir: {:?}",
                 sessions.display(),
-                std::fs::read_dir(self.home.path())
-                    .map(|entries| entries
-                        .flatten()
-                        .map(|entry| entry.path())
-                        .collect::<Vec<_>>())
-                    .unwrap_or_default()
+                std::fs::read_dir(self.home.path()).map_or_default(|entries| entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .collect::<Vec<_>>())
             )
         });
         let mut files: Vec<PathBuf> = listing

@@ -64,7 +64,7 @@ impl SessionUi {
             .as_ref()
             .and_then(|state| state.get("scopedModels"))
             .and_then(Value::as_array)
-            .map(|entries| {
+            .map_or_default(|entries| {
                 entries
                     .iter()
                     .filter_map(|entry| {
@@ -75,8 +75,7 @@ impl SessionUi {
                         ))
                     })
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         let now_ms = crate::usage_page::now_ms();
         let options = ModelPickerOptions {
             models: self.model_catalog.clone(),
@@ -95,13 +94,11 @@ impl SessionUi {
                 spend: self
                     .usage_spend
                     .as_ref()
-                    .map(|spend| spend.models.clone())
-                    .unwrap_or_default(),
+                    .map_or_default(|spend| spend.models.clone()),
                 quotas: self
                     .usage_quotas
                     .as_ref()
-                    .map(|report| report.providers.clone())
-                    .unwrap_or_default(),
+                    .map_or_default(|report| report.providers.clone()),
                 now_ms,
             },
         };
@@ -314,28 +311,26 @@ impl SessionUi {
             let configured_providers: std::collections::HashSet<String> = value
                 .get("configuredProviders")
                 .and_then(Value::as_array)
-                .map(|providers| {
+                .map_or_default(|providers| {
                     providers
                         .iter()
                         .filter_map(Value::as_str)
                         .map(str::to_string)
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             // A mode this build does not know (written by a newer daemon) leaves its model
             // classed by its catalog rates.
             let billing: std::collections::HashMap<String, pa_types::billing::BillingMode> = value
                 .get("billing")
                 .and_then(Value::as_object)
-                .map(|modes| {
+                .map_or_default(|modes| {
                     modes
                         .iter()
                         .filter_map(|(key, mode)| {
                             Some((key.clone(), serde_json::from_value(mode.clone()).ok()?))
                         })
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             let accounts = value
                 .get("accounts")
                 .cloned()
@@ -345,7 +340,7 @@ impl SessionUi {
             let account_choices = value
                 .get("accountChoices")
                 .and_then(Value::as_object)
-                .map(|providers| {
+                .map_or_default(|providers| {
                     providers
                         .iter()
                         .map(|(provider, choices)| {
@@ -363,8 +358,7 @@ impl SessionUi {
                             (provider.clone(), listed)
                         })
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             let _ = updates.send(ModelCatalogUpdate {
                 models,
                 configured_providers,

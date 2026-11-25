@@ -19,8 +19,7 @@ impl AgentView {
             .editor
             .keybindings()
             .first_key("app.todos.toggle")
-            .map(|key| crate::keybindings::format_key_text(&key))
-            .unwrap_or_default();
+            .map_or_default(|key| crate::keybindings::format_key_text(&key));
         crate::todo_panel::render_todo_panel(
             &self.todos,
             self.todo_fold,
@@ -37,8 +36,7 @@ impl AgentView {
             let kb = self.editor.keybindings();
             let first = |id: &str| {
                 kb.first_key(id)
-                    .map(|key| crate::keybindings::format_key_text(&key))
-                    .unwrap_or_default()
+                    .map_or_default(|key| crate::keybindings::format_key_text(&key))
             };
             crate::queued::PendingStripKeys {
                 dispatch: first("app.input.clear"),
