@@ -1,5 +1,17 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate only.
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the terminal-mode `run_interactive` future stays on the stack in the child process"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`run_route` and the child's `child_run` each script one exit route, top to bottom"
+    )
+)]
 
 //! Real-pty e2e for the exit contract across every route that returns the pane
 //! to the shell (the operator's kitty-mode leak: the terminal was still in kitty
@@ -749,8 +761,10 @@ impl PtyReader {
 fn spawn_child(route: Route, socket: &Path, slave: &OwnedFd, known_terminal: bool) -> Child {
     fn claim_controlling_tty(fd: i32) -> std::io::Result<()> {
         nix::unistd::setsid()?;
-        // TIOCSCTTY is already the request type on Linux and a `u32` on macOS.
-        #[allow(clippy::cast_lossless)]
+        #[allow(
+            clippy::cast_lossless,
+            reason = "TIOCSCTTY is already the request type on Linux and a `u32` on macOS, which neither CI target builds"
+        )]
         let rc = unsafe { libc::ioctl(fd, libc::TIOCSCTTY as libc::c_ulong, 0) };
         if rc < 0 {
             return Err(std::io::Error::last_os_error());
