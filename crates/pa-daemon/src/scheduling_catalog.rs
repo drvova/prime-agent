@@ -96,7 +96,10 @@ impl Supervisor {
                 continue;
             }
             let session_file = Path::new(&job.session_file);
-            if !session_file.is_file() {
+            if !pa_core::session::store::store()
+                .stat(session_file)
+                .is_ok_and(|stat| stat.is_transcript)
+            {
                 continue;
             }
             let Some(info) = read_session_info(session_file) else {

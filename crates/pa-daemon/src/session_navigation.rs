@@ -234,7 +234,7 @@ impl SessionNavigation {
         if pa_types::platform::canonicalize(&target).ok()
             != pa_types::platform::canonicalize(resolved).ok()
         {
-            if let Err(error) = std::fs::copy(resolved, &target) {
+            if let Err(error) = pa_core::session::store::store().import(resolved, &target) {
                 return Err(response_failure(
                     None,
                     "import_jsonl",

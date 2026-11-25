@@ -707,11 +707,16 @@ fn continue_recent_view(
 /// the sessions dir, or a live daemon session id (attach).
 fn resolve_resume_selector(selector: &str, session_dir: &Path) -> SessionSelection {
     let path = config::expand_tilde_path(selector);
-    if path.is_file() {
+    let is_transcript = |path: &Path| {
+        pa_core::session::store::store()
+            .stat(path)
+            .is_ok_and(|stat| stat.is_transcript)
+    };
+    if is_transcript(&path) {
         return SessionSelection::Resume(path);
     }
     let candidate = session_dir.join(format!("{selector}.jsonl"));
-    if candidate.is_file() {
+    if is_transcript(&candidate) {
         return SessionSelection::Resume(candidate);
     }
     SessionSelection::Attach(selector.to_string())

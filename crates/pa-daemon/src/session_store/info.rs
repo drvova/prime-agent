@@ -41,7 +41,6 @@ pub struct SessionInfo {
 /// a single syscall; only the syscall chunking changes.
 const SESSION_SCAN_READ_BUF_BYTES: usize = 64 * 1024;
 
-
 /// The cross-file memory budget on retained assistant usage records and
 /// stable attribution IDs: keeps large families resident without unbounded retry history.
 const SESSION_SCAN_MAX_RETAINED_USAGE_ENTRIES: usize = 400_000;

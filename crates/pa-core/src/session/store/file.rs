@@ -18,7 +18,7 @@ use super::{
 /// The [`TranscriptStore`] that keeps each transcript in the JSONL file at
 /// its locator.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct FileTranscriptStore;
+pub(crate) struct FileTranscriptStore;
 
 /// The session file write (TS `writeFileAtomicSync`): private temp, fsync,
 /// rename. The fsync is deliberate (TS passes none; a non-synced rename can

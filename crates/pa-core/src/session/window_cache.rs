@@ -1,8 +1,8 @@
 //! Disposable, generation-certified session window snapshots.
+use super::store::{store, TranscriptGeneration, TranscriptReader};
 use super::window::{WindowReadStats, WindowStats};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use super::store::{store, TranscriptGeneration, TranscriptReader};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -90,7 +90,9 @@ pub(super) fn load(
     // the eviction re-lock.
     let live = live_snapshots().lock().ok()?.get(path).cloned();
     if let Some(snapshot) = live {
-        if snapshot.version == SNAPSHOT_VERSION && certified(&snapshot.generation, reader, path).ok()? {
+        if snapshot.version == SNAPSHOT_VERSION
+            && certified(&snapshot.generation, reader, path).ok()?
+        {
             stats.cache_bytes += serde_json::to_vec(&snapshot).ok()?.len() as u64;
             return Some(snapshot);
         }
@@ -99,7 +101,9 @@ pub(super) fn load(
     let data = std::fs::read(cache_path(path)).ok()?;
     stats.cache_bytes += data.len() as u64;
     let snapshot: Snapshot = serde_json::from_slice(&data).ok()?;
-    if snapshot.version != SNAPSHOT_VERSION || !certified(&snapshot.generation, reader, path).ok()? {
+    if snapshot.version != SNAPSHOT_VERSION
+        || !certified(&snapshot.generation, reader, path).ok()?
+    {
         return None;
     }
     live_snapshots()

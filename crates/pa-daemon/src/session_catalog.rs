@@ -54,30 +54,9 @@ pub(crate) fn resolve_saved_session(
         return Ok(None);
     };
     let destination = sessions_dir.join(session_file_name(&info.id));
-    std::fs::create_dir_all(sessions_dir)?;
-    // Stage in the live directory so custom sessions dirs on another
-    // filesystem work too. Publish a complete file without replacing any
-    // live path, even one the catalog could not parse.
-    let temp = sessions_dir.join(format!(".restore-{}.tmp", uuid::Uuid::new_v4()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    pa_core::platform::perms::set_private_mode(&mut options);
-    let mut target = options.open(&temp)?;
-    let result = (|| -> Result<()> {
-        let mut source = std::fs::File::open(&info.path)?;
-        std::io::copy(&mut source, &mut target)?;
-        target.set_times(std::fs::FileTimes::new().set_modified(source.metadata()?.modified()?))?;
-        target.sync_all()?;
-        Ok(())
-    })();
-    drop(target);
-    let result = result
-        .and_then(|()| std::fs::hard_link(&temp, &destination).context("publish restored session"));
-    let cleanup = std::fs::remove_file(&temp);
-    result.with_context(|| format!("restore archived session {}", info.id))?;
-    cleanup.with_context(|| format!("remove restore staging file {}", temp.display()))?;
-    std::fs::remove_file(&info.path)
-        .with_context(|| format!("unlink restored archive {}", info.path.display()))?;
+    pa_core::session::store::store()
+        .restore(&info.path, &destination)
+        .with_context(|| format!("restore archived session {}", info.id))?;
     let mut restored = info.clone();
     restored.path = destination;
     Ok(Some(restored))

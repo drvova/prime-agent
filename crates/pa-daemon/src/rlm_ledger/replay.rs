@@ -186,7 +186,7 @@ pub(super) struct ReplayState {
 /// edits can change the inputs of the deleted-spend fold without any append.
 #[derive(Debug)]
 pub(super) struct DeletedBucket {
-    pub(super) inputs: Vec<Option<FileIdentity>>,
+    pub(super) inputs: Vec<Option<pa_core::session::store::TranscriptGeneration>>,
     pub(super) children: super::DeletedChildrenByParent,
 }
 
@@ -309,15 +309,13 @@ fn artifact_session_index(agent_dir: &Path) -> ArtifactIndex {
             index
                 .directories
                 .push((sub.path(), path_identity(&sub.path())));
-            let Ok(files) = std::fs::read_dir(sub.path()) else {
+            let Ok(files) = pa_core::session::store::store().list(&sub.path()) else {
                 continue;
             };
-            for file in files.flatten() {
-                let path = file.path();
-                if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
-                    if let Some(stem) = path.file_stem() {
-                        index.paths.insert(stem.to_string_lossy().to_string(), path);
-                    }
+            for transcript in files.transcripts {
+                let path = transcript.locator;
+                if let Some(stem) = path.file_stem() {
+                    index.paths.insert(stem.to_string_lossy().to_string(), path);
                 }
             }
         }
@@ -404,6 +402,9 @@ fn path_identity(path: &Path) -> Option<FileIdentity> {
     })
 }
 
+/// A transcript is at `path` (the ledger's edge endpoints are transcripts).
 pub(super) fn is_file(path: &Path) -> bool {
-    fs::metadata(path).is_ok_and(|m| m.is_file())
+    pa_core::session::store::store()
+        .stat(path)
+        .is_ok_and(|stat| stat.is_transcript)
 }

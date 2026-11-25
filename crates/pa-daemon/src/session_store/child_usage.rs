@@ -39,7 +39,6 @@ pub(super) struct UnconfirmedChildRow {
     bytes: Vec<u8>,
 }
 
-
 /// Compare complete headers with the actual wire tag included. The frozen
 /// original and its one wire decode cover reader float normalization without
 /// decoding an already loaded header a second time or ignoring extension fields.
@@ -147,7 +146,7 @@ impl SessionFile {
                     receipt.start = Some(
                         metadata.len()
                             + u64::from(
-                                metadata.len() > 0 && receipt.prefix_tail.last() != Some(&b'\n'),
+                                !metadata.is_empty() && receipt.prefix_tail.last() != Some(&b'\n'),
                             ),
                     );
                 }

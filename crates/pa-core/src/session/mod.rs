@@ -3,8 +3,8 @@ pub mod billed_row;
 pub mod discovery;
 pub mod manager;
 pub mod manager_ext;
-pub mod tree;
 pub mod store;
+pub mod tree;
 pub mod window;
 mod window_cache;
 

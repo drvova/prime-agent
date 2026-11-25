@@ -14,9 +14,10 @@
 //! design, like the telemetry origin: no session's scope selects it, and a
 //! session reaches its own transcript only by its locator.
 //!
-//! [`FileTranscriptStore`] keeps each transcript in its own file. The window
-//! and session-info caches certify their sidecars against that store's
-//! [`TranscriptGeneration`]s; they are its internals and keep their formats.
+//! The file store (`FileTranscriptStore`, the only one today) keeps each
+//! transcript in its own file. The window and session-info caches certify
+//! their sidecars against that store's [`TranscriptGeneration`]s; they are its
+//! internals and keep their formats.
 
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -26,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 mod file;
 
-pub use file::FileTranscriptStore;
+use file::FileTranscriptStore;
 
 /// The process-wide transcript store.
 #[must_use]
@@ -53,8 +54,13 @@ pub fn store() -> &'static dyn TranscriptStore {
 /// - A transcript's first line is its `session` header; the store does not
 ///   check this (its readers do).
 /// - The [`TranscriptGeneration`] of a transcript changes whenever its bytes
-///   change, and a reader opened on one generation keeps reading those bytes
-///   up to the length it had: a reader never sees half of an append.
+///   change. Bytes once appended keep their positions until the transcript
+///   is replaced ([`create`](Self::create), [`repair_tail`](Self::repair_tail),
+///   [`restore`](Self::restore), [`import`](Self::import)), which also changes
+///   its generation, so a cursor is good exactly while a generation check
+///   passes.
+/// - A read can race an append and end in a torn last line; readers skip or
+///   hold back an unterminated last line, as they do today.
 pub trait TranscriptStore: Send + Sync {
     /// Open the transcript at `locator` for reading, positioned at its start.
     ///
@@ -231,12 +237,8 @@ impl TranscriptGeneration {
     /// up to this generation's length may still be what they were (a
     /// replaced transcript is never the same). Without a stable identity
     /// (non-unix file stores) this is always false.
-    #[cfg_attr(not(unix), allow(clippy::unused_self))]
     #[must_use]
-    pub fn same_transcript(
-        &self,
-        #[cfg_attr(not(unix), allow(unused_variables))] other: &Self,
-    ) -> bool {
+    pub fn same_transcript(&self, other: &Self) -> bool {
         // No dev/ino from std on other platforms: an mtime identity would
         // certify an in-place rewrite as a resume.
         cfg!(unix) && self.dev == other.dev && self.ino == other.ino

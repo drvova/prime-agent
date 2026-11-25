@@ -3,8 +3,8 @@
 //! serializes writers onto the file.
 
 use super::{
-    json, new_entry_id, Context, HashMap, PathBuf, Result, Serialize, SessionEntry,
-    SessionFile, SessionHeader, Value, Write,
+    json, new_entry_id, Context, HashMap, PathBuf, Result, Serialize, SessionEntry, SessionFile,
+    SessionHeader, Value, Write,
 };
 
 impl SessionEntry {

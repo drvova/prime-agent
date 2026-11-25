@@ -572,7 +572,7 @@ impl WindowedSessionStore {
         };
         let snapshot = Snapshot {
             version: window_cache::SNAPSHOT_VERSION,
-            generation: generation.clone(),
+            generation,
             header: serde_json::to_string(&retained[0])?,
             start: retained_start,
             leaf: leaf_id.clone(),

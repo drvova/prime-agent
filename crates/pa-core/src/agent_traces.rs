@@ -607,10 +607,11 @@ pub async fn preview_trace_file(
     let mut body = String::new();
     if signature.size <= MAX_TRACE_BYTES {
         let path = session_file.to_path_buf();
-        let read = tokio::task::spawn_blocking(move || crate::session::store::read_to_string(&path))
-            .await
-            .map_err(std::io::Error::other)
-            .and_then(|read| read);
+        let read =
+            tokio::task::spawn_blocking(move || crate::session::store::read_to_string(&path))
+                .await
+                .map_err(std::io::Error::other)
+                .and_then(|read| read);
         match read {
             Ok(read) => body = read,
             Err(error) => {
