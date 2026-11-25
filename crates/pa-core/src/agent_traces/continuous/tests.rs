@@ -869,8 +869,10 @@ fn oversized_cursor_records_fail_closed_with_bounded_reads() {
 }
 
 #[tokio::test(start_paused = true)]
-// Credential lookup must stay stable while synthetic background workers run.
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "credential lookup must stay stable while synthetic background workers run"
+)]
 async fn replacement_at_capacity_reuses_a_slot_and_preserves_late_retirement() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -1038,8 +1040,10 @@ async fn exhausted_recovery_retries_leave_the_sweep_incomplete() {
 }
 
 #[tokio::test(start_paused = true)]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn a_credentialless_controller_retries_after_credentials_arrive() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -1117,8 +1121,10 @@ async fn a_settings_change_after_load_still_records_the_write_intent() {
 }
 
 #[tokio::test(start_paused = true)]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn missing_credentials_leave_the_sweep_incomplete_until_provided() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -1164,8 +1170,10 @@ async fn missing_credentials_leave_the_sweep_incomplete_until_provided() {
 }
 
 #[tokio::test(start_paused = true)]
-// Keep credential lookup stable across injected background I/O failures.
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "credential lookup stays stable across the injected background I/O failures"
+)]
 async fn transient_recovery_reads_rearm_and_deliver_after_restoration() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -1267,8 +1275,10 @@ async fn terminal_invalid_records_and_headers_complete_without_network_or_rescan
 }
 
 #[tokio::test(start_paused = true)]
-// The env lock is held across awaits to keep credential lookup deterministic.
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so credential lookup stays deterministic"
+)]
 async fn bounded_admission_preserves_retirement_and_delivers_on_readmission() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();

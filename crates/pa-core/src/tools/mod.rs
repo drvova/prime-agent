@@ -2,7 +2,13 @@
 //! crate facade (crate root) re-exports only the public tool surface.
 
 pub(crate) mod kernel_cell;
-#[allow(dead_code)] // util module; every fn exercised by unit tests
+#[cfg_attr(
+    windows,
+    expect(
+        dead_code,
+        reason = "on Windows the unix `posix_join` arm of the path helpers has no caller"
+    )
+)]
 pub(crate) mod path_utils;
 pub(crate) mod render_utils;
 pub(crate) mod scheme;

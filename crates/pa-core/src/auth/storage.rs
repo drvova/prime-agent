@@ -179,9 +179,10 @@ struct FileIdentity {
     len: u64,
 }
 
-// The fallible non-Unix twin pins the Option shape across
-// platforms - unwrapping only this arm would split the contract.
-#[allow(clippy::unnecessary_wraps)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the fallible non-unix twin pins the Option shape; unwrapping one arm splits the contract"
+)]
 #[cfg(unix)]
 fn stat_identity(metadata: &fs::Metadata) -> Option<FileIdentity> {
     use std::os::unix::fs::MetadataExt;

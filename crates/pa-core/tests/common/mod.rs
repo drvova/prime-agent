@@ -1,7 +1,10 @@
 //! A scripted loopback HTTP server (the pa-models `tests/common` pattern): answers from a queue of
 //! raw responses and records every request head (headers included). Nothing leaves loopback.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary uses a different part of the shared loopback server"
+)]
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

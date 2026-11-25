@@ -1,8 +1,23 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines/casts).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "a session's futures are large by design, as in src/lib.rs"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the verifier is one scripted scenario, end to end"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_truncation,
+        reason = "the whole floats Scheme writes back are the host's integer counts"
+    )
 )]
 
 //! Verifier: the turn-boundary host-request contract (`model.info`, `compact.*`, `refine.*`) over a

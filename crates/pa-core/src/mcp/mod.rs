@@ -234,9 +234,10 @@ impl AcpMcpServerConfig {
 
 /// A resolved integration: catalog/user entry plus auth state.
 #[derive(Debug, Clone)]
-// The mirrored TS API shape is deliberate (the booleans are the
-// product's own surface, not a refactor target).
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the booleans mirror the TS API shape: they are the product's own surface"
+)]
 pub(crate) struct ResolvedIntegration {
     pub(crate) server: String,
     pub(crate) label: String,
@@ -1020,9 +1021,10 @@ pub struct McpServerStatus {
 /// One `/mcp` connections-view row (the daemon's `get_mcp_connections` response).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-// The mirrored TS API shape is deliberate (the booleans are the
-// product's own surface, not a refactor target).
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the booleans mirror the TS API shape: they are the product's own surface"
+)]
 pub struct McpConnectionEntry {
     pub server: String,
     pub label: String,
