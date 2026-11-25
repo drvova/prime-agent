@@ -1199,15 +1199,9 @@ mod tests {
     /// it at the next turn boundary in both directions. The reserve leaves a
     /// threshold of 1616 tokens on the faux model (128k window, 16k output
     /// budget), below any real turn, so every turn is due while the toggle is on.
-    #[expect(
-        clippy::await_holding_lock,
-        reason = "the faux provider registry is process-global; the guard spans the awaited turns"
-    )]
     #[tokio::test]
     async fn set_auto_compaction_reaches_the_built_session() {
-        let _faux = crate::agent_engine::tests::FAUX_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _faux = crate::agent_engine::tests::FAUX_TEST_LOCK.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join("agent")).unwrap();
         std::fs::write(
