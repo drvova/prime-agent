@@ -622,15 +622,23 @@ async fn a_retry_after_a_lost_connection_relaunches_the_worker() {
 
     // The retry hosts a real session in this process, and one that came up
     // inside the pinned budget would answer the retry with success. This one
-    // never can: its socket path now runs through a regular file, so its bind
-    // fails and the retry stops at the probe, after the relaunch was recorded.
-    std::fs::write(dir.path().join("occupied"), "").expect("the file in the socket's way");
-    resident.descriptor.lock().await.socket_path = dir
-        .path()
-        .join("occupied")
-        .join("worker.sock")
-        .to_string_lossy()
-        .into_owned();
+    // never can: its socket address now refuses the bind, so the retry stops
+    // at the probe, after the relaunch was recorded. On unix the socket path
+    // runs through a regular file; on Windows the endpoint is a named pipe,
+    // which a file does not block, so the address is a pipe name past the
+    // 256-character limit.
+    #[cfg(unix)]
+    let refused = {
+        std::fs::write(dir.path().join("occupied"), "").expect("the file in the socket's way");
+        dir.path()
+            .join("occupied")
+            .join("worker.sock")
+            .to_string_lossy()
+            .into_owned()
+    };
+    #[cfg(windows)]
+    let refused = format!(r"\\.\pipe\{}", "x".repeat(300));
+    resident.descriptor.lock().await.socket_path = refused;
     supervisor.pin_worker_connect_budget_for_tests(Duration::from_millis(1));
     let command = DaemonCommand::RetryWorker {
         id: None,

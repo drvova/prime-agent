@@ -62,7 +62,7 @@ fn make_executable(path: &Path) {
 /// The fixture verifier: passes once the run has made at least one more
 /// attempt after the first failing check (the counter file records
 /// consults). Hermetic: only the fixture directory is touched.
-fn pass_on_second_consult_verifier(home: &Path) -> PathBuf {
+fn pass_on_second_consult_verifier(home: &Path) -> String {
     let script = home.join("verify.sh");
     let counter = home.join("verify-count").display().to_string();
     std::fs::write(
@@ -82,12 +82,14 @@ fn pass_on_second_consult_verifier(home: &Path) -> PathBuf {
     .unwrap();
     #[cfg(unix)]
     make_executable(&script);
-    script
+    // The gate is a bash command line; on Windows that bash is Git Bash, which
+    // reads a backslash as an escape, so the path goes in with forward slashes.
+    script.display().to_string().replace('\\', "/")
 }
 
 /// The fixture verifier that never passes: a task the scripted model cannot
 /// complete.
-fn always_failing_verifier(home: &Path) -> PathBuf {
+fn always_failing_verifier(home: &Path) -> String {
     let script = home.join("verify-fail.sh");
     std::fs::write(
         &script,
@@ -98,7 +100,9 @@ fn always_failing_verifier(home: &Path) -> PathBuf {
     .unwrap();
     #[cfg(unix)]
     make_executable(&script);
-    script
+    // The gate is a bash command line; on Windows that bash is Git Bash, which
+    // reads a backslash as an escape, so the path goes in with forward slashes.
+    script.display().to_string().replace('\\', "/")
 }
 
 fn session_files(home: &Path) -> Vec<PathBuf> {
@@ -163,7 +167,7 @@ fn verifier_gate_pass_stops_the_run_with_structured_events_in_run() {
             "build the feature",
             "--autonomous",
             "--autonomous-gate",
-            verifier.to_str().unwrap(),
+            &verifier,
         ],
         &script,
     );
@@ -284,7 +288,7 @@ fn verifier_gate_failure_exhausts_retries_and_exits_one() {
             "build the feature",
             "--autonomous",
             "--autonomous-gate",
-            verifier.to_str().unwrap(),
+            &verifier,
             "--autonomous-gate-retries",
             "1",
         ],
@@ -339,7 +343,7 @@ fn text_mode_verifier_pass_prints_the_final_answer() {
             "build the feature",
             "--autonomous",
             "--autonomous-gate",
-            verifier.to_str().unwrap(),
+            &verifier,
         ],
         &script,
     );
