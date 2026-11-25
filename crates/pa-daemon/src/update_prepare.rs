@@ -427,8 +427,11 @@ impl PrepareCoordinator {
     }
 
     /// The active transaction's update id, if any.
-    /// Reader: coordinator slice (`#[allow(dead_code)]` until then).
-    #[allow(dead_code)]
+    /// Reader: the coordinator slice.
+    #[expect(
+        dead_code,
+        reason = "the coordinator slice reads it; until then nothing calls it"
+    )]
     pub(crate) fn active_update_id(&self) -> Option<UpdateId> {
         self.inner
             .lock()
@@ -491,7 +494,10 @@ pub(crate) fn write_prepared_artifacts(
 
 /// Read the prepared marker back (expired markers are the coordinator's
 /// refusal); `None` if absent or unparseable.
-#[allow(dead_code)] // graceful-stop slice wires the writers; boot reads here
+#[allow(
+    dead_code,
+    reason = "only the tests read the marker until the graceful-stop slice wires the writers"
+)]
 pub(crate) fn read_prepared_marker(prepared_dir: &Path) -> Option<UpdatePreparedMarker> {
     let content = std::fs::read_to_string(prepared_dir.join("marker.json")).ok()?;
     serde_json::from_str(&content).ok()

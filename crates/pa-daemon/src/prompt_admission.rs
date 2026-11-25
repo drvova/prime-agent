@@ -186,7 +186,10 @@ pub(crate) fn input_admission_id(command: &pa_types::daemon::DaemonCommand) -> O
 impl Supervisor {
     /// Route one admitted prompt: the cancellation checks around the worker
     /// round trip, the admission-id rewrite, and the owned commit.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the routed prompt needs the connection, the command, the admission and the commit together"
+    )]
     pub(crate) async fn route_prompt_with_admission(
         self: &Arc<Self>,
         connection: &Arc<crate::input_pause_lease::ClientConnectionState>,

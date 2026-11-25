@@ -2,8 +2,13 @@
 //! the summarizer's chunks in generation order, strictly between the owning
 //! `compaction_start` and the settling `compaction_end`; the frames stay
 //! ephemeral and the end's result carries the same text.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the summary-delta streaming scenario reads top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;

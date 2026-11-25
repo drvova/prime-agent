@@ -2,8 +2,13 @@
 //! session grown through `import_jsonl` must compact on the next `compact`
 //! (TS is one-store). The gap: the Rust parse degraded rows the TS loader
 //! keeps (raw `stopReason: "tool_calls"`, missing `toolName`).
-// 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(clippy::cast_possible_wrap)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_wrap,
+        reason = "the fixture's turn index is a small count added to a fixed epoch timestamp"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -17,7 +22,10 @@ use serde_json::{json, Value};
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

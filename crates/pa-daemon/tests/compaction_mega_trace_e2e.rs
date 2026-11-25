@@ -2,8 +2,13 @@
 //! over a seeded ~50MB session, `PA_COMPACTION_TRACE` capturing every phase
 //! boundary and the client recording the wire arrival times (the loader window
 //! a user sees). Measurement, not a behavioral contract; run with --ignored.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the mega-session compaction measurement is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -23,8 +28,10 @@ const FATTEN_REPLY_CHARS: usize = 6 * 1024 * 1024;
 
 struct Supervisor {
     child: Child,
-    // Spawn bookkeeping only: the test drives the daemon through the client port, never this field.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
