@@ -2,25 +2,8 @@
 //! `get_session_tree`, `set_session_entry_label`,
 //! `get_user_messages_for_forking`, `navigate_tree`, and `fork`. The wire
 //! shapes are the TS daemon-protocol contract.
-// Stack-resident futures by design on the daemon's hot paths.
-#![allow(clippy::large_futures)]
-// Narrowing casts sit at OS boundaries (pid/fd/time/size) where the kernel
-// bounds the values.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 // Style gate only, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -43,9 +26,6 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test process exits
-// immediately afterwards, reaping it.
-#[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &std::path::Path, agent_dir: &std::path::Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let mut child = Command::new(binary)

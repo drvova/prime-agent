@@ -1,14 +1,6 @@
-// large_futures: stack-resident futures on hot paths by design.
-// too_many_lines: style gate, not correctness. Casts: 64-bit targets;
-// narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// large_futures: stack futures on hot paths by design. Casts: 64-bit targets; narrowing
+// sits at bounded OS/protocol boundaries.
+#![allow(clippy::large_futures, clippy::cast_possible_wrap)]
 
 //! End-to-end verifier for the `/mcp` service catalog view: a
 //! settings-declared stdio MCP server (the committed echo fixture) must
@@ -225,7 +217,6 @@ fn graceful_shutdown(socket: &Path) {
 
 /// Spawn the real supervisor over a hermetic agent dir declaring the echo
 /// fixture, with no ambient credentials.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     // The in-process client forwards this process's env to the worker.
     support::scrub_ambient_provider_credentials();

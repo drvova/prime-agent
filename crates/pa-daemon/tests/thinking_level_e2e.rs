@@ -2,25 +2,8 @@
 //! `create` config's `thinking` flag must clamp to the model's supported
 //! levels (`max` -> `high` for a reasoning model without xhigh/max maps),
 //! persist the effective level, and apply it to every provider request.
-// Stack-resident futures by design on the daemon's hot paths.
-#![allow(clippy::large_futures)]
-// Narrowing casts sit at OS boundaries (pid/fd/time/size) where the kernel
-// bounds the values.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 // Style gate only, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -133,7 +116,6 @@ fn serve(mut stream: TcpStream, bodies: &Arc<Mutex<Vec<Value>>>) -> std::io::Res
     )
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
@@ -269,7 +251,6 @@ impl Client {
 /// Shared harness: supervisor + a reasoning model behind the recording
 /// mock; no `thinkingLevelMap`, so `max` must clamp to `high`.
 struct Harness {
-    #[allow(dead_code)]
     agent_dir: PathBuf,
     session_dir: PathBuf,
     mock: RecordingMock,
@@ -282,7 +263,6 @@ struct Harness {
     dir: tempfile::TempDir,
 }
 
-#[allow(clippy::zombie_processes)]
 fn setup(name: &str, thinking: Option<&str>) -> Harness {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");

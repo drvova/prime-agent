@@ -3,9 +3,6 @@
 #![allow(
     clippy::large_futures,
     clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     clippy::too_many_lines
 )]
 

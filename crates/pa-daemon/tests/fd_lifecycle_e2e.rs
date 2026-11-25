@@ -3,24 +3,6 @@
 //! per session, prompt, connection or failed rebuild accumulates in the process that hosts
 //! every other session. Each test samples the daemon's `/proc/<pid>/fd` around the work and
 //! holds it to its baseline.
-// Stack-resident futures by design; boxing for a lint tick is a perf regression.
-#![allow(clippy::large_futures)]
-// 64-bit-only targets; narrowing casts sit at bounded OS/protocol boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 // Every probe reads /proc (fd tables, process state, limits): Linux only.
 #![cfg(target_os = "linux")]
 
@@ -237,9 +219,6 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test process exits
-// immediately afterwards, reaping it.
-#[allow(clippy::zombie_processes)]
 fn spawn_daemon(mut launcher: Command, socket: &Path, agent_dir: &Path) -> Daemon {
     let mut child = launcher
         .arg("supervisor")

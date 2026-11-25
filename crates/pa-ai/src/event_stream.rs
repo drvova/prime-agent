@@ -303,7 +303,6 @@ pub fn create_assistant_message_event_stream(
 }
 
 /// Initial assistant message shape shared by every provider.
-#[allow(dead_code)] // provider constructors use this once each port lands
 pub fn initial_assistant_message(api: &str, provider: &str, model_id: &str) -> AssistantMessage {
     // Epoch millis fit u64 for ~584 million years; the u128 duration's millis are the wire's u64 convention.
     #[allow(clippy::cast_possible_truncation)]

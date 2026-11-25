@@ -1,11 +1,5 @@
-// too_many_lines: the scenario is one linear script. cast_*: the pipe and
-// console APIs take 32-bit sizes the test's buffers never exceed.
-#![allow(
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss
-)]
+// too_many_lines: the scenario is one linear script.
+#![allow(clippy::too_many_lines)]
 #![cfg(windows)]
 
 //! The interactive TUI's keyboard on a Windows pseudoconsole. The test plays
@@ -35,7 +29,6 @@ const VT_INPUT_LAUNCH_ENV: &str = "PA_CONPTY_VT_INPUT_LAUNCH";
 const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
 
 mod win32 {
-    #![allow(non_snake_case)]
     use std::ffi::c_void;
     pub type Handle = *mut c_void;
     /// `winbase.h` `STD_INPUT_HANDLE`.
@@ -207,8 +200,6 @@ fn shutdown_daemon(socket: &Path) {
     let _ = shutdown.join();
 }
 
-// The supervisor child is killed and reaped by `Supervisor`'s Drop.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(agent_dir: &Path) -> Supervisor {
     support::scrub_ambient_provider_credentials();
     let unique = std::time::SystemTime::now()

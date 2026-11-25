@@ -34,7 +34,7 @@ pub enum Scenario {
     SessionSwitch,
     /// The `@` keystroke -> the first completion menu row.
     AtCompletion,
-    /// `--resume <huge session>`, then each PageUp -> the first frame scrolled
+    /// `--resume <huge session>`, then each `PageUp` -> the first frame scrolled
     /// up a page (one sample per page).
     TranscriptPaging,
     /// `--resume <huge session>`, then the top key -> the session's first
@@ -161,11 +161,21 @@ pub fn run_suite(options: &RunOptions) -> anyhow::Result<Vec<BenchResult>> {
     runner::run_suite(options)
 }
 
+/// The bench harness needs a pty, so it does not run here.
+///
+/// # Errors
+///
+/// Always: the harness is unix-only.
 #[cfg(not(unix))]
 pub fn run(_options: &BenchOptions) -> anyhow::Result<BenchResult> {
     anyhow::bail!("the bench harness is unix-only")
 }
 
+/// The bench harness needs a pty, so it does not run here.
+///
+/// # Errors
+///
+/// Always: the harness is unix-only.
 #[cfg(not(unix))]
 pub fn run_suite(_options: &RunOptions) -> anyhow::Result<Vec<BenchResult>> {
     anyhow::bail!("the bench harness is unix-only")

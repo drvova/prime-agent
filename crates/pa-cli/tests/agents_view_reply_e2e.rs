@@ -1,13 +1,5 @@
-// Tier-C/D ruling (fleet-uniform, 2026-09-28): large_futures stack by design on hot
-// paths; too_many_lines is a style gate; casts narrow bounded OS/protocol values.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// Tier-C/D ruling (fleet-uniform, 2026-09-28): too_many_lines is a style gate.
+#![allow(clippy::too_many_lines)]
 
 //! E2E verifier for the agents-view reply composer: the space-armed composer sends a
 //! live session's reply through the UNATTACHED roster client (the view never attaches),
@@ -27,7 +19,6 @@ use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, Age
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
     socket: PathBuf,
 }
 
@@ -70,7 +61,6 @@ fn graceful_shutdown(socket: &Path) {
     let _ = reader.read_line(&mut response);
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     let socket = dir.join("daemon.sock");
     let agent_dir = dir.join("agent");
