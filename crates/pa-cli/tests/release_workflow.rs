@@ -1,14 +1,5 @@
-// large_futures: stack-resident futures on hot paths by design.
-// too_many_lines: style gate, not correctness. Casts: 64-bit targets;
-// narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// too_many_lines: style gate only.
+#![allow(clippy::too_many_lines)]
 // Unix only: these run the release workflows' shell steps, which run on Linux runners,
 // through `bash`; on Windows that name is the WSL launcher, not a bash.
 #![cfg(unix)]

@@ -2,11 +2,7 @@
 //! pages, and a bounded resident run.
 #![cfg(unix)]
 // Casts: bounded fixture arithmetic.
-#![allow(
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap
-)]
+#![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
 mod support;
 

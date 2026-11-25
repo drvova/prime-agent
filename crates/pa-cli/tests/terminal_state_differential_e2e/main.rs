@@ -1,14 +1,5 @@
-// large_futures: stack-resident futures on hot paths by design.
-// too_many_lines: style gate. Casts: 64-bit targets; narrowing sits at
-// bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    clippy::too_many_lines
-)]
+// Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
+#![allow(clippy::cast_possible_wrap)]
 
 //! The terminal-state differential: a recording mock terminal over a real
 //! pty asserts that EVERY terminal mode the TUI arms comes back off on EVERY

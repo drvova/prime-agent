@@ -4,9 +4,7 @@
     clippy::large_futures,
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_possible_wrap
 )]
 
 //! End-to-end verifier for the interactive TUI: spawn the real supervisor
@@ -430,7 +428,6 @@ fn sweep_orphan_test_daemons() {
     }
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     support::scrub_ambient_provider_credentials();
     #[cfg(target_os = "linux")]

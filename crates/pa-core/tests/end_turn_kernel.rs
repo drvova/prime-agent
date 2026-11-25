@@ -1,12 +1,5 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines/casts).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines).
+#![allow(clippy::large_futures, clippy::too_many_lines)]
 
 //! Verifier: the end-turn contract over a REAL kernel and the full
 //! session-engine tool path. One scripted `eval` turn runs

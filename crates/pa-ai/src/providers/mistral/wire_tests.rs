@@ -77,8 +77,6 @@ async fn stream_tool_call_deltas(
     result
 }
 
-// Keep the split/interleaved fixtures beside their full HTTP/SSE verification.
-#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn streamed_tool_calls_keep_index_identity_and_complete_arguments() {
     let cases = [
