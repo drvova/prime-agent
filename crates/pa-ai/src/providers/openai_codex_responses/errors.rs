@@ -403,10 +403,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::float_cmp,
-        reason = "golden equality against the fixed multiplier table is the contract; an allow, not an expect: clippy 1.100 no longer flags exact-float asserts, 1.98 does"
-    )]
     fn service_tier_multipliers() {
         assert_eq!(
             get_codex_service_tier_cost_multiplier("gpt-5.5-codex", Some("priority")),
