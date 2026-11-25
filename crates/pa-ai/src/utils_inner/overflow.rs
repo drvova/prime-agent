@@ -122,8 +122,10 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u6
         // context window, leaving no room for output.
         if message.stop_reason == StopReason::Length && message.usage.output == 0 {
             let input_tokens = message.usage.input + message.usage.cache_read;
-            // The 0.99 ratio threshold is the TS port's f64 comparison; token counts sit far below 2^53.
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "the 0.99 ratio threshold is the TS port's f64 comparison; token counts sit far below 2^53"
+            )]
             if (input_tokens as f64) >= context_window as f64 * 0.99 {
                 return true;
             }
@@ -145,7 +147,10 @@ pub fn error_message_has_overflow(error_message: &str) -> bool {
             .any(|p| p.is_match(error_message))
 }
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "the TS port's text extraction, kept beside the overflow checks that will read it"
+)]
 fn content_text(message: &AssistantMessage) -> String {
     message
         .content

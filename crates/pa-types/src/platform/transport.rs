@@ -193,8 +193,7 @@ fn peer_uid(fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<libc::uid_t> {
         uid: 0,
         gid: 0,
     };
-    // `ucred` is 12 bytes.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation, reason = "`ucred` is 12 bytes")]
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: SO_PEERCRED writes at most `len` bytes into `cred`.
     let status = unsafe {

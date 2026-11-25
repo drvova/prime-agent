@@ -19,8 +19,11 @@ pub fn parse_retry_after_ms<S: std::hash::BuildHasher>(
 ) -> Option<u64> {
     if let Some(value) = header_value(headers, "retry-after-ms") {
         if let Ok(ms) = value.parse::<f64>() {
-            // The wire's retry-after-ms is a lenient header value (finite, non-negative); u64 ms is the wait's unit.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the retry-after-ms header is finite and non-negative here; the wait is u64 ms"
+            )]
             if ms.is_finite() && ms >= 0.0 {
                 return Some(ms as u64);
             }
@@ -28,8 +31,11 @@ pub fn parse_retry_after_ms<S: std::hash::BuildHasher>(
     }
     let raw = header_value(headers, "retry-after")?;
     if let Ok(seconds) = raw.parse::<f64>() {
-        // The wire's retry-after is a lenient second count (finite, non-negative); u64 ms is the wait's unit.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the retry-after header is a finite, non-negative second count here; the wait is u64 ms"
+        )]
         if seconds.is_finite() && seconds >= 0.0 {
             return Some((seconds * 1000.0) as u64);
         }
@@ -37,10 +43,15 @@ pub fn parse_retry_after_ms<S: std::hash::BuildHasher>(
     // HTTP-date form: compute the delta against now.
     match parse_http_date(&raw) {
         Some(date_ms) => {
-            // Epoch millis fit i64; the max(0) floor keeps the delta non-negative for the u64 wait.
-            #[allow(clippy::cast_possible_wrap)]
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "epoch milliseconds fit i64 for about 292 million years"
+            )]
             let now = now_ms() as i64;
-            #[allow(clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "the max(0) floor keeps the delta non-negative for the u64 wait"
+            )]
             let wait = (date_ms - now).max(0) as u64;
             Some(wait)
         }
@@ -76,12 +87,18 @@ pub fn parse_rate_limit_reset_ms<S: std::hash::BuildHasher>(
 /// `anthropic-ratelimit-*-reset`); the wait to an instant is the delta to now.
 pub(crate) fn parse_reset_ms(raw: &str) -> Option<u64> {
     let raw = raw.trim();
-    // Epoch millis fit i64; the max(0) floor keeps the delta non-negative.
-    #[allow(clippy::cast_possible_wrap)]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "epoch milliseconds fit i64 for about 292 million years"
+    )]
     let now = now_ms() as i64;
     match raw.parse::<f64>() {
         Ok(number) if number.is_finite() && number >= 0.0 => {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the parsed number is finite and non-negative, and the floor keeps the delta non-negative"
+            )]
             let wait = if number >= 1e12 {
                 (number as i64 - now).max(0) as u64
             } else if number >= 1e9 {
@@ -93,8 +110,10 @@ pub(crate) fn parse_reset_ms(raw: &str) -> Option<u64> {
         }
         Ok(_) => None,
         Err(_) => parse_duration_ms(raw).or_else(|| {
-            // The floor keeps the delta non-negative for the u64 wait.
-            #[allow(clippy::cast_sign_loss)]
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "the floor keeps the delta non-negative for the u64 wait"
+            )]
             parse_rfc3339_ms(raw).map(|instant| (instant - now).max(0) as u64)
         }),
     }
@@ -126,8 +145,10 @@ fn parse_rfc3339_ms(raw: &str) -> Option<i64> {
     if !seconds.is_finite() || seconds < 0.0 {
         return None;
     }
-    // A parsed second count is finite and non-negative.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a parsed second count is finite and non-negative"
+    )]
     let millis = (seconds * 1000.0).round() as i64;
     let days = days_from_civil(year, month, day);
     Some((days * 86_400 + hour * 3600 + minute * 60 - offset_seconds) * 1000 + millis)
@@ -159,8 +180,11 @@ fn parse_duration_ms(raw: &str) -> Option<u64> {
         total += amount * scale;
         rest = &rest[unit_end..];
     }
-    // A parsed duration is finite and non-negative; u64 ms is the wait's unit.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a parsed duration is finite and non-negative; the wait is u64 ms"
+    )]
     Some(total as u64)
 }
 
