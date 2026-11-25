@@ -681,7 +681,7 @@ fn a_version_3_database_migrates_keeping_its_rows() {
                 .map(|event| (event.id, event.seq))
                 .collect::<Vec<_>>(),
             log.value("harness:/h.json", "document").unwrap(),
-            log.unfinished_tasks().unwrap(),
+            log.unfinished_tasks("a").unwrap(),
         ),
         (
             4,

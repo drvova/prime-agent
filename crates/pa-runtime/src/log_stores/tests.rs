@@ -156,8 +156,8 @@ impl TaskStore for Recording {
         self.store.save(task)
     }
 
-    fn unfinished(&self) -> impl Future<Output = anyhow::Result<Vec<Task>>> + Send {
-        self.store.unfinished()
+    fn unfinished(&self, session: &str) -> impl Future<Output = anyhow::Result<Vec<Task>>> + Send {
+        self.store.unfinished(session)
     }
 }
 
@@ -196,13 +196,12 @@ async fn a_queued_task_survives_reopening_the_database() {
         saved: Arc::default(),
     };
     let (started, mut starts) = mpsc::unbounded_channel();
-    let _queue = TaskQueue::restore(
+    let queue = TaskQueue::new(
         Gate(started),
         store.clone(),
         NonZeroUsize::new(1).expect("a cap"),
-    )
-    .await
-    .expect("restored");
+    );
+    queue.restore("a").await.expect("restored");
     let (running, _finish) = starts.recv().await.expect("the queued task runs");
     let interrupted = Task {
         state: TaskState::Failed,
@@ -214,7 +213,7 @@ async fn a_queued_task_survives_reopening_the_database() {
         (
             running,
             lock(&store.saved).clone(),
-            log.unfinished_tasks().expect("read"),
+            log.unfinished_tasks("a").expect("read"),
         ),
         (
             now_running.clone(),

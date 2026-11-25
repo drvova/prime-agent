@@ -37,8 +37,9 @@ SQLite implementations over `pa-log`.
   or Cancelled, each state saved to a `TaskStore` first. A `TaskRunner` runs each task on its own
   Tokio task, so a panic fails only that task. A `Steer` task queued while its session runs one
   is offered to the running task (`TaskRunner::steer`): taken, it is Done; declined, it runs
-  next. `cancel_queued` cancels a session's waiting tasks. `TaskQueue::restore` requeues the
-  store's queued tasks in order and fails each running one with `"interrupted by restart"`.
+  next. `cancel_queued` cancels a session's waiting tasks. `TaskQueue::restore(session)` requeues
+  that session's stored queued tasks in order and fails each running one with
+  `"interrupted by restart"`; it never reads or touches another session's tasks.
 - **Wire2 server** (`WireServer::serve`): one client connection over any `AsyncRead` +
   `AsyncWrite` pair (the daemon's local socket or named pipe; `tokio::io::duplex` in tests),
   framed by `pa_types::daemon::framing` with each frame's JSON as the header.
@@ -65,24 +66,27 @@ SQLite implementations over `pa-log`.
     connection with `closing`.
 - **SQLite stores** (`log_stores`, over one shared `pa_log::Log`): `LogEventStore`
   (`append_event`, `events_since`, `events_before`), `LogTaskStore` (`save_task`,
-  `unfinished_tasks`, in first-save order, which `TaskQueue::restore` replays), and
+  `unfinished_tasks(session)`, in first-save order, which `TaskQueue::restore` replays), and
   `LogStateStore` on `pa-log`'s `kv` table: partition `state/<session>` for a session's keys and
   `state` for global ones, the key itself as the `kv` key, the value stored as
   `{"value", "trust", "cause"}` JSON. No other `kv` partition starts with `state`. Writes await
   the writer's `Receipt`; reads run on Tokio's blocking pool, never on the runtime's thread.
 - **Runtime** (`Runtime::open(agent_dir, RuntimeOptions)`): the bus over the agent dir's
   database (the transcript store's `agent.db`, `pa_core::session::store::database_path`; opened
-  on the blocking pool, no network), the task queue restored from it (a restored task whose
-  session is not open yet fails), `RuntimeOptions::spare_kernels` Scheme kernels kept built by
-  pa-core's spare pool, `RuntimeOptions::sessions` opened while the database opens (their
-  engines build meanwhile, so the open costs a first turn nothing), and one subscription
-  installed at open: `agent/+/input` (an `AgentInput`) queues a `Prompt` task in that session
-  (`AgentTarget::Origin`; the input's own `priority`, such as `steer`, when it names one; its
-  images ride beside the task in memory, which the task store does not keep).
+  on the blocking pool, no network), the task queue over it, `RuntimeOptions::spare_kernels`
+  Scheme kernels kept built by pa-core's spare pool, `RuntimeOptions::sessions` opened while the
+  database opens (their engines build meanwhile, so the open costs a first turn nothing), and one
+  subscription installed at open: `agent/+/input` (an `AgentInput`) queues a `Prompt` task in
+  that session (`AgentTarget::Origin`; the input's own `priority`, such as `steer`, when it names
+  one; its images ride beside the task in memory, which the task store does not keep).
   `create_session(SessionSpec)` opens a session and returns its id (minted when the spec has
-  none); `publish`, `listen`, `cancel(session)` (its queued tasks, and the running one's turn is
-  aborted: it ends `Cancelled`), `idle(session)`, `settle(session, SettleAfter)`,
-  `finish(session)` and `shutdown`. `Call` routes are refused (`system/route_failed`): the runtime
+  none). A session's stored tasks are restored (`TaskQueue::restore`) when it is opened, at open
+  for `RuntimeOptions::sessions` or by `create_session`; only the sessions a runtime opens are
+  restored, under the caller's hold on them (print mode's `SessionLease`), so two processes on
+  one `agent.db` never fail or run each other's tasks. `publish`, `listen`, `cancel(session)`
+  (its queued tasks, and the running one's turn is aborted: it ends `Cancelled`),
+  `idle(session)`, `settle(session, SettleAfter)`, `finish(session)` and `shutdown`. `Call`
+  routes are refused (`system/route_failed`): the runtime
   makes no model calls yet.
 - **Sessions**: each on its own OS thread and multi-threaded Tokio runtime (as the daemon's
   session host), entered with its `pa_types::session_scope` (id, cwd, environment). The

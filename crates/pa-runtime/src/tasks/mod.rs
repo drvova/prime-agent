@@ -126,21 +126,18 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
         }
     }
 
-    /// The queue as `store` left it: its queued tasks queued again in their
-    /// order, and each task that was running Failed with
-    /// [`INTERRUPTED_BY_RESTART`], since it may have done part of its work.
+    /// Restores `session`'s lane as the store left it: its queued tasks
+    /// queued again in their order, and each task that was running Failed
+    /// with [`INTERRUPTED_BY_RESTART`], since it may have done part of its
+    /// work. Called once, as the session opens, by whoever holds the
+    /// session: no other session's tasks are read or touched, since another
+    /// process on the same store may be running them.
     ///
     /// # Errors
     ///
     /// The store failed to load the tasks or to save an interrupted one.
-    pub async fn restore(
-        runner: R,
-        store: S,
-        max_concurrent_runs: NonZeroUsize,
-    ) -> anyhow::Result<Self> {
-        let unfinished = store.unfinished().await?;
-        let queue = TaskQueue::new(runner, store, max_concurrent_runs);
-        for task in unfinished {
+    pub async fn restore(&self, session: &str) -> anyhow::Result<()> {
+        for task in self.inner.store.unfinished(session).await? {
             match task.state {
                 TaskState::Running => {
                     let failed = Task {
@@ -148,13 +145,13 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                         error: Some(INTERRUPTED_BY_RESTART.to_string()),
                         ..task
                     };
-                    queue.inner.store.save(failed).await?;
+                    self.inner.store.save(failed).await?;
                 }
-                TaskState::Queued => queue.enqueue(task),
+                TaskState::Queued => self.enqueue(task),
                 TaskState::Done | TaskState::Failed | TaskState::Cancelled => {}
             }
         }
-        Ok(queue)
+        Ok(())
     }
 
     /// Queues `task` in its session's lane, whatever its state says (it

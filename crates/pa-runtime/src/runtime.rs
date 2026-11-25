@@ -82,14 +82,16 @@ impl<B: SessionBuilder> Runtime<B> {
     /// Opens the runtime over `agent_dir`'s database (the transcript store's
     /// `agent.db`), keeps `options.spare_kernels` Scheme kernels built in the
     /// background, opens `options.sessions` while the database opens,
-    /// restores the task queue and subscribes every session's input. A task
-    /// the queue restores runs at once, so one whose session is not open
-    /// fails. Nothing here touches the network.
+    /// restores those sessions' tasks and subscribes every session's input.
+    /// It restores no other session's task: a session's tasks are restored
+    /// when it is opened (here or by [`Runtime::create_session`]), so
+    /// another process running other sessions on the same database is never
+    /// touched. Nothing here touches the network.
     ///
     /// # Errors
     ///
     /// A session cannot be opened (see [`Runtime::create_session`]), the
-    /// database cannot be opened or migrated, or the queue cannot be
+    /// database cannot be opened or migrated, or a session's tasks cannot be
     /// restored from it; the sessions opened are closed again.
     ///
     /// # Panics
@@ -106,16 +108,22 @@ impl<B: SessionBuilder> Runtime<B> {
         let sessions = Arc::new(Sessions::new(options.builder, outbox));
         let runner = SessionRunner::new(Arc::clone(&sessions));
         let restored = async {
+            let mut opened = Vec::with_capacity(options.sessions.len());
             for spec in options.sessions {
-                sessions.open(spec)?;
+                opened.push(sessions.open(spec)?);
             }
             let log = Arc::new(log.await.context("open the runtime's database")??);
-            let queue = TaskQueue::restore(
+            let queue = TaskQueue::new(
                 runner.clone(),
                 LogTaskStore::new(Arc::clone(&log)),
                 options.max_concurrent_runs,
-            )
-            .await?;
+            );
+            for id in &opened {
+                queue
+                    .restore(id)
+                    .await
+                    .with_context(|| format!("restore the tasks of session {id}"))?;
+            }
             anyhow::Ok((log, queue))
         }
         .await;
@@ -179,15 +187,25 @@ impl<B: SessionBuilder> Runtime<B> {
         self.bus.listen()
     }
 
-    /// Opens a session on its own thread, which starts building its engine;
+    /// Opens a session on its own thread, which starts building its engine,
+    /// and restores its tasks from the database (`TaskQueue::restore`: the
+    /// queued ones queued again, a running one failed as interrupted);
     /// returns its id. Its tasks queue at once and run once it is built.
+    /// The caller holds the session (the print mode's `SessionLease`), so
+    /// no other process runs the tasks restored.
     ///
     /// # Errors
     ///
     /// The id is not a topic level or is open already, or the operating
-    /// system refused the thread.
-    pub fn create_session(&self, spec: SessionSpec) -> anyhow::Result<String> {
-        self.sessions.open(spec)
+    /// system refused the thread; or the database failed to restore its
+    /// tasks, and the session stays open without them.
+    pub async fn create_session(&self, spec: SessionSpec) -> anyhow::Result<String> {
+        let id = self.sessions.open(spec)?;
+        self.queue
+            .restore(&id)
+            .await
+            .with_context(|| format!("restore the tasks of session {id}"))?;
+        Ok(id)
     }
 
     /// Cancels `session`'s queued tasks and its running one, whose turn is

@@ -74,8 +74,9 @@ in it. `pa-runtime` keeps its events, task lanes and state in it (`pa_runtime::L
 
 - **Task lanes** (schema migration 4, `pa_types::event_log::Task`). `save_task` upserts a task
   by id; its first save fixes its place in insertion order (`seq`), and `created`/`updated` record
-  its first and last save. `unfinished_tasks` returns the `queued` and `running` tasks in that
-  order, which is what `pa-runtime`'s `TaskQueue::restore` replays.
+  its first and last save. `unfinished_tasks(session)` returns one session's `queued` and
+  `running` tasks in that order, which is what `pa-runtime`'s `TaskQueue::restore` replays when
+  that session opens (another process may be running the database's other sessions).
 
 ## Non-goals
 

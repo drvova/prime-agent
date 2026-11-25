@@ -13,15 +13,17 @@ use crate::lock;
 /// an id fixes its place in insertion order, and a later save keeps it.
 /// The queue saves a task when it is queued, when it starts running, and
 /// when it ends, and awaits each save before it goes on. `unfinished`
-/// returns every task whose state is `Queued` or `Running`, in insertion
-/// order: what [`TaskQueue::restore`](crate::TaskQueue::restore) starts
-/// from after a restart.
+/// returns every task of one session whose state is `Queued` or `Running`,
+/// in insertion order: what
+/// [`TaskQueue::restore`](crate::TaskQueue::restore) starts that session
+/// from after a restart. It never returns another session's tasks, which
+/// another process may be running.
 pub trait TaskStore: Send + Sync + 'static {
     /// Stores `task`.
     fn save(&self, task: Task) -> impl Future<Output = anyhow::Result<()>> + Send;
 
-    /// The queued and running tasks, oldest first.
-    fn unfinished(&self) -> impl Future<Output = anyhow::Result<Vec<Task>>> + Send;
+    /// `session`'s queued and running tasks, oldest first.
+    fn unfinished(&self, session: &str) -> impl Future<Output = anyhow::Result<Vec<Task>>> + Send;
 }
 
 /// Tasks in memory, for tests and headless runs. Clones share the same
@@ -49,12 +51,15 @@ impl TaskStore for MemoryTaskStore {
         std::future::ready(Ok(()))
     }
 
-    fn unfinished(&self) -> impl Future<Output = anyhow::Result<Vec<Task>>> + Send {
+    fn unfinished(&self, session: &str) -> impl Future<Output = anyhow::Result<Vec<Task>>> + Send {
         let unfinished = lock(&self.tasks)
             .iter()
-            .filter(|task| match task.state {
-                TaskState::Queued | TaskState::Running => true,
-                TaskState::Done | TaskState::Failed | TaskState::Cancelled => false,
+            .filter(|task| {
+                task.session == session
+                    && match task.state {
+                        TaskState::Queued | TaskState::Running => true,
+                        TaskState::Done | TaskState::Failed | TaskState::Cancelled => false,
+                    }
             })
             .cloned()
             .collect();
