@@ -359,9 +359,7 @@ fn report_text(
     ending: Option<&str>,
 ) -> String {
     let failed = outcomes.iter().filter(|outcome| !outcome.passed()).count();
-    let handle = handle
-        .map(|handle| format!(" {handle}"))
-        .unwrap_or_default();
+    let handle = handle.map_or_default(|handle| format!(" {handle}"));
     let mut lines = vec![format!(
         "[better-checks{handle} · {} passed · {failed} failed · round {round} of {MAX_ROUNDS}]",
         outcomes.len() - failed

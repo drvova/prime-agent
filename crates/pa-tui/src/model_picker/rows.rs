@@ -148,8 +148,7 @@ impl ModelPicker {
     fn account_cell(&self, model: &Model) -> String {
         self.accounts
             .get(&model.provider)
-            .map(|account| format!("account: {account}"))
-            .unwrap_or_default()
+            .map_or_default(|account| format!("account: {account}"))
     }
 }
 

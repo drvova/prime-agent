@@ -122,8 +122,7 @@ impl Supervisor {
             rest: rest
                 .get("messageKind")
                 .filter(|kind| kind.is_string())
-                .map(|kind| Map::from_iter([("messageKind".to_string(), kind.clone())]))
-                .unwrap_or_default(),
+                .map_or_default(|kind| Map::from_iter([("messageKind".to_string(), kind.clone())])),
         };
         let payload = match serde_json::to_value(&delivery) {
             Ok(payload) => payload,

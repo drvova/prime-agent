@@ -639,13 +639,9 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                 rest: serde_json::Map::default(),
             }),
             AgentMessage::CompactionSummary(summary) => {
-                let digest_block = summary
-                    .harness_digest
-                    .as_deref()
-                    .map(|digest| {
-                        format!("{HARNESS_DIGEST_PREFIX}{digest}{HARNESS_DIGEST_SUFFIX}\n\n")
-                    })
-                    .unwrap_or_default();
+                let digest_block = summary.harness_digest.as_deref().map_or_default(|digest| {
+                    format!("{HARNESS_DIGEST_PREFIX}{digest}{HARNESS_DIGEST_SUFFIX}\n\n")
+                });
                 AgentMessage::User(UserMessage {
                     content: UserContent::Blocks(vec![text_block(format!(
                         "{digest_block}{COMPACTION_SUMMARY_PREFIX}{}{COMPACTION_SUMMARY_SUFFIX}",

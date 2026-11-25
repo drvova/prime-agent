@@ -276,9 +276,8 @@ pub(crate) const TOOL_ACTIVITY: &str = "Executing";
 /// (the rebuild path keeps the stored "Operation aborted").
 #[must_use]
 pub fn live_abort_text(retry_attempt: u32, elapsed_secs: Option<u64>) -> String {
-    let elapsed_suffix = elapsed_secs
-        .map(|secs| format!(" \u{00b7} {}", format_working_elapsed(secs)))
-        .unwrap_or_default();
+    let elapsed_suffix =
+        elapsed_secs.map_or_default(|secs| format!(" \u{00b7} {}", format_working_elapsed(secs)));
     if retry_attempt > 0 {
         format!(
             "Aborted after {retry_attempt} retry attempt{}{elapsed_suffix}",

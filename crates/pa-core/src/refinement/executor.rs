@@ -44,8 +44,7 @@ pub fn overview_for_prompt(state: &HarnessState) -> String {
         let entries: Vec<&super::HarnessEntry> = state
             .entries
             .get(&kind_value(kind))
-            .map(|records| records.values().collect())
-            .unwrap_or_default();
+            .map_or_default(|records| records.values().collect());
         lines.push(format!("{kind}: {}", entries.len()));
         for entry in entries.iter().take(40) {
             let content: String = entry
@@ -113,8 +112,7 @@ pub fn history_for_prompt(history: &[RefinementResult]) -> String {
             let rollback = item
                 .rollback_of
                 .as_ref()
-                .map(|id| format!(" rollbackOf={id}"))
-                .unwrap_or_default();
+                .map_or_default(|id| format!(" rollbackOf={id}"));
             format!(
                 "[{}]{} {}\n{edits}\nExpected outcome: {}",
                 item.id, rollback, item.summary, item.expected_outcome

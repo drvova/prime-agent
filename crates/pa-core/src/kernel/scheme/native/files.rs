@@ -455,8 +455,7 @@ impl Files {
         for found in &definitions {
             let handle = found["handle"]
                 .as_str()
-                .map(|handle| format!(" · {handle}"))
-                .unwrap_or_default();
+                .map_or_default(|handle| format!(" · {handle}"));
             lines.push(format!(
                 "def {}:{} [{}] {}{handle}",
                 field(found, "path"),

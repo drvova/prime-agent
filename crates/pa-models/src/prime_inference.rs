@@ -382,8 +382,7 @@ pub fn parse_prime_inference_model_catalog(
         if has_specs {
             let context_window = positive_integer(wire.specs.context_window).unwrap_or_default();
             let max_tokens = positive_integer(wire.specs.max_output_tokens)
-                .map(|max| max.min(context_window))
-                .unwrap_or_default();
+                .map_or_default(|max| max.min(context_window));
             entry.context_window = Some(context_window);
             entry.max_tokens = Some(max_tokens);
             entry.vision = Some(wire.specs.modalities.input.iter().any(|m| m == "image"));

@@ -305,24 +305,22 @@ pub(crate) fn read_jobs_state(path: &Path) -> CronJobsState {
         jobs: parsed
             .get("jobs")
             .and_then(|jobs| jobs.as_array())
-            .map(|jobs| {
+            .map_or_default(|jobs| {
                 jobs.iter()
                     .filter_map(|job| serde_json::from_value::<AgentCronJob>(job.clone()).ok())
                     .collect()
-            })
-            .unwrap_or_default(),
+            }),
         dispatches: parsed
             .get("dispatches")
             .and_then(|dispatches| dispatches.as_array())
-            .map(|dispatches| {
+            .map_or_default(|dispatches| {
                 dispatches
                     .iter()
                     .filter_map(|dispatch| {
                         serde_json::from_value::<AgentCronDispatchRecord>(dispatch.clone()).ok()
                     })
                     .collect()
-            })
-            .unwrap_or_default(),
+            }),
     }
 }
 

@@ -531,8 +531,7 @@ impl SearchReport {
             let age = source
                 .published_date
                 .as_ref()
-                .map(|date| format!(" ({date})"))
-                .unwrap_or_default();
+                .map_or_default(|date| format!(" ({date})"));
             parts.push(format!(
                 "[{}] {}{age}\n    {}",
                 i + 1,
