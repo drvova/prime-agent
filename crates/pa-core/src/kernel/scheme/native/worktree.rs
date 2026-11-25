@@ -803,6 +803,10 @@ pub(super) mod tests {
         git(&repo, &["init", "--quiet", "--initial-branch", "main"]);
         git(&repo, &["config", "user.name", "Worktree Test"]);
         git(&repo, &["config", "user.email", "worktree@test.invalid"]);
+        // Files keep the bytes the test writes, whatever line-ending
+        // conversion the machine's git config asks for (Windows git
+        // installs with core.autocrlf=true).
+        git(&repo, &["config", "core.autocrlf", "false"]);
         std::fs::write(repo.join("notes.txt"), "one\ntwo\nthree\n").unwrap();
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "--quiet", "-m", "start"]);
@@ -870,7 +874,8 @@ pub(super) mod tests {
         // The merge replaces the record whole: a hard link made before it
         // keeps the old record, and no temp file is left beside it.
         let records = root
-            .join("agent/worktrees")
+            .join("agent")
+            .join("worktrees")
             .join(repo_key(&repo))
             .join("s1");
         let record_before = std::fs::read_to_string(records.join("lane-a.json")).unwrap();
@@ -907,7 +912,7 @@ pub(super) mod tests {
         let key = repo_key(&repo);
         let expected_tree = json!({
             "name": "lane-a",
-            "path": root.join("agent/worktrees").join(key).join("s1/lane-a"),
+            "path": root.join("agent").join("worktrees").join(key).join("s1").join("lane-a"),
             "repo": repo,
             "base": git(&repo, &["rev-parse", "HEAD"]),
             "exists": true,

@@ -112,9 +112,13 @@ fn package_provided_skill_appears_in_created_session_skill_list() {
         "system prompt lists the package skill:\n{text}"
     );
     assert!(text.contains("<description>Greets from a package</description>"));
+    let location = Path::new("fixture-pkg")
+        .join("skills")
+        .join("e-greeting")
+        .join("SKILL.md");
     assert!(
-        text.contains("fixture-pkg/skills/e-greeting/SKILL.md"),
-        "location points into the package"
+        text.contains(&location.display().to_string()),
+        "location points into the package:\n{text}"
     );
 
     // An explicit empty skills filter disables the package's skills.

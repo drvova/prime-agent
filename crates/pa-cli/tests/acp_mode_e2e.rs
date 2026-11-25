@@ -34,7 +34,8 @@ struct AcpChild {
     /// dropping the tempdir deletes it and the child's `current_dir` fails.
     /// `None` for a second child sharing another child's home.
     _home: Option<tempfile::TempDir>,
-    spawn_stderr: Option<std::process::ChildStderr>,
+    /// The child's whole stderr, sent once the pipe ends.
+    stderr: Receiver<String>,
     /// The sandboxed supervisor socket the child spawned: the drop shuts
     /// the supervisor down with it (a killed child must not leak the
     /// supervisor into later test binaries).
@@ -54,6 +55,13 @@ impl AcpChild {
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
+        let (stderr_tx, stderr_text) = channel();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut text = String::new();
+            let _ = BufReader::new(stderr).read_to_string(&mut text);
+            let _ = stderr_tx.send(text);
+        });
         let (tx, lines) = channel();
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
@@ -74,7 +82,7 @@ impl AcpChild {
             lines,
             next_id: 0,
             _home: home,
-            spawn_stderr: Some(stderr),
+            stderr: stderr_text,
             socket,
         }
     }
@@ -253,12 +261,13 @@ impl Drop for AcpChild {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let Some(mut stderr) = self.spawn_stderr.take() {
-            use std::io::Read;
-            let mut text = String::new();
-            let _ = stderr.read_to_string(&mut text);
-            if !text.is_empty() {
-                eprintln!("ACP child stderr: {text}");
+        // Bounded: a process that still holds the pipe (a daemon that
+        // inherited it) must not hang the test past the daemon's shutdown.
+        match self.stderr.recv_timeout(Duration::from_secs(10)) {
+            Ok(text) if !text.is_empty() => eprintln!("ACP child stderr: {text}"),
+            Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                eprintln!("ACP child stderr never ended: another process holds the pipe");
             }
         }
         shutdown_sandboxed_daemon(&self.socket);
@@ -327,6 +336,44 @@ fn acp_second_initialize_is_served() {
     let second = client.request("initialize", &initialize_params());
     let (response, _) = client.wait_response(second, TIMEOUT);
     assert_eq!(response["result"]["protocolVersion"], 1);
+}
+
+/// The daemon the ACP child started outlives it but holds none of the
+/// client's pipes: the client's stdout and stderr end when the child exits,
+/// while the daemon still answers. (Windows hands a child every inheritable
+/// handle of its parent, the parent's own stdio included.)
+#[test]
+fn acp_client_pipes_end_with_the_child_while_its_daemon_runs() {
+    let script = json!({ "responses": ["unused"] });
+    let mut client = AcpChild::spawn(&["--mode", "acp", "--no-session"], &script);
+    let init = client.request("initialize", &initialize_params());
+    let _ = client.wait_response(init, TIMEOUT);
+    client.close_stdin();
+    assert!(client.child.wait().expect("the ACP child exits").success());
+    let deadline = Instant::now() + TIMEOUT;
+    let stdout_end = loop {
+        match client
+            .lines
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(_) => {}
+            Err(end) => break end,
+        }
+    };
+    let stderr_end = client.stderr.recv_timeout(TIMEOUT).map(drop);
+    assert_eq!(
+        (
+            stdout_end,
+            stderr_end,
+            pa_types::platform::transport::connect_blocking(&client.socket).is_ok(),
+        ),
+        (
+            std::sync::mpsc::RecvTimeoutError::Disconnected,
+            Ok(()),
+            true
+        ),
+        "both pipes end with the child, and its daemon still runs"
+    );
 }
 
 #[test]
@@ -463,7 +510,7 @@ fn acp_cwd_mismatch_is_reported_not_adopted() {
     // (the value is tempdir-random).
     assert!(meta["actual"]
         .as_str()
-        .is_some_and(|actual| actual.starts_with(std::path::MAIN_SEPARATOR)));
+        .is_some_and(|actual| std::path::Path::new(actual).is_absolute()));
 }
 
 #[test]
@@ -833,8 +880,17 @@ fn acp_daemon_attached_eof_teardown_clears_the_connection_mcp_servers() {
 #[test]
 fn acp_mode_daemon_unreachable_exits_1_without_fallback() {
     let home = tempfile::TempDir::new().unwrap();
-    let socket = home.path().join("daemon.sock");
-    std::fs::write(&socket, "not a socket").unwrap();
+    // An address nothing can listen on. On unix a regular file holds the socket path; on
+    // Windows the endpoint is a named pipe, which a file does not block, so the address is a
+    // pipe name past the 256-character limit that both bind and connect refuse.
+    #[cfg(unix)]
+    let socket = {
+        let socket = home.path().join("daemon.sock");
+        std::fs::write(&socket, "not a socket").unwrap();
+        socket
+    };
+    #[cfg(windows)]
+    let socket = std::path::PathBuf::from(format!(r"\\.\pipe\{}", "x".repeat(300)));
     std::fs::write(
         home.path().join("worker-script.json"),
         json!({ "engine": "faux", "responses": ["unused"] }).to_string(),
