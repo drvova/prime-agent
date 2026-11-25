@@ -644,15 +644,9 @@ mod tests {
     /// A replaced session is live: the teardown closes the OLD session, and
     /// the moved-to session still runs its goal loop (a stale close would
     /// stop every continuation mint after the first turn).
-    #[expect(
-        clippy::await_holding_lock,
-        reason = "the faux provider registry is process-global; the guard spans the awaited turns"
-    )]
     #[tokio::test]
     async fn a_replaced_session_continues_its_goal() {
-        let _faux = crate::agent_engine::FAUX_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _faux = crate::agent_engine::FAUX_TEST_LOCK.lock().await;
         let dir = tempfile::TempDir::new().expect("temp dir");
         let sessions_dir = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
