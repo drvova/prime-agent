@@ -200,8 +200,7 @@ pub(super) fn streaming_tray_hint(
     let key = |id: &str| {
         keybindings
             .first_key(id)
-            .map(|key| crate::keybindings::format_key_text(&key))
-            .unwrap_or_default()
+            .map_or_default(|key| crate::keybindings::format_key_text(&key))
     };
     Some(format!(
         "{} steer \u{00b7} {} queue",

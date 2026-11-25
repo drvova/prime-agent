@@ -100,8 +100,7 @@ impl Hypotheses {
         }
         let approaches: Vec<&str> = options["approaches"]
             .as_array()
-            .map(|approaches| approaches.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
+            .map_or_default(|approaches| approaches.iter().filter_map(Value::as_str).collect());
         if options["approaches"]
             .as_array()
             .is_none_or(|given| given.len() != approaches.len())

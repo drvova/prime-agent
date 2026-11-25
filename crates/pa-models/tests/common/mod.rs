@@ -137,9 +137,7 @@ async fn run(listener: TcpListener, requests: RequestLog, responses: ResponseQue
 /// Convenience builders for raw HTTP responses.
 pub fn ok_json(body: impl AsRef<str>, etag: Option<&str>) -> Vec<u8> {
     let body = body.as_ref();
-    let etag = etag
-        .map(|etag| format!("etag: {etag}\r\n"))
-        .unwrap_or_default();
+    let etag = etag.map_or_default(|etag| format!("etag: {etag}\r\n"));
     format!(
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n{etag}\r\n{body}",
         body.len()

@@ -87,18 +87,16 @@ fn shutdown_command_exits_the_supervisor_process() {
     let session_socket =
         std::path::PathBuf::from(descriptor["socketPath"].as_str().expect("socket path"));
     let held_leases = || -> Vec<std::path::PathBuf> {
-        std::fs::read_dir(agent_dir.join("session-leases"))
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .map(|entry| entry.path())
-                    .filter(|path| {
-                        path.extension()
-                            .is_some_and(|extension| extension == "lock")
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        std::fs::read_dir(agent_dir.join("session-leases")).map_or_default(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "lock")
+                })
+                .collect()
+        })
     };
     assert_eq!(
         (

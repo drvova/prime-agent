@@ -535,18 +535,16 @@ pub fn message_value_to_entries(message: &Value) -> Vec<ChatEntry> {
     match role {
         // A skill-block text renders the skill-invocation card (+ the
         // trailing argument text); every other text renders the user block.
-        "user" => user_display_text(message)
-            .map(|text| {
-                crate::custom_message::skill_invocation_entries(&text).unwrap_or_else(|| {
-                    // A replayed prompt keeps its own send time (the message `timestamp`).
-                    vec![ChatEntry::User {
-                        text,
-                        sent_at: message.get("timestamp").and_then(Value::as_i64),
-                        images: crate::chat::MessageImage::from_message(message),
-                    }]
-                })
+        "user" => user_display_text(message).map_or_default(|text| {
+            crate::custom_message::skill_invocation_entries(&text).unwrap_or_else(|| {
+                // A replayed prompt keeps its own send time (the message `timestamp`).
+                vec![ChatEntry::User {
+                    text,
+                    sent_at: message.get("timestamp").and_then(Value::as_i64),
+                    images: crate::chat::MessageImage::from_message(message),
+                }]
             })
-            .unwrap_or_default(),
+        }),
         "assistant" => assistant_value_to_entries(message),
         "custom" => custom_message_entries(message),
         "compactionSummary" => compaction_summary_entries(message),

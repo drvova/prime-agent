@@ -65,7 +65,7 @@ fn job(workflow: &serde_yaml::Value, name: &str) -> serde_yaml::Value {
 fn step_runs(job: &serde_yaml::Value) -> Vec<String> {
     job.get("steps")
         .and_then(serde_yaml::Value::as_sequence)
-        .map(|steps| {
+        .map_or_default(|steps| {
             steps
                 .iter()
                 .map(|step| {
@@ -76,7 +76,6 @@ fn step_runs(job: &serde_yaml::Value) -> Vec<String> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// The battery's scenario test names: the workflow must drive exactly
@@ -182,17 +181,14 @@ fn the_tui_battery_job_boots_the_binary_and_dumps_the_panes() {
     // The contributor-trust gate: PR authors must be vouched (the ci.yml
     // trust job's own class - an unvouched author must not bill a
     // windows runner).
-    let needs = job
-        .get("needs")
-        .map(|needs| match needs {
-            serde_yaml::Value::Sequence(entries) => entries
-                .iter()
-                .filter_map(serde_yaml::Value::as_str)
-                .collect::<Vec<_>>(),
-            serde_yaml::Value::String(single) => vec![single.as_str()],
-            _ => Vec::new(),
-        })
-        .unwrap_or_default();
+    let needs = job.get("needs").map_or_default(|needs| match needs {
+        serde_yaml::Value::Sequence(entries) => entries
+            .iter()
+            .filter_map(serde_yaml::Value::as_str)
+            .collect::<Vec<_>>(),
+        serde_yaml::Value::String(single) => vec![single.as_str()],
+        _ => Vec::new(),
+    });
     assert!(
         needs.contains(&"trust"),
         "the battery job needs the trust gate: {needs:?}"

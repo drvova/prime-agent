@@ -159,15 +159,13 @@ fn run_in_home(
 
 fn session_files(home: &std::path::Path) -> Vec<std::path::PathBuf> {
     let dir = home.join(".prime/agent/sessions");
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+            .collect()
+    });
     files.sort();
     files
 }

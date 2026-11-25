@@ -88,55 +88,53 @@ impl ScriptedEngine {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let side_question = script
-            .get("sideQuestion")
-            .map(|side_question| SideQuestionScript {
-                responses: side_question
-                    .get("responses")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default(),
-                retry: side_question.get("retry").map(|retry| ProviderRetryPolicy {
-                    enabled: retry
-                        .get("enabled")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(true),
-                    max_retries: retry.get("maxRetries").and_then(Value::as_u64).unwrap_or(0)
-                        as u32,
-                    base_delay_ms: retry
-                        .get("baseDelayMs")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                    max_retry_delay_ms: retry
-                        .get("maxRetryDelayMs")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                    max_delay_ms: UNBOUNDED_BACKOFF_MS,
-                }),
-            })
-            .unwrap_or_default();
+        let side_question =
+            script
+                .get("sideQuestion")
+                .map_or_default(|side_question| SideQuestionScript {
+                    responses: side_question
+                        .get("responses")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default(),
+                    retry: side_question.get("retry").map(|retry| ProviderRetryPolicy {
+                        enabled: retry
+                            .get("enabled")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true),
+                        max_retries: retry.get("maxRetries").and_then(Value::as_u64).unwrap_or(0)
+                            as u32,
+                        base_delay_ms: retry
+                            .get("baseDelayMs")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                        max_retry_delay_ms: retry
+                            .get("maxRetryDelayMs")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                        max_delay_ms: UNBOUNDED_BACKOFF_MS,
+                    }),
+                });
         let compaction = script
             .get("compaction")
-            .map(|compaction| CompactionScript {
+            .map_or_default(|compaction| CompactionScript {
                 responses: compaction
                     .get("responses")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default(),
                 next: std::sync::atomic::AtomicUsize::new(0),
-            })
-            .unwrap_or_default();
+            });
         let branch_summary = script
             .get("branchSummary")
-            .map(|branch_summary| CompactionScript {
+            .map_or_default(|branch_summary| CompactionScript {
                 responses: branch_summary
                     .get("responses")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default(),
                 next: std::sync::atomic::AtomicUsize::new(0),
-            })
-            .unwrap_or_default();
+            });
         let goal = script
             .get("goal")
             .filter(|goal| !goal.is_null())
@@ -429,7 +427,7 @@ impl SessionEngine for ScriptedEngine {
             if !emit(EngineEvent::ToolExecutionEnd {
                 tool_call_id: tool_call_id.clone(),
                 result: json!({
-                    "content": [{ "type": "text", "text": result_text.clone() }],
+                    "content": [{ "type": "text", "text": result_text }],
                     "details": Value::Null,
                     "isError": is_error,
                 }),
@@ -564,7 +562,7 @@ impl SessionEngine for ScriptedEngine {
             let index = self
                 .compaction
                 .next
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::SeqCst,
                     std::sync::atomic::Ordering::SeqCst,
                     |current| {
@@ -643,7 +641,7 @@ impl SessionEngine for ScriptedEngine {
             let index = self
                 .branch_summary
                 .next
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::SeqCst,
                     std::sync::atomic::Ordering::SeqCst,
                     |current| {

@@ -333,8 +333,7 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
     let (messages, backfill_seam) = snapshot
         .get("messages")
         .and_then(Value::as_array)
-        .map(|messages| transcript_with_backfill_seam(messages))
-        .unwrap_or_default();
+        .map_or_default(|messages| transcript_with_backfill_seam(messages));
     let state = snapshot.get("state");
     let (model_id, model_provider) = state
         .and_then(|state| state.get("model"))
@@ -389,21 +388,17 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
     let queued = crate::queued::QueuedMessages {
         steering: actions
             .as_ref()
-            .map(|a| queue_lane(a, "steering"))
-            .unwrap_or_default(),
+            .map_or_default(|a| queue_lane(a, "steering")),
         follow_ups: actions
             .as_ref()
-            .map(|a| queue_lane(a, "followUps"))
-            .unwrap_or_default(),
+            .map_or_default(|a| queue_lane(a, "followUps")),
         starting: actions.as_ref().and_then(starting_from_actions),
         rlm_child_status: actions
             .as_ref()
-            .map(|actions| queue_lane_indices(actions, "rlmChildStatus"))
-            .unwrap_or_default(),
+            .map_or_default(|actions| queue_lane_indices(actions, "rlmChildStatus")),
         injected_prompts: actions
             .as_ref()
-            .map(|actions| queue_lane_indices(actions, "injectedPrompts"))
-            .unwrap_or_default(),
+            .map_or_default(|actions| queue_lane_indices(actions, "injectedPrompts")),
     };
 
     let service_tier = state
@@ -502,14 +497,13 @@ fn queue_lane_indices(actions: &Value, rider: &str) -> crate::queued::QueueLaneI
             .get(rider)
             .and_then(|rider| rider.get(lane))
             .and_then(Value::as_array)
-            .map(|items| {
+            .map_or_default(|items| {
                 items
                     .iter()
                     .filter_map(Value::as_u64)
                     .map(|index| index as usize)
                     .collect::<Vec<usize>>()
             })
-            .unwrap_or_default()
     };
     crate::queued::QueueLaneIndices {
         steering: indices("steering"),
@@ -522,14 +516,13 @@ fn queue_lane(actions: &Value, key: &str) -> Vec<String> {
     actions
         .get(key)
         .and_then(Value::as_array)
-        .map(|items| {
+        .map_or_default(|items| {
             items
                 .iter()
                 .filter_map(Value::as_str)
                 .map(str::to_string)
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// The model id and provider from a `state.model` wire value (`{id,

@@ -1023,8 +1023,7 @@ pub(super) async fn execute(
             .trim()
             .strip_prefix('(')
             .and_then(|form| form.strip_suffix(')'))
-            .map(|form| form.split_whitespace().collect())
-            .unwrap_or_default();
+            .map_or_default(|form| form.split_whitespace().collect());
         let named = |word: &str| {
             word.strip_prefix('"')
                 .and_then(|word| word.strip_suffix('"'))

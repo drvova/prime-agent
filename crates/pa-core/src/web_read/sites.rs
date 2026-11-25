@@ -68,8 +68,7 @@ pub(crate) fn route(url: &Url) -> Option<Route> {
     let host = host.strip_prefix("www.").unwrap_or(&host);
     let segments: Vec<&str> = url
         .path_segments()
-        .map(|segments| segments.filter(|segment| !segment.is_empty()).collect())
-        .unwrap_or_default();
+        .map_or_default(|segments| segments.filter(|segment| !segment.is_empty()).collect());
     match host {
         "arxiv.org" | "export.arxiv.org" => match segments.as_slice() {
             [kind @ ("abs" | "pdf" | "html"), id @ ..] if !id.is_empty() => {
@@ -403,13 +402,12 @@ async fn github_issue(
     let labels: Vec<&str> = issue
         .get("labels")
         .and_then(Value::as_array)
-        .map(|labels| {
+        .map_or_default(|labels| {
             labels
                 .iter()
                 .filter_map(|label| label.get("name").and_then(Value::as_str))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     let mut text = format!(
         "# {title}\n\n**{}** {} · opened by {} on {} · {} comments",
         str_at(&issue, "/state"),
@@ -476,19 +474,17 @@ async fn stack_exchange(
         value
             .get("creation_date")
             .and_then(Value::as_i64)
-            .map(epoch_seconds_to_iso)
-            .unwrap_or_default()
+            .map_or_default(epoch_seconds_to_iso)
     };
     let tags: Vec<String> = item
         .get("tags")
         .and_then(Value::as_array)
-        .map(|tags| {
+        .map_or_default(|tags| {
             tags.iter()
                 .filter_map(Value::as_str)
                 .map(|tag| format!("`{tag}`"))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     let answers = answers
         .get("items")
         .and_then(Value::as_array)

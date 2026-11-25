@@ -486,11 +486,7 @@ impl ModelRegistry {
                     }
                     if let Some(model_overrides) = provider_config.model_overrides {
                         for (model_id, model_override) in model_overrides {
-                            self.store_model_headers(
-                                &provider,
-                                &model_id,
-                                model_override.headers.clone(),
-                            );
+                            self.store_model_headers(&provider, &model_id, model_override.headers);
                         }
                     }
                     if let Some(model_defs) = provider_config.models {

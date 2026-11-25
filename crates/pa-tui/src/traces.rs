@@ -292,9 +292,7 @@ pub fn format_upload_outcome(outcome: &TraceUploadOutcome, log_path: &str) -> St
             if *status_code == Some(404) {
                 return "Trace upload endpoint was not found. The platform API may not be deployed yet, or PRIME_AGENT_TRACES_BASE_URL points at the wrong API.".to_string();
             }
-            let status = status_code
-                .map(|status| format!("HTTP {status}: "))
-                .unwrap_or_default();
+            let status = status_code.map_or_default(|status| format!("HTTP {status}: "));
             format!("Trace upload failed: {status}{message}. See {log_path} for details.")
         }
     }

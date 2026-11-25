@@ -39,8 +39,7 @@ pub(crate) fn load_skill_from_file(
     let skill_dir = file_path.parent().unwrap_or_else(|| Path::new("."));
     let parent_dir_name = skill_dir
         .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy().to_string());
 
     let description = frontmatter
         .get("description")
