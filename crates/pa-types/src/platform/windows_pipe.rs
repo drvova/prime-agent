@@ -96,10 +96,32 @@ pub(crate) async fn connect(name: &str) -> io::Result<NamedPipeClient> {
 /// dedicated single-threaded runtime, because std exposes no read deadline for named pipes; the
 /// runtime gives `set_read_timeout` a real bounded wait.
 struct BlockingPipeState {
-    runtime: Runtime,
     client: AsyncMutex<NamedPipeClient>,
     /// Read deadline for pending reads; `None` blocks indefinitely.
     read_timeout: Mutex<Option<Duration>>,
+    /// Declared last so the pipe drops before its runtime shuts down.
+    runtime: ClientRuntime,
+}
+
+/// A blocking client's own runtime. It shuts down in the background when it drops: the client
+/// is dropped from threads that drive a runtime too, where tokio refuses the blocking shutdown
+/// a dropped `Runtime` performs.
+struct ClientRuntime(Option<Runtime>);
+
+impl ClientRuntime {
+    fn get(&self) -> &Runtime {
+        self.0
+            .as_ref()
+            .expect("a client's runtime lives until the client drops")
+    }
+}
+
+impl Drop for ClientRuntime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 /// A blocking named-pipe client for one-shot command surfaces (the CLI
@@ -136,10 +158,12 @@ where
 impl BlockingPipeClient {
     /// Connect to the pipe at `name`, blocking until connected.
     pub(crate) fn connect(name: &str) -> io::Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let client = drive(&runtime, connect(name))?;
+        let runtime = ClientRuntime(Some(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?,
+        ));
+        let client = drive(runtime.get(), connect(name))?;
         Ok(Self {
             name: name.to_string(),
             state: Arc::new(BlockingPipeState {
@@ -169,7 +193,7 @@ impl BlockingPipeClient {
         let read = async { self.state.client.lock().await.read(buf).await };
         match *deadline {
             // Construct the timer only after entering this client's runtime.
-            Some(timeout) => match drive(&self.state.runtime, async {
+            Some(timeout) => match drive(self.state.runtime.get(), async {
                 tokio::time::timeout(timeout, read).await
             }) {
                 Ok(result) => result,
@@ -177,7 +201,7 @@ impl BlockingPipeClient {
                 // the deadline as an empty poll, like Unix `SO_RCVTIMEO`.
                 Err(_elapsed) => Err(io::ErrorKind::TimedOut.into()),
             },
-            None => drive(&self.state.runtime, read),
+            None => drive(self.state.runtime.get(), read),
         }
     }
 }
@@ -190,13 +214,13 @@ impl std::io::Read for BlockingPipeClient {
 
 impl std::io::Write for BlockingPipeClient {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        drive(&self.state.runtime, async {
+        drive(self.state.runtime.get(), async {
             self.state.client.lock().await.write(buf).await
         })
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        drive(&self.state.runtime, async {
+        drive(self.state.runtime.get(), async {
             self.state.client.lock().await.flush().await
         })
     }
@@ -344,8 +368,9 @@ mod tests {
         server.join().expect("server thread");
     }
 
-    /// The CLI's async entry points use the blocking client from a thread that drives a
-    /// runtime; tokio refuses a nested `block_on` there, which panicked `--continue`.
+    /// The CLI's async entry points use and drop the blocking client on a thread that drives a
+    /// runtime; tokio refuses a nested `block_on` and a blocking runtime shutdown there, which
+    /// panicked `--continue`.
     #[test]
     fn a_blocking_client_works_on_a_thread_that_drives_a_runtime() {
         let path = test_pipe("blocking-in-runtime");
