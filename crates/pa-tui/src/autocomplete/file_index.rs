@@ -433,18 +433,26 @@ fn plan_batch(
             // A directory's name event may be the only event for an entire
             // moved subtree. Its current existence cannot prove it is still
             // the indexed directory, especially after coalesced replacements.
-            if matches!(
-                event.kind,
+            let structural = match event.kind {
                 notify::EventKind::Create(_)
-                    | notify::EventKind::Remove(_)
-                    | notify::EventKind::Modify(
-                        notify::event::ModifyKind::Name(_)
-                            | notify::event::ModifyKind::Any
-                            | notify::event::ModifyKind::Other,
-                    )
-                    | notify::EventKind::Any
-                    | notify::EventKind::Other
-            ) {
+                | notify::EventKind::Remove(_)
+                | notify::EventKind::Modify(
+                    notify::event::ModifyKind::Name(_) | notify::event::ModifyKind::Other,
+                )
+                | notify::EventKind::Any
+                | notify::EventKind::Other => true,
+                // Windows reports every `FILE_ACTION_MODIFIED` as `Any`: a change to an
+                // existing entry's data or metadata, such as a directory's timestamps after
+                // a child changed (NTFS can report those late, as the build's own walk
+                // opens the directory). Additions, removals and renames arrive as their own
+                // kinds there. Elsewhere `Any` may be a coalesced replacement.
+                notify::EventKind::Modify(notify::event::ModifyKind::Any) => cfg!(not(windows)),
+                notify::EventKind::Modify(
+                    notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Metadata(_),
+                )
+                | notify::EventKind::Access(_) => false,
+            };
+            if structural {
                 replaced.insert(rel.clone());
             }
             rels.insert(rel);
@@ -772,7 +780,14 @@ mod freshness_tests {
 
     #[test]
     fn unknown_directory_modify_refreshes_descendants() {
-        for kind in [ModifyKind::Any, ModifyKind::Other] {
+        // On Windows `Any` is `FILE_ACTION_MODIFIED`, never a replacement (see
+        // `plan_batch`): a replaced directory arrives there as removal and creation.
+        let kinds: &[ModifyKind] = if cfg!(windows) {
+            &[ModifyKind::Other]
+        } else {
+            &[ModifyKind::Any, ModifyKind::Other]
+        };
+        for &kind in kinds {
             let outer = tempfile::tempdir().expect("tempdir");
             let base = outer.path();
             std::fs::create_dir(base.join("dir")).expect("mkdir");
@@ -918,11 +933,14 @@ mod freshness_tests {
         let base = outer.path();
         std::fs::create_dir(base.join(".git")).expect("git init");
         std::fs::write(base.join("visible.rs"), "visible").expect("write");
+        // Windows reports the same change as `Any` (`FILE_ACTION_MODIFIED`).
+        let kind = if cfg!(windows) {
+            ModifyKind::Any
+        } else {
+            ModifyKind::Metadata(notify::event::MetadataKind::WriteTime)
+        };
         let mut state = snapshot(base);
-        let event = Event::new(notify::EventKind::Modify(ModifyKind::Metadata(
-            notify::event::MetadataKind::WriteTime,
-        )))
-        .add_path(base.join(".git"));
+        let event = Event::new(notify::EventKind::Modify(kind)).add_path(base.join(".git"));
         apply_batch(&mut state, &[Ok(event)], base);
         assert!(
             matches!(state, IndexState::Ready { .. }),

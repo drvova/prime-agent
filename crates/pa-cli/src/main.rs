@@ -4,6 +4,9 @@ fn main() {
     // per-thread arenas otherwise keep each burst's high-water pages
     // resident for the process lifetime.
     pa_types::memory_release::cap_thread_arenas();
+    // Before anything spawns: a daemon or program started from here must not
+    // hold the caller's stdio pipes open past this process (Windows).
+    pa_core::platform::process::withhold_standard_handles_from_children();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // A session's elevated helper (Windows), started through UAC: it serves
     // that session's elevated commands and nothing else of the CLI runs.

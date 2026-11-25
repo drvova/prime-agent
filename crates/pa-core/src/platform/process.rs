@@ -110,6 +110,21 @@ pub fn set_no_window(command: &mut Command) {
 #[cfg(not(windows))]
 pub fn set_no_window(_command: &mut Command) {}
 
+/// Windows: this process's own standard handles stop being inheritable, so
+/// a child receives only the handles its spawn hands it. Windows gives every
+/// child all of the parent's inheritable handles (Rust spawns with
+/// `bInheritHandles`), and a process's standard handles are inheritable when
+/// its parent passed them down: without this, a daemon this CLI starts keeps
+/// a copy of the client's stdio pipes, and an ACP client (an editor) never
+/// sees this CLI's stdout end when it exits. A child that is meant to share
+/// a standard stream still does: Rust hands it a fresh inheritable duplicate.
+/// Call it before the first spawn. Unix: descriptors are close-on-exec
+/// already, and nothing is done.
+pub fn withhold_standard_handles_from_children() {
+    #[cfg(windows)]
+    win32::withhold_standard_handles();
+}
+
 /// Raise the soft open-file limit to the hard limit and return the
 /// resulting soft limit (Node raises it the same way at startup). macOS
 /// refuses a soft limit above `kern.maxfilesperproc`, so the target is
@@ -710,6 +725,29 @@ mod win32 {
         fn OpenProcess(access: u32, inherit_handle: i32, process_id: usize) -> Handle;
         fn CloseHandle(handle: Handle) -> i32;
         fn TerminateProcess(handle: Handle, exit_code: u32) -> i32;
+        fn GetStdHandle(which: u32) -> Handle;
+        fn SetHandleInformation(handle: Handle, mask: u32, flags: u32) -> i32;
+    }
+
+    /// `winbase.h` `STD_INPUT_HANDLE`, `STD_OUTPUT_HANDLE`, `STD_ERROR_HANDLE`
+    /// (`(DWORD)-10`, `-11`, `-12`).
+    const STANDARD_HANDLES: [u32; 3] = [0xFFFF_FFF6, 0xFFFF_FFF5, 0xFFFF_FFF4];
+    /// `winbase.h`: the handle is inherited by children.
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+    /// `handleapi.h` `INVALID_HANDLE_VALUE` (`(HANDLE)-1`), as an address.
+    const INVALID_HANDLE_VALUE: usize = usize::MAX;
+
+    /// Clear the inherit flag on each standard handle the process has. A
+    /// handle that refuses the flag is a console pseudo-handle (Windows 7),
+    /// which inheritance never copies, so the outcome is not consulted.
+    pub(crate) fn withhold_standard_handles() {
+        for which in STANDARD_HANDLES {
+            let handle = unsafe { GetStdHandle(which) };
+            if handle.is_null() || handle.addr() == INVALID_HANDLE_VALUE {
+                continue;
+            }
+            unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+        }
     }
 
     /// Terminate exactly the pid; false when it could not be proven
