@@ -304,8 +304,10 @@ pub fn create_assistant_message_event_stream(
 
 /// Initial assistant message shape shared by every provider.
 pub fn initial_assistant_message(api: &str, provider: &str, model_id: &str) -> AssistantMessage {
-    // Epoch millis fit u64 for ~584 million years; the u128 duration's millis are the wire's u64 convention.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "epoch milliseconds fit u64 for about 584 million years; the wire's timestamp is u64"
+    )]
     let timestamp_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
@@ -326,7 +328,10 @@ pub fn initial_assistant_message(api: &str, provider: &str, model_id: &str) -> A
     }
 }
 
-#[allow(dead_code)] // provider constructors use this once each port lands
+#[expect(
+    dead_code,
+    reason = "provider constructors use this once each port lands"
+)]
 pub fn empty_content() -> Vec<AssistantContent> {
     Vec::new()
 }

@@ -311,8 +311,10 @@ pub fn stream_azure_openai_responses(
     reader
 }
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one function per provider stream, mirroring the TS reference's shape"
+)]
 async fn run_stream(
     model: &Model,
     context: &Context,

@@ -24,8 +24,10 @@ pub struct CallbackCode {
 }
 
 /// Settled once per login; the first settle wins.
-// Two states: outer None = unsettled, inner None = settled-empty (cancelled).
-#[allow(clippy::option_option)]
+#[expect(
+    clippy::option_option,
+    reason = "two states: outer None is unsettled, inner None is settled empty (cancelled)"
+)]
 #[derive(Default, Debug)]
 struct CallbackShared {
     result: tokio::sync::Mutex<Option<Option<CallbackCode>>>,

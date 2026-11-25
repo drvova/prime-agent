@@ -136,7 +136,10 @@ pub struct BashExecutionMessage {
 }
 
 /// The missing-clock fill for [`CustomMessage::timestamp`].
-#[allow(clippy::cast_possible_truncation)] // epoch millis fit u64 for ~584M years
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "epoch milliseconds fit u64 for about 584 million years"
+)]
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

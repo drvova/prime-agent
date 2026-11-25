@@ -108,8 +108,10 @@ fn build_foreign_responses_item_id(item_id: &str) -> String {
 }
 
 /// Convert a conversation to Responses API `input` items.
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one function per provider stream, mirroring the TS reference's shape"
+)]
 pub fn convert_responses_messages(
     model: &Model,
     context: &Context,
