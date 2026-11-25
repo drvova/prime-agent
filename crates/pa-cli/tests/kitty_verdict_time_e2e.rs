@@ -1,9 +1,23 @@
-// large_futures: stack futures on hot paths by design. Casts: 64-bit targets;
-// narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::cast_possible_truncation,
-    clippy::too_many_lines
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the terminal-mode `run_interactive` future stays on the stack in the child process"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_truncation,
+        reason = "the sweep's millisecond durations fit u64"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`verdict_time_characterization_sweep` is one sweep, top to bottom"
+    )
 )]
 
 //! Real-pty e2e for the kitty probe's VERDICT TIME: the probe resolves at the
@@ -632,8 +646,10 @@ fn spawn_child(socket: &Path, slave: &OwnedFd) -> Child {
     // Runs between fork and exec: become a session leader and claim the pty slave as the tty.
     fn claim_controlling_tty(fd: i32) -> std::io::Result<()> {
         nix::unistd::setsid()?;
-        // TIOCSCTTY is already the request type on Linux and a `u32` on macOS.
-        #[allow(clippy::cast_lossless)]
+        #[allow(
+            clippy::cast_lossless,
+            reason = "TIOCSCTTY is already the request type on Linux and a `u32` on macOS, which neither CI target builds"
+        )]
         let rc = unsafe { libc::ioctl(fd, libc::TIOCSCTTY as libc::c_ulong, 0) };
         if rc < 0 {
             return Err(std::io::Error::last_os_error());

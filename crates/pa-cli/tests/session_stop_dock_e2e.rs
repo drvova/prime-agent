@@ -1,6 +1,10 @@
-// Pedantic-gate dispositions: the flow is intentionally linear and its async test future is
-// stack-resident by shape.
-#![allow(clippy::large_futures)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the headless `run_interactive` futures stay on the stack; each test awaits one at a time"
+    )
+)]
 #![cfg(unix)]
 
 //! E2E verifier for the dock after a session stop: a chat attached to a live session whose kernel
