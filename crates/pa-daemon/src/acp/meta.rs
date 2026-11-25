@@ -225,8 +225,7 @@ pub fn acp_stop_reason_for_status(
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default();
+        .map_or_default(|duration| duration.as_millis() as u64);
     match status
         .filter(|status| status.enabled)
         .and_then(|status| autonomous_limit_reason_of_status(status, now))

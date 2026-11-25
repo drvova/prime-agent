@@ -113,9 +113,7 @@ impl Worker {
             steering_mode: core.steering_mode.clone(),
             follow_up_mode: core.follow_up_mode.clone(),
             session_file: store.map(|s| s.path.to_string_lossy().to_string()),
-            session_id: store
-                .map(|s| s.session_id().to_string())
-                .unwrap_or_default(),
+            session_id: store.map_or_default(|s| s.session_id().to_string()),
             session_name: store.and_then(|s| s.session_name().map(str::to_string)),
             session_dir: store
                 .and_then(|s| s.path.parent())
@@ -548,16 +546,13 @@ pub(crate) fn session_summary(core: &SessionCore, inputs: SummaryInputs) -> Sess
         .map(|time| {
             crate::util::iso_from_unix_ms(
                 time.duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or_default(),
+                    .map_or_default(|d| d.as_millis() as u64),
             )
         });
     // The scalars derive from one borrowed walk of the same windowed
     // sequence `SessionFile::messages` folds, so the summary never
     // materializes the retained transcript.
-    let scalars = store
-        .map(crate::session_store::SessionFile::scan_message_scalars)
-        .unwrap_or_default();
+    let scalars = store.map_or_default(crate::session_store::SessionFile::scan_message_scalars);
     let last_activity_at = scalars
         .last_timestamp_ms
         .map(crate::util::iso_from_unix_ms)
@@ -591,9 +586,7 @@ pub(crate) fn session_summary(core: &SessionCore, inputs: SummaryInputs) -> Sess
         last_activity_at,
         rlm_depth: Some(core.rlm_depth),
         active_session_id: Some(core.active_session_id.clone()),
-        session_id: store
-            .map(|s| s.session_id().to_string())
-            .unwrap_or_default(),
+        session_id: store.map_or_default(|s| s.session_id().to_string()),
         session_file: store.map(|s| s.path.to_string_lossy().to_string()),
         session_name: store.and_then(|s| s.session_name().map(str::to_string)),
         cwd: core.cwd.clone(),

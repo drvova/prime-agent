@@ -42,8 +42,7 @@ impl AgentSessionEngine {
             config
                 .supervisor_link
                 .as_ref()
-                .map(|link_config| link_config.socket_path.clone())
-                .unwrap_or_default(),
+                .map_or_default(|link_config| link_config.socket_path.clone()),
         ));
         let model_refusal_telemetry =
             std::sync::Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(

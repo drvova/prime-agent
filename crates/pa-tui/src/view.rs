@@ -333,7 +333,7 @@ impl AgentView {
         // confirm, the share loader, the reload box, and the auth panel
         // (its own channel drives it). None of them leaves a paste to the
         // editor behind.
-        if self.factory_view.is_some()
+        self.factory_view.is_some()
             || self.heartbeats_picker.is_some()
             || self.bash_view.is_some()
             || self.changes_panel.is_some()
@@ -346,10 +346,6 @@ impl AgentView {
             || self.share_loader.is_some()
             || self.reload_box.is_some()
             || self.auth_panel.is_some()
-        {
-            return true;
-        }
-        false
     }
 
     /// Whether an open menu holds a non-empty search query (the menu-search adoption seam: the
@@ -813,8 +809,7 @@ impl AgentView {
             .editor
             .keybindings()
             .first_key("app.tools.expand")
-            .map(|key| crate::keybindings::format_key_text(&key))
-            .unwrap_or_default();
+            .map_or_default(|key| crate::keybindings::format_key_text(&key));
         conversation_detail_status(
             self.detail.tool_output_expanded(),
             self.detail.show_thinking(),

@@ -72,11 +72,8 @@ pub fn flat_tree(store: &SessionFile) -> Vec<Value> {
             if let Some(id) = entry.get("id").and_then(Value::as_str) {
                 if let Some(label) = labels.labels.get(id) {
                     node["label"] = json!(label);
-                    node["labelTimestamp"] = json!(labels
-                        .timestamps
-                        .get(id)
-                        .map(String::as_str)
-                        .unwrap_or_default());
+                    node["labelTimestamp"] =
+                        json!(labels.timestamps.get(id).map_or_default(String::as_str));
                 }
             }
             node
@@ -108,8 +105,7 @@ fn entry_id_of(store: &SessionFile, message: &Value) -> String {
         .entries()
         .iter()
         .find(|entry| entry.fields.get("message") == Some(message))
-        .map(|entry| entry.id.clone())
-        .unwrap_or_default()
+        .map_or_default(|entry| entry.id.clone())
 }
 
 fn message_role(message: &Value) -> Option<&str> {

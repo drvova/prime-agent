@@ -88,14 +88,13 @@ pub(crate) fn injected_prompt_row(
                 skills: details
                     .get("skills")
                     .and_then(Value::as_array)
-                    .map(|names| {
+                    .map_or_default(|names| {
                         names
                             .iter()
                             .filter_map(Value::as_str)
                             .map(str::to_string)
                             .collect()
-                    })
-                    .unwrap_or_default(),
+                    }),
             }
         }
         // The dispatch routes only this module's four kinds here; every

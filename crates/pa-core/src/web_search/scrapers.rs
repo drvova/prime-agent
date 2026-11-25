@@ -575,10 +575,7 @@ pub(crate) async fn public(call: &ProviderCall<'_>) -> ProviderResult<SearchResp
                     } else {
                         path
                     };
-                    let query = url
-                        .query()
-                        .map(|query| format!("?{query}"))
-                        .unwrap_or_default();
+                    let query = url.query().map_or_default(|query| format!("?{query}"));
                     format!("{host}{path}{query}")
                 },
             );

@@ -10,16 +10,14 @@ use std::sync::atomic::Ordering;
 
 /// The capture files' names, oldest first (the epoch-lead name order).
 pub(crate) fn payload_files(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_file()))
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| Path::new(name).extension().is_some_and(|ext| ext == "json"))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<String> = std::fs::read_dir(dir).map_or_default(|entries| {
+        entries
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_file()))
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| Path::new(name).extension().is_some_and(|ext| ext == "json"))
+            .collect()
+    });
     names.sort();
     names
 }

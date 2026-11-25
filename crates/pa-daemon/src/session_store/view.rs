@@ -682,8 +682,7 @@ impl SessionFile {
         let mut counts = self
             .window
             .as_ref()
-            .map(|window| window.older_path_stats.display_rows.clone())
-            .unwrap_or_default();
+            .map_or_default(|window| window.older_path_stats.display_rows.clone());
         for position in self.walk_back(self.branch_leaf()) {
             if let Some(role) = self.display_role(position) {
                 count_role(&mut counts, role);

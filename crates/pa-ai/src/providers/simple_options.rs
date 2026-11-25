@@ -34,9 +34,7 @@ pub fn build_base_options(
     options: Option<&SimpleStreamOptions>,
     api_key: Option<&str>,
 ) -> StreamOptions {
-    let base = options
-        .map(|options| options.base.clone())
-        .unwrap_or_default();
+    let base = options.map_or_default(|options| options.base.clone());
     StreamOptions {
         temperature: base.temperature,
         max_tokens: match base.max_tokens {
@@ -44,13 +42,9 @@ pub fn build_base_options(
             None => default_request_max_tokens(model),
         },
         signal: base.signal,
-        api_key: Some(
-            api_key
-                .map(std::string::ToString::to_string)
-                .unwrap_or_default(),
-        )
-        .filter(|key| !key.is_empty())
-        .or(base.api_key),
+        api_key: Some(api_key.map_or_default(std::string::ToString::to_string))
+            .filter(|key| !key.is_empty())
+            .or(base.api_key),
         transport: base.transport,
         service_tier: base.service_tier,
         cache_retention: base.cache_retention,

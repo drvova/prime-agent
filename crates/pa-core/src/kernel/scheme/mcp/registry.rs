@@ -200,8 +200,7 @@ impl Registry {
         let oauth = config.get("oauth") == Some(&Value::Bool(true));
         let mut bearer = variable
             .and_then(|variable| pa_types::session_scope::var(variable).ok())
-            .map(|token| token.trim().to_string())
-            .unwrap_or_default();
+            .map_or_default(|token| token.trim().to_string());
         if oauth && bearer.is_empty() {
             let mut stored = credentials::stored(agent_dir, server, url).await;
             let now_ms = SystemTime::now()
@@ -229,8 +228,7 @@ impl Registry {
                         .iter()
                         .find_map(|key| stored.get(*key)?.as_str())
                 })
-                .map(credentials::stored_key)
-                .unwrap_or_default();
+                .map_or_default(credentials::stored_key);
         }
         if bearer.is_empty() && (oauth || variable.is_some()) {
             return Err(credentials::unavailable(server));

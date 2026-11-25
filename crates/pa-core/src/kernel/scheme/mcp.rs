@@ -148,7 +148,7 @@ fn reply_outcome(mut reply: Value) -> Result<Value, Failure> {
                     .unwrap_or("no message"),
             ),
         )),
-        None => Ok(reply.get_mut("result").map(Value::take).unwrap_or_default()),
+        None => Ok(reply.get_mut("result").map_or_default(Value::take)),
     }
 }
 

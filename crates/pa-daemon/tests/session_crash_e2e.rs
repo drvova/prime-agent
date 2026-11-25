@@ -236,18 +236,16 @@ fn await_wedged(dir: &Path) {
 
 /// The session leases held under `agent_dir` (one `.lock` directory each).
 fn held_leases(agent_dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(agent_dir.join("session-leases"))
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.extension()
-                        .is_some_and(|extension| extension == "lock")
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    std::fs::read_dir(agent_dir.join("session-leases")).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "lock")
+            })
+            .collect()
+    })
 }
 
 /// The processes whose parent is `pid` (Linux: the kernel's own list).

@@ -374,7 +374,7 @@ pub fn generate(options: &CorpusOptions) -> anyhow::Result<Manifest> {
         let written = rows::write_session_file(
             &file,
             &SessionSpec {
-                id: id.clone(),
+                id,
                 start_ms: start,
                 cwd: cwd.clone(),
                 rows: options.rows,
