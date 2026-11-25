@@ -69,7 +69,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
 # The in-process Scheme kernel (pa-core `kernel::scheme`). `sync` makes an engine `Send`, so a
 # session's engine can run on a blocking thread and the spare can live in a static.
 steel-core = { version = "0.8.3", features = ["sync"] }
