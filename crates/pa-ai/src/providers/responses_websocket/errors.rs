@@ -12,7 +12,10 @@ use crate::utils_inner::stream_failure::ProviderError;
 /// A Responses API error event (the class name it records is the Codex provider's, its only
 /// converter).
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // full TS error surface; fields are read by future retry plumbing
+#[expect(
+    dead_code,
+    reason = "the struct keeps the TS error surface; retry plumbing reads only some fields"
+)]
 pub struct ResponsesApiError {
     pub message: String,
     pub code: Option<String>,
@@ -22,7 +25,10 @@ pub struct ResponsesApiError {
 }
 
 impl ResponsesApiError {
-    #[allow(dead_code)] // parity helper; the transport loops build the struct literally
+    #[expect(
+        dead_code,
+        reason = "a parity helper; the transport loops build the struct literally"
+    )]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -63,7 +69,10 @@ impl std::fmt::Display for ResponsesApiError {
 pub struct ResponsesProtocolError {
     pub message: String,
     /// The invalid frame the TS error keeps for debugging; user-facing text never embeds it.
-    #[allow(dead_code)] // full TS error surface; parity helper for debugging
+    #[expect(
+        dead_code,
+        reason = "the TS error keeps the invalid frame for debugging; user-facing text never reads it"
+    )]
     pub payload: Option<Value>,
 }
 

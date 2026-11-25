@@ -2,10 +2,20 @@
 //! identifier form (name, RLM child id, persisted session id), and the
 //! child replies back to its parent.
 //! Linux-only e2e (`AF_UNIX` sockets), like the other pa-daemon verifiers.
-// 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(clippy::cast_possible_truncation)]
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_truncation,
+        reason = "`total as usize` indexes a message count read back from JSON"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "each agent-family end-to-end scenario reads top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -30,7 +40,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

@@ -73,8 +73,10 @@ fn urls_for(domain: &str) -> DeviceUrls {
     }
 }
 
-// The three TS `getUrls` endpoints are all named `*_url`; renaming would drift from the port.
-#[allow(clippy::struct_field_names)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the three TS `getUrls` endpoints are all named `*_url`; renaming would drift from the port"
+)]
 struct DeviceUrls {
     device_code_url: String,
     access_token_url: String,
@@ -210,8 +212,10 @@ pub async fn refresh_github_copilot_token(
         .and_then(serde_json::Value::as_f64)
         .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
         .ok_or_else(|| "Invalid Copilot token response fields".to_string())?;
-    // The wire's expires_at is epoch seconds (f64); i64 millis is the credentials' convention.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the wire's expires_at is epoch seconds (f64); the credentials keep i64 milliseconds"
+    )]
     let expires_ms = (expires_at * 1000.0) as i64;
     Ok(CopilotCredentials {
         access: token,
@@ -253,8 +257,10 @@ async fn enable_all_github_copilot_models(
     }
 }
 
-// Field names mirror the TS `DeviceCodeResponse` wire payload; renaming is a contract change.
-#[allow(clippy::struct_field_names)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field names mirror the TS `DeviceCodeResponse` wire payload"
+)]
 struct DeviceCode {
     device_code: String,
     user_code: String,
@@ -329,10 +335,17 @@ async fn start_device_flow(http: &dyn ProviderHttp, domain: &str) -> Result<Devi
         .as_f64()
         .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
         .ok_or_else(|| "Invalid device code response fields".to_string())?;
-    // The device-flow wire sends integer second counts as JSON numbers; u64 seconds is the port's unit.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the device flow sends integer second counts as JSON numbers; the port keeps u64 seconds"
+    )]
     let interval_seconds = interval as u64;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the device flow sends integer second counts as JSON numbers; the port keeps u64 seconds"
+    )]
     let expires_in_seconds = expires_in as u64;
     Ok(DeviceCode {
         device_code,
@@ -343,8 +356,10 @@ async fn start_device_flow(http: &dyn ProviderHttp, domain: &str) -> Result<Devi
     })
 }
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one function per stream phase, mirroring the provider's flow"
+)]
 async fn poll_for_github_access_token(
     http: &dyn ProviderHttp,
     domain: &str,
@@ -361,11 +376,11 @@ async fn poll_for_github_access_token(
             return Err(LOGIN_CANCELLED.to_string());
         }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        // Backoff math: u64 ms -> f64 scaling -> u64 ms, capped by the u128 deadline remainder.
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
-            clippy::cast_precision_loss
+            clippy::cast_precision_loss,
+            reason = "backoff math: u64 ms -> f64 scaling -> u64 ms, capped by the u128 deadline remainder"
         )]
         let wait_ms = ((interval_ms as f64 * interval_multiplier).ceil() as u64)
             .min(remaining.as_millis() as u64);
@@ -430,8 +445,11 @@ async fn poll_for_github_access_token(
                     .get("interval")
                     .and_then(serde_json::Value::as_f64)
                     .filter(|seconds| *seconds > 0.0);
-                // The advertised slow_down interval is a wire f64 second count; u64 ms is the poll's unit.
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "the advertised slow_down interval is a wire f64 second count; the poll waits in u64 ms"
+                )]
                 let advertised_ms = advertised.map_or((interval_ms + 5000).max(1000), |seconds| {
                     (seconds * 1000.0) as u64
                 });

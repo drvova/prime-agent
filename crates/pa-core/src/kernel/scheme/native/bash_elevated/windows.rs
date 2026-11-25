@@ -111,7 +111,10 @@ type Handle = *mut c_void;
 
 /// `SHELLEXECUTEINFOW` (its `hIcon`/`hMonitor` union is one handle).
 #[repr(C)]
-#[allow(non_snake_case)] // The Win32 fields keep their documented names.
+#[expect(
+    non_snake_case,
+    reason = "the Win32 fields keep their documented names"
+)]
 struct ShellExecuteInfo {
     cbSize: u32,
     fMask: u32,
@@ -139,7 +142,10 @@ const _: () = assert!(
 
 /// `SECURITY_ATTRIBUTES`.
 #[repr(C)]
-#[allow(non_snake_case)] // The Win32 fields keep their documented names.
+#[expect(
+    non_snake_case,
+    reason = "the Win32 fields keep their documented names"
+)]
 struct SecurityAttributes {
     nLength: u32,
     lpSecurityDescriptor: *mut c_void,

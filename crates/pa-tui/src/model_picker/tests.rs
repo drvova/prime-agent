@@ -254,7 +254,10 @@ fn a_scope_the_catalog_cannot_resolve_still_scopes() {
 }
 
 /// One priced catalog model: its capabilities, context window, and $/1M rates.
-#[allow(clippy::too_many_arguments)] // A fixture row: every field is a column the frame shows.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a fixture row: every field is a column the frame shows"
+)]
 fn rich_model(
     provider: &str,
     id: &str,

@@ -2,8 +2,13 @@
 //! TS divergence): TS `teardownForReplacement` closes the parent-linked RLM
 //! children and the replacement session's roster starts empty;
 //! `rlm.create_session` root sessions are not parent-linked and survive.
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the replacement and restart-relist scenarios each read top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -18,7 +23,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

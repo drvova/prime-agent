@@ -2,8 +2,13 @@
 //! creates must join the first instead of both initializing the session.
 //! The race window is the restore's `spawn_blocking` file scan: the driver
 //! pads the session file so the scan holds the first create open.
-// 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(clippy::cast_sign_loss)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_sign_loss,
+        reason = "the fixture index is a small non-negative count"
+    )
+)]
 #![cfg(unix)]
 
 mod common;

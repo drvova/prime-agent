@@ -147,7 +147,10 @@ impl Worker {
 
     /// The delivery gate's paused check: the exact TS error string, surfaced
     /// through `worker_deliver_message`.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error channel carries the whole wire response, which is wide by design"
+    )]
     pub(crate) fn refuse_delivery_if_paused(&self) -> Result<(), DaemonResponse> {
         if self.agent_messages.paused() {
             return Err(response_failure(

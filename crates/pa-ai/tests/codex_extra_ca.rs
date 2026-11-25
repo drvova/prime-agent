@@ -28,10 +28,14 @@ impl Drop for FixtureEnvironment {
 }
 
 #[tokio::test]
-// Keep the fixture, first-use precondition and public-path assertions in one
-// test so no other test/client can initialize the process-default TLS provider.
-// tungstenite dictates the upgrade callback's Response-sized error type.
-#[allow(clippy::too_many_lines, clippy::result_large_err)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one test keeps the fixture, first-use precondition and public-path assertions, so no other test can initialize the process-default TLS provider"
+)]
+#[expect(
+    clippy::result_large_err,
+    reason = "tungstenite dictates the upgrade callback's Response-sized error type"
+)]
 async fn the_first_codex_websocket_trusts_node_extra_ca_certs() {
     let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("CA params");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);

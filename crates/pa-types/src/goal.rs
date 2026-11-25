@@ -92,8 +92,10 @@ pub enum GoalVerifier {
     Judge,
 }
 
-// serde's `skip_serializing_if` passes the field by reference.
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `skip_serializing_if` passes the field by reference"
+)]
 fn is_zero_cost(cost: &f64) -> bool {
     *cost == 0.0
 }

@@ -1,5 +1,10 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures).
-#![allow(clippy::large_futures)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "a session's futures are large by design, as in src/lib.rs"
+    )
+)]
 
 //! Live kernel: a cell prints far past the transcript cap, its result carries the
 //! spill's handle, and a later cell pages the middle back in with `ctx.page`

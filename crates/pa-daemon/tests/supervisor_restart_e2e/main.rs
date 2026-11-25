@@ -4,8 +4,13 @@
 //! mid-turn sessions are revived from their journals under the same ids,
 //! idle ones stay down until a client opens them, and a stop that was under
 //! way is finished.
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "each restart scenario reads top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 #[path = "../common/mod.rs"]
@@ -21,7 +26,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

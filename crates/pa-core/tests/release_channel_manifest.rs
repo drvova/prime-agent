@@ -1,5 +1,10 @@
-// Pedantic-gate dispositions as src/lib.rs (too_many_lines).
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the gate runs the promote step against one fixture tree, end to end"
+    )
+)]
 #![cfg(unix)]
 //! The release pipeline's channel-manifest producer, gated against the update reader it feeds: run
 //! the promote job's real step code against a fixture tree, and prove the emitted manifest parses
