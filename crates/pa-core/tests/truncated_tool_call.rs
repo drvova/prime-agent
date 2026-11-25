@@ -1,5 +1,7 @@
-// Pedantic-gate disposition as src/lib.rs: a session's futures are large by design.
-#![allow(clippy::large_futures)]
+#![expect(
+    clippy::large_futures,
+    reason = "a session's futures are large by design, as in src/lib.rs"
+)]
 
 //! A reply cut off at the output limit runs none of its tool calls, through a
 //! real session and kernel: the `eval` call it carries may be incomplete, so
