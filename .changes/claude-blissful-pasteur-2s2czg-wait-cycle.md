@@ -1,0 +1,1 @@
+- Fixed `agent-message-wait` sometimes answering `cycle` right after the other agent's wait had ended: a cycle is now confirmed against each session's live state before it is reported.
