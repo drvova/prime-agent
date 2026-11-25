@@ -163,7 +163,7 @@ pub(super) fn run(options: &BenchOptions) -> anyhow::Result<BenchResult> {
         | Scenario::TranscriptTop
         | Scenario::IdleCost => Ok(launch(&ctx, options.scenario, index)?.0),
     })?;
-    let result = build_result(&ctx, options.scenario, runs);
+    let result = build_result(&ctx, options.scenario, &runs);
     write_result(&result, &options.json)?;
     Ok(result)
 }
@@ -384,7 +384,7 @@ pub(super) fn run_suite(options: &RunOptions) -> anyhow::Result<Vec<BenchResult>
             );
         }
         let ctx = corpus_for(scenario, &cold_ctx, &warm_ctx);
-        let result = build_result(ctx, scenario, runs);
+        let result = build_result(ctx, scenario, &runs);
         let name = crate::report::key_of(scenario);
         // Per-profile unique names: the CI legs merge their artifacts into
         // one results dir, and same-named files would overwrite each other.
@@ -726,7 +726,7 @@ fn at_completion(ctx: &RunCtx, child: &mut PtyChild) -> anyhow::Result<Measured>
     Ok(Measured::single(Mark::since(child, started)))
 }
 
-/// From the resumed tail: PAGES PageUps, each timed to the first frame whose
+/// From the resumed tail: PAGES `PageUps`, each timed to the first frame whose
 /// topmost block ordinal is above the previous frame's.
 fn transcript_paging(ctx: &RunCtx, child: &mut PtyChild) -> anyhow::Result<Measured> {
     wait_ordinal_frame(ctx, child)?;
@@ -976,7 +976,7 @@ fn restore(ctx: &RunCtx) -> anyhow::Result<()> {
 }
 
 /// The result object for one scenario's runs (settled marks pooled).
-fn build_result(ctx: &RunCtx, scenario: Scenario, runs: Vec<Measured>) -> BenchResult {
+fn build_result(ctx: &RunCtx, scenario: Scenario, runs: &[Measured]) -> BenchResult {
     let mut samples: Vec<f64> = runs.iter().flat_map(|run| run.settled.clone()).collect();
     samples.sort_by(f64::total_cmp);
     let (median_ms, p95_ms, _) = stats(&samples);
@@ -1023,7 +1023,7 @@ fn stats(samples: &[f64]) -> (f64, f64, f64) {
     let median = if sorted.len() % 2 == 1 {
         sorted[sorted.len() / 2]
     } else {
-        (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
+        f64::midpoint(sorted[sorted.len() / 2 - 1], sorted[sorted.len() / 2])
     };
     let p95_index = ((sorted.len() as f64 - 1.0) * 0.95).ceil() as usize;
     (
@@ -1317,7 +1317,7 @@ mod tests {
                 settled: vec![1.0],
                 ..Measured::default()
             };
-            let result = build_result(measured, scenario, vec![run]);
+            let result = build_result(measured, scenario, &[run]);
             let expected = if scenario == Scenario::ColdStart {
                 &cold
             } else {
