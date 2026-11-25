@@ -67,6 +67,13 @@ fn turn_failure_error(id: &Value, failure: &str, details: &str) -> Value {
 /// Two paths are the same cwd when their canonical forms match, or when they
 /// are the same directory on disk (dev/inode) — the bind-mount and
 /// case-normalized-FS cases a lexical comparison misses.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::needless_bool,
+        reason = "off unix there is no dev/inode check between the early return and the false"
+    )
+)]
 fn same_cwd(requested: &Path, actual: &Path) -> bool {
     let canonical = |path: &Path| -> PathBuf {
         pa_types::platform::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
