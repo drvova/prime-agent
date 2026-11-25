@@ -1,5 +1,10 @@
-// large_futures: stack futures on hot paths by design.
-#![allow(clippy::large_futures)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the headless `run_interactive` futures stay on the stack; each test awaits one at a time"
+    )
+)]
 
 //! Long-session transcript scrolling through a real daemon: a session file with
 //! thousands of rows and a compaction, attached headlessly and scrolled to the top.

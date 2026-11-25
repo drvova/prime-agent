@@ -75,7 +75,10 @@ impl UpdateTarget {
 }
 
 #[derive(Debug, Default)]
-#[allow(clippy::struct_excessive_bools)] // the package command's flag set is the deliberate surface
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the package command's flags are independent switches of one surface"
+)]
 struct PackageCommandOptions {
     local: bool,
     help: bool,

@@ -1,5 +1,10 @@
-// Tier-C/D ruling (fleet-uniform, 2026-09-28): too_many_lines is a style gate.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`reply_to_live_session_delivers_the_prompt` is one scenario, top to bottom"
+    )
+)]
 
 //! E2E verifier for the agents-view reply composer: the space-armed composer sends a
 //! live session's reply through the UNATTACHED roster client (the view never attaches),
