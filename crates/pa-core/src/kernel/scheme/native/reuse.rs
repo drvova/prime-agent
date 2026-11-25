@@ -143,7 +143,7 @@ mod tests {
         let b = session(dir.path(), "session-b").await;
         evaluate(
             b.as_ref(),
-            &format!(r#"(fs-read "{}")"#, skill_file("deploy-notes")),
+            &format!("(fs-read {:?})", skill_file("deploy-notes")),
         )
         .await
         .unwrap();
