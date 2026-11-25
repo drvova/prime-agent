@@ -2,23 +2,6 @@
 //! records of sessions that died with its predecessor must keep hello/list
 //! responsive while the background recovery (capped revival fan-out) runs,
 //! and every queued recovery must complete.
-#![allow(clippy::large_futures)]
-// 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;

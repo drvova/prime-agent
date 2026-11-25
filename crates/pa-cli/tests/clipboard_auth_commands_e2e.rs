@@ -3,10 +3,7 @@
 #![allow(
     clippy::large_futures,
     clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_possible_wrap
 )]
 
 //! End-to-end verifier for the clipboard/auth/update command group: a scripted
@@ -181,7 +178,6 @@ fn graceful_shutdown(socket: &Path) {
     let _ = reader.read_line(&mut response);
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     // The in-process client forwards this process's env to the worker.
     support::scrub_ambient_provider_credentials();

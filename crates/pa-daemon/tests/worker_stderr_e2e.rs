@@ -55,9 +55,6 @@ impl DaemonBuilder {
         self
     }
 
-    // The timeout panic path cannot wait on the child; the test process
-    // exits immediately afterwards, reaping it.
-    #[allow(clippy::zombie_processes)]
     fn spawn(mut self, socket: &Path) -> Daemon {
         let mut child = self.command.spawn().expect("spawn pa-daemon supervisor");
         common::await_listening(socket, &mut child);

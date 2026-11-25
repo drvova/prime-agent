@@ -13,9 +13,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(test)]
 use std::fs;
-// `BufRead` re-exports to the session-store children through this facade.
-#[allow(unused_imports)]
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]

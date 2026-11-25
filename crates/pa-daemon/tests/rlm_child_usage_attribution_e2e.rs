@@ -2,8 +2,6 @@
 //! `child_usage_attributed` row reaches the PARENT's durable transcript in the TS row
 //! shape, so live and resumed usage views fold the child's billable usage. Tests skip
 //! without a live kernel install.
-// Stack-resident futures by design; boxing for a lint tick is a perf regression.
-#![allow(clippy::large_futures)]
 // Fn length is a style gate, not correctness.
 #![allow(clippy::too_many_lines)]
 #![cfg(unix)]
@@ -28,8 +26,6 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test exits and reaps it.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)

@@ -2,21 +2,6 @@
 //! (default) — full-screen TUI in a real terminal; `--frame WxH` — one frame as plain
 //! text to stdout (the tmux verifier); `--panic-exit` — panic mid-loop after the first
 //! paint (the exit-restore verifier: a real unwind must leave the terminal whole).
-// Casts: terminal-layout arithmetic narrows structurally bounded values.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-// Flat route tables: splitting the arms would add indirection.
-#![allow(clippy::too_many_lines)]
-// Independent flag bits: a nested struct would add indirection.
-#![allow(clippy::struct_excessive_bools, clippy::fn_params_excessive_bools)]
-// Futures are bounded by the surface's lifetime; boxing would add a per-loop allocation.
-#![allow(clippy::large_futures)]
-// Wrappers keep a uniform Result-returning API; removals would ripple through callers.
-#![allow(clippy::unnecessary_wraps)]
 
 use anyhow::{Context, Result};
 use clap::Parser;

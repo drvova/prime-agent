@@ -2,25 +2,8 @@
 //! `thinking_level_change` must reach the roster surfaces immediately, in
 //! the same turn-free window the TS worker covers
 //! (`ROSTER_SESSION_EVENT_TRIGGERS` includes `thinking_level_changed`).
-// Stack-resident futures by design on the daemon's hot paths.
-#![allow(clippy::large_futures)]
-// Narrowing casts sit at OS boundaries (pid/fd/time/size) where the kernel
-// bounds the values.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 // Style gate only, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -45,7 +28,6 @@ impl Drop for Supervisor {
     }
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
@@ -224,7 +206,6 @@ impl Client {
 }
 
 struct Harness {
-    #[allow(dead_code)]
     agent_dir: PathBuf,
     session_dir: PathBuf,
     #[allow(dead_code)]
@@ -237,7 +218,6 @@ struct Harness {
     dir: tempfile::TempDir,
 }
 
-#[allow(clippy::zombie_processes)]
 fn setup(name: &str) -> Harness {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");

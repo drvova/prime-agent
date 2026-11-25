@@ -3,8 +3,6 @@
 //! builds. A collect reads the registry's records, so it must end at its timeout however
 //! many children are busy, and must not wait for a child that is waiting on its parent.
 //! The idle wait the settle watchers park on must end where it is served.
-// Stack-resident futures by design; boxing for a lint tick is a perf regression.
-#![allow(clippy::large_futures)]
 #![cfg(unix)]
 
 mod common;

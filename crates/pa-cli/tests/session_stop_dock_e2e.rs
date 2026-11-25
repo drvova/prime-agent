@@ -1,6 +1,6 @@
 // Pedantic-gate dispositions: the flow is intentionally linear and its async test future is
 // stack-resident by shape.
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![allow(clippy::large_futures)]
 #![cfg(unix)]
 
 //! E2E verifier for the dock after a session stop: a chat attached to a live session whose kernel
@@ -34,8 +34,6 @@ impl Drop for Supervisor {
     }
 }
 
-// The spawned daemon is killed and reaped by `Supervisor::drop`, which clippy cannot see.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     // The in-process client forwards this process's env to the worker.
     support::scrub_ambient_provider_credentials();

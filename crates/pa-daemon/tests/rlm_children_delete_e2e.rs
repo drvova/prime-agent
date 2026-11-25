@@ -34,8 +34,6 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test exits and reaps it.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)

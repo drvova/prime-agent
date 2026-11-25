@@ -16,7 +16,6 @@
 //! editor exits the session silently instead — the run ends with no
 //! restore, no draft, no frames.
 #![cfg(unix)]
-#![allow(clippy::too_many_lines, clippy::large_futures)]
 
 mod support;
 

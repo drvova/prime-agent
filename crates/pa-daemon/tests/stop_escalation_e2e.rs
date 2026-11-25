@@ -2,25 +2,9 @@
 //! worker that ignores the graceful stop dies inside one bounded escalation
 //! window and its session lease frees; a well-behaved worker keeps the
 //! clean stop.
-// Stack-resident futures by design on the daemon's hot paths.
-#![allow(clippy::large_futures)]
 // Narrowing casts sit at OS boundaries (pid/fd/time/size) where the kernel
 // bounds the values.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
+#![allow(clippy::cast_possible_truncation)]
 #![cfg(target_os = "linux")]
 
 mod common;

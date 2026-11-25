@@ -27,7 +27,6 @@ impl Drop for Supervisor {
     }
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
