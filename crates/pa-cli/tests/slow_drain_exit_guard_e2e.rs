@@ -1,13 +1,9 @@
-// large_futures: stack-resident futures on hot paths by design.
-// too_many_lines: style gate, not correctness. Casts: 64-bit targets;
-// narrowing sits at bounded OS/protocol boundaries.
+// large_futures: stack futures on hot paths by design. Casts: 64-bit targets; narrowing
+// sits at bounded OS/protocol boundaries.
 #![allow(
     clippy::large_futures,
-    clippy::too_many_lines,
     clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_sign_loss
 )]
 
 //! Real-pty e2e for the slow-drain exit-guard contract: the exit flush
@@ -42,7 +38,6 @@ const ALT_SCREEN_LEAVE: &[u8] = b"\x1b[?1049l";
 const TAIL_MARK: &[u8] = b"\x1b[?2026l\x1b[0m";
 /// The watchdog's user-visible line (the test binary's libtest harness
 /// captures stderr per test, so the fire is asserted structurally here).
-#[allow(dead_code)]
 const STALL_MSG: &[u8] = b"shutdown stalled; forced exit.";
 /// The startup paint shows the viewport tail, so this row only ever
 /// appears in the exit flush (the completeness assertion).

@@ -22,8 +22,6 @@ mod worker_lifecycle;
 
 use adoption::AdoptionBoot;
 use launch_budget::WORKER_AUTH_FLOOR_MS;
-// Called only by the clients sibling module (its `use super::*` glob); unused on the lib target.
-#[allow(unused_imports)]
 use signals_shutdown::daemon_closing_shutdown_event;
 mod supervision;
 
@@ -51,8 +49,6 @@ use sessions::{saved_session_row, saved_session_summary};
 pub(crate) use options::ClientRouting;
 pub use options::SupervisorOptions;
 
-// Called only by the routing and clients siblings (their `use super::*` globs); lib-unused.
-#[allow(unused_imports)]
 use update_restart::{salvage_command_type, salvage_id, streamed_attach_lines};
 
 pub(crate) use clients::client_command_payload;
@@ -65,7 +61,6 @@ pub(crate) use routing::{
 
 // Called only by the supervision sibling module and in-file tests; lib-target unused.
 pub(crate) use worker_lifecycle::RosterFamilySeedOwner;
-#[allow(unused_imports)]
 use worker_lifecycle::{probe_worker_socket, worker_connect_deadline};
 
 use std::path::{Path, PathBuf};

@@ -1004,7 +1004,6 @@ fn strings(array: &[serde_json::Value]) -> Vec<String> {
 
 /// One loaded scope: the leniently-parsed settings, the migrated raw document,
 /// and the load error (`Some` when the document exists but cannot be read/parsed).
-#[allow(clippy::type_complexity)]
 /// The effective settings: global < profile < project.
 fn layered(global: &Settings, profile: &Settings, project: &Settings) -> Settings {
     deep_merge(&deep_merge(global, profile), project)

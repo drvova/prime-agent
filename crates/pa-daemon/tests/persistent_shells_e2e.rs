@@ -8,7 +8,7 @@
 //! and `kill_persistent_shell` ends an orphan.
 #![cfg(target_os = "linux")]
 // Narrowing casts sit at OS boundaries (pid) where the kernel bounds the values.
-#![allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+#![allow(clippy::cast_possible_wrap)]
 // Style gate only, not correctness: the live test is one long scenario.
 #![allow(clippy::too_many_lines)]
 
@@ -59,8 +59,6 @@ fn group_alive(pgid: i32) -> bool {
         })
 }
 
-// The returned Daemon's Drop kills and reaps the child.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));

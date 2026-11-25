@@ -1,7 +1,3 @@
-// large_futures: stack futures on hot paths by design. too_many_lines:
-// style gate only.
-#![allow(clippy::large_futures, clippy::too_many_lines)]
-
 //! The windows-runtime-triage workflow's contract gates (the operator's
 //! 2026-10-08 ask: "we need to give you an easy way to test things" - a
 //! repeatable Windows test surface for the fleet). The workflow IS the

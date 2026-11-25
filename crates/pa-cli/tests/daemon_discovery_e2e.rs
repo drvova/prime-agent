@@ -1,13 +1,6 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate
-// only. Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// too_many_lines: style gate only. Casts: 64-bit targets; narrowing sits at bounded
+// OS/protocol boundaries.
+#![allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
 
 //! End-to-end containment tests for the daemon-discovery commands. Every
 //! daemon lives in a test-created fixture directory. A discovery scan or
@@ -74,7 +67,6 @@ impl Drop for Daemon {
 /// Spawn the real supervisor on a fixture socket the way production does
 /// (`prime-agent --mode daemon --daemon-socket`), with agent dir and TMPDIR
 /// pinned inside the fixture root so every socket it ever makes stays there.
-#[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &Path, agent_dir: &Path, tmp_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     std::fs::create_dir_all(tmp_dir).expect("tmp dir");

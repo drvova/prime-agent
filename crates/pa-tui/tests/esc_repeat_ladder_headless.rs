@@ -3,8 +3,6 @@
 //! converges to the inert empty state — the repeat's tree action is one
 //! shot per input chain, and any non-Escape key re-arms the gesture.
 #![cfg(unix)]
-// The mock supervisor's request loop is one arm per wire command; splitting adds indirection.
-#![allow(clippy::too_many_lines)]
 
 mod support;
 

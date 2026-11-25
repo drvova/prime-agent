@@ -16,12 +16,7 @@
 // The fn-length threshold is a style gate, not correctness.
 #![allow(clippy::too_many_lines)]
 // API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
+#![allow(clippy::unnecessary_wraps, clippy::struct_excessive_bools)]
 /// Session code logs with `eprintln!`, as it did when each session was a process with its own
 /// stderr. Sessions now share the daemon's, so in this crate the macro routes each line to
 /// the calling session's own log, tagged with the session (`worker_stderr::line`); a line

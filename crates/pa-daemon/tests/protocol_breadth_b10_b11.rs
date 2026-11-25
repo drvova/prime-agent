@@ -1,24 +1,10 @@
 //! Supervisor wire-shape tests for the protocol-breadth waves (roadmap item 7): every new
 //! command rides the real supervisor + worker over the socket and answers the exact TS
 //! wire shape (success and error paths), the same harness the supervisor e2e suite uses.
-// Stack-resident futures by design; boxing for a lint tick is a perf regression.
-#![allow(clippy::large_futures)]
 // 64-bit-only targets; narrowing casts sit at bounded OS/protocol boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+#![allow(clippy::cast_possible_truncation)]
 // Fn length is a style gate, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -44,8 +30,6 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test exits and reaps it.
-#[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &std::path::Path, agent_dir: &std::path::Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let mut child = Command::new(binary)

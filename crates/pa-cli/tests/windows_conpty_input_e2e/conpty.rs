@@ -9,9 +9,6 @@
 //! Terminal, `WezTerm`, VS Code and Warp ship. Hand-declared kernel32 externs,
 //! the repo's no-windows-sys policy (see `pa_types::platform`).
 
-// The Win32 header names stay verbatim: the pinned-constants wall mirrors them.
-#![allow(non_snake_case, clippy::upper_case_acronyms)]
-
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;

@@ -105,7 +105,6 @@ fn serve(mut stream: TcpStream, answer: &str) -> std::io::Result<()> {
     )
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     let mut child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
         .arg("supervisor")

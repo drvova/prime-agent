@@ -1,6 +1,5 @@
 //! Short deterministic hash used for tool-call id normalization (must match TS output exactly).
 
-#[allow(dead_code)] // used by tool-call id normalization in upcoming providers
 pub fn short_hash(input: &str) -> String {
     let mut h1: u32 = 0xdead_beef;
     let mut h2: u32 = 0x41c6_ce57;

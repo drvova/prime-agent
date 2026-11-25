@@ -173,7 +173,7 @@ fn main() -> anyhow::Result<()> {
         Command::Corpus(args) => corpus_command(args),
         Command::Bench(args) => bench_command(args),
         Command::Run(args) => run_command(args),
-        Command::Report(args) => report_command(args),
+        Command::Report(args) => report_command(&args),
         Command::SessionMetrics(args) => {
             let runs = pa_core::session_engine::run_metrics::transcript_run_metrics(
                 &std::fs::read_to_string(&args.session)?,
@@ -215,7 +215,7 @@ fn main() -> anyhow::Result<()> {
 
 fn corpus_command(args: CorpusArgs) -> anyhow::Result<()> {
     let mut options = CorpusOptions {
-        out: args.out.clone(),
+        out: args.out,
         ..args.profile.defaults()
     };
     options.seed = args.seed;
@@ -301,7 +301,7 @@ fn run_command(args: RunArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn report_command(args: ReportArgs) -> anyhow::Result<()> {
+fn report_command(args: &ReportArgs) -> anyhow::Result<()> {
     let mut results = Vec::new();
     for path in &args.results {
         let result: pa_perf::bench::BenchResult =
