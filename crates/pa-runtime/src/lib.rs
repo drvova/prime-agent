@@ -21,11 +21,14 @@
 //!   run each task as an agent turn on their own thread, over the engine a
 //!   [`SessionBuilder`] builds; every session's `agent/<id>/input` queues
 //!   its tasks, and each turn streams on `agent/<id>/stream` and ends with
-//!   `agent/<id>/done`.
-//! - The headless turn driver ([`TurnBoundary`], [`PrintGoalSurface`],
-//!   [`HeadlessAutonomous`], [`wire_continuation_hook`],
-//!   [`execute_prompt_session_command`]): what runs around a turn, shared
-//!   by the runtime's sessions and the print modes.
+//!   `agent/<id>/done`; a run is settled ([`Runtime::settle`], the
+//!   [`Settled`] exit facts) and finished ([`Runtime::finish`]) on the
+//!   session's thread too. The print and json modes run on it.
+//! - The headless turn driver: what runs around a turn (the turn boundary,
+//!   the goal surface, the autonomous run, the continuation hook, the
+//!   session slash commands), which the runtime's sessions run. Its
+//!   [`TurnBoundary`] is public: an embedder's [`InlineSubagents`] drive
+//!   their turns through it.
 //!
 //! The `Memory*` implementations are for tests and headless use.
 
@@ -46,18 +49,16 @@ pub use bus::{Bus, BusClosed, BusParts, Heard, Intake, Listener, Published};
 pub use log_stores::{LogEventStore, LogStateStore, LogTaskStore};
 pub use routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
 pub use runtime::{Runtime, RuntimeOptions};
-pub use session::{BuiltSession, SessionBuilder, SessionSpec};
+pub use session::{
+    BuiltSession, DriverEvents, Finished, InlineSubagents, SessionBuilder, SessionSpec,
+    SettleAfter, Settled,
+};
 pub use store::{EventStore, MemoryEventStore, MemoryStateStore, StateKey, StateStore, StateWrite};
 pub use subscriptions::{DuplicateSubscription, MemorySessionTree, SessionTree};
 pub use tasks::{
     MemoryTaskStore, Steered, TaskOutcome, TaskQueue, TaskRunner, TaskStore, INTERRUPTED_BY_RESTART,
 };
-pub use turn::auto_retry::auto_retry_event_json;
-pub use turn::autonomous::HeadlessAutonomous;
 pub use turn::boundary::TurnBoundary;
-pub use turn::continuation::{wire_continuation_hook, UnsettledWork};
-pub use turn::goal::{EventSink, PrintGoalSurface};
-pub use turn::session_command::execute_prompt_session_command;
 pub use wire::{
     Call, Handlers, Query, UnknownOperation, WireConfig, WireServer, CLIENT_TOPICS, IN_FLIGHT,
     MAX_TAIL,

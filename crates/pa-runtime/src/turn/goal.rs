@@ -16,8 +16,8 @@ use pa_types::session::CustomMessage;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-/// Where the turn driver's json events go: stdout in the print modes, a session's stream in the
-/// runtime, a captured buffer in tests.
+/// Where the turn driver's json events go: a session's stream in the runtime, stdout for a
+/// boundary made with `TurnBoundary::new`, a captured buffer in tests.
 pub type EventSink = std::sync::Arc<dyn Fn(&Value) + Send + Sync>;
 
 /// Collapse whitespace, cap at 160 chars with a trailing `...` (the session-action label form).
@@ -112,22 +112,15 @@ pub struct PrintGoalSurface {
 }
 
 impl PrintGoalSurface {
-    #[must_use]
-    pub fn new(json_mode: bool) -> Self {
-        Self {
-            json_mode,
-            sink: Arc::new(|event| println!("{event}")),
-            budget_crossed: AtomicBool::new(false),
-            queued: Mutex::new(None),
-            active_label: Mutex::new(None),
-            running_frame_at_turn_start: AtomicBool::new(false),
-            last_action_snapshot: Mutex::new(Value::Null),
-            last_published_goal: Mutex::new(pa_types::goal::empty_goal_state()),
-        }
+    /// A surface whose json events print on stdout (the verifiers of the
+    /// quiet, text-mode surface).
+    #[cfg(test)]
+    pub(crate) fn new(json_mode: bool) -> Self {
+        Self::with_sink(json_mode, Arc::new(|event| println!("{event}")))
     }
 
-    /// A surface with an explicit event sink (json-mode verifiers).
-    #[cfg(test)]
+    /// A surface whose json events go to `sink` (a runtime session's
+    /// stream; the json-mode verifiers).
     pub(crate) fn with_sink(json_mode: bool, sink: EventSink) -> Self {
         Self {
             json_mode,

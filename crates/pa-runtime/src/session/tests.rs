@@ -7,10 +7,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use pa_core::session::manager::SessionManager;
-use pa_types::event_log::{AgentDone, AgentInput, NewEvent, Priority, TaskState, Topic, Trust};
+use pa_types::event_log::{
+    AgentDone, AgentInput, EventId, NewEvent, Priority, TaskFailure, TaskState, Topic, Trust,
+};
 use serde_json::{json, Value};
 
-use super::{BuiltSession, SessionBuilder, SessionSpec};
+use super::{BuiltSession, DriverEvents, Finished, SessionBuilder, SessionSpec, SettleAfter};
 use crate::bus::{Heard, Listener};
 use crate::runtime::{Runtime, RuntimeOptions};
 
@@ -86,18 +88,21 @@ impl SessionBuilder for FauxBuilder {
         ))
         .await?;
         Ok(BuiltSession {
-            engine,
+            engine: Arc::new(engine),
             model: self.model.clone(),
             api_key: None,
             agent_dir: self.agent_dir.clone(),
+            events: DriverEvents::Stream,
+            autonomous: None,
+            subagents: None,
         })
     }
 }
 
 /// A runtime over its own agent dir, with one open session whose faux model
 /// answers `responses` in order.
-struct Bed {
-    runtime: Runtime<FauxBuilder>,
+struct Bed<B: SessionBuilder = FauxBuilder> {
+    runtime: Runtime<B>,
     listener: Listener,
     session: String,
     cwd: PathBuf,
@@ -105,14 +110,25 @@ struct Bed {
 }
 
 async fn bed(responses: Value) -> Bed {
+    bed_with(
+        responses,
+        json!({ "compaction": { "enabled": false } }),
+        |faux| faux,
+    )
+    .await
+}
+
+/// A bed whose agent dir has `settings`, and whose sessions `wrap` builds
+/// over the faux builder.
+async fn bed_with<B: SessionBuilder>(
+    responses: Value,
+    settings: Value,
+    wrap: impl FnOnce(FauxBuilder) -> B,
+) -> Bed<B> {
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
-    std::fs::write(
-        agent_dir.join("settings.json"),
-        json!({ "compaction": { "enabled": false } }).to_string(),
-    )
-    .unwrap();
+    std::fs::write(agent_dir.join("settings.json"), settings.to_string()).unwrap();
     let parsed =
         pa_ai::faux::script::parse_faux_script(&json!({ "responses": responses })).unwrap();
     let registration =
@@ -126,14 +142,15 @@ async fn bed(responses: Value) -> Bed {
     let runtime = Runtime::open(
         &agent_dir,
         RuntimeOptions {
-            builder: FauxBuilder {
+            builder: wrap(FauxBuilder {
                 model: registration.get_model(),
                 agent_dir: agent_dir.clone(),
-            },
+            }),
             spare_kernels: 1,
             max_concurrent_runs: NonZeroUsize::new(4).unwrap(),
             listener_capacity: NonZeroUsize::new(4096).unwrap(),
             cwd: cwd.clone(),
+            sessions: Vec::new(),
         },
     )
     .await
@@ -154,9 +171,10 @@ async fn bed(responses: Value) -> Bed {
     }
 }
 
-impl Bed {
-    /// Publishes `text` as the session's input, at `priority`.
-    async fn input(&self, text: &str, priority: Option<Priority>) {
+impl<B: SessionBuilder> Bed<B> {
+    /// Publishes `text` as the session's input, at `priority`; the input
+    /// event's id.
+    async fn input(&self, text: &str, priority: Option<Priority>) -> EventId {
         self.runtime
             .publish(NewEvent {
                 topic: Topic::new(format!("agent/{}/input", self.session)).unwrap(),
@@ -164,6 +182,7 @@ impl Bed {
                 session: Some(self.session.clone()),
                 payload: serde_json::to_value(AgentInput {
                     text: text.to_string(),
+                    images: Vec::new(),
                     priority,
                 })
                 .unwrap(),
@@ -172,7 +191,9 @@ impl Bed {
                 reply: None,
             })
             .await
-            .unwrap();
+            .unwrap()
+            .event
+            .id
     }
 
     /// The session's stream payloads up to its next `done`, and the `done`.
@@ -258,8 +279,8 @@ fn pairs(rows: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
-fn outcome(done: &AgentDone) -> (TaskState, Option<String>) {
-    (done.outcome, done.error.clone())
+fn outcome(done: &AgentDone) -> (TaskState, Option<TaskFailure>, Option<String>) {
+    (done.outcome, done.failure, done.error.clone())
 }
 
 #[tokio::test]
@@ -290,7 +311,7 @@ async fn an_input_runs_a_turn_that_streams_then_reports_done() {
             "agent_end",
         ]
     );
-    assert_eq!(outcome(&done), (TaskState::Done, None));
+    assert_eq!(outcome(&done), (TaskState::Done, None, None));
     assert_eq!(
         bed.transcript(),
         pairs(&[("user", "hello"), ("assistant", "hello back")])
@@ -322,7 +343,10 @@ async fn a_steer_during_a_turn_is_read_at_its_next_step() {
     {
         other_dones += usize::from(event.event.topic.as_str() == done_topic);
     }
-    assert_eq!((outcome(&done), other_dones), ((TaskState::Done, None), 0));
+    assert_eq!(
+        (outcome(&done), other_dones),
+        ((TaskState::Done, None, None), 0)
+    );
     assert_eq!(
         bed.transcript(),
         pairs(&[
@@ -343,7 +367,7 @@ async fn cancelling_a_running_task_aborts_its_turn() {
     bed.stream_event("turn_start").await;
     bed.runtime.cancel(&bed.session).await.unwrap();
     let (_, done) = bed.until_done().await;
-    assert_eq!(outcome(&done), (TaskState::Cancelled, None));
+    assert_eq!(outcome(&done), (TaskState::Cancelled, None, None));
     bed.runtime.idle(&bed.session).await;
     bed.runtime.shutdown().await;
 }
@@ -360,10 +384,168 @@ async fn a_panicking_turn_fails_its_task_and_the_next_one_runs() {
         [
             (
                 TaskState::Failed,
+                Some(TaskFailure::Turn),
                 Some("the turn panicked: the scripted turn panics".to_string())
             ),
-            (TaskState::Done, None),
+            (TaskState::Done, None, None),
         ]
+    );
+    bed.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_failed_model_reply_fails_its_task_as_a_reply() {
+    // No response queued: the faux provider answers with an error stop.
+    let mut bed = bed(json!([])).await;
+    bed.input("hello", None).await;
+    let (_, done) = bed.until_done().await;
+    assert_eq!(
+        (done.outcome, done.failure, done.error.is_some()),
+        (TaskState::Failed, Some(TaskFailure::Reply), true)
+    );
+    bed.runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn settling_reports_how_the_run_ended() {
+    let mut bed = bed(json!([{ "text": "hello back" }])).await;
+    bed.input("hello", None).await;
+    bed.until_done().await;
+    let settled = bed
+        .runtime
+        .settle(&bed.session, SettleAfter::Queued)
+        .await
+        .unwrap()
+        .expect("nothing stopped the run");
+    assert_eq!(
+        (
+            settled
+                .terminal
+                .primary
+                .and_then(|primary| primary.stdout_text()),
+            settled.terminal.compaction_outcomes,
+            settled.goal_stopped,
+            settled.autonomous_failure,
+        ),
+        (Some("hello back".to_string()), Vec::new(), None, None)
+    );
+    bed.runtime.shutdown().await;
+}
+
+/// Builds over the faux builder, runs a seed turn, then makes every later
+/// run fail at its start.
+struct FailingAfterSeed(FauxBuilder);
+
+impl SessionBuilder for FailingAfterSeed {
+    async fn build(&self, id: &str, spec: &SessionSpec) -> anyhow::Result<BuiltSession> {
+        let built = self.0.build(id, spec).await?;
+        built
+            .engine
+            .session
+            .prompt("seed", pa_core::session_engine::PromptOptions::default())
+            .await?;
+        built.engine.session.agent().wait_for_idle().await;
+        let _failing = built
+            .engine
+            .session
+            .agent()
+            .subscribe(|event, _signal| {
+                Box::pin(async move {
+                    if matches!(event, pa_agent::types::AgentEvent::AgentStart) {
+                        anyhow::bail!("listener failed");
+                    }
+                    Ok(())
+                })
+            })
+            .await;
+        Ok(built)
+    }
+}
+
+/// A run's end drains what its turns left: a `/refine` still planning when a
+/// later task failed lands its outcome before the finish answers.
+#[tokio::test]
+async fn finishing_after_a_failed_task_drains_an_in_flight_refine() {
+    // The planner's reply is held past the failed task: only the drain waits
+    // for it.
+    let mut bed = bed_with(
+        json!([
+            { "text": "seed" },
+            { "text": r#"{"summary":"background note","edits":[]}"#, "delayMs": 3000 },
+        ]),
+        json!({
+            "compaction": { "enabled": false },
+            "autoRefine": { "enabled": true, "compact": true, "cooldownMs": 0 },
+        }),
+        FailingAfterSeed,
+    )
+    .await;
+    bed.input("/refine", None).await;
+    let (_, refine) = bed.until_done().await;
+    let next_input = bed.input("next", None).await;
+    // Armed behind a task that stops the run, the settle has nothing to do.
+    let settled = bed
+        .runtime
+        .settle(&bed.session, SettleAfter::Task(next_input));
+    let (_, next) = bed.until_done().await;
+    let settled = settled.await.unwrap();
+    let finished = bed.runtime.finish(&bed.session).await.unwrap();
+    // The finish answers once its events are on the bus: the listener holds
+    // them all already.
+    let stream = format!("agent/{}/stream", bed.session);
+    let mut refined = false;
+    while let Ok(Some(Heard::Event(event))) =
+        tokio::time::timeout(std::time::Duration::ZERO, bed.listener.recv()).await
+    {
+        refined |= event.event.topic.as_str() == stream
+            && event.event.payload["type"] == "refine_complete";
+    }
+    assert_eq!(
+        (
+            outcome(&refine),
+            (next.outcome, next.failure),
+            settled,
+            finished,
+            refined
+        ),
+        (
+            (TaskState::Done, None, None),
+            (TaskState::Failed, Some(TaskFailure::Turn)),
+            None,
+            Finished {
+                refine_command_failed: false
+            },
+            true
+        )
+    );
+    bed.runtime.shutdown().await;
+}
+
+/// Fails every build.
+struct FailingBuild;
+
+impl SessionBuilder for FailingBuild {
+    fn build(
+        &self,
+        _id: &str,
+        _spec: &SessionSpec,
+    ) -> impl std::future::Future<Output = anyhow::Result<BuiltSession>> + Send {
+        std::future::ready(Err(anyhow::anyhow!("no engine here")))
+    }
+}
+
+#[tokio::test]
+async fn a_task_whose_engine_cannot_be_built_reports_its_failure() {
+    let mut bed = bed_with(json!([]), json!({}), |_| FailingBuild).await;
+    bed.input("hello", None).await;
+    let (_, done) = bed.until_done().await;
+    assert_eq!(
+        outcome(&done),
+        (
+            TaskState::Failed,
+            Some(TaskFailure::Turn),
+            Some("build the session: no engine here".to_string())
+        )
     );
     bed.runtime.shutdown().await;
 }

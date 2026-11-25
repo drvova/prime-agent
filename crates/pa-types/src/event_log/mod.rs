@@ -20,7 +20,7 @@ pub mod agent;
 pub mod subscription;
 pub mod topic;
 
-pub use agent::{AgentDone, AgentInput};
+pub use agent::{AgentDone, AgentInput, TaskFailure};
 
 pub use subscription::{
     AgentTarget, Predicate, Priority, Route, Scope, Subscription, Task, TaskState,
