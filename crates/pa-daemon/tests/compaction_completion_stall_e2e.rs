@@ -2,23 +2,8 @@
 //! event and the next prompt's admission never wait on the compact-trigger
 //! auto-refine review's model call (TS `_scheduleAutoRefineAfterCompaction`
 //! runs it as a background round, never between the compaction and the settle).
-#![allow(clippy::large_futures)]
-// 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 // Fn length is a style gate, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -422,8 +407,6 @@ fn daemon_stderr_path(trace_path: &Path) -> std::path::PathBuf {
     trace_path.with_file_name("daemon-stderr.log")
 }
 
-// The child is reaped in Supervisor::drop (kill + wait); the lint cannot see the Drop guard.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path, trace_path: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let stderr_path = daemon_stderr_path(trace_path);

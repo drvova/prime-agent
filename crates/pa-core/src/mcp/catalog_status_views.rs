@@ -79,7 +79,6 @@ pub(crate) struct HttpStatusOptions<'a> {
 
 /// Status for an HTTP connection with an optional OAuth credential or
 /// static bearer token.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn http_connection_status(
     options: &HttpStatusOptions<'_>,
     credentials: &SnapshotCredentials,

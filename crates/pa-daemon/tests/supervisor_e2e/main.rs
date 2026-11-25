@@ -1,25 +1,11 @@
 //! End-to-end supervisor tests against the real `pa-daemon` binary: spawn the
 //! supervisor on a temp socket, drive it with a JSONL socket client, verify
 //! session lifecycle and streamed events with the scripted engine.
-// Stack-resident futures by design on the daemon's hot paths.
-#![allow(clippy::large_futures)]
 // Narrowing casts sit at OS boundaries (pid/fd/time/size) where the kernel
 // bounds the values.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+#![allow(clippy::cast_possible_truncation)]
 // Style gate only, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 #[path = "../common/mod.rs"]
@@ -54,14 +40,10 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test process exits
-// immediately afterwards, reaping it.
-#[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &std::path::Path, agent_dir: &std::path::Path) -> Daemon {
     spawn_daemon_in(socket, agent_dir, &std::env::current_dir().unwrap())
 }
 
-#[allow(clippy::zombie_processes)] // the timeout path exits the test process
 fn spawn_daemon_in(
     socket: &std::path::Path,
     agent_dir: &std::path::Path,

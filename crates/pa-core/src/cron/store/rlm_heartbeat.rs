@@ -96,7 +96,6 @@ impl AgentCronJobStore {
     /// # Errors
     ///
     /// Returns an error when a matching job exists but the update was rejected.
-    #[allow(clippy::too_many_arguments)]
     pub fn update_rlm_heartbeat(
         &self,
         active_session_id: &str,

@@ -1,12 +1,5 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines/casts).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// Pedantic-gate dispositions as src/lib.rs (large_futures).
+#![allow(clippy::large_futures)]
 
 //! Live kernel: a later cell re-reads a file the model already saw; the transcript shows one
 //! "unchanged since turn N" line with a handle instead of the file again.

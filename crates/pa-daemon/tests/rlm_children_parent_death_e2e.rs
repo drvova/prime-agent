@@ -4,24 +4,8 @@
 //! monitoring performs the close (a plain stop; grandchildren cascade). The parent is made to
 //! die by wedging a cell in a native call and aborting it: the daemon ends the session as
 //! crashed, and nothing in it gets to run.
-// Stack-resident futures by design; boxing for a lint tick is a perf regression.
-#![allow(clippy::large_futures)]
-// 64-bit-only targets; narrowing casts sit at bounded OS/protocol boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 // Fn length is a style gate, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 // The SIGKILL tests are Linux-only, so their helpers are unused elsewhere.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -50,8 +34,6 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test exits and reaps it.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)

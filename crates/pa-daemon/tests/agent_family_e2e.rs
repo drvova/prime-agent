@@ -2,24 +2,10 @@
 //! identifier form (name, RLM child id, persisted session id), and the
 //! child replies back to its parent.
 //! Linux-only e2e (`AF_UNIX` sockets), like the other pa-daemon verifiers.
-// Stack-resident futures by design on the daemon's hot paths.
-#![allow(clippy::large_futures)]
 // 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+#![allow(clippy::cast_possible_truncation)]
 // Fn length is a style gate, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -54,8 +40,6 @@ impl Drop for Daemon {
     }
 }
 
-// The timeout panic path cannot wait on the child; the test process exits and reaps it.
-#[allow(clippy::zombie_processes)]
 /// The parent worker's real auth token from its worker descriptor: the family
 /// roster is worker-token gated, so the family view needs the live token.
 fn parent_worker_token(agent_dir: &Path, active_session_id: &str) -> String {

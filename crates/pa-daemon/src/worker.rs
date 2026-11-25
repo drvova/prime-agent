@@ -7,9 +7,6 @@ mod env;
 mod session_core;
 
 pub(crate) use config::WorkerConfig;
-// KillCloseReason is read only by the commands module (via `use super::*`), so allow the unused
-// import.
-#[allow(unused_imports)]
 use env::KillCloseReason;
 mod input;
 mod lifecycle;
