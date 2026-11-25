@@ -109,11 +109,7 @@ impl<B: SessionBuilder> Runtime<B> {
         // The sessions' events wait in the outbox until the bus is up.
         let (outbox, outgoing) = Outbox::channel();
         let events = Arc::new(BusEvents::new(agent_dir, outbox.clone()));
-        let sessions = Arc::new(Sessions::new(
-            options.builder,
-            outbox,
-            Arc::clone(&events),
-        ));
+        let sessions = Arc::new(Sessions::new(options.builder, outbox, Arc::clone(&events)));
         let runner = SessionRunner::new(Arc::clone(&sessions));
         let restored = async {
             let mut opened = Vec::with_capacity(options.sessions.len());

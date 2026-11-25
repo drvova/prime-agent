@@ -32,7 +32,10 @@ async fn turn<B: SessionBuilder>(bed: &mut Bed<B>, session: &str, prompt: &str) 
         .iter()
         .map(|answer| {
             let answer: Value = serde_json::from_str(answer).unwrap();
-            answer["details"]["result"].as_str().unwrap_or_default().to_string()
+            answer["details"]["result"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
         })
         .collect()
 }
@@ -91,8 +94,8 @@ async fn a_publication_starts_a_turn_in_the_subscribed_session() {
     let owner = bed.session.clone();
     let subscriber = second_session(&bed).await;
     turn(&mut bed, &owner, "define it").await;
-    let subscribed = turn(&mut bed, &subscriber, "subscribe").await;
-    let subscription = subscription_id(&subscribed[0]);
+    let subscribe_cells = turn(&mut bed, &subscriber, "subscribe").await;
+    let subscription = subscription_id(&subscribe_cells[0]);
     bed.input_to(&owner, "publish it", None, Trust::Owner).await;
     let event_id = published_then_done(
         &mut bed,
@@ -145,7 +148,11 @@ async fn a_publication_reaches_no_mismatched_filter_and_not_its_publisher() {
     bed.runtime.idle(&subscriber).await;
     bed.runtime.idle(&owner).await;
     assert_eq!(
-        (published, bed.transcript_of(&subscriber).len(), bed.transcript().len()),
+        (
+            published,
+            bed.transcript_of(&subscriber).len(),
+            bed.transcript().len()
+        ),
         (vec!["0".to_string()], 3, 7)
     );
     bed.runtime.shutdown().await;
@@ -166,8 +173,8 @@ async fn a_topic_filter_subscription_hears_the_topics_it_matches() {
     .await;
     let owner = bed.session.clone();
     let subscriber = second_session(&bed).await;
-    let subscribed = turn(&mut bed, &subscriber, "subscribe").await;
-    let subscription = subscription_id(&subscribed[0]);
+    let subscribe_cells = turn(&mut bed, &subscriber, "subscribe").await;
+    let subscription = subscription_id(&subscribe_cells[0]);
     bed.input_to(&owner, "define and publish", None, Trust::Owner)
         .await;
     let event_id = published_then_done(

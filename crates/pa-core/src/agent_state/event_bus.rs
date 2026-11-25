@@ -198,8 +198,9 @@ impl EventBusState {
             } => {
                 match topics {
                     TopicSubscriptions::Accepted if source.contains('/') => {
-                        TopicFilter::new(source.as_str())
-                            .map_err(|error| anyhow!("{source:?} is not a topic filter: {error}"))?;
+                        TopicFilter::new(source.as_str()).map_err(|error| {
+                            anyhow!("{source:?} is not a topic filter: {error}")
+                        })?;
                     }
                     TopicSubscriptions::Accepted | TopicSubscriptions::Refused => {
                         let record = self

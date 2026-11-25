@@ -24,8 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use pa_core::agent_state::{
-    event_delivery_message, held_event_bus_in, store_event_bus_in, EventBusChange,
-    EventBusState, EventRequester, TopicSubscriptions,
+    event_delivery_message, held_event_bus_in, store_event_bus_in, EventBusChange, EventBusState,
+    EventRequester, TopicSubscriptions,
 };
 use pa_core::session_engine::agent_messaging::{
     create_agent_session_message_prompt, AgentMessagePromptPayload,
@@ -188,7 +188,9 @@ impl EventBusController for SessionEvents {
         let saves = !matches!(request, EventBusRequest::List);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX));
+            .map_or(0, |since| {
+                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+            });
         let (change, stored) = {
             let mut kept = lock(&events.kept);
             let change =
@@ -309,7 +311,10 @@ fn sync(kept: &mut Kept, registry: &Mutex<Registry>) {
                 .map_err(anyhow::Error::from)
         });
         if let Err(error) = added {
-            tracing::warn!("event subscription {} is not on the bus: {error:#}", record.id);
+            tracing::warn!(
+                "event subscription {} is not on the bus: {error:#}",
+                record.id
+            );
         }
     }
     kept.installed = current;
