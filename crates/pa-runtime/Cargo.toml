@@ -1,0 +1,23 @@
+[package]
+name = "pa-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Prime Agent's event-driven runtime: the bus, subscriptions and per-session task lanes."
+
+[dependencies]
+pa-types.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# `test-util` (tokio time pause) is test-only: the throttle, debounce and
+# lane-cap tests run on paused time.
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
