@@ -239,9 +239,8 @@ async fn restore_requeues_queued_tasks_and_fails_the_interrupted_one() {
     }
     let (runner, started, steered) = gate();
     let cap = NonZeroUsize::new(1).expect("a cap");
-    let queue = TaskQueue::restore(runner, store.clone(), cap)
-        .await
-        .expect("restored");
+    let queue = TaskQueue::new(runner, store.clone(), cap);
+    queue.restore("a").await.expect("restored");
     let mut harness = Harness {
         queue,
         store,

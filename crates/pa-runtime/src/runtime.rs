@@ -77,14 +77,15 @@ pub struct Runtime<B: SessionBuilder> {
 impl<B: SessionBuilder> Runtime<B> {
     /// Opens the runtime over `agent_dir`'s database (the transcript store's
     /// `agent.db`), keeps `options.spare_kernels` Scheme kernels built in the
-    /// background, restores the task queue and subscribes every session's
-    /// input. A task the queue restores runs at once, so one whose session is
-    /// not open yet fails. Nothing here touches the network.
+    /// background and subscribes every session's input. It restores no
+    /// task: a session's tasks are restored when it is opened
+    /// ([`Runtime::create_session`]), so another process running other
+    /// sessions on the same database is never touched. Nothing here touches
+    /// the network.
     ///
     /// # Errors
     ///
-    /// The database cannot be opened or migrated, or the queue cannot be
-    /// restored from it.
+    /// The database cannot be opened or migrated.
     ///
     /// # Panics
     ///
@@ -101,12 +102,11 @@ impl<B: SessionBuilder> Runtime<B> {
         let (outbox, outgoing) = Outbox::channel();
         let sessions = Arc::new(Sessions::new(options.builder, outbox));
         let runner = SessionRunner::new(Arc::clone(&sessions));
-        let queue = TaskQueue::restore(
+        let queue = TaskQueue::new(
             runner.clone(),
             LogTaskStore::new(Arc::clone(&log)),
             options.max_concurrent_runs,
-        )
-        .await?;
+        );
         let tree = MemorySessionTree::default();
         let bus = Bus::new(BusParts {
             events: LogEventStore::new(Arc::clone(&log)),
@@ -160,15 +160,25 @@ impl<B: SessionBuilder> Runtime<B> {
         self.bus.listen()
     }
 
-    /// Opens a session on its own thread, which starts building its engine;
+    /// Opens a session on its own thread, which starts building its engine,
+    /// and restores its tasks from the database (`TaskQueue::restore`: the
+    /// queued ones queued again, a running one failed as interrupted);
     /// returns its id. Its tasks queue at once and run once it is built.
+    /// The caller holds the session (the print mode's `SessionLease`), so
+    /// no other process runs the tasks restored.
     ///
     /// # Errors
     ///
     /// The id is not a topic level or is open already, or the operating
-    /// system refused the thread.
-    pub fn create_session(&self, spec: SessionSpec) -> anyhow::Result<String> {
-        self.sessions.open(spec)
+    /// system refused the thread; or the database failed to restore its
+    /// tasks, and the session stays open without them.
+    pub async fn create_session(&self, spec: SessionSpec) -> anyhow::Result<String> {
+        let id = self.sessions.open(spec)?;
+        self.queue
+            .restore(&id)
+            .await
+            .with_context(|| format!("restore the tasks of session {id}"))?;
+        Ok(id)
     }
 
     /// Cancels `session`'s queued tasks and its running one, whose turn is

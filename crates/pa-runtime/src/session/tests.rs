@@ -17,11 +17,15 @@ use crate::runtime::{Runtime, RuntimeOptions};
 /// The prompt whose turn panics inside the model call.
 const PANIC_PROMPT: &str = "panic now";
 
+/// The prompt whose model call waits for a permit of the builder's `hold`.
+const HOLD_PROMPT: &str = "hold on";
+
 /// Builds every session over one faux provider of the test's own, with its
 /// transcript under `<cwd>/sessions`.
 struct FauxBuilder {
     model: pa_types::ai::Model,
     agent_dir: PathBuf,
+    hold: Arc<tokio::sync::Semaphore>,
 }
 
 impl SessionBuilder for FauxBuilder {
@@ -29,14 +33,18 @@ impl SessionBuilder for FauxBuilder {
         let sessions = spec.cwd.join("sessions");
         let inner =
             pa_core::session_engine::provider_adapter::real_stream_fn(None, self.model.clone());
+        let hold = Arc::clone(&self.hold);
         let stream_fn: pa_agent::stream::StreamFn = Arc::new(move |model, context, options| {
-            assert!(
-                !serde_json::to_string(&context.messages)
-                    .unwrap_or_default()
-                    .contains(PANIC_PROMPT),
-                "the scripted turn panics"
-            );
-            inner(model, context, options)
+            let messages = serde_json::to_string(&context.messages).unwrap_or_default();
+            assert!(!messages.contains(PANIC_PROMPT), "the scripted turn panics");
+            let gate = messages.contains(HOLD_PROMPT).then(|| Arc::clone(&hold));
+            let inner = Arc::clone(&inner);
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    let _permit = gate.acquire().await?;
+                }
+                inner(model, context, options).await
+            })
         });
         let engine = Box::pin(pa_core::session_engine::engine::create_session(
             pa_core::session_engine::engine::SessionEngineConfig {
@@ -101,7 +109,35 @@ struct Bed {
     listener: Listener,
     session: String,
     cwd: PathBuf,
+    agent_dir: PathBuf,
+    model: pa_types::ai::Model,
+    hold: Arc<tokio::sync::Semaphore>,
     _dir: tempfile::TempDir,
+}
+
+/// A runtime over `agent_dir` whose sessions run on `model`.
+async fn open_runtime(
+    agent_dir: &std::path::Path,
+    cwd: &std::path::Path,
+    model: pa_types::ai::Model,
+    hold: &Arc<tokio::sync::Semaphore>,
+) -> Runtime<FauxBuilder> {
+    Runtime::open(
+        agent_dir,
+        RuntimeOptions {
+            builder: FauxBuilder {
+                model,
+                agent_dir: agent_dir.to_path_buf(),
+                hold: Arc::clone(hold),
+            },
+            spare_kernels: 1,
+            max_concurrent_runs: NonZeroUsize::new(4).unwrap(),
+            listener_capacity: NonZeroUsize::new(4096).unwrap(),
+            cwd: cwd.to_path_buf(),
+        },
+    )
+    .await
+    .unwrap()
 }
 
 async fn bed(responses: Value) -> Bed {
@@ -123,33 +159,25 @@ async fn bed(responses: Value) -> Bed {
     registration.set_responses(parsed.responses);
     let cwd = dir.path().join("work");
     std::fs::create_dir_all(&cwd).unwrap();
-    let runtime = Runtime::open(
-        &agent_dir,
-        RuntimeOptions {
-            builder: FauxBuilder {
-                model: registration.get_model(),
-                agent_dir: agent_dir.clone(),
-            },
-            spare_kernels: 1,
-            max_concurrent_runs: NonZeroUsize::new(4).unwrap(),
-            listener_capacity: NonZeroUsize::new(4096).unwrap(),
-            cwd: cwd.clone(),
-        },
-    )
-    .await
-    .unwrap();
+    let model = registration.get_model();
+    let hold = Arc::new(tokio::sync::Semaphore::new(0));
+    let runtime = open_runtime(&agent_dir, &cwd, model.clone(), &hold).await;
     let listener = runtime.listen();
     let session = runtime
         .create_session(SessionSpec {
             cwd: cwd.clone(),
             ..SessionSpec::default()
         })
+        .await
         .unwrap();
     Bed {
         runtime,
         listener,
         session,
         cwd,
+        agent_dir,
+        model,
+        hold,
         _dir: dir,
     }
 }
@@ -365,5 +393,45 @@ async fn a_panicking_turn_fails_its_task_and_the_next_one_runs() {
             (TaskState::Done, None),
         ]
     );
+    bed.runtime.shutdown().await;
+}
+
+/// A second runtime on the same database (a second headless process)
+/// restores only the sessions it opens: the first runtime's running task
+/// stays Running through the second's open, and ends Done.
+#[tokio::test]
+async fn a_second_runtime_on_the_database_leaves_other_sessions_tasks_alone() {
+    let mut bed = bed(json!([{ "text": "held reply" }])).await;
+    bed.input(HOLD_PROMPT, None).await;
+    bed.stream_event("turn_start").await;
+    let second = open_runtime(&bed.agent_dir, &bed.cwd, bed.model.clone(), &bed.hold).await;
+    second
+        .create_session(SessionSpec {
+            cwd: bed.cwd.clone(),
+            ..SessionSpec::default()
+        })
+        .await
+        .unwrap();
+    let log = pa_log::Log::open(
+        pa_core::session::store::database_path(&bed.agent_dir),
+        pa_log::DEFAULT_EVENT_RETENTION,
+    )
+    .unwrap();
+    let stored: Vec<(TaskState, String, Option<String>)> = log
+        .unfinished_tasks(&bed.session)
+        .unwrap()
+        .into_iter()
+        .map(|task| (task.state, task.prompt, task.error))
+        .collect();
+    bed.hold.add_permits(1);
+    let (_, done) = bed.until_done().await;
+    assert_eq!(
+        (stored, outcome(&done)),
+        (
+            vec![(TaskState::Running, HOLD_PROMPT.to_string(), None)],
+            (TaskState::Done, None)
+        )
+    );
+    second.shutdown().await;
     bed.runtime.shutdown().await;
 }
