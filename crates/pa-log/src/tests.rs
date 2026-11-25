@@ -463,3 +463,28 @@ fn transcript_appends_replaces_moves_and_removes() {
         )
     );
 }
+
+/// Two processes opening one new database at once (a daemon and the CLI
+/// command that reads it) both open it: only one of them applies each
+/// migration, and the other finds it applied.
+#[test]
+fn concurrent_opens_of_a_new_database_both_succeed() {
+    let dir = tempfile::tempdir().unwrap();
+    for attempt in 0..40 {
+        let path = dir.path().join(format!("agent-{attempt}.db"));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let opens: Vec<_> = (0..2)
+            .map(|_| {
+                let (path, start) = (path.clone(), std::sync::Arc::clone(&start));
+                std::thread::spawn(move || {
+                    start.wait();
+                    Log::open(path, DEFAULT_EVENT_RETENTION)
+                        .map(drop)
+                        .map_err(|error| format!("{error:#}"))
+                })
+            })
+            .collect();
+        let results: Vec<_> = opens.into_iter().map(|open| open.join().unwrap()).collect();
+        assert_eq!(results, vec![Ok(()), Ok(())], "attempt {attempt}");
+    }
+}
