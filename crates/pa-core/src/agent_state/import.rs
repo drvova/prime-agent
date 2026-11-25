@@ -25,12 +25,19 @@ pub struct StateImportReport {
     pub already_held: u64,
     /// Files that could not be imported, and why; nothing of them is stored.
     pub failed: Vec<(PathBuf, String)>,
+    /// `scheduled-jobs.json` files that list a job id more than once, with
+    /// those ids: each was imported keeping the last job with the id.
+    pub duplicate_job_ids: Vec<(PathBuf, Vec<String>)>,
 }
 
 /// What [`import_state_file`] did with one file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum StateImport {
-    Imported,
+    /// Stored; `duplicate_job_ids` names the ids a `scheduled-jobs.json`
+    /// listed more than once (the last job with each was kept).
+    Imported {
+        duplicate_job_ids: Vec<String>,
+    },
     AlreadyHeld,
     /// There is no file.
     Missing,
@@ -73,6 +80,7 @@ pub(crate) fn import_state_file(
             }),
     };
     let text = String::from_utf8(bytes).map_err(|_| "it is not UTF-8".to_string())?;
+    let mut duplicate_job_ids = Vec::new();
     let receipt = match file {
         StateFile::ScheduledJobs => {
             let value: serde_json::Value =
@@ -80,9 +88,23 @@ pub(crate) fn import_state_file(
             if !value.is_object() {
                 return Err("it is not a JSON object".to_string());
             }
-            let rows =
-                crate::cron::store::jobs_state_rows(&crate::cron::store::jobs_state_from(&value))
-                    .map_err(|error| format!("{error:#}"))?;
+            let mut state = crate::cron::store::jobs_state_from(&value);
+            // Two jobs with one id: the last is kept, in its place, as the
+            // file store's merging write keeps it, and the ids are reported.
+            let mut seen = std::collections::HashSet::new();
+            let mut kept = Vec::with_capacity(state.jobs.len());
+            for job in state.jobs.into_iter().rev() {
+                if seen.insert(job.id.clone()) {
+                    kept.push(job);
+                } else if !duplicate_job_ids.contains(&job.id) {
+                    duplicate_job_ids.push(job.id);
+                }
+            }
+            kept.reverse();
+            duplicate_job_ids.reverse();
+            state.jobs = kept;
+            let rows = crate::cron::store::jobs_state_rows(&state)
+                .map_err(|error| format!("{error:#}"))?;
             log.replace_sources(&scope, rows, origin)
         }
         StateFile::HarnessState | StateFile::ReuseLedger => {
@@ -121,7 +143,7 @@ pub(crate) fn import_state_file(
     match receipt.wait_blocking() {
         Ok(true) => {
             crate::session::store::freeze_original(path);
-            Ok(StateImport::Imported)
+            Ok(StateImport::Imported { duplicate_job_ids })
         }
         Ok(false) => Ok(StateImport::AlreadyHeld),
         Err(error) => Err(format!("{error:#}")),
@@ -189,7 +211,14 @@ pub fn import_agent_state(
     let mut report = StateImportReport::default();
     for (file, path) in state_files(agent_dir).iter().chain(more) {
         match import_state_file(log, *file, path) {
-            Ok(StateImport::Imported) => report.imported += 1,
+            Ok(StateImport::Imported { duplicate_job_ids }) => {
+                report.imported += 1;
+                if !duplicate_job_ids.is_empty() {
+                    report
+                        .duplicate_job_ids
+                        .push((path.clone(), duplicate_job_ids));
+                }
+            }
             Ok(StateImport::AlreadyHeld) => report.already_held += 1,
             Ok(StateImport::Missing) => {}
             Err(reason) => report.failed.push((path.clone(), reason)),

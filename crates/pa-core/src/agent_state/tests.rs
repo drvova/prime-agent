@@ -63,7 +63,12 @@ fn imported_once() -> (
     [bool; 2],
 ) {
     (
-        vec![Ok(StateImport::Imported), Ok(StateImport::AlreadyHeld)],
+        vec![
+            Ok(StateImport::Imported {
+                duplicate_job_ids: Vec::new(),
+            }),
+            Ok(StateImport::AlreadyHeld),
+        ],
         true,
         false,
         true,
@@ -94,6 +99,42 @@ fn scheduled_jobs_import_with_their_claimed_dispatches() {
     assert_eq!(
         (round, AgentCronJobStore::new(original).read_states()),
         (imported_once(), store.read_states())
+    );
+}
+
+/// A `scheduled-jobs.json` that lists one job id twice imports keeping the
+/// last job with it, in its place, and the import names the id.
+#[test]
+fn a_job_id_listed_twice_imports_keeping_the_last() {
+    use crate::cron::store::{input, read_jobs_state_in, AgentCronJobStore};
+    let dir = tempfile::tempdir().unwrap();
+    let log = process_log().expect("the test process keeps a database");
+    let written = dir.path().join("a").join("scheduled-jobs.json");
+    let store = AgentCronJobStore::new(written.clone());
+    let now = 1_700_000_000_000;
+    store.create(&input("tick", "every 10m", now)).unwrap();
+    store.create(&input("later", "every 3h", now)).unwrap();
+    let jobs = read_jobs_state_in(Some(log), &written).jobs;
+    let mut again = jobs[0].clone();
+    again.prompt = "tock".to_string();
+    let original = dir.path().join("b").join("scheduled-jobs.json");
+    std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+    std::fs::write(
+        &original,
+        serde_json::to_string(&json!({ "jobs": [&jobs[0], &jobs[1], &again] })).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            import_state_file(log, StateFile::ScheduledJobs, &original),
+            read_jobs_state_in(Some(log), &original).jobs,
+        ),
+        (
+            Ok(StateImport::Imported {
+                duplicate_job_ids: vec![jobs[0].id.clone()],
+            }),
+            vec![jobs[1].clone(), again],
+        )
     );
 }
 

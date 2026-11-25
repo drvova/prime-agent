@@ -278,7 +278,10 @@ The same database keeps the stores that were files besides transcripts
   log may end in one torn line, which is not a record) is skipped whole, in
   one transaction or not at all. The daemon log names it and the next boot
   retries it; until the store's next write, the store reads the file as it
-  always did. With `"transcriptStore": "file"` every store stays on its file.
+  always did. A `scheduled-jobs.json` that lists one job id more than once
+  imports keeping the last job with that id, as the file store's merging
+  write keeps it, and the daemon log names the id. With `"transcriptStore":
+  "file"` every store stays on its file.
 
 ## Platform limits and release claims
 

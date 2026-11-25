@@ -187,6 +187,14 @@ impl Supervisor {
                             path.display()
                         ));
                     }
+                    for (path, ids) in &report.duplicate_job_ids {
+                        supervisor.log_line(&format!(
+                            "agent state import: {} lists job id(s) {} more than once; \
+                             kept the last job with each",
+                            path.display(),
+                            ids.join(", ")
+                        ));
+                    }
                 }
                 Ok(None) => {}
                 Err(error) => supervisor.log_line(&format!("agent state import stopped: {error}")),
