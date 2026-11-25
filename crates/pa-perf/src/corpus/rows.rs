@@ -354,7 +354,7 @@ pub(crate) fn write_session_file(
             rows.push(
                 "compaction",
                 serde_json::to_value(CompactionEntry {
-                    summary: summary.clone(),
+                    summary,
                     first_kept_entry_id: format!("{:08x}", rows.counter),
                     tokens_before: 40_000 + rng.below(60_000),
                     details: None,

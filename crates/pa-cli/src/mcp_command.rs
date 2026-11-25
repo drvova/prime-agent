@@ -200,7 +200,7 @@ fn drop_server_credentials(name: &str) -> Result<()> {
 /// Run an `mcp <add|list|get|remove>` command; the returned message is printed
 /// by the caller, and errors are printed as `Error: <message>` with exit 1.
 pub fn run_mcp_management_command(args: &[String]) -> Result<String> {
-    let action = args.first().map(String::as_str).unwrap_or_default();
+    let action = args.first().map_or_default(String::as_str);
     match action {
         "list" => {
             require_count(args, 1, "mcp list")?;
@@ -326,12 +326,7 @@ fn parse_mcp_add_args(args: &[String]) -> Result<(&str, McpServerConfig, bool)> 
                 if env.contains_key(child.as_str()) {
                     bail!("Duplicate child environment variable: {child}");
                 }
-                env.insert(
-                    child.clone(),
-                    EnvRef {
-                        env: source.clone(),
-                    },
-                );
+                env.insert(child, EnvRef { env: source });
             }
         }
         index += 2;

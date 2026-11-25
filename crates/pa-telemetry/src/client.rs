@@ -690,7 +690,7 @@ mod tests {
             Box::pin(async move {
                 if self
                     .remaining
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
                         remaining.checked_sub(1)
                     })
                     .is_ok()
@@ -824,8 +824,7 @@ mod tests {
     fn now_epoch_ms_for_tests() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or_default()
+            .map_or_default(|duration| duration.as_millis() as u64)
     }
 
     #[tokio::test]

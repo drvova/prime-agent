@@ -352,8 +352,7 @@ fn render(
         let column = entry
             .location
             .column
-            .map(|column| format!(":{column}"))
-            .unwrap_or_default();
+            .map_or_default(|column| format!(":{column}"));
         let _ = write!(
             section,
             "\n{}:{}{column} ({})",

@@ -93,7 +93,7 @@ impl ReadBudget {
     fn take(&self) -> bool {
         let limit = self.limit.load(Ordering::SeqCst);
         self.used
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
                 (used < limit).then_some(used + 1)
             })
             .is_ok()

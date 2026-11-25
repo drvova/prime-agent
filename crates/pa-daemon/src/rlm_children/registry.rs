@@ -562,8 +562,7 @@ fn ledger_child_records(
             session_id,
             session_dir: child
                 .parent()
-                .map(|dir| dir.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+                .map_or_default(|dir| dir.to_string_lossy().into_owned()),
             model: display
                 .as_ref()
                 .and_then(|display| display.model.as_ref())

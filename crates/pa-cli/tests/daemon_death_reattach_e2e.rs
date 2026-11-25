@@ -43,14 +43,13 @@ impl Drop for LaunchedDaemon {
         let _ = reader.read_line(&mut hello);
         let pids: Vec<i32> = serde_json::from_str::<Value>(hello.trim())
             .ok()
-            .map(|hello| {
+            .map_or_default(|hello| {
                 ["keeperPid", "supervisorPid"]
                     .iter()
                     .filter_map(|key| hello[*key].as_u64())
                     .filter_map(|pid| i32::try_from(pid).ok())
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         let _ = writer.write_all(
             b"{\"type\":\"command\",\"id\":\"stop\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7},\"command\":{\"type\":\"shutdown\"}}\n",
         );

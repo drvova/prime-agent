@@ -127,26 +127,22 @@ fn mock_execution(entry: &serde_json::Value) -> ExecuteResult {
         result.error = Some(KernelErrorInfo {
             ename: error["ename"].as_str().unwrap_or("").to_string(),
             evalue: error["evalue"].as_str().unwrap_or("").to_string(),
-            traceback: error["traceback"]
-                .as_array()
-                .map(|lines| {
-                    lines
-                        .iter()
-                        .map(|l| l.as_str().unwrap_or("").to_string())
-                        .collect()
-                })
-                .unwrap_or_default(),
+            traceback: error["traceback"].as_array().map_or_default(|lines| {
+                lines
+                    .iter()
+                    .map(|l| l.as_str().unwrap_or("").to_string())
+                    .collect()
+            }),
         });
     }
     result.attachments = Vec::<KernelAttachment>::new();
     result.sent_agent_messages = entry["sentAgentMessages"]
         .as_array()
-        .map(|rows| {
+        .map_or_default(|rows| {
             rows.iter()
                 .filter_map(crate::kernel::shared::parse_sent_agent_message)
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     result
 }
 

@@ -19,7 +19,7 @@ impl Worker {
             let store = core.store.as_ref();
             let data = json!({
                 "activeSessionId": core.active_session_id,
-                "sessionId": store.map(crate::session_store::SessionFile::session_id).unwrap_or_default(),
+                "sessionId": store.map_or_default(crate::session_store::SessionFile::session_id),
                 "sessionFile": core
                     .store
                     .as_ref()

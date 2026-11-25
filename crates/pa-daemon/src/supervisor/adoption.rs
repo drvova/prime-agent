@@ -362,8 +362,7 @@ impl Supervisor {
                     let session_id = session_id.unwrap_or_else(|| {
                         Path::new(&session_file)
                             .file_stem()
-                            .map(|stem| stem.to_string_lossy().to_string())
-                            .unwrap_or_default()
+                            .map_or_default(|stem| stem.to_string_lossy().to_string())
                     });
                     self.arm_scheduled_wake(worker_id.clone(), &session_file, &session_id);
                 }
@@ -880,8 +879,7 @@ impl Supervisor {
                 || {
                     Path::new(child)
                         .parent()
-                        .map(|dir| dir.to_string_lossy().to_string())
-                        .unwrap_or_default()
+                        .map_or_default(|dir| dir.to_string_lossy().to_string())
                 },
                 str::to_string,
             );

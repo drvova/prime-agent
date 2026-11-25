@@ -47,8 +47,7 @@ impl WorkerConfig {
         let active_session_id = pa_types::session_scope::var(WORKER_ACTIVE_SESSION_ID_ENV)
             .context("worker root active session id is required")?;
         let supervisor_socket_path = pa_types::session_scope::var_os(WORKER_SUPERVISOR_SOCKET_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_default();
+            .map_or_default(PathBuf::from);
         let agent_dir = paths::agent_dir()?;
         let recovery_journal_path = pa_types::session_scope::var_os(WORKER_RECOVERY_JOURNAL_ENV)
             .map_or_else(

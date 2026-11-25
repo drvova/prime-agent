@@ -115,10 +115,7 @@ impl WebCrawlHost {
 
     /// The user's identity settings, read now.
     fn settings(&self) -> WebCrawlSettings {
-        self.settings
-            .as_ref()
-            .map(|read| read())
-            .unwrap_or_default()
+        self.settings.as_ref().map_or_default(|read| read())
     }
 
     /// `web.extract`: the values `selectors` find in the given `html`, or in

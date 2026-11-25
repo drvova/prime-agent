@@ -27,8 +27,7 @@ impl SessionUi {
     pub(super) fn clear_key_tail(&self, wording: impl Fn(&str) -> String) -> String {
         self.keybindings
             .first_key("app.input.clear")
-            .map(|key| wording(&crate::keybindings::format_key_text(&key)))
-            .unwrap_or_default()
+            .map_or_default(|key| wording(&crate::keybindings::format_key_text(&key)))
     }
 
     /// Start one run; the composer stays usable while it runs.
@@ -60,8 +59,7 @@ impl SessionUi {
             "better-{}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|since| since.as_millis())
-                .unwrap_or_default(),
+                .map_or_default(|since| since.as_millis()),
             self.side_question_counter
         );
         self.better_run = Some(id.clone());
