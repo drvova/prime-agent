@@ -52,7 +52,8 @@ impl<T> Receipt<T> {
 
     /// Wait for the change to commit, blocking this thread (as a file write
     /// would: on a runtime, call it from a blocking thread). Unlike tokio's
-    /// own blocking receive, it never panics on a runtime's thread.
+    /// own blocking receive, it never panics on a runtime's thread, and the
+    /// calling task's spent coop budget never holds the answer back.
     ///
     /// # Errors
     ///
@@ -67,7 +68,11 @@ impl<T> Receipt<T> {
         }
         let waker = std::task::Waker::from(std::sync::Arc::new(Unpark(std::thread::current())));
         let mut context = std::task::Context::from_waker(&waker);
-        let mut answer = self.answer;
+        // Inside a task that has spent its coop budget, tokio's receive
+        // answers `Pending` and wakes at once until the task yields, which a
+        // blocked thread never does: the wait would spin forever on an
+        // answer already sent. The budget is the task's, not this wait's.
+        let mut answer = tokio::task::unconstrained(self.answer);
         loop {
             match std::pin::Pin::new(&mut answer).poll(&mut context) {
                 std::task::Poll::Ready(answer) => {
