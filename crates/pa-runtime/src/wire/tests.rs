@@ -17,6 +17,9 @@ use crate::routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
 use crate::store::{EventStore, MemoryEventStore, MemoryStateStore};
 use crate::subscriptions::MemorySessionTree;
 
+/// The longest a test waits for one server frame before failing.
+const RECV_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Takes no route's work: no test here adds a subscription.
 struct Idle;
 
@@ -216,8 +219,14 @@ impl Client {
             .expect("the frame is written");
     }
 
+    /// The next frame, or `None` once the server closed. A frame that never
+    /// comes fails the test after `RECV_LIMIT` instead of hanging it: a
+    /// broken catch-up or a stalled connection is a failure, not a stuck run.
     async fn recv(&mut self) -> Option<ServerFrame> {
-        let frame = self.frames.read_frame().await.expect("a frame reads")?;
+        let frame = tokio::time::timeout(RECV_LIMIT, self.frames.read_frame())
+            .await
+            .expect("the server sends the next frame within the limit")
+            .expect("a frame reads")?;
         Some(serde_json::from_value(frame.header).expect("a server frame"))
     }
 
