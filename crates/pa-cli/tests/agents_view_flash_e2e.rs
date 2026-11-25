@@ -1,5 +1,10 @@
-// too_many_lines: style gate only.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the clean-first-render and stopped-session scenarios each read top to bottom"
+    )
+)]
 
 //! End-to-end verifier for the agents-view flash (the operator's fleet box:
 //! a departed root's registration-seeded rows stayed top-level until the

@@ -1,5 +1,17 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate only.
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the headless `run_interactive` futures stay on the stack; each test awaits one at a time"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`panel_expand_drill_in_and_back_re_expands_the_tree` is one scenario, top to bottom"
+    )
+)]
 
 //! End-to-end verifier for the subagent panel surface of the agents view:
 //! the headless plan expands the parent, drills into the child's transcript

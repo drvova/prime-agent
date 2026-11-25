@@ -1,9 +1,17 @@
-// large_futures: stack futures on hot paths by design. Casts: 64-bit targets; narrowing
-// sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the terminal-mode `run_interactive` future stays on the stack in the child process"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the per-slice byte budget is a positive rate times a short slice, floored at 1"
+    )
 )]
 
 //! Real-pty e2e for the slow-drain exit-guard contract: the exit flush
@@ -463,8 +471,10 @@ fn find_subsequence_last(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 fn spawn_child(socket: &Path, slave: &OwnedFd) -> Child {
     fn claim_controlling_tty(fd: i32) -> std::io::Result<()> {
         nix::unistd::setsid()?;
-        // TIOCSCTTY is already the request type on Linux and a `u32` on macOS.
-        #[allow(clippy::cast_lossless)]
+        #[allow(
+            clippy::cast_lossless,
+            reason = "TIOCSCTTY is already the request type on Linux and a `u32` on macOS, which neither CI target builds"
+        )]
         let rc = unsafe { libc::ioctl(fd, libc::TIOCSCTTY as libc::c_ulong, 0) };
         if rc < 0 {
             return Err(std::io::Error::last_os_error());
