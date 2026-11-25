@@ -1180,9 +1180,11 @@ mod tests {
             entries_before.as_slice()
         );
         let session_guard = session.lock().await;
-        assert!(!local_harness_state_dir(&session_guard)
-            .join("harness_state.json")
-            .exists());
+        assert!(crate::agent_state::kept_bytes(
+            crate::agent_state::StateFile::HarnessState,
+            &local_harness_state_dir(&session_guard).join("harness_state.json")
+        )
+        .is_none());
         assert!(!global_dir.exists());
     }
 
@@ -1431,7 +1433,11 @@ Reviewer instructions: record it"
         assert_eq!(result.applied_edits.len(), 1);
         assert!(result.applied_edits[0].applied);
         let state_path = Path::new(&result.harness_state_path);
-        assert!(state_path.exists());
+        assert!(crate::agent_state::kept_bytes(
+            crate::agent_state::StateFile::HarnessState,
+            state_path
+        )
+        .is_some());
         let session_dir = session.lock().await.get_session_dir().to_path_buf();
         let harness_dir =
             crate::refinement::get_local_harness_state_dir(Some(&session_dir)).unwrap();

@@ -90,10 +90,9 @@ fn cancel_scheduled_jobs_for_members(
         let Some(dir) = session_artifact_dir(&member.session_file, &member.session_id) else {
             continue;
         };
-        if !dir
-            .join(pa_core::cron::store::SESSION_SCHEDULED_JOBS_FILENAME)
-            .is_file()
-        {
+        if !pa_core::cron::store::scheduled_jobs_kept(
+            &dir.join(pa_core::cron::store::SESSION_SCHEDULED_JOBS_FILENAME),
+        ) {
             continue;
         }
         store.register_session_artifact(&member.session_id, &dir);
@@ -525,11 +524,8 @@ mod tests {
 
     fn read_job(session_file: &Path, session_id: &str) -> AgentCronJob {
         let dir = session_artifact_dir(session_file, session_id).unwrap();
-        let raw: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join("scheduled-jobs.json")).unwrap(),
-        )
-        .unwrap();
-        serde_json::from_value(raw["jobs"][0].clone()).unwrap()
+        pa_core::cron::store::read_scheduled_jobs_artifact(&dir.join("scheduled-jobs.json"))
+            .swap_remove(0)
     }
 
     #[test]

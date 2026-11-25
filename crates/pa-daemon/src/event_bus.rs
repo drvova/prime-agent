@@ -12,18 +12,19 @@
 //! an agent message (`supervisor.rs` in this module), which brings the
 //! message path's lanes, idle wake, wake budget and queue cap with it.
 //!
-//! The bus is daemon-wide and survives daemon restarts: its state is one JSON
-//! file in the supervisor's descriptor directory, rewritten atomically on
-//! every change. A file that does not parse is set aside (`.corrupt`) and the
-//! bus starts empty.
+//! The bus is daemon-wide and survives daemon restarts: its state is kept in
+//! the agent database (`pa_core::agent_state`, its sources and subscriptions
+//! as rows), under the path of its file in the supervisor's descriptor
+//! directory, and stored whole on every change. Until the database holds it
+//! (and with the file transcript store, always) the file is read, and with
+//! the file store rewritten atomically. A file that does not parse is set
+//! aside (`.corrupt`) and the bus starts empty.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use pa_types::events::{EventBusRequest, EventSourceRecord, EventSubscriptionRecord};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 mod link;
@@ -80,12 +81,7 @@ pub(crate) enum Handled {
 }
 
 /// The persisted state.
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BusState {
-    sources: BTreeMap<String, EventSourceRecord>,
-    subscriptions: Vec<EventSubscriptionRecord>,
-}
+type BusState = pa_core::agent_state::EventBusState;
 
 pub(crate) struct EventBus {
     path: PathBuf,
@@ -97,27 +93,37 @@ impl EventBus {
     /// none or it does not parse (that file is renamed aside first, and `log`
     /// says so).
     pub(crate) fn load(path: PathBuf, log: &crate::paths::RotatingLog) -> Self {
-        let state = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
-                let aside = path.with_extension("json.corrupt");
-                let moved = match std::fs::rename(&path, &aside) {
-                    Ok(()) => format!("set aside as {}", aside.display()),
-                    Err(error) => format!("not set aside: {error}"),
-                };
-                log.append(&format!(
-                    "event bus state {} does not parse ({error}); {moved}; starting empty",
-                    path.display()
-                ));
-                BusState::default()
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BusState::default(),
-            Err(error) => {
-                log.append(&format!(
-                    "event bus state {} is unreadable ({error}); starting empty",
-                    path.display()
-                ));
-                BusState::default()
-            }
+        let held = pa_core::agent_state::held_event_bus(&path).unwrap_or_else(|error| {
+            log.append(&format!(
+                "event bus state for {} is unreadable in the database ({error:#}); starting empty",
+                path.display()
+            ));
+            Some(BusState::default())
+        });
+        let state = match held {
+            Some(state) => state,
+            None => match std::fs::read_to_string(&path) {
+                Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
+                    let aside = path.with_extension("json.corrupt");
+                    let moved = match std::fs::rename(&path, &aside) {
+                        Ok(()) => format!("set aside as {}", aside.display()),
+                        Err(error) => format!("not set aside: {error}"),
+                    };
+                    log.append(&format!(
+                        "event bus state {} does not parse ({error}); {moved}; starting empty",
+                        path.display()
+                    ));
+                    BusState::default()
+                }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => BusState::default(),
+                Err(error) => {
+                    log.append(&format!(
+                        "event bus state {} is unreadable ({error}); starting empty",
+                        path.display()
+                    ));
+                    BusState::default()
+                }
+            },
         };
         EventBus {
             path,
@@ -383,6 +389,11 @@ impl EventBus {
     }
 
     fn save(&self, state: &BusState) -> Result<()> {
+        if pa_core::agent_state::store_event_bus(&self.path, state)
+            .with_context(|| format!("save the event bus for {}", self.path.display()))?
+        {
+            return Ok(());
+        }
         crate::descriptor::write_file_atomic(&self.path, &serde_json::to_string_pretty(state)?)
             .with_context(|| format!("save the event bus to {}", self.path.display()))
     }

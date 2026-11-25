@@ -165,15 +165,20 @@ pub fn factory_enabled(agent_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Load harness state; a corrupt or unreadable file degrades to empty rather
-/// than throwing (prompt builds run on every turn).
+/// Load harness state (from the agent database once it holds the store,
+/// `crate::agent_state`, else from its file); a corrupt or unreadable store
+/// degrades to empty rather than throwing (prompt builds run on every turn).
 ///
 /// # Panics
 ///
 /// The `get_mut(kind).unwrap()` cannot panic: the empty state pre-populates every kind map.
 pub fn load_harness_state(harness_state_dir: &Path, scope: HarnessScope) -> HarnessState {
     let state_path = get_harness_state_path(harness_state_dir);
-    let Ok(raw) = std::fs::read_to_string(&state_path) else {
+    let Ok(Some(raw)) = crate::agent_state::read_document(
+        crate::agent_state::process_log(),
+        crate::agent_state::StateFile::HarnessState,
+        &state_path,
+    ) else {
         return empty_harness_state();
     };
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) else {
@@ -270,11 +275,13 @@ pub fn merge_harness_states(
     merged
 }
 
-/// Atomically save harness state (0o600 for new files).
+/// Atomically save harness state: to the agent database when the process
+/// keeps one (`crate::agent_state`), else to its file (0o600 for new files).
+/// Returns the store's file path, which names it either way.
 ///
 /// # Errors
 ///
-/// Error when the directory cannot be created, serialization fails, or the atomic write fails.
+/// Error when the directory cannot be created, serialization fails, or the write fails.
 pub fn save_harness_state(
     harness_state_dir: &Path,
     state: &HarnessState,
@@ -282,9 +289,10 @@ pub fn save_harness_state(
     std::fs::create_dir_all(harness_state_dir)?;
     let state_path = get_harness_state_path(harness_state_dir);
     let content = format!("{}\n", serde_json::to_string_pretty(state)?);
-    crate::settings::storage::atomic_write_with(
+    crate::agent_state::write_document(
+        crate::agent_state::StateFile::HarnessState,
         &state_path,
-        &content,
+        content,
         crate::settings::storage::AtomicWriteOptions { fsync: true },
     )?;
     Ok(state_path)
@@ -604,14 +612,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = empty_harness_state();
         let path = save_harness_state(dir.path(), &state).unwrap();
-        let before = std::fs::read(&path).unwrap();
+        let before =
+            crate::agent_state::kept_bytes(crate::agent_state::StateFile::HarnessState, &path)
+                .unwrap();
         let result: anyhow::Result<((), PathBuf)> =
             try_update_harness_state(dir.path(), HarnessScope::Global, |state| {
                 state.schema = 99;
                 anyhow::bail!("disabled before commit")
             });
         assert!(result.is_err());
-        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert_eq!(
+            crate::agent_state::kept_bytes(crate::agent_state::StateFile::HarnessState, &path)
+                .unwrap(),
+            before
+        );
     }
 
     #[test]
@@ -681,7 +695,13 @@ mod tests {
             "a fact"
         );
 
-        std::fs::write(get_harness_state_path(&dir), "not json").unwrap();
+        crate::agent_state::write_document(
+            crate::agent_state::StateFile::HarnessState,
+            &get_harness_state_path(&dir),
+            "not json".to_string(),
+            crate::settings::storage::AtomicWriteOptions { fsync: true },
+        )
+        .unwrap();
         assert!(
             load_harness_state(&dir, HarnessScope::Global).entries[&RefinementKind::Memory]
                 .is_empty()
@@ -689,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_save_takes_exactly_one_fsync() {
+    fn harness_save_keeps_the_pretty_document() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = get_global_harness_state_dir(tmp.path());
         let mut state = empty_harness_state();
@@ -702,17 +722,16 @@ mod tests {
                 entry("m1", RefinementKind::Memory, HarnessScope::Global, "a fact"),
             );
         let expected = format!("{}\n", serde_json::to_string_pretty(&state).unwrap());
-        let before = crate::settings::storage::opt_in_fsync_calls();
         let written = save_harness_state(&dir, &state).unwrap();
         assert_eq!(
-            crate::settings::storage::opt_in_fsync_calls(),
-            before + 1,
-            "the harness save must flush the temp file before the rename"
-        );
-        assert_eq!(written, get_harness_state_path(&dir));
-        assert_eq!(
-            std::fs::read_to_string(get_harness_state_path(&dir)).unwrap(),
-            expected
+            (
+                written.clone(),
+                crate::agent_state::kept_bytes(
+                    crate::agent_state::StateFile::HarnessState,
+                    &written
+                )
+            ),
+            (get_harness_state_path(&dir), Some(expected.into_bytes()))
         );
     }
 

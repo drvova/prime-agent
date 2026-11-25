@@ -173,6 +173,58 @@ fn process_alive(pid: u32) -> bool {
     kill(Pid::from_raw(raw), None).is_ok()
 }
 
+/// The database of the nearest agent dir above `path` or beside it as
+/// `agent/`: the seam's, or one a process without it kept in the dir.
+// Each test target compiles this module for itself, and not every one reads
+// a database.
+#[allow(dead_code)]
+fn database_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    // The tests keep the agent dir beside custom sessions dirs: `<root>/agent`.
+    path.ancestors()
+        .flat_map(|dir| [dir.to_path_buf(), dir.join("agent")])
+        .flat_map(|dir| {
+            [
+                pa_core::session::store::database_path(&dir),
+                dir.join(pa_core::session::store::DATABASE_FILE),
+            ]
+        })
+        .find(|database| database.is_file())
+}
+
+/// The agent state (`pa_core::agent_state`) of the database holding the
+/// store whose file is `path` ([`database_of`]), when there is one.
+#[allow(dead_code)]
+pub fn agent_state(path: &std::path::Path) -> Option<&'static pa_core::agent_state::StateDatabase> {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, PoisonError};
+    type Opened = HashMap<PathBuf, &'static pa_core::agent_state::StateDatabase>;
+    static OPENED: Mutex<Option<Opened>> = Mutex::new(None);
+    let database = database_of(path)?;
+    let mut opened = OPENED.lock().unwrap_or_else(PoisonError::into_inner);
+    Some(
+        *opened
+            .get_or_insert_with(HashMap::new)
+            .entry(database.clone())
+            .or_insert_with(|| {
+                Box::leak(Box::new(
+                    pa_core::agent_state::StateDatabase::open(&database)
+                        .expect("open the agent database"),
+                ))
+            }),
+    )
+}
+
+/// The jobs of the `scheduled-jobs.json` at `path`, wherever its store
+/// keeps them ([`agent_state`], else this process's).
+#[allow(dead_code)]
+pub fn scheduled_jobs(path: &std::path::Path) -> Vec<pa_core::cron::AgentCronJob> {
+    match agent_state(path) {
+        Some(state) => state.scheduled_jobs(path),
+        None => pa_core::cron::store::read_scheduled_jobs_artifact(path),
+    }
+}
+
 /// The transcript store holding the transcripts under `path`: the database of
 /// the nearest agent dir above it or beside it as `agent/` (a supervisor the
 /// test started with its own agent dir keeps them there), else this
@@ -189,19 +241,7 @@ pub fn transcripts(
     use std::sync::{Mutex, PoisonError};
     type Opened = HashMap<PathBuf, &'static dyn pa_core::session::store::TranscriptStore>;
     static OPENED: Mutex<Option<Opened>> = Mutex::new(None);
-    // The tests keep the agent dir beside custom sessions dirs: `<root>/agent`.
-    let Some(database) = path
-        .ancestors()
-        .flat_map(|dir| [dir.to_path_buf(), dir.join("agent")])
-        // The seam's database, or one a process without it kept in the dir.
-        .flat_map(|dir| {
-            [
-                pa_core::session::store::database_path(&dir),
-                dir.join(pa_core::session::store::DATABASE_FILE),
-            ]
-        })
-        .find(|database| database.is_file())
-    else {
+    let Some(database) = database_of(path) else {
         return pa_core::session::store::store();
     };
     let mut opened = OPENED.lock().unwrap_or_else(PoisonError::into_inner);

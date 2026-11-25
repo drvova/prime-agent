@@ -152,6 +152,45 @@ impl Supervisor {
                 Ok(None) => {}
                 Err(error) => supervisor.log_line(&format!("transcript import stopped: {error}")),
             }
+            // Then the agent's other state files: schedules, harness stores,
+            // the reuse ledger, and this daemon's event bus and crash log.
+            let agent_dir = supervisor.options.agent_dir.clone();
+            let descriptor_dir =
+                crate::descriptor::descriptor_dir(&agent_dir, &supervisor.options.socket_path);
+            let daemon_files = [
+                (
+                    pa_core::agent_state::StateFile::EventBus,
+                    descriptor_dir.join(crate::event_bus::EVENT_BUS_FILE_NAME),
+                ),
+                (
+                    pa_core::agent_state::StateFile::CrashLog,
+                    descriptor_dir.join(crate::supervisor::SESSION_CRASH_LOG),
+                ),
+            ];
+            let imported = tokio::task::spawn_blocking(move || {
+                pa_core::agent_state::import_agent_state(&agent_dir, &daemon_files)
+            })
+            .await;
+            match imported {
+                Ok(Some(report)) => {
+                    if report.imported > 0 || !report.failed.is_empty() {
+                        supervisor.log_line(&format!(
+                            "agent state import: {} file(s) imported, {} already held, {} failed",
+                            report.imported,
+                            report.already_held,
+                            report.failed.len()
+                        ));
+                    }
+                    for (path, reason) in &report.failed {
+                        supervisor.log_line(&format!(
+                            "agent state import skipped {}: {reason}",
+                            path.display()
+                        ));
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => supervisor.log_line(&format!("agent state import stopped: {error}")),
+            }
         });
     }
 }

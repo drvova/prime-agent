@@ -4,7 +4,9 @@ use super::{json, persist_worker, util, Arc, ResidentWorker, Supervisor, Value};
 use crate::session_host::SessionCrash;
 
 /// The append-only crash log's file name inside the worker-records directory:
-/// one JSON object per line, never rewritten by the daemon.
+/// one JSON object per crash, never rewritten by the daemon. The agent
+/// database keeps it under this path (`pa_core::agent_state`); with the file
+/// transcript store, the file holds one record per line.
 pub(crate) const SESSION_CRASH_LOG: &str = "session-crashes.jsonl";
 
 /// What becomes of the turn that was running when a session went down.
@@ -150,22 +152,15 @@ impl Supervisor {
         };
         self.publish_fault_state(resident, "rebuilding").await;
         let log_path = self.descriptor_dir.join(SESSION_CRASH_LOG);
-        let line = format!("{record}\n");
         let appended = tokio::task::spawn_blocking(move || {
-            use std::io::Write;
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .and_then(|mut file| {
-                    file.write_all(line.as_bytes())?;
-                    file.sync_data()
-                })
+            pa_core::agent_state::append_crash_record(&log_path, &record)
         })
         .await;
         match appended {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => self.log_line(&format!("session crash log append failed: {error}")),
+            Ok(Err(error)) => {
+                self.log_line(&format!("session crash log append failed: {error:#}"));
+            }
             Err(error) => self.log_line(&format!("session crash log append failed: {error}")),
         }
         self.log_line(&format!(

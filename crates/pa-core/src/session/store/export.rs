@@ -130,7 +130,9 @@ fn destination(locator: &Path, base: &Path, out: &Path, selection: ExportSelecti
 
 /// Export the selected transcripts found under `roots` (the session trees,
 /// e.g. `<agent dir>/sessions` and `sessions-archive`) or held by the
-/// database, as JSONL files under `out`. `base` (the agent dir) is the root
+/// database, as JSONL files under `out`; with [`ExportSelection::All`], the
+/// agent state the database keeps too (schedules, harness stores, the reuse
+/// ledger, the event bus, the crash log), each as the file it replaced. `base` (the agent dir) is the root
 /// whose layout [`ExportSelection::All`] keeps. A file already at a
 /// destination is never overwritten: with the same bytes it counts as
 /// unchanged, with other bytes it is a failure.
@@ -145,7 +147,18 @@ pub fn export_jsonl(
     selection: ExportSelection<'_>,
     out: &Path,
 ) -> io::Result<ExportReport> {
-    export_from(store(), stored_locators()?, roots, base, selection, out)
+    let mut report = export_from(store(), stored_locators()?, roots, base, selection, out)?;
+    if selection == ExportSelection::All {
+        // The agent's other state the database keeps, in the files a build
+        // before the move reads (`crate::agent_state`).
+        let base = pa_types::platform::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+        for (path, bytes) in crate::agent_state::exported_files().map_err(io::Error::other)? {
+            let target = destination(&path, &base, out, selection);
+            let written = bytes.and_then(|bytes| write_exported(&target, &bytes));
+            report.note(target, path, written);
+        }
+    }
+    Ok(report)
 }
 
 /// [`export_jsonl`] from `store`, whose database holds `stored`.
@@ -193,28 +206,41 @@ pub(super) fn export_from(
     let mut report = ExportReport::default();
     for transcript in found {
         let target = destination(&transcript.canonical, &base, out, selection);
-        let written = store.read(&transcript.locator).and_then(|bytes| {
-            match std::fs::read(&target) {
-                Ok(existing) if existing == bytes => return Ok(false),
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        format!("{} exists with other content", target.display()),
-                    ))
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&target, bytes).map(|()| true)
-        });
-        match written {
-            Ok(true) => report.written.push(target),
-            Ok(false) => report.unchanged.push(target),
-            Err(error) => report.failed.push((transcript.locator, error.to_string())),
-        }
+        let written = store
+            .read(&transcript.locator)
+            .and_then(|bytes| write_exported(&target, &bytes));
+        report.note(target, transcript.locator, written);
     }
     Ok(report)
+}
+
+/// Write `bytes` to `target`, unless a file is there already: with the same
+/// bytes it is unchanged (false), with others it is an error.
+fn write_exported(target: &Path, bytes: &[u8]) -> io::Result<bool> {
+    match std::fs::read(target) {
+        Ok(existing) if existing == bytes => return Ok(false),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} exists with other content", target.display()),
+            ))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(target, bytes).map(|()| true)
+}
+
+impl ExportReport {
+    /// Count one file's export to `target` of what `source` holds.
+    fn note(&mut self, target: PathBuf, source: PathBuf, written: io::Result<bool>) {
+        match written {
+            Ok(true) => self.written.push(target),
+            Ok(false) => self.unchanged.push(target),
+            Err(error) => self.failed.push((source, error.to_string())),
+        }
+    }
 }

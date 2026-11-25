@@ -306,27 +306,22 @@ pub fn install_panic_hook(crash_log: PathBuf) {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
                     let appended = record.0.as_ref().map(|path| {
-                        std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(path)
-                            .and_then(|mut log| {
-                                let line = serde_json::json!({
-                                    "kind": crash.kind,
-                                    "message": crash.message,
-                                    "location": crash.location,
-                                    "thread": crash.thread,
-                                    "at": crash.at,
-                                });
-                                log.write_all(format!("{line}\n").as_bytes())?;
-                                log.sync_data()
-                            })
+                        pa_core::agent_state::append_crash_record(
+                            path,
+                            &serde_json::json!({
+                                "kind": crash.kind,
+                                "message": crash.message,
+                                "location": crash.location,
+                                "thread": crash.thread,
+                                "at": crash.at,
+                            }),
+                        )
                     });
                     if let Some(Err(error)) = appended {
                         // A hook must not panic: a closed stderr is ignored.
                         let _ = writeln!(
                             std::io::stderr(),
-                            "the daemon's crash log could not be appended: {error}"
+                            "the daemon's crash log could not be appended: {error:#}"
                         );
                     }
                     record.1.push(crash);

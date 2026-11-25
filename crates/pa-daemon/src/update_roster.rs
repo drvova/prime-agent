@@ -271,7 +271,10 @@ fn scheduled_job_files(partition: &Path) -> Vec<PathBuf> {
             paths.push(child.path().join("scheduled-jobs.json"));
         }
     }
-    paths.into_iter().filter(|path| path.is_file()).collect()
+    paths
+        .into_iter()
+        .filter(|path| pa_core::cron::store::scheduled_jobs_kept(path))
+        .collect()
 }
 
 /// The schedule's display text (a UX projection; the durable schedule

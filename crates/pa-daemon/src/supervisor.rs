@@ -7,6 +7,7 @@ mod accept_loop;
 mod adoption;
 mod clients;
 mod crash;
+pub(crate) use crash::SESSION_CRASH_LOG;
 mod launch_budget;
 mod notes;
 mod options;
