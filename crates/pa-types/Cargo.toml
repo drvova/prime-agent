@@ -13,11 +13,14 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
-libc = "0.2"
 socket2 = "0.6"
 # The incident classifier's log-message patterns are the TS regexes
 # (src/cli/incident.ts); the `regex` crate keeps their semantics 1:1.
 regex = "1"
+
+# The unix process start time and strftime; Windows declares its Win32 externs by hand.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 proptest = { workspace = true }
@@ -29,7 +32,11 @@ tempfile = "3"
 # bindings' legitimate unsafe blocks. The clippy rows mirror the
 # workspace table, and the pedantic class rides here so CI's
 # -D warnings bar enforces it on this crate too.
-pedantic = "warn"
+pedantic = { level = "warn", priority = -1 }
+# Mirrored from the workspace table: every lint exception gives its reason, and
+# `assert!(x.is_empty())` stays (assert_is_empty's fix reads worse).
+allow_attributes_without_reason = "warn"
+assert_is_empty = "allow"
 redundant_clone = "warn"
 clone_on_copy = "warn"
 assigning_clones = "warn"
