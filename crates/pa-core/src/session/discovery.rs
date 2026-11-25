@@ -115,14 +115,11 @@ fn header_matches_cwd(header: &SessionHeaderInfo, cwd: &Path) -> bool {
 #[must_use]
 pub fn scan_session_headers(session_dir: &Path) -> Vec<SessionHeaderInfo> {
     let mut headers = Vec::new();
-    let Ok(entries) = std::fs::read_dir(session_dir) else {
+    let Ok(listing) = super::store::store().list(session_dir) else {
         return headers;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
-        }
+    for transcript in listing.transcripts {
+        let path = transcript.locator;
         if let Some(header) = read_session_header(&path) {
             if header.cwd.is_empty() {
                 continue;
@@ -144,10 +141,8 @@ pub fn find_most_recent_session_for_cwd(session_dir: &Path, cwd: &Path) -> Optio
         .into_iter()
         .filter(|header| header_matches_cwd(header, cwd))
         .filter_map(|header| {
-            std::fs::metadata(&header.path)
-                .and_then(|meta| meta.modified())
-                .map(|modified| (modified, header.path))
-                .ok()
+            let modified = super::store::store().stat(&header.path).ok()?.modified?;
+            Some((modified, header.path))
         })
         .collect();
     candidates.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));

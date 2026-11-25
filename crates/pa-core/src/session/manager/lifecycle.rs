@@ -1,8 +1,6 @@
 //! The lifecycle concern: the constructors, the open/fork/new/materialize/
 //! adopt arm, and the fork's branch-copy helpers.
 
-#[cfg(test)]
-use super::repair::repair_jsonl_damage;
 use super::{
     capture_git_context, create_session_id, format_iso_now, get_session_file_path,
     is_valid_rlm_depth, load_entries_from_file, migrate_to_current_version,
@@ -192,8 +190,8 @@ impl SessionManager {
         // A non-regular source (a FIFO or a device) would block the copy's
         // read until a writer appears; a missing path falls through to the
         // empty-or-invalid contract.
-        if let Ok(metadata) = std::fs::metadata(source_path) {
-            if !metadata.is_file() {
+        if let Ok(stat) = crate::session::store::store().stat(source_path) {
+            if !stat.is_transcript {
                 return Err(format!(
                     "Cannot fork: source session file is not a regular file: {}",
                     source_path.display()
@@ -257,7 +255,7 @@ impl SessionManager {
         let session_dir = session_dir.to_owned();
         let path = session_file.to_owned();
         tokio::task::spawn_blocking(move || {
-            repair_jsonl_damage(&path);
+            crate::session::store::store().repair_tail(&path);
             let Some(window) = super::window::WindowedSessionStore::open(&path)? else {
                 return Ok(Self::open(&cwd, &session_dir, &path));
             };
@@ -313,7 +311,11 @@ impl SessionManager {
     ) {
         self.window = None;
         self.session_file = Some(session_file);
-        if self.session_file.as_ref().is_some_and(|path| path.exists()) {
+        if self
+            .session_file
+            .as_ref()
+            .is_some_and(|path| crate::session::store::store().exists(path))
+        {
             let path = self.session_file.clone().unwrap();
             let mut entries =
                 preloaded_entries.unwrap_or_else(|| load_entries_from_file(&path, self.persist));
@@ -366,7 +368,7 @@ impl SessionManager {
             if let Some(id) = &options.id {
                 let candidate = get_session_file_path(&self.session_dir, id);
                 assert!(
-                    !candidate.exists(),
+                    !crate::session::store::store().exists(&candidate),
                     "Session file already exists for id \"{id}\": {}",
                     candidate.display()
                 );
@@ -375,7 +377,7 @@ impl SessionManager {
                 session_id = create_session_id();
                 let mut candidate = get_session_file_path(&self.session_dir, &session_id);
                 let mut attempts = 0;
-                while candidate.exists() && attempts < 100 {
+                while crate::session::store::store().exists(&candidate) && attempts < 100 {
                     session_id = create_session_id();
                     candidate = get_session_file_path(&self.session_dir, &session_id);
                     attempts += 1;

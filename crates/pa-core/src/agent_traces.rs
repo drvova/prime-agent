@@ -266,18 +266,17 @@ struct TraceUploadSignature {
 
 impl TraceUploadSignature {
     fn of(path: &Path) -> Option<Self> {
-        let metadata = std::fs::metadata(path).ok()?;
-        if !metadata.is_file() {
+        let stat = crate::session::store::store().stat(path).ok()?;
+        if !stat.is_transcript {
             return None;
         }
-        let mtime_ms = metadata
-            .modified()
-            .ok()
+        let mtime_ms = stat
+            .modified
             .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|since| since.as_millis() as u64)
             .unwrap_or_default();
         Some(TraceUploadSignature {
-            size: metadata.len(),
+            size: stat.len(),
             mtime_ms,
         })
     }
@@ -293,7 +292,7 @@ fn read_trace_session_header_checked(
     path: &Path,
 ) -> std::io::Result<Option<pa_types::session::SessionHeader>> {
     use std::io::BufRead;
-    let file = std::fs::File::open(path)?;
+    let file = crate::session::store::store().open(path)?;
     let mut first_line = String::new();
     // Corrupt headers must not allocate an entire unbounded transcript line.
     if let Err(error) = std::io::Read::take(std::io::BufReader::new(file), 256 * 1024 + 1)
@@ -607,7 +606,12 @@ pub async fn preview_trace_file(
     };
     let mut body = String::new();
     if signature.size <= MAX_TRACE_BYTES {
-        match tokio::fs::read_to_string(session_file).await {
+        let path = session_file.to_path_buf();
+        let read = tokio::task::spawn_blocking(move || crate::session::store::read_to_string(&path))
+            .await
+            .map_err(std::io::Error::other)
+            .and_then(|read| read);
+        match read {
             Ok(read) => body = read,
             Err(error) => {
                 return TracePreviewResult::Failed {

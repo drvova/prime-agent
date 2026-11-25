@@ -4,6 +4,7 @@ pub mod discovery;
 pub mod manager;
 pub mod manager_ext;
 pub mod tree;
+pub mod store;
 pub mod window;
 mod window_cache;
 

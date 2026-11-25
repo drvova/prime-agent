@@ -5,7 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use super::window_cache::{self, Generation, Snapshot};
+use super::store::{store, TranscriptReader};
+use super::window_cache::{self, Snapshot};
 pub use super::window_cache::{append_cached, flush as flush_cache, AppendOwnership};
 use pa_types::session::{FileEntry, SessionHeader};
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ pub struct WindowReadStats {
 }
 
 struct ReverseLines {
-    file: std::fs::File,
+    file: Box<dyn TranscriptReader>,
     position: u64,
     pending: Vec<u8>,
     reads: WindowReadStats,
@@ -236,12 +237,12 @@ impl WindowedSessionStore {
         if !cfg!(unix) {
             return Ok(None);
         }
-        let mut file = std::fs::File::open(path)?;
-        let generation = Generation::of(&file.metadata()?);
-        let size = file.metadata()?.len();
+        let mut file = store().open(path)?;
+        let generation = file.stat()?.generation;
+        let size = file.stat()?.len();
         let mut reads = WindowReadStats::default();
-        if let Some(snapshot) = window_cache::load(path, &file, &mut reads) {
-            if let Some(store) = Self::from_snapshot(path, &mut file, snapshot, reads.clone())? {
+        if let Some(snapshot) = window_cache::load(path, &*file, &mut reads) {
+            if let Some(store) = Self::from_snapshot(path, &mut *file, snapshot, reads.clone())? {
                 return Ok(Some(store));
             }
         }
@@ -592,7 +593,7 @@ impl WindowedSessionStore {
             non_bootstrap,
             retained_whole_file: !window_done,
         };
-        if !generation.valid(&reader.file, path)? {
+        if !window_cache::certified(&generation, &*reader.file, path)? {
             return Ok(None);
         }
         // A disposable sidecar failure must never prevent opening the source.
@@ -625,7 +626,7 @@ impl WindowedSessionStore {
 
     fn from_snapshot(
         path: &Path,
-        file: &mut std::fs::File,
+        file: &mut dyn TranscriptReader,
         snapshot: Snapshot,
         mut reads: WindowReadStats,
     ) -> io::Result<Option<Self>> {
@@ -645,7 +646,7 @@ impl WindowedSessionStore {
         };
         if serde_json::to_string(&canonical)? != snapshot.header
             || snapshot.start < header.len() as u64
-            || snapshot.start > file.metadata()?.len()
+            || snapshot.start > file.stat()?.len()
         {
             return Ok(None);
         }
@@ -669,7 +670,7 @@ impl WindowedSessionStore {
             entries.push(entry);
         }
         if entries.last().and_then(FileEntry::id) != Some(snapshot.leaf.as_str())
-            || !snapshot.generation.valid(file, path)?
+            || !window_cache::certified(&snapshot.generation, file, path)?
         {
             return Ok(None);
         }
@@ -910,7 +911,7 @@ impl WindowedSessionStore {
         }
         let path = self.path.clone();
         let entries = tokio::task::spawn_blocking(move || {
-            std::fs::read_to_string(path).map(|text| super::parse_session_entries(&text))
+            super::store::read_to_string(&path).map(|text| super::parse_session_entries(&text))
         })
         .await??;
         self.entries = entries;

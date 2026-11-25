@@ -434,8 +434,8 @@ fn a_failed_prefix_check_rescans_from_byte_zero() {
     let file = fs::File::open(&path).unwrap();
     let _ = file.set_modified(past);
     drop(file);
-    let mut file = fs::File::open(&path).unwrap();
-    let (second, sidecar_behind) = read_session_info_from(&mut file, &path).unwrap();
+    let mut file = pa_core::session::store::store().open(&path).unwrap();
+    let (second, sidecar_behind) = read_session_info_from(&mut *file, &path).unwrap();
     assert!(
         sidecar_behind,
         "a rejected prefix must mark the fresh scan for sidecar backfill"
@@ -671,7 +671,10 @@ fn scan_cache_recency_tracks_updates_and_removals_without_growth() {
     let paths: Vec<PathBuf> = (0..3)
         .map(|index| dir.join(format!("lru-{index}.jsonl")))
         .collect();
-    let generation = SessionInfoGeneration::from_metadata(&fs::metadata(&dir).unwrap());
+    let generation = pa_core::session::store::store()
+        .stat(&dir)
+        .unwrap()
+        .generation;
     let mut cache = SessionInfoScanCache::default();
     for path in &paths {
         cache.store_state(path, SessionScanState::fresh(generation));

@@ -2,52 +2,23 @@
 use super::window::{WindowReadStats, WindowStats};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::{File, Metadata};
-use std::io::{self, Write};
+use super::store::{store, TranscriptGeneration, TranscriptReader};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct Generation {
-    len: u64,
-    dev: u64,
-    ino: u64,
-    mtime: i64,
-    mtime_ns: i64,
-    ctime: i64,
-    ctime_ns: i64,
-}
-impl Generation {
-    #[cfg(unix)]
-    pub(super) fn of(meta: &Metadata) -> Self {
-        use std::os::unix::fs::MetadataExt;
-        Self {
-            len: meta.len(),
-            dev: meta.dev(),
-            ino: meta.ino(),
-            mtime: meta.mtime(),
-            mtime_ns: meta.mtime_nsec(),
-            ctime: meta.ctime(),
-            ctime_ns: meta.ctime_nsec(),
-        }
-    }
-    #[cfg(not(unix))]
-    pub(super) fn of(meta: &Metadata) -> Self {
-        Self {
-            len: meta.len(),
-            dev: 0,
-            ino: 0,
-            mtime: 0,
-            mtime_ns: 0,
-            ctime: 0,
-            ctime_ns: 0,
-        }
-    }
-    pub(super) fn valid(&self, file: &File, path: &Path) -> io::Result<bool> {
-        Ok(cfg!(unix)
-            && *self == Self::of(&file.metadata()?)
-            && *self == Self::of(&std::fs::metadata(path)?))
-    }
+/// A snapshot certifies `generation` only while both the open handle and the
+/// path still answer it: a same-generation transcript is the same bytes.
+/// Unix only: the certificate anchors on inode identity, and a same-length
+/// replace is indistinguishable under weaker metadata.
+pub(super) fn certified(
+    generation: &TranscriptGeneration,
+    reader: &dyn TranscriptReader,
+    path: &Path,
+) -> io::Result<bool> {
+    Ok(cfg!(unix)
+        && *generation == reader.stat()?.generation
+        && *generation == store().stat(path)?.generation)
 }
 /// The snapshot format version: a sidecar serves only at exactly this
 /// version (any other version is rebuilt by the full walk). A served
@@ -65,7 +36,7 @@ pub(super) const SNAPSHOT_VERSION: u32 = 9;
 #[allow(clippy::struct_excessive_bools)]
 pub(super) struct Snapshot {
     pub version: u32,
-    pub generation: Generation,
+    pub generation: TranscriptGeneration,
     pub header: String,
     pub start: u64,
     pub leaf: String,
@@ -109,13 +80,17 @@ fn live_snapshots() -> &'static Mutex<HashMap<PathBuf, Snapshot>> {
     SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(super) fn load(path: &Path, file: &File, stats: &mut WindowReadStats) -> Option<Snapshot> {
+pub(super) fn load(
+    path: &Path,
+    reader: &dyn TranscriptReader,
+    stats: &mut WindowReadStats,
+) -> Option<Snapshot> {
     // Clone out of the guard before the staleness check: the `if let`
     // scrutinee guard would live through the block and self-deadlock on
     // the eviction re-lock.
     let live = live_snapshots().lock().ok()?.get(path).cloned();
     if let Some(snapshot) = live {
-        if snapshot.version == SNAPSHOT_VERSION && snapshot.generation.valid(file, path).ok()? {
+        if snapshot.version == SNAPSHOT_VERSION && certified(&snapshot.generation, reader, path).ok()? {
             stats.cache_bytes += serde_json::to_vec(&snapshot).ok()?.len() as u64;
             return Some(snapshot);
         }
@@ -124,7 +99,7 @@ pub(super) fn load(path: &Path, file: &File, stats: &mut WindowReadStats) -> Opt
     let data = std::fs::read(cache_path(path)).ok()?;
     stats.cache_bytes += data.len() as u64;
     let snapshot: Snapshot = serde_json::from_slice(&data).ok()?;
-    if snapshot.version != SNAPSHOT_VERSION || !snapshot.generation.valid(file, path).ok()? {
+    if snapshot.version != SNAPSHOT_VERSION || !certified(&snapshot.generation, reader, path).ok()? {
         return None;
     }
     live_snapshots()
@@ -185,16 +160,6 @@ pub enum AppendOwnership {
     /// No runtime lease: append without publishing an incremental snapshot.
     Unleased,
 }
-/// Whether the file's last byte is a newline: the append boundary probe.
-fn file_tail_is_newline(path: &Path) -> io::Result<bool> {
-    use std::io::{Read, Seek};
-    let mut probe = std::fs::File::open(path)?;
-    let mut tail = [0u8; 1];
-    probe.seek(std::io::SeekFrom::End(-1))?;
-    probe.read_exact(&mut tail)?;
-    Ok(tail[0] == b'\n')
-}
-
 /// Append authoritative JSONL bytes. Only a caller holding the existing session
 /// lease may incrementally certify the cache. Rows must have fresh writer IDs.
 /// Cache failures never fail a successful durable append.
@@ -203,26 +168,13 @@ fn file_tail_is_newline(path: &Path) -> io::Result<bool> {
 ///
 /// The durable append's I/O error; a failed incremental certification is dropped.
 pub fn append_cached(path: &Path, bytes: &[u8], ownership: AppendOwnership) -> io::Result<()> {
-    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
-    // The torn-tail boundary (the append-only reopen's belt): an
-    // unterminated final row - a crashed append the repair failed to
-    // re-terminate, its errors swallowed - must not merge with the first
-    // appended row: both would be lost to the index. One newline before
-    // the payload keeps the torn row alone (the loaders skip it) and the
-    // appended rows parseable. A no-op on a healthy file.
-    if file.metadata()?.len() > 0 && !file_tail_is_newline(path)? {
-        file.write_all(b"\n")?;
-    }
-    file.write_all(bytes)?;
-    file.flush()?;
-    crate::platform::fsync(&file)?;
+    let generation = store().append(path, bytes)?;
     if ownership != AppendOwnership::SessionLeaseHeld || !bytes.ends_with(b"\n") {
         if let Ok(mut snapshots) = live_snapshots().lock() {
             snapshots.remove(path);
         }
         return Ok(());
     }
-    let generation = Generation::of(&file.metadata()?);
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Ok(());
     };

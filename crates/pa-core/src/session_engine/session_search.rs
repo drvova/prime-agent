@@ -104,8 +104,11 @@ impl ProjectScope {
             .into_iter()
             .filter(|header| normalize(Path::new(&header.cwd)) == cwd)
             .filter_map(|header| {
-                let modified = std::fs::metadata(&header.path).and_then(|meta| meta.modified());
-                Some((header.path, header.id, modified.ok()?))
+                let modified = crate::session::store::store()
+                    .stat(&header.path)
+                    .ok()?
+                    .modified?;
+                Some((header.path, header.id, modified))
             })
             .collect();
         sessions.sort_by_key(|(_, _, modified)| std::cmp::Reverse(*modified));
@@ -128,7 +131,7 @@ struct SavedSession {
 
 /// Parse a session file read-only: the active branch is the parent chain of the last entry.
 fn read_saved_session(path: &Path) -> anyhow::Result<SavedSession> {
-    let content = std::fs::read_to_string(path)
+    let content = crate::session::store::read_to_string(path)
         .with_context(|| format!("read saved session {}", path.display()))?;
     let mut lines = content.lines();
     let header: Value = lines
@@ -268,7 +271,9 @@ fn search(scope: &ProjectScope, data: &Value) -> anyhow::Result<(Value, SessionR
     let mut hits = Vec::new();
     for (path, id, modified) in scope.sessions().into_iter().take(MAX_SCANNED_SESSIONS) {
         if id == scope.current_session_id
-            || std::fs::metadata(&path).is_ok_and(|meta| meta.len() > MAX_SEARCHED_BYTES)
+            || crate::session::store::store()
+                .stat(&path)
+                .is_ok_and(|stat| stat.len() > MAX_SEARCHED_BYTES)
         {
             continue;
         }

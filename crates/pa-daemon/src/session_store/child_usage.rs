@@ -2,6 +2,7 @@
 //! row identity, written through the same persist core as every other row.
 use super::{SessionEntry, SessionFile};
 use anyhow::{ensure, Context, Result};
+use pa_core::session::store::{store as transcripts, TranscriptIdentity};
 use pa_core::session_engine::rlm_usage::{
     attribute_child_usage, child_usage_identity_matches, ChildUsageAppendResult,
 };
@@ -30,7 +31,7 @@ pub(super) struct UnconfirmedChildRow {
     path: PathBuf,
     header: serde_json::Value,
     header_wire: serde_json::Value,
-    identity: Option<(u64, u64)>,
+    identity: Option<TranscriptIdentity>,
     start: Option<u64>,
     prefix_end: u64,
     prefix_tail: Vec<u8>,
@@ -38,27 +39,6 @@ pub(super) struct UnconfirmedChildRow {
     bytes: Vec<u8>,
 }
 
-fn file_identity(metadata: &std::fs::Metadata) -> (u64, u64) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        (metadata.dev(), metadata.ino())
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        // Creation time is a limited replacement anchor, not a unique Windows
-        // file ID. Owned path/header/prefix/row checks and the existing managed
-        // single-writer lease remain necessary; noncooperative writers are out
-        // of this attribution-local recovery contract.
-        (metadata.creation_time(), 0)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = metadata;
-        (0, 0)
-    }
-}
 
 /// Compare complete headers with the actual wire tag included. The frozen
 /// original and its one wire decode cover reader float normalization without
@@ -155,10 +135,10 @@ impl SessionFile {
                 entry: entry.clone(),
             };
             receipt.bytes.push(b'\n');
-            match std::fs::File::open(&self.path) {
+            match transcripts().open(&self.path) {
                 Ok(mut file) => {
-                    let metadata = file.metadata()?;
-                    receipt.identity = Some(file_identity(&metadata));
+                    let metadata = file.stat()?;
+                    receipt.identity = Some(metadata.identity);
                     receipt.prefix_end = metadata.len();
                     let tail_len = metadata.len().min(16) as usize;
                     file.seek(SeekFrom::End(-(tail_len as i64)))?;
@@ -205,11 +185,7 @@ impl SessionFile {
                 self.path == receipt.path && header_matches_receipt(&self.header, &receipt),
                 "attribution recovery session changed"
             );
-            let mut file = match std::fs::OpenOptions::new()
-                .read(true)
-                .append(true)
-                .open(&receipt.path)
-            {
+            let mut file = match transcripts().open_for_completion(&receipt.path) {
                 Ok(file) => file,
                 Err(error)
                     if error.kind() == std::io::ErrorKind::NotFound && receipt.start.is_none() =>
@@ -219,15 +195,15 @@ impl SessionFile {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let metadata = file.metadata()?;
+            let metadata = file.stat()?;
             if let Some(identity) = receipt.identity {
                 ensure!(
-                    file_identity(&metadata) == identity,
+                    metadata.identity == identity,
                     "attribution recovery file replaced"
                 );
             }
-            let header_line = super::read_first_line_bounded_from(
-                &mut file,
+            let header_line = pa_core::session::store::read_first_line_bounded(
+                &mut *file,
                 super::SESSION_LIST_HEADER_READ_MAX_BYTES,
             )
             .context("attribution recovery header unreadable")?;
@@ -291,9 +267,8 @@ impl SessionFile {
                     "attribution recovery owned prefix conflicts"
                 );
                 ensure!(
-                    file.metadata()?.len() == metadata.len()
-                        && file_identity(&std::fs::metadata(&receipt.path)?)
-                            == file_identity(&file.metadata()?),
+                    file.stat()?.len() == metadata.len()
+                        && transcripts().stat(&receipt.path)?.identity == file.stat()?.identity,
                     "attribution recovery tail changed before completion"
                 );
                 #[cfg(test)]
@@ -306,9 +281,9 @@ impl SessionFile {
                 // append_cached would insert a newline into this incomplete row.
                 file.write_all(&receipt.bytes[present..])?;
                 file.flush()?;
-                pa_core::platform::fsync(&file)?;
+                file.sync()?;
                 ensure!(
-                    file.metadata()?.len() == expected_end,
+                    file.stat()?.len() == expected_end,
                     "attribution recovery tail changed during completion"
                 );
                 completed_tail = true;
@@ -329,8 +304,7 @@ impl SessionFile {
             );
             if completed_tail {
                 ensure!(
-                    file_identity(&std::fs::metadata(&receipt.path)?)
-                        == file_identity(&file.metadata()?),
+                    transcripts().stat(&receipt.path)?.identity == file.stat()?.identity,
                     "attribution recovery file changed after completion"
                 );
                 // The row is now newline-closed. Empty append invalidates the old
@@ -344,8 +318,7 @@ impl SessionFile {
                 };
                 pa_core::session::window::append_cached(&receipt.path, &[], ownership)?;
                 ensure!(
-                    file_identity(&std::fs::metadata(&receipt.path)?)
-                        == file_identity(&file.metadata()?),
+                    transcripts().stat(&receipt.path)?.identity == file.stat()?.identity,
                     "attribution recovery file changed after completion sync"
                 );
             }
@@ -414,8 +387,7 @@ impl SessionFile {
                     anyhow::bail!("injected attribution confirmation sync failure");
                 }
                 ensure!(
-                    file_identity(&std::fs::metadata(&self.path)?)
-                        == file_identity(&file.metadata()?),
+                    transcripts().stat(&self.path)?.identity == file.stat()?.identity,
                     "attribution confirmation file changed before sync"
                 );
                 if self.lease.is_some() {
@@ -425,11 +397,10 @@ impl SessionFile {
                         pa_core::session::window::AppendOwnership::SessionLeaseHeld,
                     )?;
                 } else {
-                    pa_core::platform::fsync(&file)?;
+                    file.sync()?;
                 }
                 ensure!(
-                    file_identity(&std::fs::metadata(&self.path)?)
-                        == file_identity(&file.metadata()?),
+                    transcripts().stat(&self.path)?.identity == file.stat()?.identity,
                     "attribution confirmation file changed"
                 );
                 self.child_usage_recovery.pending = None;

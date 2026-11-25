@@ -286,7 +286,7 @@ fn status_of(state: &AcceptanceState) -> CheckStatus {
 /// how a parent reads a child whose host runs in another process.
 #[must_use]
 pub fn check_status_from_session_file(session_file: &std::path::Path) -> CheckStatus {
-    let Ok(content) = std::fs::read_to_string(session_file) else {
+    let Ok(content) = crate::session::store::read_to_string(session_file) else {
         return CheckStatus::None;
     };
     let mut status = CheckStatus::None;

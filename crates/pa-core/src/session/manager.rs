@@ -40,7 +40,7 @@ pub use git::capture_git_context;
 
 mod repair;
 use repair::serialize_entry;
-pub use repair::{load_entries_from_file, repair_jsonl_damage};
+pub use repair::load_entries_from_file;
 
 /// A persist observer; must not break session writes (panics are contained).
 pub type SessionPersistListener = Box<dyn Fn(&Path) + Send + Sync>;

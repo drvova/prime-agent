@@ -969,15 +969,9 @@ fn durable_compaction_row_serializes_in_the_ts_key_order() {
 
 #[test]
 fn resume_tail_window_matches_the_rolling_reference() {
-    let mut state = SessionScanState::fresh(SessionInfoGeneration {
-        len: 0,
-        dev: 0,
-        ino: 0,
-        mtime: 0,
-        mtime_ns: 0,
-        ctime: 0,
-        ctime_ns: 0,
-    });
+    let mut state = SessionScanState::fresh(
+        pa_core::session::store::TranscriptGeneration::default(),
+    );
     let mut reference = [b'\n'; SESSION_SCAN_RESUME_TAIL_BYTES];
     let rolling_reference = |tail: &mut [u8; SESSION_SCAN_RESUME_TAIL_BYTES], line: &[u8]| {
         let keep = SESSION_SCAN_RESUME_TAIL_BYTES - 1;

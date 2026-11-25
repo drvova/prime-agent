@@ -1,11 +1,13 @@
 //! The read arm: the file-IO load surface — the streamed and windowed opens, the bounded
 //! header-only readers, the file-layout helpers, and the in-memory create.
 
+use pa_core::session::store::store as transcripts;
+
 use super::view::is_warning_shown_row;
 use super::{
-    anyhow, fold_child_usage_attributions, fs, message_text, BilledRowSinkSlot, BufRead, Context,
-    HashMap, Map, Path, PathBuf, Read, Result, SessionEntry, SessionFile, SessionHeader,
-    SessionWindow, Value,
+    anyhow, fold_child_usage_attributions, message_text, BilledRowSinkSlot, BufRead, Context,
+    HashMap, Map, Path, PathBuf, Result, SessionEntry, SessionFile, SessionHeader, SessionWindow,
+    Value,
 };
 
 const CURRENT_SESSION_VERSION: u32 = 3;
@@ -47,51 +49,11 @@ pub(crate) fn parse_session_header_line(line: &str) -> Option<SessionHeader> {
     serde_json::from_value(value).ok()
 }
 
-/// Read the file's first line when it ends within `max_bytes` bytes. `None`
-/// when no line ends within the bound: the caller judges with a full read,
-/// never on truncated bytes. A final line without a trailing newline still
-/// counts.
+/// Read the transcript's first line when it ends within `max_bytes` bytes
+/// ([`pa_core::session::store::read_first_line_bounded`] over a fresh open).
 pub(crate) fn read_first_line_bounded(path: &Path, max_bytes: usize) -> Option<Vec<u8>> {
-    let mut file = fs::File::open(path).ok()?;
-    read_first_line_bounded_from(&mut file, max_bytes)
-}
-
-/// The bounded first-line read over an already-open handle (the roster gate shares one
-/// open with the fold).
-pub(crate) fn read_first_line_bounded_from(
-    file: &mut fs::File,
-    max_bytes: usize,
-) -> Option<Vec<u8>> {
-    // One byte over the cap separates a line that fits (judgeable) from an
-    // over-long one: a newline at index `max_bytes` still bounds a full line.
-    let mut buf = vec![0u8; max_bytes + 1];
-    let mut filled = 0;
-    while filled < buf.len() {
-        let read = file.read(&mut buf[filled..]).ok()?;
-        if read == 0 {
-            return (filled > 0).then(|| strip_line_return(&buf[..filled]));
-        }
-        if let Some(at) = buf[filled..filled + read]
-            .iter()
-            .position(|&byte| byte == b'\n')
-        {
-            if filled + at > max_bytes {
-                return None;
-            }
-            return Some(strip_line_return(&buf[..filled + at]));
-        }
-        filled += read;
-    }
-    None
-}
-
-/// Drop one `\r\n` line return off the line's own bytes, like `str::lines`.
-fn strip_line_return(line: &[u8]) -> Vec<u8> {
-    let mut line = line.to_vec();
-    if line.last() == Some(&b'\r') {
-        line.pop();
-    }
-    line
+    let mut transcript = transcripts().open(path).ok()?;
+    pa_core::session::store::read_first_line_bounded(&mut *transcript, max_bytes)
 }
 
 /// The session file's header, read from the first line bounded to
@@ -107,7 +69,7 @@ pub fn read_session_header_bounded(path: &Path) -> Option<SessionHeader> {
 /// Read the first line of a session file and parse it as a header.
 #[must_use]
 pub fn read_session_header(path: &Path) -> Option<SessionHeader> {
-    let file = fs::File::open(path).ok()?;
+    let file = transcripts().open(path).ok()?;
     let mut first = String::new();
     std::io::BufReader::new(file).read_line(&mut first).ok()?;
     parse_session_header_line(&first)
@@ -129,7 +91,8 @@ impl SessionFile {
     pub fn open(path: &Path) -> Result<Self> {
         // Streamed line-by-line load: one line is resident at a time, so a grown session
         // never holds the raw file bytes alongside the parsed entries.
-        let file = fs::File::open(path)
+        let file = transcripts()
+            .open(path)
             .with_context(|| format!("read session file {}", path.display()))?;
         let mut lines = std::io::BufReader::new(file).lines();
         let read_context = || format!("read session file {}", path.display());

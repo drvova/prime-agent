@@ -5,14 +5,15 @@
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
+use pa_core::session::store::{read_first_line_bounded, store as transcripts, TranscriptReader};
+
 use crate::session_store::{
-    parse_session_header_line, persist_info_sidecar, read_first_line_bounded_from,
-    read_session_info_from, SessionInfo, SESSION_LIST_HEADER_READ_MAX_BYTES,
+    parse_session_header_line, persist_info_sidecar, read_session_info_from, SessionInfo,
+    SESSION_LIST_HEADER_READ_MAX_BYTES,
 };
 
 /// The bounded header read's verdict for one roster file.
@@ -28,8 +29,8 @@ enum HeaderGate {
     Unjudged,
 }
 
-fn bounded_header_gate(file: &mut fs::File) -> HeaderGate {
-    let Some(line) = read_first_line_bounded_from(file, SESSION_LIST_HEADER_READ_MAX_BYTES) else {
+fn bounded_header_gate(file: &mut dyn TranscriptReader) -> HeaderGate {
+    let Some(line) = read_first_line_bounded(file, SESSION_LIST_HEADER_READ_MAX_BYTES) else {
         return HeaderGate::Unjudged;
     };
     let Ok(text) = std::str::from_utf8(&line) else {
@@ -60,11 +61,11 @@ fn bounded_header_gate(file: &mut fs::File) -> HeaderGate {
 /// handles could judge one file and fold another). A fold the sidecar did not
 /// cover backfills it, so the next cold process loads this row cheaply.
 fn roster_session_info(path: &Path) -> Option<SessionInfo> {
-    let mut file = fs::File::open(path).ok()?;
-    match bounded_header_gate(&mut file) {
+    let mut file = transcripts().open(path).ok()?;
+    match bounded_header_gate(&mut *file) {
         HeaderGate::NotAHeader => None,
         HeaderGate::Header | HeaderGate::Unjudged => {
-            let (info, sidecar_behind) = read_session_info_from(&mut file, path)?;
+            let (info, sidecar_behind) = read_session_info_from(&mut *file, path)?;
             if sidecar_behind {
                 persist_info_sidecar(path);
             }
@@ -113,14 +114,13 @@ fn snapshot_files(session_dir: &Path, cursor: Option<&str>) -> (String, Arc<Vec<
             }
         }
     }
-    let mut files: Vec<(WalkKey, PathBuf)> = fs::read_dir(session_dir)
+    let mut files: Vec<(WalkKey, PathBuf)> = transcripts()
+        .list(session_dir)
         .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .flat_map(|listing| listing.transcripts)
+        .map(|transcript| transcript.locator)
         .filter_map(|path| {
-            let modified = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+            let modified = transcripts().stat(&path).ok()?.modified?;
             let modified_ns = modified
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_nanos());
@@ -215,6 +215,7 @@ mod tests {
     use super::*;
     use crate::session_store::{read_session_info, session_file_name, SessionFile};
     use serde_json::json;
+    use std::fs;
     use std::time::SystemTime;
 
     fn temp_dir() -> (tempfile::TempDir, PathBuf) {
