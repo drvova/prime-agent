@@ -15,14 +15,15 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # CLI parsing: the workspace already resolves clap for pa-tui.
 clap = { version = "4", features = ["derive"] }
+[target.'cfg(unix)'.dependencies]
 # The screen model for content needles the raw byte stream cannot see (the
 # agents view's `Inactive (N)` heading repaints as cell diffs on big
 # corpora). MIT, no_std-free, never shipped — the only new third-party dep
-# this crate carries (see README + the PR body).
+# this crate carries (see README + the PR body). Unix only, like the pty
+# harness that reads it.
 vt100 = "0.15"
 # pty + poll for the bench harness: the same nix version the workspace
 # already resolves for pa-core/pa-cli.
-[target.'cfg(unix)'.dependencies]
 # `feature` provides sysconf(CLK_TCK) for idle-cost's /proc tick counts.
 nix = { version = "0.29", features = ["term", "signal", "process", "fs", "poll", "feature"] }
 
