@@ -244,14 +244,12 @@ fn parse_judge_reply(reply: &str, corpus: &str) -> JudgeVerdict {
         .map(|verdict| verdict.trim().to_ascii_uppercase());
     let gap: String = reply
         .split_once("GAP:")
-        .map(|(_, gap)| gap.trim().chars().take(MAX_JUDGE_GAP_CHARS).collect())
-        .unwrap_or_default();
+        .map_or_default(|(_, gap)| gap.trim().chars().take(MAX_JUDGE_GAP_CHARS).collect());
     match verdict.as_deref() {
         Some("MET") => {
             let evidence = reply
                 .split_once("EVIDENCE:")
-                .map(|(_, rest)| rest.split("GAP:").next().unwrap_or_default())
-                .unwrap_or_default();
+                .map_or_default(|(_, rest)| rest.split("GAP:").next().unwrap_or_default());
             if evidence
                 .lines()
                 .any(|line| citation_is_verified(line, corpus))

@@ -32,8 +32,7 @@ fn session_tree(ledger: &RlmSpawnLedger, root_session_file: &Path) -> Vec<TreeMe
     let root_id = read_session_info(&root).map_or_else(
         || {
             root.file_stem()
-                .map(|stem| stem.to_string_lossy().to_string())
-                .unwrap_or_default()
+                .map_or_default(|stem| stem.to_string_lossy().to_string())
         },
         |info| info.id,
     );

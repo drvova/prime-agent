@@ -661,8 +661,7 @@ impl WebPage {
         let section = self
             .section
             .as_ref()
-            .map(|section| format!(", section {section}"))
-            .unwrap_or_default();
+            .map_or_default(|section| format!(", section {section}"));
         parts.push(format!(
             "Source: {} ({}{section})",
             self.final_url,

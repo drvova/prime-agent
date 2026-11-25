@@ -82,8 +82,7 @@ fn attach_data(id: &str, prompt_age_ms: u64) -> Value {
     )]
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_millis() as u64)
-        .unwrap_or_default();
+        .map_or_default(|since| since.as_millis() as u64);
     let mut response = attach_response(id, "loader anchor session");
     response["data"]["snapshot"]["state"]["isStreaming"] = json!(true);
     response["data"]["snapshot"]["messages"] = json!([

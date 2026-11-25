@@ -181,18 +181,16 @@ fn render_list(result: &Value, json: bool) -> i32 {
     let machines: Vec<MachineListing> = result
         .get("machines")
         .cloned()
-        .map(|value| serde_json::from_value(value).unwrap_or_default())
-        .unwrap_or_default();
+        .map_or_default(|value| serde_json::from_value(value).unwrap_or_default());
     for warning in result
         .get("warnings")
         .and_then(Value::as_array)
-        .map(|warnings| {
+        .map_or_default(|warnings| {
             warnings
                 .iter()
                 .filter_map(Value::as_str)
                 .collect::<Vec<_>>()
         })
-        .unwrap_or_default()
     {
         eprintln!("Warning: {warning}");
     }
@@ -262,8 +260,7 @@ fn dispatch_error_sentences(result: &Value) -> Vec<&str> {
     result
         .get("errors")
         .and_then(Value::as_array)
-        .map(|errors| errors.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default()
+        .map_or_default(|errors| errors.iter().filter_map(Value::as_str).collect())
 }
 
 /// Print a failed dispatch's errors verbatim (the validator's exact

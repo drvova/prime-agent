@@ -641,9 +641,7 @@ async fn run_stream(
     // The TS request-handler selection: http2 by default, http1 for AWS_BEDROCK_FORCE_HTTP1 or a
     // proxy environment. Cleartext endpoints speak h2c prior-knowledge HTTP/2 directly; https
     // endpoints negotiate h2 via TLS ALPN through reqwest.
-    let scheme = url::Url::parse(&url)
-        .map(|parsed| parsed.scheme().to_string())
-        .unwrap_or_default();
+    let scheme = url::Url::parse(&url).map_or_default(|parsed| parsed.scheme().to_string());
     let endpoint_port = bedrock_endpoint_port(&url);
     let transport = crate::providers::bedrock::h2::select_transport(
         &scheme,

@@ -614,8 +614,7 @@ async fn refine_rows(engine: &SessionEngine) -> Vec<pa_types::session::CustomMes
                     timestamp: base
                         .timestamp
                         .as_deref()
-                        .map(pa_core::session::timestamp_to_millis)
-                        .unwrap_or_default(),
+                        .map_or_default(pa_core::session::timestamp_to_millis),
                     rest: payload.rest,
                 };
                 (row.custom_type == "refinement_outcome" || row.custom_type == "refinement_notice")

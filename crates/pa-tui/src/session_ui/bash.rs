@@ -567,8 +567,7 @@ impl SessionUi {
                     let raw = pane
                         .bash
                         .as_ref()
-                        .map(|bash| bash.output.clone())
-                        .unwrap_or_default();
+                        .map_or_default(|bash| bash.output.clone());
                     let (tail, tail_truncated) = crate::bash_bang::truncate_tail(&raw);
                     let output = tail.trim_end_matches('\n').to_string();
                     let answer = crate::bash_bang::bash_output_to_text(

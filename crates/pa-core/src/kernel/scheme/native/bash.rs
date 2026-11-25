@@ -938,13 +938,12 @@ fn wait(
             .get("failures")
             .and_then(Value::as_array)
             .filter(|handles| handles.len() == parsed.failures.len())
-            .map(|handles| {
+            .map_or_default(|handles| {
                 handles
                     .iter()
                     .map(|handle| handle.as_str().map(str::to_string))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         let tests = parsed.value(
             reply.get("output").and_then(Value::as_str),
             &failure_handles,

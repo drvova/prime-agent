@@ -215,7 +215,7 @@ pub(crate) fn spawn_child(
             )?;
         }
         ledger.append_spawn(&RlmSpawnInput {
-            child_id: child_tag.clone(),
+            child_id: child_tag,
             parent: parent_file.display().to_string(),
             child: child_file.display().to_string(),
             depth,

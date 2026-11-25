@@ -578,13 +578,12 @@ impl MistralStreamState {
                         let delta_text = item
                             .get("thinking")
                             .and_then(Value::as_array)
-                            .map(|parts| {
+                            .map_or_default(|parts| {
                                 parts
                                     .iter()
                                     .filter_map(|part| part.get("text").and_then(Value::as_str))
                                     .collect::<String>()
-                            })
-                            .unwrap_or_default();
+                            });
                         let thinking_delta = sanitize_surrogates(&delta_text);
                         if thinking_delta.is_empty() {
                             continue;

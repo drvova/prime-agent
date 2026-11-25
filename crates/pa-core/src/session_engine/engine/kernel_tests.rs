@@ -81,32 +81,24 @@ fn piped_lines(
 
 /// The text of each cell result in the model's latest request, in order.
 fn cell_results(provider: &ScriptedProvider) -> Vec<String> {
-    provider
-        .calls()
-        .last()
-        .map(|call| {
-            call.messages
-                .iter()
-                .filter_map(|message| match message {
-                    pa_agent::types::Message::ToolResult(result) => Some(
-                        result
-                            .content
-                            .iter()
-                            .map(|block| match block {
-                                pa_agent::types::ToolResultContent::Text(text) => {
-                                    text.text.as_str()
-                                }
-                                pa_agent::types::ToolResultContent::Image(_) => "",
-                            })
-                            .collect::<String>(),
-                    ),
-                    pa_agent::types::Message::User(_) | pa_agent::types::Message::Assistant(_) => {
-                        None
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    provider.calls().last().map_or_default(|call| {
+        call.messages
+            .iter()
+            .filter_map(|message| match message {
+                pa_agent::types::Message::ToolResult(result) => Some(
+                    result
+                        .content
+                        .iter()
+                        .map(|block| match block {
+                            pa_agent::types::ToolResultContent::Text(text) => text.text.as_str(),
+                            pa_agent::types::ToolResultContent::Image(_) => "",
+                        })
+                        .collect::<String>(),
+                ),
+                pa_agent::types::Message::User(_) | pa_agent::types::Message::Assistant(_) => None,
+            })
+            .collect()
+    })
 }
 
 /// The session's kernel tool is `eval` alone, and its cells share one engine.

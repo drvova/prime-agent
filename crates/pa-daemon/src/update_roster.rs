@@ -48,8 +48,7 @@ fn value_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 fn file_stem(path: &str) -> String {
     Path::new(path)
         .file_stem()
-        .map(|stem| stem.to_string_lossy().to_string())
-        .unwrap_or_default()
+        .map_or_default(|stem| stem.to_string_lossy().to_string())
 }
 
 /// One roster session row, assembled from the worker's snapshot and the descriptor.
