@@ -8,6 +8,7 @@
 //! savepoint, so one job's failure undoes only its own changes. A job's
 //! [`Receipt`] resolves once its transaction has committed.
 
+use std::future::Future;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
@@ -49,16 +50,33 @@ impl<T> Receipt<T> {
             .map_err(|_| anyhow!("the database writer stopped before answering"))?
     }
 
-    /// Wait for the change to commit, blocking this thread. Not for a thread
-    /// that runs async tasks.
+    /// Wait for the change to commit, blocking this thread (as a file write
+    /// would: on a runtime, call it from a blocking thread). Unlike tokio's
+    /// own blocking receive, it never panics on a runtime's thread.
     ///
     /// # Errors
     ///
     /// The change failed, its transaction did not commit, or the writer is gone.
     pub fn wait_blocking(self) -> Result<T> {
-        self.answer
-            .blocking_recv()
-            .map_err(|_| anyhow!("the database writer stopped before answering"))?
+        /// Wakes the waiting thread.
+        struct Unpark(std::thread::Thread);
+        impl std::task::Wake for Unpark {
+            fn wake(self: std::sync::Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        let waker = std::task::Waker::from(std::sync::Arc::new(Unpark(std::thread::current())));
+        let mut context = std::task::Context::from_waker(&waker);
+        let mut answer = self.answer;
+        loop {
+            match std::pin::Pin::new(&mut answer).poll(&mut context) {
+                std::task::Poll::Ready(answer) => {
+                    return answer
+                        .map_err(|_| anyhow!("the database writer stopped before answering"))?;
+                }
+                std::task::Poll::Pending => std::thread::park(),
+            }
+        }
     }
 }
 
