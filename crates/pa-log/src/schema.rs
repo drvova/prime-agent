@@ -150,25 +150,31 @@ const MIGRATIONS: &[&str] = &[
 ///
 /// A migration failed, or the database was migrated by a newer build.
 pub(crate) fn migrate(connection: &mut Connection) -> Result<()> {
-    let applied: i64 = connection
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .context("read the schema version")?;
-    let applied = usize::try_from(applied).context("a negative schema version")?;
-    if applied > MIGRATIONS.len() {
-        bail!(
-            "the database is at schema version {applied}, newer than this build's {}: it was \
-             written by a newer Prime Agent",
-            MIGRATIONS.len()
-        );
-    }
-    for (index, migration) in MIGRATIONS.iter().enumerate().skip(applied) {
-        let version = index + 1;
-        let transaction = connection.transaction()?;
+    loop {
+        // The version is read under the write lock (`BEGIN IMMEDIATE`), so of
+        // two processes opening one new database, only one applies a
+        // migration and the other reads it applied.
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let applied: i64 = transaction
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .context("read the schema version")?;
+        let applied = usize::try_from(applied).context("a negative schema version")?;
+        if applied > MIGRATIONS.len() {
+            bail!(
+                "the database is at schema version {applied}, newer than this build's {}: it \
+                 was written by a newer Prime Agent",
+                MIGRATIONS.len()
+            );
+        }
+        let Some(migration) = MIGRATIONS.get(applied) else {
+            return Ok(());
+        };
+        let version = applied + 1;
         transaction
             .execute_batch(migration)
             .with_context(|| format!("apply schema migration {version}"))?;
         transaction.pragma_update(None, "user_version", i64::try_from(version)?)?;
         transaction.commit()?;
     }
-    Ok(())
 }
