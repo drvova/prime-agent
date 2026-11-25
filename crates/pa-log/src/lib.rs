@@ -19,7 +19,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
@@ -61,7 +61,25 @@ impl Log {
         let mut connection =
             Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
+        // Switching a new database to WAL answers SQLITE_BUSY at once, without
+        // the busy handler, while another process creates the same file (a
+        // daemon and the CLI command that reads its database): retried until
+        // the busy timeout.
+        let deadline = Instant::now() + BUSY_TIMEOUT;
+        loop {
+            match connection.pragma_update(None, "journal_mode", "WAL") {
+                Ok(()) => break,
+                Err(error)
+                    if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy)
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("set WAL on {}", path.display()))
+                }
+            }
+        }
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         schema::migrate(&mut connection).with_context(|| format!("migrate {}", path.display()))?;
