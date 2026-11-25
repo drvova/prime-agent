@@ -117,13 +117,29 @@ impl std::fmt::Debug for BlockingPipeClient {
     }
 }
 
+/// Drive `future` to completion on a blocking client's own runtime. Tokio refuses to block a
+/// thread that already drives a runtime (the CLI's async entry points call the blocking client
+/// from one, as they call the unix stream, which simply blocks), so on such a thread the
+/// client's runtime runs on a scoped thread while this one waits.
+fn drive<F>(runtime: &Runtime, future: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    if tokio::runtime::Handle::try_current().is_err() {
+        return runtime.block_on(future);
+    }
+    std::thread::scope(|scope| scope.spawn(|| runtime.block_on(future)).join())
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
 impl BlockingPipeClient {
     /// Connect to the pipe at `name`, blocking until connected.
     pub(crate) fn connect(name: &str) -> io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let client = runtime.block_on(connect(name))?;
+        let client = drive(&runtime, connect(name))?;
         Ok(Self {
             name: name.to_string(),
             state: Arc::new(BlockingPipeState {
@@ -152,18 +168,16 @@ impl BlockingPipeClient {
             .map_err(|_| io::Error::other("read deadline lock poisoned"))?;
         let read = async { self.state.client.lock().await.read(buf).await };
         match *deadline {
-            Some(timeout) => match self
-                .state
-                .runtime
-                // Construct the timer only after entering this client's runtime.
-                .block_on(async { tokio::time::timeout(timeout, read).await })
-            {
+            // Construct the timer only after entering this client's runtime.
+            Some(timeout) => match drive(&self.state.runtime, async {
+                tokio::time::timeout(timeout, read).await
+            }) {
                 Ok(result) => result,
                 // Cancelled reads leave the buffer untouched; callers treat
                 // the deadline as an empty poll, like Unix `SO_RCVTIMEO`.
                 Err(_elapsed) => Err(io::ErrorKind::TimedOut.into()),
             },
-            None => self.state.runtime.block_on(read),
+            None => drive(&self.state.runtime, read),
         }
     }
 }
@@ -176,15 +190,15 @@ impl std::io::Read for BlockingPipeClient {
 
 impl std::io::Write for BlockingPipeClient {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.state
-            .runtime
-            .block_on(async { self.state.client.lock().await.write(buf).await })
+        drive(&self.state.runtime, async {
+            self.state.client.lock().await.write(buf).await
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.state
-            .runtime
-            .block_on(async { self.state.client.lock().await.flush().await })
+        drive(&self.state.runtime, async {
+            self.state.client.lock().await.flush().await
+        })
     }
 }
 
@@ -327,6 +341,47 @@ mod tests {
         assert_eq!(&buf, b"hello");
         stream.write_all(b"echo").expect("client write");
         stream.flush().expect("client flush");
+        server.join().expect("server thread");
+    }
+
+    /// The CLI's async entry points use the blocking client from a thread that drives a
+    /// runtime; tokio refuses a nested `block_on` there, which panicked `--continue`.
+    #[test]
+    fn a_blocking_client_works_on_a_thread_that_drives_a_runtime() {
+        let path = test_pipe("blocking-in-runtime");
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let server_path = path.clone();
+        let server = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("server runtime");
+            runtime.block_on(async move {
+                let listener = bind_transport(&server_path).await.expect("bind");
+                ready_tx.send(()).expect("listener ready");
+                let server = listener.accept().await.expect("accept");
+                let (mut reader, mut writer) = server.split();
+                let mut buf = [0u8; 4];
+                reader.read_exact(&mut buf).await.expect("server read");
+                writer.write_all(&buf).await.expect("server write");
+            });
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("listener ready");
+        let client_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        let echoed = client_runtime.block_on(async {
+            let mut stream = connect_blocking(&path).expect("blocking connect");
+            stream
+                .set_read_timeout(Duration::from_secs(5))
+                .expect("deadline");
+            stream.write_all(b"ping").expect("client write");
+            stream.flush().expect("client flush");
+            let mut buf = [0u8; 4];
+            stream.read_exact(&mut buf).expect("client read");
+            buf
+        });
+        assert_eq!(&echoed, b"ping");
         server.join().expect("server thread");
     }
 
