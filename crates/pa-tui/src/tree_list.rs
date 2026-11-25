@@ -591,8 +591,10 @@ impl TreeList {
             .cloned()
             .unwrap_or_default();
         self.multiple_roots = visible_root_ids.len() > 1;
-        // DFS over the visible tree, recomputing placement.
-        #[allow(clippy::type_complexity)]
+        #[expect(
+            clippy::type_complexity,
+            reason = "the DFS returns each visible row with its placement"
+        )]
         let mut stack: Vec<(String, usize, bool, bool, bool, Vec<GutterInfo>, bool)> = Vec::new();
         for (index, root_id) in visible_root_ids.iter().enumerate().rev() {
             let is_last = index == visible_root_ids.len() - 1;

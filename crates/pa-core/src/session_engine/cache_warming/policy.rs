@@ -198,8 +198,10 @@ impl CachePrices {
     /// The dollars one request saved through the cache: its cache reads
     /// against the same tokens uncached, less what its cache writes cost
     /// above uncached input.
-    // Token counts sit far below f64's 2^53 exact-integer range.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "token counts stay far below f64's 2^53 exact-integer range"
+    )]
     pub(crate) fn request_savings(&self, usage: &Usage) -> f64 {
         (usage.cache_read as f64 * (self.input - self.cache_read)
             - usage.cache_write as f64 * (self.cache_write - self.input))
@@ -210,8 +212,10 @@ impl CachePrices {
     /// save in `phase`: the write the next round avoids, weighted by the
     /// chance it comes in time, less the refresh's own read and one output
     /// token.
-    // Token counts sit far below f64's 2^53 exact-integer range.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "token counts stay far below f64's 2^53 exact-integer range"
+    )]
     pub(crate) fn expected_saving(&self, prompt_tokens: u64, phase: WarmPhase) -> f64 {
         let tokens = prompt_tokens as f64;
         let avoided_write = (self.cache_write - self.cache_read).max(0.0) * tokens;

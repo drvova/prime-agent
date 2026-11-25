@@ -78,8 +78,10 @@ impl<'a> ResponsesStreamProcessor<'a> {
     }
 
     /// Process one parsed stream event. Errors mirror the TS thrown `StreamFailureError`s.
-    // Long by design: mirrors the provider's stream shape.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one function per provider stream, mirroring the TS reference's shape"
+    )]
     pub fn handle_event(&mut self, event: &Value) -> Result<(), ProviderError> {
         let event_type = event
             .get("type")

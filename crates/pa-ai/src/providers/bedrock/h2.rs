@@ -169,8 +169,10 @@ fn timeout_error(connection: &ConnectionErrorProfile, timeout_ms: u64) -> Provid
 
 /// Issue one h2c prior-knowledge request: connect, handshake, send the request, and resolve once
 /// the response HEADERS arrive. The body is read through the returned [`H2Response`].
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one loop drives the HTTP/2 connection's frames"
+)]
 pub(crate) async fn send_h2(options: H2RequestOptions) -> Result<H2Response, ProviderError> {
     let H2RequestOptions {
         url,
@@ -359,8 +361,10 @@ mod h2_wire_tests {
 
     fn frame(ftype: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(9 + payload.len());
-        // Test frames are tiny; the HTTP/2 length prefix is 24 bits (u32 wire with the top byte dropped).
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test frames are tiny; the HTTP/2 length prefix is 24 bits"
+        )]
         out.extend_from_slice(&(payload.len() as u32).to_be_bytes()[1..]);
         out.push(ftype);
         out.push(flags);
@@ -372,8 +376,10 @@ mod h2_wire_tests {
     /// HPACK: indexed `:status` 200 (0x88) + literal content-type (name 31).
     fn response_headers() -> Vec<u8> {
         let content_type = b"application/vnd.amazon.eventstream";
-        // HPACK literal lengths are u8; the fixed test content-type is 33 bytes.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "HPACK literal lengths are u8; the fixed test content-type is 33 bytes"
+        )]
         let mut block = vec![0x88, 0x0f, 0x10, content_type.len() as u8];
         block.extend_from_slice(content_type);
         block

@@ -2,7 +2,13 @@
 //! `/fork` must be a FULLY detached session: the worker replaces its live
 //! session file in place, and every supervisor-side route must follow that
 //! move, never crossing original and fork.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the fork-detach and failed-persist restart scenarios each read top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -15,7 +21,10 @@ use std::time::{Duration, Instant};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

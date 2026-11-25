@@ -131,7 +131,10 @@ pub(super) async fn end_turn_on_auth_rejection(
 ///
 /// Returns the `attempt` future's error when a turn attempt fails, or the
 /// `emit` callback's error while observing retry events.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the retry loop takes its attempt, event, wait and recovery seams as separate callbacks"
+)]
 pub async fn run_turn_with_auto_retry<A, AF, E, EF, W, WF>(
     policy: &ProviderRetryPolicy,
     context_window: u64,

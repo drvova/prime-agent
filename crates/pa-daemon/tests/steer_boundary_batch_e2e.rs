@@ -2,8 +2,13 @@
 //! at the next tool-call boundary as ONE batched turn. Deliberate divergence
 //! from TS "one-at-a-time" (Kevin 2026-09-23); "one-at-a-time" stays
 //! selectable.
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`multi_steer_parked_mid_run_co_delivers_as_one_batched_turn` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -54,7 +59,10 @@ fn faux_script(dir: &Path) -> PathBuf {
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

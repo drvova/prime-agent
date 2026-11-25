@@ -194,9 +194,10 @@ pub(super) fn count(
     lines.len()
 }
 
-// One more than clippy's limit: the paint/count sink rides beside the
-// render inputs so both traversals share this single layout.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the paint/count sink rides beside the render inputs so both traversals share one layout"
+)]
 fn layout(
     card: &ToolCallCard,
     frame: usize,

@@ -5,10 +5,13 @@
 //! a running card showed no duration until the first partial result
 //! arrived, so a quiet tool run (no output) left the card with no
 //! timing at all.
-// - the mock's serve loop is one flat request table (one arm per
-// command); splitting it would add indirection without changing the
-// flow.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the mock's serve loop is one flat request table, one arm per command"
+    )
+)]
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};

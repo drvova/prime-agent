@@ -47,7 +47,10 @@ use crate::utils_inner::stream_failure::{
 pub const API_BEDROCK_CONVERSE_STREAM: &str = "bedrock-converse-stream";
 
 /// How Claude's thinking content is returned (`thinkingDisplay` in the TS).
-#[allow(dead_code)] // full TS option surface; variants set by callers
+#[expect(
+    dead_code,
+    reason = "the enum keeps the TS option surface; callers set only some variants"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BedrockThinkingDisplay {
     Summarized,
@@ -487,8 +490,10 @@ fn bedrock_extra_signed_headers(options: &BedrockOptions) -> Vec<(String, String
     headers
 }
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one function per provider stream, mirroring the TS reference's shape"
+)]
 async fn run_stream(
     model: &Model,
     context: &Context,

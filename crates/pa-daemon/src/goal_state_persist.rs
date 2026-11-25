@@ -15,7 +15,13 @@ use crate::session_store::SessionFile;
 /// reference): the window's snapshot goal, else the full reader's
 /// active-branch scan. In production this reader has no caller - it stays
 /// compiled as the differential oracle's reference so it cannot bit-rot.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "production never calls it; it stays compiled as the differential oracle's reference"
+    )
+)]
 pub(crate) fn persisted_goal_state(path: Option<&Path>) -> Option<GoalState> {
     let path = path?;
     if let Ok(Some(window)) = pa_core::session::window::WindowedSessionStore::open(path) {

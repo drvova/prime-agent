@@ -1002,7 +1002,10 @@ mod tests {
     /// normalized row: the type default fills the clock at the
     /// injected-row parse, so the frames clients get carry the same row
     /// the model context holds.
-    #[allow(clippy::await_holding_lock)] // the faux registry is process-global: the guard must span the async flow
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the faux provider registry is process-global; the guard spans the awaited turns"
+    )]
     #[tokio::test]
     async fn a_restored_row_without_a_timestamp_delivers_one_normalized_row() {
         let _faux = crate::agent_engine::tests::FAUX_TEST_LOCK

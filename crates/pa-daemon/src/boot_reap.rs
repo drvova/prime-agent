@@ -394,7 +394,13 @@ fn socket_spelling_of(pid: u32, value: &str) -> String {
 /// The product's own binary names: `prime-agent` (release/install) and
 /// `pa-daemon` (the workspace binary). Unix only, as [`is_worker_argv`].
 #[cfg(unix)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "the Linux reaper is the only caller; other unixes compile it for parity"
+    )
+)]
 pub(crate) fn is_product_binary(exe: &str) -> bool {
     matches!(
         Path::new(exe).file_name().and_then(|name| name.to_str()),
@@ -405,7 +411,13 @@ pub(crate) fn is_product_binary(exe: &str) -> bool {
 /// Whether a command line is the product's worker role: a product binary
 /// with `worker` as its first argument. Unix only.
 #[cfg(unix)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "the Linux reaper is the only caller; other unixes compile it for parity"
+    )
+)]
 pub(crate) fn is_worker_argv(argv: &[String]) -> bool {
     argv.first().is_some_and(|exe| is_product_binary(exe))
         && argv.get(1).map(String::as_str) == Some("worker")
@@ -451,7 +463,10 @@ fn proc_environ_names_active_session(pid: u32, active_session: &str) -> bool {
 /// everywhere else (`allow(dead_code)` is the honest parity mark — the
 /// linux side owns the real read).
 #[cfg(all(unix, not(target_os = "linux")))]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "the non-Linux twin keeps the signature's parity; the Linux side owns the real read"
+)]
 fn proc_environ_names_active_session(_pid: u32, _active_session: &str) -> bool {
     false
 }
@@ -518,7 +533,13 @@ fn resolve_relative_socket_tokens(pid: u32, argv: &mut [String]) {
 /// the product form (`--mode daemon --daemon-socket <socket>`) or `supervisor --socket <socket>`.
 /// The executable gate is load-bearing. Unix only.
 #[cfg(unix)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "the Linux reaper is the only caller; other unixes compile it for parity"
+    )
+)]
 pub(crate) fn supervisor_argv_names_socket(argv: &[String], socket: &str) -> bool {
     let Some(exe) = argv.first() else {
         return false;
@@ -645,7 +666,13 @@ fn protected_worker_pids(agent_dir: &Path, socket_path: &Path) -> HashSet<u32> {
 /// darwin included, which `supervisor_argv_names_socket` (the argv-only
 /// view the supervisor census normalizes with) requires.
 #[cfg(unix)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "the Linux reaper is the only caller; other unixes compile it for parity"
+    )
+)]
 pub(crate) fn normalize_socket_spelling(path: &Path) -> String {
     if let Ok(canonical) = pa_types::platform::canonicalize(path) {
         return canonical.to_string_lossy().to_string();
