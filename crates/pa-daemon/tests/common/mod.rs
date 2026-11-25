@@ -177,9 +177,10 @@ fn process_alive(pid: u32) -> bool {
 
 /// The database of the nearest agent dir above `path` or beside it as
 /// `agent/`: the seam's, or one a process without it kept in the dir.
-// Each test target compiles this module for itself, and not every one reads
-// a database.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module for itself, and not every one reads a database"
+)]
 fn database_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
     // The tests keep the agent dir beside custom sessions dirs: `<root>/agent`.
     path.ancestors()
@@ -195,7 +196,10 @@ fn database_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
 
 /// The agent state (`pa_core::agent_state`) of the database holding the
 /// store whose file is `path` ([`database_of`]), when there is one.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one calls agent_state"
+)]
 pub fn agent_state(path: &std::path::Path) -> Option<&'static pa_core::agent_state::StateDatabase> {
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -219,7 +223,10 @@ pub fn agent_state(path: &std::path::Path) -> Option<&'static pa_core::agent_sta
 
 /// The jobs of the `scheduled-jobs.json` at `path`, wherever its store
 /// keeps them ([`agent_state`], else this process's).
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one calls scheduled_jobs"
+)]
 pub fn scheduled_jobs(path: &std::path::Path) -> Vec<pa_core::cron::AgentCronJob> {
     match agent_state(path) {
         Some(state) => state.scheduled_jobs(path),
