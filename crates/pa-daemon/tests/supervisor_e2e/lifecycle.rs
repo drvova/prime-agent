@@ -340,3 +340,32 @@ fn supervisor_end_to_end_scripted_session_lifecycle() {
     let final_answer = client.read_response("g2");
     assert_eq!(final_answer["data"]["text"], "second turn");
 }
+
+/// A transcript database the daemon cannot open (a directory where its file goes) leaves the
+/// daemon on the JSONL files, and its hello tells every client why: otherwise the fallback shows
+/// only on the daemon's standard error.
+#[test]
+fn an_unopenable_transcript_database_is_named_in_the_hello() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    let database = pa_core::session::store::database_path(&agent_dir);
+    std::fs::create_dir_all(&database).expect("a directory where the database goes");
+    let daemon = spawn_daemon(&socket, &agent_dir);
+    let (_client, hello) = Client::connect(&socket);
+    drop(daemon);
+    // The database path lives under the shared test seam, not the temp dir.
+    std::fs::remove_dir(&database).expect("remove the directory");
+    let prefix = format!("{} (", database.display());
+    assert_eq!(
+        (
+            hello["type"].clone(),
+            hello["transcriptStoreFallback"]
+                .as_str()
+                .map(|reason| reason.starts_with(&prefix)),
+        ),
+        (serde_json::json!("daemon_hello"), Some(true)),
+        "{hello}"
+    );
+}

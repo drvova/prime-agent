@@ -137,6 +137,8 @@ impl Supervisor {
             update_resume: Some(self.restore.hello_resume()),
             daemon_death: crate::keeper::boot_death(&self.descriptor_dir),
             keeper_pid: crate::keeper::keeper_pid().map(u64::from),
+            transcript_store_fallback: pa_core::session::store::fallback_reason()
+                .map(str::to_string),
             client_id: connection_id.clone(),
             server_capabilities: factory_capabilities,
             rest: Map::default(),
