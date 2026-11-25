@@ -96,8 +96,9 @@ pub fn saved_transcripts_in(
 }
 
 /// The agent dir whose database holds the transcripts under `path`: the
-/// nearest ancestor with an `agent.db`, or the one a home or test root above
-/// it keeps (`.prime/agent`, `agent`).
+/// nearest ancestor whose database exists
+/// (`pa_core::session::store::database_path`), or the one a home or test
+/// root above it keeps (`.prime/agent`, `agent`).
 fn agent_dir_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
     path.ancestors()
         .flat_map(|ancestor| {
@@ -107,7 +108,7 @@ fn agent_dir_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
                 ancestor.join("agent"),
             ]
         })
-        .find(|dir| dir.join("agent.db").is_file())
+        .find(|dir| pa_core::session::store::database_path(dir).is_file())
 }
 
 /// The saved sessions in the directory `dir` (a sessions dir, or a child

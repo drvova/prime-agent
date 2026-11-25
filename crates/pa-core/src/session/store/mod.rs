@@ -35,6 +35,8 @@
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+use sha2::Digest;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -52,11 +54,45 @@ use sqlite::{OriginalImport, SqliteTranscriptStore};
 /// The database file in the agent dir.
 pub const DATABASE_FILE: &str = "agent.db";
 
+/// The test-isolation seam: when set (to a directory), every agent dir's
+/// transcript database is `<dir>/<sha256 of the agent dir>.db` instead of
+/// `<agent dir>/agent.db`. The repository's `.cargo/config.toml` sets it for
+/// every `cargo test` and `cargo run`, so a test run never creates or writes
+/// the database of a real agent dir (the developer's own `~/.prime/agent`
+/// included), while the processes of one test that share an agent dir (a
+/// daemon and the `export-jsonl` that reads it back) still share its
+/// database. Installed builds never set it.
+pub const DATABASE_DIR_ENV: &str = "PRIME_AGENT_TRANSCRIPT_DB_DIR";
+
+/// Where the transcript database of `agent_dir` is: `<agent dir>/agent.db`,
+/// or under [`DATABASE_DIR_ENV`] when the process sets it.
+#[must_use]
+pub fn database_path(agent_dir: &Path) -> PathBuf {
+    let isolated = {
+        // The process's own setting, never a session's.
+        let _process = pa_types::session_scope::enter(None);
+        pa_types::session_scope::var_os(DATABASE_DIR_ENV).filter(|dir| !dir.is_empty())
+    };
+    let Some(dir) = isolated else {
+        return agent_dir.join(DATABASE_FILE);
+    };
+    // Lexical, not canonical: the agent dir may not exist yet, and every
+    // process of a test spells it the same way.
+    let agent_dir = std::path::absolute(agent_dir).unwrap_or_else(|_| agent_dir.to_path_buf());
+    let digest = sha2::Sha256::digest(agent_dir.to_string_lossy().as_bytes());
+    let name = digest.iter().fold(String::new(), |mut name, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(name, "{byte:02x}");
+        name
+    });
+    PathBuf::from(dir).join(format!("{name}.db"))
+}
+
 /// The store the process uses.
 enum Selected {
     Files(FileTranscriptStore),
-    /// The store, and the agent dir whose database it opened.
-    Sqlite(SqliteTranscriptStore, PathBuf),
+    /// The store, the agent dir whose database it opened, and the database.
+    Sqlite(SqliteTranscriptStore, PathBuf, PathBuf),
 }
 
 /// Which store [`store`] is.
@@ -91,9 +127,9 @@ fn select() -> Selected {
              using sqlite"
         ),
     }
-    let database = agent_dir.join(DATABASE_FILE);
+    let database = database_path(&agent_dir);
     match SqliteTranscriptStore::open(&database) {
-        Ok(store) => Selected::Sqlite(store, agent_dir),
+        Ok(store) => Selected::Sqlite(store, agent_dir, database),
         Err(error) => {
             eprintln!(
                 "transcript store: cannot open {} ({error:#}); sessions are kept as JSONL files",
@@ -109,7 +145,7 @@ fn select() -> Selected {
 pub fn store() -> &'static dyn TranscriptStore {
     match selected() {
         Selected::Files(store) => store,
-        Selected::Sqlite(store, _) => store,
+        Selected::Sqlite(store, ..) => store,
     }
 }
 
@@ -123,6 +159,16 @@ pub fn store() -> &'static dyn TranscriptStore {
 /// The database cannot be opened or migrated.
 pub fn open_database(database: &Path) -> anyhow::Result<Box<dyn TranscriptStore>> {
     Ok(Box::new(SqliteTranscriptStore::open(database)?))
+}
+
+/// The database the process's [`store`] keeps transcripts in (none for the
+/// file store).
+#[must_use]
+pub fn database() -> Option<&'static Path> {
+    match selected() {
+        Selected::Files(_) => None,
+        Selected::Sqlite(_, _, database) => Some(database),
+    }
 }
 
 /// Which store [`store`] is.
@@ -158,7 +204,7 @@ pub struct TranscriptImportReport {
 /// on a path a client waits on (until then, the files are read as they are).
 #[must_use]
 pub fn import_session_trees(agent_dir: &Path) -> Option<TranscriptImportReport> {
-    let Selected::Sqlite(store, opened) = selected() else {
+    let Selected::Sqlite(store, opened, _) = selected() else {
         return None;
     };
     let resolved =
@@ -281,7 +327,7 @@ pub fn session_trees(agent_dir: &Path) -> Vec<PathBuf> {
 pub fn stored_locators() -> io::Result<Vec<PathBuf>> {
     match selected() {
         Selected::Files(_) => Ok(Vec::new()),
-        Selected::Sqlite(store, _) => store.locators(),
+        Selected::Sqlite(store, ..) => store.locators(),
     }
 }
 

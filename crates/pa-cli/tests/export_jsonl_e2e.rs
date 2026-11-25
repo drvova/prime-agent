@@ -66,3 +66,32 @@ fn export_jsonl_writes_a_saved_session_back_byte_for_byte() {
         String::from_utf8_lossy(&every.stderr)
     );
 }
+
+/// A test run never writes a real agent dir's database: with HOME at a
+/// fresh dir (the agent dir the product would resolve), the store's database
+/// lands under the repository's test seam (`.cargo/config.toml`), and no
+/// `.prime/agent/agent.db` appears under HOME.
+#[test]
+fn a_test_run_never_writes_the_home_agent_database() {
+    let home = tempfile::tempdir().expect("home");
+    let out = home.path().join("out");
+    let output = Command::new(env!("CARGO_BIN_EXE_prime-agent"))
+        .args(["export-jsonl", "--all", "--out"])
+        .arg(&out)
+        .env("HOME", home.path())
+        .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
+        .env("DO_NOT_TRACK", "1")
+        .output()
+        .expect("run export-jsonl");
+    let agent_dir = home.path().join(".prime/agent");
+    assert_eq!(
+        (
+            output.status.code(),
+            agent_dir.join("agent.db").exists(),
+            pa_core::session::store::database_path(&agent_dir).is_file(),
+        ),
+        (Some(0), false, true),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

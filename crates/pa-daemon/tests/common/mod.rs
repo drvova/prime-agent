@@ -193,7 +193,7 @@ pub fn transcripts(
     let Some(database) = path
         .ancestors()
         .flat_map(|dir| [dir.to_path_buf(), dir.join("agent")])
-        .map(|dir| dir.join(pa_core::session::store::DATABASE_FILE))
+        .map(|dir| pa_core::session::store::database_path(&dir))
         .find(|database| database.is_file())
     else {
         return pa_core::session::store::store();

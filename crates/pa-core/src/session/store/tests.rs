@@ -255,3 +255,26 @@ fn export_jsonl_writes_the_stored_bytes() {
         )
     );
 }
+
+/// The test process's own store keeps its database under the test seam
+/// (`DATABASE_DIR_ENV`, set by `.cargo/config.toml`), never in the agent dir
+/// the process resolves (the developer's `~/.prime/agent`).
+#[test]
+fn the_process_store_never_opens_the_agent_dirs_database_under_test() {
+    let agent_dir = {
+        let _process = pa_types::session_scope::enter(None);
+        pa_types::platform::agent_dir().expect("an agent dir")
+    };
+    let seam = std::env::var_os(super::DATABASE_DIR_ENV).map(PathBuf::from);
+    let database = super::database().map(Path::to_path_buf);
+    assert_eq!(
+        (
+            seam.is_some(),
+            database
+                .as_ref()
+                .is_some_and(|database| database.starts_with(&agent_dir)),
+            database,
+        ),
+        (true, false, Some(super::database_path(&agent_dir))),
+    );
+}
