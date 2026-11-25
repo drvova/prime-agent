@@ -10,21 +10,7 @@
 //! last write. The env-less session stays silent (no boot-context bleed
 //! — the TS daemon's shared-process failure mode cannot recur here) until
 //! its attach adopts the pane identity (adopt-if-absent).
-// Pedantic-gate dispositions (fleet-uniform ruling; see create_join_e2e).
-#![allow(clippy::large_futures)]
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 #![allow(clippy::too_many_lines)]
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;

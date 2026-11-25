@@ -3,6 +3,7 @@
 //! conversation turn generator, and the marker discipline the bench
 //! needles read from the corpus manifest.
 
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::Path;
 
@@ -168,12 +169,12 @@ fn sentence(rng: &mut Rng, words: usize) -> String {
 }
 
 fn user_text(rng: &mut Rng) -> String {
-    (0..(1 + rng.below(3)))
+    (0..=rng.below(3))
         .map(|_| {
             let words = 6 + rng.below(12);
             let mut text = sentence(rng, words as usize);
             if rng.chance(12) {
-                text.push_str(&format!(" ({})", sentence(rng, 2)));
+                let _ = write!(text, " ({})", sentence(rng, 2));
             }
             text.push('.');
             text
@@ -183,7 +184,7 @@ fn user_text(rng: &mut Rng) -> String {
 
 fn assistant_text(rng: &mut Rng) -> String {
     let mut text = String::new();
-    for _ in 0..(1 + rng.below(3)) {
+    for _ in 0..=rng.below(3) {
         for _ in 0..(2 + rng.below(4)) {
             let words = 8 + rng.below(16);
             text.push_str(&sentence(rng, words as usize));

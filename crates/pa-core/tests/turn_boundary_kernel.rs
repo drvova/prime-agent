@@ -2,10 +2,7 @@
 #![allow(
     clippy::large_futures,
     clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_possible_truncation
 )]
 
 //! Verifier: the turn-boundary host-request contract (`model.info`, `compact.*`, `refine.*`) over a

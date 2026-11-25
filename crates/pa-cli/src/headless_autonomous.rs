@@ -193,7 +193,6 @@ impl HeadlessAutonomous {
     /// The settled boundary's autonomous drain: each held continuation runs as
     /// this invocation's follow-up turn; a re-crossing threshold holds the
     /// next. Returns whether any turn ran.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn drive_boundary(
         &self,
         engine: &SessionEngine,
