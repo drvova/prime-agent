@@ -11,9 +11,10 @@
 /// Copilot a signed-in provider, and its models then ranked above the
 /// fixtures' in the `/model` picker. Call it before the daemon spawns and
 /// before the client runs.
-// Each test target compiles this module for itself, and not every one runs
-// the client in-process.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one runs the client in-process"
+)]
 pub fn scrub_ambient_provider_credentials() {
     static SCRUB: std::sync::Once = std::sync::Once::new();
     SCRUB.call_once(|| {
@@ -37,9 +38,10 @@ pub fn scrub_ambient_provider_credentials() {
 /// # Panics
 ///
 /// The export failed.
-// Each test target compiles this module for itself, and not every one reads
-// the sessions it ran.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module for itself, and not every one reads the sessions it ran"
+)]
 pub fn saved_transcripts(
     agent_dir: &std::path::Path,
 ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
@@ -104,7 +106,10 @@ fn outside_root(absolute: &std::path::Path) -> std::path::PathBuf {
 
 /// The saved sessions' transcripts in the sessions directory `dir`, by
 /// locator ([`saved_transcripts`] of `agent_dir`, filtered to `dir`).
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one calls saved_transcripts_in"
+)]
 pub fn saved_transcripts_in(
     agent_dir: &std::path::Path,
     dir: &std::path::Path,
@@ -152,7 +157,10 @@ fn agent_dir_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
 /// The saved sessions in the directory `dir` (a sessions dir, or a child
 /// session's dir under the agent dir), by locator, as text. Before any run
 /// opened the agent dir's database, the session files there as they are.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one calls session_texts"
+)]
 pub fn session_texts(dir: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
     if let Some(agent_dir) = agent_dir_of(dir) {
         return saved_transcripts_in(&agent_dir, dir)
@@ -179,7 +187,10 @@ pub fn session_texts(dir: &std::path::Path) -> Vec<(std::path::PathBuf, String)>
 /// # Panics
 ///
 /// No saved session is at `locator`.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one calls saved_text"
+)]
 pub fn saved_text(locator: &std::path::Path) -> String {
     match agent_dir_of(locator) {
         Some(agent_dir) => saved_transcript(&agent_dir, locator),
@@ -194,7 +205,10 @@ pub fn saved_text(locator: &std::path::Path) -> String {
 /// # Panics
 ///
 /// No saved session is at `locator`, or it is not UTF-8.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one calls saved_transcript"
+)]
 pub fn saved_transcript(
     agent_dir: &std::path::Path,
     locator: impl AsRef<std::path::Path>,
@@ -228,9 +242,10 @@ pub fn saved_transcript(
 /// # Panics
 ///
 /// `child` exited first, or 15 seconds passed.
-// Each test target compiles this module for itself, and not every one waits
-// for a daemon through it.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one waits for a daemon through it"
+)]
 #[cfg(unix)]
 pub fn await_listening(socket: &std::path::Path, child: &mut std::process::Child) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);

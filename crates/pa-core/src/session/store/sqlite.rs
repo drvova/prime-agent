@@ -628,8 +628,10 @@ fn writable(path: &Path) {
     #[cfg(windows)]
     if let Ok(metadata) = fs::metadata(path) {
         let mut permissions = metadata.permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        // Windows: clears the read-only attribute only
+        #[allow(
+            clippy::permissions_set_readonly_false,
+            reason = "on Windows this clears the read-only attribute only"
+        )]
         permissions.set_readonly(false);
         let _ = fs::set_permissions(path, permissions);
     }

@@ -1,6 +1,3 @@
-// too_many_lines: style gate only.
-#![allow(clippy::too_many_lines)]
-
 //! End-to-end verifier for the print-mode active-session guard (B-11): a
 //! headless `-c`/`-r` must refuse to open a session file that a live daemon
 //! worker already hosts, with the exact TS `SessionAlreadyActiveError`

@@ -232,9 +232,10 @@ pub fn scheduled_jobs(path: &std::path::Path) -> Vec<pa_core::cron::AgentCronJob
 /// test started with its own agent dir keeps them there), else this
 /// process's own store (a supervisor
 /// that runs on the process's agent dir shares it).
-// Each test target compiles this module for itself, and not every one reads
-// transcripts.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module for itself, and not every one reads transcripts"
+)]
 pub fn transcripts(
     path: &std::path::Path,
 ) -> &'static dyn pa_core::session::store::TranscriptStore {
@@ -263,7 +264,10 @@ pub fn transcripts(
 /// # Errors
 ///
 /// No transcript is there, or it is not UTF-8.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one calls read_transcript"
+)]
 pub fn read_transcript(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
     let path = path.as_ref();
     String::from_utf8(transcripts(path).read(path)?)
@@ -278,7 +282,10 @@ pub fn read_transcript(path: impl AsRef<std::path::Path>) -> std::io::Result<Str
 /// # Panics
 ///
 /// The transcript cannot be read or copied.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one calls mirror_into_process_store"
+)]
 pub fn mirror_into_process_store(path: &std::path::Path) {
     let bytes = transcripts(path).read(path).expect("read the transcript");
     pa_core::session::store::write(path, bytes).expect("copy the transcript");
@@ -292,7 +299,10 @@ pub fn mirror_into_process_store(path: &std::path::Path) {
 /// # Panics
 ///
 /// The transcript cannot be moved.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one calls into_original_file"
+)]
 pub fn into_original_file(path: &std::path::Path) {
     let store = pa_core::session::store::store();
     let bytes = store.read(path).expect("read the stored transcript");

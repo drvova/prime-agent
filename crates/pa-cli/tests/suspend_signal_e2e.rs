@@ -1,5 +1,10 @@
-// Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(clippy::cast_possible_wrap)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_wrap,
+        reason = "the pids passed to `kill` and `Pid::from_raw` are kernel-bounded below i32::MAX"
+    )
+)]
 
 //! Real-signal e2e for the `app.suspend` cycle (TS `handleCtrlZ`): the
 //! renderer runs on a pty in a child process group, driven like a shell.

@@ -1,5 +1,17 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate only.
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the headless `run_interactive` futures stay on the stack; each test awaits one at a time"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`agents_view_round_trip_reattaches_under_the_ceiling` is one scenario, top to bottom"
+    )
+)]
 
 //! Latency regression guard for the operators' agents-view round trip
 //! (operator ruling 2026-09-24: the Esc handoff took close to 5-10

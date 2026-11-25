@@ -31,7 +31,10 @@ struct LegacyQueue {
     actions: Value,
 }
 
-#[allow(clippy::struct_excessive_bools)] // The released TS wire format has independent activity flags.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the released TS wire format carries independent activity flags"
+)]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LegacySession {
@@ -58,8 +61,10 @@ struct LegacySession {
     had_accepted_prompt_in_flight: bool,
 }
 
-// Keep the wire-to-roster field mapping together so omissions are reviewable.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the wire-to-roster field mapping stays in one place so an omission is reviewable"
+)]
 pub(super) fn convert(
     manifest: &Value,
     hello: &Value,

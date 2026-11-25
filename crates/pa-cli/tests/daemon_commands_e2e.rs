@@ -1,5 +1,10 @@
-// too_many_lines: style gate only.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`rust_daemon_cli_commands_end_to_end` walks every daemon command in one scenario"
+    )
+)]
 
 //! End-to-end daemon-command tests: spawn the real `pa-daemon` supervisor on a
 //! temp socket, drive `prime-agent` list/stop/rename against it, and diff the

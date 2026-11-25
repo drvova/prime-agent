@@ -1,13 +1,17 @@
-// large_futures: stack futures on hot paths by design.
-// too_many_lines: style gate only (the harness fns are intentionally linear).
-// Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(
+#![expect(
     clippy::large_futures,
+    reason = "stack-resident futures on the hot paths by design; boxing the call sites costs speed"
+)]
+#![expect(
     clippy::too_many_lines,
+    reason = "the command and harness functions read linearly; the length gate is style, not correctness"
+)]
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    reason = "64-bit targets; the narrowing casts sit at bounded OS and protocol boundaries"
 )]
 
 //! pa-cli: the `prime-agent` binary. The argument surface, command routing,

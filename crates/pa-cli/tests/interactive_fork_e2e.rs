@@ -1,9 +1,17 @@
-// too_many_lines: style gate only. Casts: 64-bit targets; narrowing sits at bounded
-// OS/protocol boundaries.
-#![allow(
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`interactive_fork_launch_copies_and_the_daemon_opens_the_fork` is one scenario, top to bottom"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "the pids read back from the wire and passed to `kill` are kernel-bounded"
+    )
 )]
 
 //! End-to-end verifier for the interactive `--fork` launch: the fork copies

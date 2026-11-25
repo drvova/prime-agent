@@ -1,10 +1,23 @@
-// Pedantic-gate dispositions: the async test futures are stack-resident by shape, the run
-// helper reads linearly from the chat run to the session file, and token counts in a test stay
-// far below the 52 bits an f64 holds exactly.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_precision_loss
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the summary-row runs stay on the stack; each test awaits one at a time"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`summary_rows` reads linearly from the chat run to the session file"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::cast_precision_loss,
+        reason = "token counts in a test stay far below the 52 bits an f64 holds exactly"
+    )
 )]
 #![cfg(unix)]
 
