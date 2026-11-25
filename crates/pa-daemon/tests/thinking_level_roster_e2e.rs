@@ -2,8 +2,13 @@
 //! `thinking_level_change` must reach the roster surfaces immediately, in
 //! the same turn-free window the TS worker covers
 //! (`ROSTER_SESSION_EVENT_TRIGGERS` includes `thinking_level_changed`).
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`thinking_level_changes_reach_the_roster_push` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -18,7 +23,10 @@ use serde_json::{json, Value};
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 
@@ -208,7 +216,10 @@ impl Client {
 struct Harness {
     agent_dir: PathBuf,
     session_dir: PathBuf,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "held so the daemon lives as long as the harness; no step reads it"
+    )]
     supervisor: Supervisor,
     client: Client,
     session_id: String,

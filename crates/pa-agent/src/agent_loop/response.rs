@@ -71,8 +71,7 @@ pub(crate) async fn stream_assistant_response(
 }
 
 /// Inner body of `streamAssistantResponse`.
-// Direct port of the TS `try` block.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "a direct port of the TS `try` block")]
 async fn stream_assistant_response_inner(
     context: &mut AgentContext,
     config: &AgentLoopConfig,

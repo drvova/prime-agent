@@ -298,9 +298,10 @@ impl Worker {
     /// close, so the close's abort always sees — and cancels — the new token
     /// (a claim its `abort_and_settle` missed would leave the child running
     /// past the exit).
-    // DaemonResponse is the wire response struct and is deliberately wide; the
-    // error channel here carries the whole response, so allow the large-err lint.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error channel carries the whole wire response, which is wide by design"
+    )]
     pub(crate) fn admit_streamed_bash(&self) -> Result<Arc<CancellationToken>, DaemonResponse> {
         let core = self.core.lock().unwrap();
         if core.shutdown_requested {
@@ -326,9 +327,10 @@ impl Worker {
     /// with the gate's close, so the close's abort always sees — and cancels —
     /// the new token (a registration its `abort_and_settle` missed would let
     /// a child outlive the exit).
-    // DaemonResponse is the wire response struct and is deliberately wide; the
-    // error channel here carries the whole response, so allow the large-err lint.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error channel carries the whole wire response, which is wide by design"
+    )]
     pub(crate) fn admit_awaited_bash(&self) -> Result<AwaitedRun<'_>, DaemonResponse> {
         let core = self.core.lock().unwrap();
         if core.shutdown_requested {

@@ -109,7 +109,10 @@ impl SessionNavigation {
 
     /// `new_session`'s prepare phase: a fresh session in the same directory,
     /// optionally parented on `parentSession`; a failure never touches the live session.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error channel carries the whole wire response, which is wide by design"
+    )]
     pub(crate) fn prepare_new_session(
         &self,
         payload: &Value,
@@ -162,7 +165,10 @@ impl SessionNavigation {
 
     /// `switch_session`'s prepare phase: a missing file or a gone cwd fails
     /// here, before the teardown, so the live session keeps its kernel.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error channel carries the whole wire response, which is wide by design"
+    )]
     pub(crate) fn prepare_switch_session(
         &self,
         payload: &Value,
@@ -180,7 +186,10 @@ impl SessionNavigation {
 
     /// `import_jsonl`'s prepare phase: copy the input file into the session
     /// dir and open the copy; a missing input answers the TS import error.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error channel carries the whole wire response, which is wide by design"
+    )]
     pub(crate) fn prepare_import_jsonl(
         &self,
         payload: &Value,
@@ -253,7 +262,10 @@ impl SessionNavigation {
 
     /// Open one replacement session file and check its stored cwd exists:
     /// the `MissingSessionCwdError` text is TS-verbatim.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error channel carries the whole wire response, which is wide by design"
+    )]
     fn open_replacement(
         &self,
         path: &str,
@@ -632,9 +644,10 @@ mod tests {
     /// A replaced session is live: the teardown closes the OLD session, and
     /// the moved-to session still runs its goal loop (a stale close would
     /// stop every continuation mint after the first turn).
-    // The faux provider registration is global; the lock must span the
-    // awaited turns that consume its queue.
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the faux provider registry is process-global; the guard spans the awaited turns"
+    )]
     #[tokio::test]
     async fn a_replaced_session_continues_its_goal() {
         let _faux = crate::agent_engine::FAUX_TEST_LOCK

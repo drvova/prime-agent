@@ -1,17 +1,25 @@
-// large_futures: stack futures on hot paths by design. too_many_lines:
-// style gate only. Casts: 64-bit targets; narrowing sits at bounded
-// OS/protocol boundaries.
-#![allow(
+#![expect(
     clippy::large_futures,
+    reason = "session futures stay on the stack on hot paths by design"
+)]
+#![expect(
     clippy::too_many_lines,
+    reason = "the function-length threshold is a style gate, not correctness"
+)]
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    reason = "64-bit targets; the narrowing casts sit at bounded OS and protocol boundaries"
 )]
-// Test-only: exact-float `assert_eq!`s assert parsed fixture values; an
-// epsilon compare would weaken the assertions, not fix a lint.
-#![cfg_attr(test, allow(clippy::float_cmp))]
+#![cfg_attr(
+    test,
+    expect(
+        clippy::float_cmp,
+        reason = "the exact-float `assert_eq!`s check parsed fixture values; an epsilon would weaken them"
+    )
+)]
 
 //! Session engine: tools, skills, prompts, compaction, refinement, kernel/RLM
 //! manager, subagents, session manager, settings.

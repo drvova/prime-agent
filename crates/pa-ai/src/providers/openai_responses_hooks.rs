@@ -4,7 +4,10 @@ use crate::types::Usage;
 
 /// Reasoning summary mode requested from the Responses API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // full TS option surface; variants set by callers
+#[expect(
+    dead_code,
+    reason = "the enum keeps the TS option surface; callers set only some variants"
+)]
 pub enum ReasoningSummary {
     Auto,
     Detailed,
@@ -53,8 +56,10 @@ pub fn get_service_tier_cost_multiplier(model_id: &str, service_tier: Option<&st
 /// Apply service-tier pricing multipliers to a usage block.
 pub fn apply_service_tier_pricing(usage: &mut Usage, service_tier: Option<&str>, model_id: &str) {
     let multiplier = get_service_tier_cost_multiplier(model_id, service_tier);
-    // The multiplier table is discrete; equality with the 1.0 sentinel is the no-op contract.
-    #[allow(clippy::float_cmp)]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the multiplier table is discrete; equality with the 1.0 sentinel is the no-op contract"
+    )]
     if multiplier == 1.0 {
         return;
     }

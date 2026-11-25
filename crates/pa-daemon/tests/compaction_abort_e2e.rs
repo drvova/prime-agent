@@ -2,8 +2,13 @@
 //! `aborted` arm): a threshold compaction aborted mid-summarizer records the
 //! durable `cancelled` outcome row, broadcasts its pair before the aborted
 //! `compaction_end`, never commits an entry, and the session keeps working.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the two abort scenarios each read top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -25,7 +30,10 @@ const SUMMARIZER_MARKER: &str = "context summarization assistant";
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

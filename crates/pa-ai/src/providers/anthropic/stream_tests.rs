@@ -11,7 +11,10 @@ use crate::types::{
 };
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)] // one inline SSE script plus a whole-value snapshot of every event
+#[expect(
+    clippy::too_many_lines,
+    reason = "one inline SSE script plus a whole-value snapshot of every event"
+)]
 async fn stream_events_snapshot_current_content() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

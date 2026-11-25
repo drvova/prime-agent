@@ -1128,9 +1128,10 @@ fn flush_streams_append_then_repaints_the_changed_tail() {
     });
     let repaint = flush_bytes(&mut long, 80, 10);
     assert!(repaint.starts_with(b"\x1b[2J\x1b[H"));
-    // One screenful of rows: at most `screen_height` CRLFs; the SIMD
-    // bytecount dependency would be pointless here.
-    #[allow(clippy::naive_bytecount)]
+    #[expect(
+        clippy::naive_bytecount,
+        reason = "one screenful of rows: at most `screen_height` CRLFs, no SIMD bytecount needed"
+    )]
     let newline_rows = repaint.iter().filter(|b| **b == b'\n').count();
     assert!(newline_rows <= 10);
     let joined = String::from_utf8_lossy(&repaint);

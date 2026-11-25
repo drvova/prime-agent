@@ -2,8 +2,13 @@
 //! session wakes it (catalog-resolve, spawn a worker over the saved file,
 //! deliver); a second send reuses the resident worker, and an unknown
 //! selector keeps the TS unknown-session error.
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the saved-session wake scenario reads top to bottom for each location"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -20,7 +25,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

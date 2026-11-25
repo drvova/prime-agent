@@ -4,8 +4,13 @@
 //! killed. (A detached command cannot outlive the daemon that hosted its
 //! session — the boot reaps it, see `supervisor_restart_e2e` — so no
 //! completion notice crosses a restart.)
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "each heartbeat-across-restart scenario reads top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -20,7 +25,10 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

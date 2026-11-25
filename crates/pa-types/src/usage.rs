@@ -30,9 +30,10 @@ pub struct ContextUsage {
 impl ContextUsage {
     /// A reading of `tokens` against a positive `context_window`, its percent derived.
     #[must_use]
-    // TS number parity: the wire percent is a JavaScript number (f64); token counts stay far
-    // below 2^53.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the wire percent is a JavaScript number (f64); token counts stay far below 2^53"
+    )]
     pub fn of(tokens: u64, context_window: u64) -> Self {
         Self {
             tokens: Some(tokens),

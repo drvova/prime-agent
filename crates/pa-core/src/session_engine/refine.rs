@@ -274,10 +274,10 @@ pub struct RefinementTranscript<'a> {
 /// (`rlm.factory.require_factory_enabled`), so a refinement cannot
 /// author factories the user has not opted into. `None` (a session
 /// without a wired agent dir) keeps the fail-closed disabled default.
-// One refine funnel: the transcript, the store dirs, the model seam, the
-// options, the source, and the resolved gates ride the same call
-// (same style as the daemon's too_many_arguments seams).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one refine funnel: transcript, store dirs, model seam, options, source and gates ride one call"
+)]
 pub async fn execute_refinement(
     session: &tokio::sync::Mutex<SessionManager>,
     agent: &pa_agent::agent::Agent,
@@ -331,7 +331,10 @@ impl Drop for RefinementFlightGuard {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the spawned refinement owns its session, agent, locks and model seam as separate handles"
+)]
 pub(crate) async fn run_refinement(
     session: std::sync::Arc<tokio::sync::Mutex<SessionManager>>,
     agent: std::sync::Arc<pa_agent::agent::Agent>,
@@ -771,7 +774,10 @@ pub(crate) fn recorded_refiner_call(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the review reads the session, branch state, models and usage store the run plans with"
+)]
 async fn review_compact_refinement(
     session: &std::sync::Arc<tokio::sync::Mutex<SessionManager>>,
     branch_state: &std::sync::Mutex<super::auto_refine_trigger::CompactAutoRefineState>,

@@ -50,7 +50,11 @@ pub fn build_summarization_request(
     custom_instructions: Option<&str>,
     previous_summary: Option<&str>,
     recent_state_anchor: Option<&str>,
-    #[allow(unused_variables)] reserve_tokens: u64,
+    #[expect(
+        unused_variables,
+        reason = "the signature keeps the TS reserve parameter; the request does not size itself by it"
+    )]
+    reserve_tokens: u64,
 ) -> Vec<AgentMessage> {
     let llm_messages = convert_to_llm(messages);
     let conversation_text = super::compaction_utils::serialize_conversation(&llm_messages);
@@ -143,7 +147,10 @@ pub type SummaryDeltaSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 /// Returns an error when the summarizer wire call fails, when its reply
 /// stops with an error, a tool call, or an abort, or when its joined text
 /// is empty (all labeled with `failure`).
-#[allow(clippy::too_many_arguments)] // Each summary carries its owning conversation and request metadata.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each summary carries its owning conversation and request metadata"
+)]
 pub async fn complete_summary_call(
     model: &pa_types::ai::Model,
     session_id: &str,

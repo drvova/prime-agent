@@ -38,12 +38,16 @@ mod spawn_record_tests;
 #[cfg(test)]
 mod tests;
 
-// Read only by this facade's in-file tests; the lib-target import is flagged unused.
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "only this facade's in-file tests read them; the lib build sees the import unused"
+)]
 use supervision::{MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS};
 
-// Called only by this facade's in-file test modules; the lib-target import is unused.
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "only this facade's in-file test modules call them; the lib build sees the import unused"
+)]
 use sessions::{saved_session_row, saved_session_summary};
 
 pub(crate) use options::ClientRouting;

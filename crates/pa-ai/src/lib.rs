@@ -5,7 +5,10 @@
 //!
 //! Wire-shape enums mirror the TS tagged unions 1:1, so `result_large_err` is allowed
 //! crate-wide rather than boxing payloads.
-#![allow(clippy::result_large_err)]
+#![expect(
+    clippy::result_large_err,
+    reason = "wire-shape enums mirror the TS tagged unions 1:1, so errors carry their payloads unboxed"
+)]
 
 pub mod admission;
 pub mod billing;

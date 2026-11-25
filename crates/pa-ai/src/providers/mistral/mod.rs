@@ -59,7 +59,10 @@ impl MistralPromptMode {
 }
 
 /// Tool selection.
-#[allow(dead_code)] // full TS option surface; variants set by callers
+#[expect(
+    dead_code,
+    reason = "the enum keeps the TS option surface; callers set only some variants"
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum MistralToolChoice {
     Auto,

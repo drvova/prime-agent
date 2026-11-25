@@ -21,9 +21,10 @@ use nix::unistd::Pid;
 /// # Panics
 ///
 /// `child` exited first, or 15 seconds passed.
-// Each test target compiles this module for itself, and not every one waits
-// for a daemon through it.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one waits for a daemon through it"
+)]
 pub fn await_listening(socket: &std::path::Path, child: &mut std::process::Child) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while std::os::unix::net::UnixStream::connect(socket).is_err() {
@@ -48,9 +49,10 @@ pub fn await_listening(socket: &std::path::Path, child: &mut std::process::Child
 /// descendant walk settles once every member is stopped, and no member
 /// writes between the walk and its kill. Best effort by design: this runs
 /// inside `Drop`, where a panic would abort the test process.
-// Each test target compiles this module for itself, and not every one reaps
-// through it.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one reaps through it"
+)]
 pub fn reap_tree(child: &mut Child) {
     let root = child.id();
     signal(root, Signal::SIGSTOP);
