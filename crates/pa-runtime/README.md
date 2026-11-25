@@ -2,8 +2,8 @@
 
 Prime Agent's event-driven runtime: the bus every event goes through, the subscriptions that
 turn events into work, and the per-session task lanes that run it. Being built; nothing uses it
-yet. This is the storage-independent core: storage, the agent turn, the kernel and the wire
-come in later phases behind the traits defined here.
+yet. This is the storage-independent core: storage, the agent turn and the kernel come in later
+phases behind the traits defined here.
 
 ## Scope
 - **Bus** (`Bus::publish`): stores the event through an `EventStore` (which assigns id,
@@ -36,6 +36,29 @@ come in later phases behind the traits defined here.
   is offered to the running task (`TaskRunner::steer`): taken, it is Done; declined, it runs
   next. `cancel_queued` cancels a session's waiting tasks. `TaskQueue::restore` requeues the
   store's queued tasks in order and fails each running one with `"interrupted by restart"`.
+- **Wire2 server** (`WireServer::serve`): one client connection over any `AsyncRead` +
+  `AsyncWrite` pair (the daemon's local socket or named pipe; `tokio::io::duplex` in tests),
+  framed by `pa_types::daemon::framing` with each frame's JSON as the header.
+  - **Hello**: a first frame that is not `hello` at `WIRE2_VERSION` gets `closing` ("restart the
+    client") and the connection ends; then `welcome` with the log's last sequence number.
+  - **Subscribe**: replays `since` from the log (`now`: nothing; `after`: every matching event
+    above `seq`; `tail`: the last `count` matching events, at most `MAX_TAIL`), then exactly one
+    `backfilled{through_seq}`, then live events above it. No gap and no duplicate: the
+    connection's listener is registered before `welcome`, the replay reads the log only up to its
+    last event at that moment, and live events at or below `through_seq` are skipped. A live-only
+    topic (none yet: the bus stores every event) has nothing to replay. A subscribe with an id in
+    use restarts it.
+  - **Lag**: frames wait in a bounded per-connection queue (`WireConfig::outbound_capacity`). A
+    client that stops reading stalls only its own connection: the bus drops the oldest events for
+    that listener alone, and the connection catches up from the log in order. Live-only events
+    lost that way cannot be recovered.
+  - **Publish**: only on `CLIENT_TOPICS` (`agent/<id>/input`), as `Trust::Owner`, with the
+    client's `hello` name as `source` and `<id>` as the session; the reply is `{"seq": n}`.
+  - **Query / call**: the wire keeps the operation's name a string (an unknown name costs one
+    error reply, not the connection); the server parses it into `Query` or `Call`, refuses an
+    unknown one, and runs `Handlers` on its own task, at most `IN_FLIGHT` per connection.
+  - A malformed frame, a second `hello`, or an outbound frame over the frame limits ends the
+    connection with `closing`.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
 
@@ -43,14 +66,17 @@ come in later phases behind the traits defined here.
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
 `TaskStore`). No agent turn, model call, kernel or session actor (behind `TaskRunner`,
 `ModelCaller` and `TaskSink`). No event sources (`pa-sources`, publishing through `Intake`). No
-wire server: `Listener` is what one reads. No subscription persistence, live-only topics, or
+socket listener (the daemon accepts connections and hands each to `WireServer::serve`), and no
+query or call backend (behind `Handlers`). No subscription persistence, live-only topics, or
 trust gate yet. Nothing bounds how wide a cascade grows within the hop limit, or how many
 events an `Intake` buffers.
 
 ## Public API
 - `Bus`, `BusParts`, `Published`, `Listener`, `Heard`, `Intake`, `BusClosed`,
   `DuplicateSubscription`.
-- `EventStore`, `StateStore`, `StateKey`, `StateWrite`, `SessionTree`, `ModelCaller`,
-  `ModelCall`, `TaskSink`, `TaskRequest`.
+- `WireServer`, `WireConfig`, `Handlers`, `Query`, `Call`, `UnknownOperation`,
+  `CLIENT_TOPICS`, `IN_FLIGHT`, `MAX_TAIL`.
+- `EventStore` (`append`, `since`, `before`), `StateStore`, `StateKey`, `StateWrite`,
+  `SessionTree`, `ModelCaller`, `ModelCall`, `TaskSink`, `TaskRequest`.
 - `TaskQueue`, `TaskRunner`, `TaskOutcome`, `Steered`, `TaskStore`, `INTERRUPTED_BY_RESTART`.
 - `MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`, `MemoryTaskStore`.

@@ -180,6 +180,12 @@ where
         lock(&self.inner.registry).remove(id)
     }
 
+    /// The event log this bus appends to.
+    #[must_use]
+    pub fn events(&self) -> &E {
+        &self.inner.events
+    }
+
     /// A listener for every event stored from now on.
     #[must_use]
     pub fn listen(&self) -> Listener {

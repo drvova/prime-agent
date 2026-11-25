@@ -10,8 +10,12 @@
 //! - [`TaskQueue`]: one serial lane per session, sessions in parallel under a
 //!   global cap, run by a [`TaskRunner`] and kept in a [`TaskStore`].
 //!
-//! Storage, the agent turn, the kernel and the wire come later, behind the
-//! traits defined here. The `Memory*` implementations are for tests and
+//! - [`WireServer`]: the wire2 endpoint clients connect to: subscriptions
+//!   with gap-free replay, publishes of client input, and queries and calls
+//!   answered by [`Handlers`].
+//!
+//! Storage, the agent turn and the kernel come later, behind the traits
+//! defined here. The `Memory*` implementations are for tests and
 //! headless use.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -21,6 +25,7 @@ mod routes;
 mod store;
 mod subscriptions;
 mod tasks;
+mod wire;
 
 pub use bus::{Bus, BusClosed, BusParts, Heard, Intake, Listener, Published};
 pub use routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
@@ -28,6 +33,10 @@ pub use store::{EventStore, MemoryEventStore, MemoryStateStore, StateKey, StateS
 pub use subscriptions::{DuplicateSubscription, MemorySessionTree, SessionTree};
 pub use tasks::{
     MemoryTaskStore, Steered, TaskOutcome, TaskQueue, TaskRunner, TaskStore, INTERRUPTED_BY_RESTART,
+};
+pub use wire::{
+    Call, Handlers, Query, UnknownOperation, WireConfig, WireServer, CLIENT_TOPICS, IN_FLIGHT,
+    MAX_TAIL,
 };
 
 /// Locks `mutex`, taking the value even when a panicking holder poisoned it:

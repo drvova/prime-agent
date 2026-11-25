@@ -33,6 +33,14 @@ pub trait EventStore: Send + Sync + 'static {
         seq: u64,
         limit: usize,
     ) -> impl Future<Output = anyhow::Result<Vec<Event>>> + Send;
+
+    /// At most `limit` stored events whose sequence number is below `seq`,
+    /// newest first. `before(u64::MAX, 1)` is the last stored event.
+    fn before(
+        &self,
+        seq: u64,
+        limit: usize,
+    ) -> impl Future<Output = anyhow::Result<Vec<Event>>> + Send;
 }
 
 /// An event log in memory, for tests and headless runs. Clones share the
@@ -69,6 +77,21 @@ impl EventStore for MemoryEventStore {
         let events = lock(&self.events);
         let start = events.partition_point(|event| event.seq <= seq);
         std::future::ready(Ok(events[start..].iter().take(limit).cloned().collect()))
+    }
+
+    fn before(
+        &self,
+        seq: u64,
+        limit: usize,
+    ) -> impl Future<Output = anyhow::Result<Vec<Event>>> + Send {
+        let events = lock(&self.events);
+        let end = events.partition_point(|event| event.seq < seq);
+        std::future::ready(Ok(events[..end]
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect()))
     }
 }
 
