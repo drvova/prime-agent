@@ -108,7 +108,7 @@ fn a_first_write_imports_the_original_and_never_writes_it() {
         let listed = store.list(&sessions).unwrap().transcripts.len();
         store.repair_tail(&original);
         store.append(&original, b"{\"type\":\"custom\"}\n").unwrap();
-        let mut expected = captured.clone();
+        let mut expected = captured;
         expected.extend_from_slice(b"{\"type\":\"custom\"}\n");
         results.push((
             read_through,
