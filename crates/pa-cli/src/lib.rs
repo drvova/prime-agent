@@ -29,6 +29,7 @@ pub(crate) mod daemon_discovery;
 pub(crate) mod daemon_mode;
 pub(crate) mod daemon_session_list;
 pub(crate) mod descriptor_login;
+pub(crate) mod export_jsonl_command;
 pub(crate) mod factory_command;
 pub(crate) mod file_processor;
 pub(crate) mod global_flags;
