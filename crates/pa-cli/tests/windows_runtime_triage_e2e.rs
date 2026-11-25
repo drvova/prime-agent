@@ -118,8 +118,7 @@ fn daemon_endpoint(dir: &Path) -> PathBuf {
         let _ = dir;
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|stamp| stamp.as_nanos())
-            .unwrap_or_default();
+            .map_or_default(|stamp| stamp.as_nanos());
         PathBuf::from(format!(
             r"\\.\pipe\prime-agent-triage-{}-{unique}",
             std::process::id()
