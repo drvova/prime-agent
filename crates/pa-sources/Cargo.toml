@@ -1,0 +1,38 @@
+[package]
+name = "pa-sources"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Prime Agent's event sources: timers, folder watches and webhooks"
+
+[dependencies]
+pa-types = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = "0.7"
+# Folder watches: the notify the TUI's settings watcher already uses.
+notify = "8"
+globset = "0.4"
+# The webhook listener: hyper's own HTTP/1 server (hyper is already in the
+# graph as reqwest's client), not a framework.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+# Webhook signatures: HMAC-SHA256 (`X-Signature-256: sha256=<hex>`), with the
+# hmac and sha2 pa-ai and pa-models already sign with; subtle compares bearer
+# tokens in constant time.
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+subtle = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

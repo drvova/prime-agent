@@ -9,6 +9,7 @@ members = [
     "crates/pa-agent",
     "crates/pa-shell",
     "crates/pa-runtime",
+    "crates/pa-sources",
     "crates/pa-core",
     "crates/pa-daemon",
     "crates/pa-tui",

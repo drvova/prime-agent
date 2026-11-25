@@ -195,6 +195,7 @@ The table summarizes each crate's current direct workspace dependencies:
 | `pa-shell` | Built-in bash-compatible shell and its utilities | `pa-types` |
 | `pa-log` | SQLite store: the event log, session transcripts and the agent's other state (the transcript store's database) | `pa-types` |
 | `pa-runtime` | Event-driven runtime: bus, subscriptions, task lanes and their SQLite stores, the sessions that run tasks as turns, and the headless turn driver | `pa-types`, `pa-log`, `pa-core`, `pa-agent` |
+| `pa-sources` | Event sources: timers, folder watches, webhooks | `pa-types` |
 | `pa-ai` | Providers, model registry, streaming | `pa-types` |
 | `pa-models` | Live model catalog and transport | `pa-ai`, `pa-types` |
 | `pa-core` | Session engine, tools, skills, Scheme kernel, settings, transcript store | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-shell`, `pa-telemetry`, `pa-log` |
