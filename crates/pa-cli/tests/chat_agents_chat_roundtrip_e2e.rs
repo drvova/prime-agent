@@ -2,10 +2,20 @@
 //! a chat run that exits through the agents-back handoff holds its
 //! visible-window entry packs, the agents view's Enter opens the same
 //! session, and the re-entry adopts the handoff and renders the same rows.
-// Pedantic-gate dispositions: the round-trip flows are intentionally
-// linear (fn-length is style, not correctness), and their async test
-// futures are stack-resident by shape.
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the headless `run_interactive` futures stay on the stack; each test awaits one at a time"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the two round-trip reentry scenarios each read top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod support;

@@ -1,5 +1,7 @@
-// too_many_lines: style gate only.
-#![allow(clippy::too_many_lines)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "the packaging dry run and the reference SHA-256 each read top to bottom"
+)]
 
 //! Kernel-packaging e2e: the packaged (exe-adjacent) release layout boots
 //! a session with NO `PI_PACKAGE_DIR`, and the packaging script produces
@@ -626,7 +628,10 @@ fn sha256_file(path: &Path) -> String {
 }
 
 /// SHA-256 (FIPS 180-4), pure std so the e2e needs no extra dev-dependency.
-#[allow(clippy::many_single_char_names)] // the RFC 6234 SHA-256 reference names (h, w, a..g)
+#[expect(
+    clippy::many_single_char_names,
+    reason = "the RFC 6234 SHA-256 reference names (h, w, a..g)"
+)]
 fn sha256(data: &[u8]) -> [u8; 32] {
     const K: [u32; 64] = [
         0x428a_2f98,
