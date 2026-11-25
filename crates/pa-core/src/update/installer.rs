@@ -401,9 +401,13 @@ pub async fn run_bundled_installer(
     prefix: &Path,
     args: &[&std::ffi::OsStr],
 ) -> std::result::Result<Installed, UpdateFailure> {
-    // `mut` serves the Windows handoff's post-pre-flight rewind; the
-    // unix path only ever borrows the handle.
-    #[cfg_attr(not(windows), allow(unused_mut))]
+    #[cfg_attr(
+        not(windows),
+        expect(
+            unused_mut,
+            reason = "only the Windows handoff rewinds the handle after the pre-flight; unix only borrows it"
+        )
+    )]
     let (script, mut handle) =
         write_script(BUNDLED_INSTALLER.as_bytes()).map_err(|error| UpdateFailure {
             message: format!("could not write the bundled installer: {error:#}"),
@@ -1180,11 +1184,21 @@ mod tests {
     /// The sandboxed preserve fixture: a session file under a home the installer
     /// world shares, with its exact bytes snapshotted for the byte-identity assert.
     struct Preserve {
-        // The byte-identity readers are the unix `assert_untouched`
-        // checks; on other platforms the fixture only stages the file.
-        #[cfg_attr(not(unix), allow(dead_code))]
+        #[cfg_attr(
+            not(unix),
+            expect(
+                dead_code,
+                reason = "only the unix `assert_untouched` checks read the snapshot; elsewhere it only stages the file"
+            )
+        )]
         session_file: PathBuf,
-        #[cfg_attr(not(unix), allow(dead_code))]
+        #[cfg_attr(
+            not(unix),
+            expect(
+                dead_code,
+                reason = "only the unix `assert_untouched` checks read the snapshot bytes"
+            )
+        )]
         bytes: Vec<u8>,
     }
 

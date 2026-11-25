@@ -2,8 +2,13 @@
 //! session file carries the `thread_goal_state` rows a started goal writes,
 //! and a worker killed mid-goal rebuilds with the goal rehydrated — objective,
 //! usage counters, and continuation count from the durable rows, not a fresh engine.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`killed_mid_goal_worker_rehydrates_the_goal_with_counts` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -20,7 +25,10 @@ const OBJECTIVE: &str = "ship the goal-recovery port";
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

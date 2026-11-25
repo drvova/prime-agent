@@ -766,9 +766,13 @@ fn probe_effective_uid(dir: &std::path::Path) -> Option<u32> {
 }
 
 /// The fence's verdict for one send.
-// Only `Accepted` is constructed on Windows (named pipes keep their
-// connect-time ACL model; the fence is unix-only).
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(
+    windows,
+    expect(
+        dead_code,
+        reason = "only `Accepted` is built on Windows: named pipes keep their connect-time ACL model"
+    )
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FenceVerdict {
     /// The target is this process's own socket: the send may connect.
@@ -803,9 +807,10 @@ async fn pane_socket_acceptable(socket_target: &str) -> FenceVerdict {
 }
 
 #[cfg(windows)]
-// The async stays for the shared call site (the unix arm awaits); the
-// windows pipe arm needs no await for its connect-time ACL verdict.
-#[allow(clippy::unused_async)]
+#[expect(
+    clippy::unused_async,
+    reason = "the async stays for the shared call site; the pipe arm's ACL verdict needs no await"
+)]
 async fn pane_socket_acceptable(_socket_target: &str) -> FenceVerdict {
     // Named pipes carry their own ACL model at connect time.
     FenceVerdict::Accepted

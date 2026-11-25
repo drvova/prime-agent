@@ -16,8 +16,7 @@ use super::response::stream_assistant_response;
 use super::tools::execute_tool_calls;
 use super::{AgentEventSink, AgentLoopConfig};
 
-// Direct port of the TS turn loop.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "a direct port of the TS turn loop")]
 pub(crate) async fn run_loop(
     current_context: &mut AgentContext,
     new_messages: &mut Vec<AgentMessage>,

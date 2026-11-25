@@ -208,8 +208,10 @@ pub struct Paired {
 }
 
 /// A trial's cost at `prices`.
-// Token counts stay far below 2^53.
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "token counts stay far below 2^53"
+)]
 fn trial_cost(tokens: &TokenSplit, prices: &Prices) -> f64 {
     ((tokens.uncached_input + tokens.cache_write) as f64 * prices.input
         + tokens.cache_read as f64 * prices.cached_input
@@ -218,8 +220,7 @@ fn trial_cost(tokens: &TokenSplit, prices: &Prices) -> f64 {
 }
 
 /// Each task's means, in task order.
-// Counts stay far below 2^53.
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, reason = "counts stay far below 2^53")]
 fn task_means(trials: &[Trial], prices: &Prices) -> Vec<TaskMeans> {
     let mut by_task: BTreeMap<&str, Vec<&Trial>> = BTreeMap::new();
     for trial in trials {
@@ -246,8 +247,7 @@ fn task_means(trials: &[Trial], prices: &Prices) -> Vec<TaskMeans> {
 
 /// `[pass rate, cost/task, cost/pass, time/task, time/pass, steps/task]`
 /// over the tasks at `picks` (a resample may pick a task twice).
-// Counts stay far below 2^53.
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, reason = "counts stay far below 2^53")]
 fn run_statistics(tasks: &[TaskMeans], picks: &[usize]) -> [Option<f64>; 6] {
     let count = picks.len() as f64;
     let mean = |value: &dyn Fn(&TaskMeans) -> f64| {
@@ -293,11 +293,11 @@ fn bootstrap<const K: usize>(
     }
     draws.map(|mut values| {
         values.sort_by(f64::total_cmp);
-        // Lengths stay far below 2^53.
-        #[allow(
+        #[expect(
             clippy::cast_precision_loss,
             clippy::cast_possible_truncation,
-            clippy::cast_sign_loss
+            clippy::cast_sign_loss,
+            reason = "lengths stay far below 2^53"
         )]
         let at = |quantile: f64| {
             let last = values.len().checked_sub(1)?;
@@ -311,8 +311,7 @@ fn bootstrap<const K: usize>(
 
 /// Aggregate one run of trials.
 #[must_use]
-// Counts stay far below 2^53.
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, reason = "counts stay far below 2^53")]
 pub fn summarize(trials: &[Trial], prices: &Prices, options: Bootstrap) -> Summary {
     let per_task = task_means(trials, prices);
     let all: Vec<usize> = (0..per_task.len()).collect();
@@ -376,8 +375,7 @@ pub fn summarize(trials: &[Trial], prices: &Prices, options: Bootstrap) -> Summa
 
 /// Compare `run` against `baseline` per task, over the tasks both ran.
 #[must_use]
-// Counts stay far below 2^53.
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, reason = "counts stay far below 2^53")]
 pub fn paired(run: &[Trial], baseline: &[Trial], prices: &Prices, options: Bootstrap) -> Paired {
     let baseline: BTreeMap<String, TaskMeans> = task_means(baseline, prices)
         .into_iter()

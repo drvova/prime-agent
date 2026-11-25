@@ -1,5 +1,7 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures).
-#![allow(clippy::large_futures)]
+#![expect(
+    clippy::large_futures,
+    reason = "a session's futures are large by design, as in src/lib.rs"
+)]
 
 //! Verifier integration tests for the session-creation kernel prewarm: a main session with the
 //! config flag boots its kernel at creation (so a compaction with no `eval` use still lands the
@@ -88,7 +90,10 @@ async fn wait_for_kernel_boot(engine: &pa_core::session_engine::engine::SessionE
 /// durable entries — with the empty-namespace arm, because the model never
 /// ran a cell.
 #[tokio::test(flavor = "multi_thread")]
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the faux provider registry is process-global; the lock serializes the tests across awaits"
+)]
 async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
     let _guard = FAUX_LOCK
         .lock()
@@ -191,7 +196,10 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
 /// call joins a booted kernel instead of paying the cold start after its
 /// first model call.
 #[tokio::test(flavor = "multi_thread")]
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the faux provider registry is process-global; the lock serializes the tests across awaits"
+)]
 async fn subagent_sessions_boot_their_kernel_before_the_first_cell() {
     let _guard = FAUX_LOCK
         .lock()
@@ -277,7 +285,10 @@ impl Drop for CleanTelemetryEnv {
 /// pre-install-window finding: the switch used to arrive only at the
 /// first-turn install, so an off-period prewarm boot counted.
 #[tokio::test(flavor = "multi_thread")]
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the faux provider registry is process-global; the lock serializes the tests across awaits"
+)]
 async fn an_off_switch_at_creation_keeps_the_prewarm_window_uncounted() {
     let _env = CleanTelemetryEnv::default();
     let _guard = FAUX_LOCK

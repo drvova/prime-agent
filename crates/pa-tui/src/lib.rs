@@ -3,24 +3,30 @@
 //! Rust port of the TS reference TUI (packages/tui) plus the interactive agent view
 //! from `coding-agent/src/modes/interactive`. Components render styled lines;
 //! the terminal layer paints them with crossterm + ratatui diffing.
-// Pedantic-gate exceptions: casts narrow structurally bounded values (screen coordinates,
-// byte counts, timestamps); guarded conversions would add panic paths the bounds guarantee away.
-#![allow(
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    reason = "casts narrow structurally bounded values (screen coordinates, byte counts, timestamps)"
 )]
-// Render routes are flat tables; splitting would add indirection without changing the flow.
-#![allow(clippy::too_many_lines)]
-// Widget state structs carry independent flag bits; a nested struct would add indirection.
-#![allow(clippy::struct_excessive_bools, clippy::fn_params_excessive_bools)]
-// The futures are bounded by the surface's lifetime; boxing would add an allocation to the
-// steady-state loop.
-#![allow(clippy::large_futures)]
-// The wrappers preserve a uniform Result-returning API surface; unwrap removals would ripple
-// without changing behavior.
-#![allow(clippy::unnecessary_wraps)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "render routes are flat tables; splitting adds indirection without changing the flow"
+)]
+#![expect(
+    clippy::struct_excessive_bools,
+    clippy::fn_params_excessive_bools,
+    reason = "widget state carries independent flag bits; a nested struct adds indirection"
+)]
+#![expect(
+    clippy::large_futures,
+    reason = "the futures live as long as the surface; boxing adds an allocation to the steady-state loop"
+)]
+#![expect(
+    clippy::unnecessary_wraps,
+    reason = "the wrappers keep a uniform Result-returning API surface"
+)]
 
 pub mod agents_view;
 pub mod agents_view_forest;

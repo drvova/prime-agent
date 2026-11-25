@@ -2,8 +2,13 @@
 //! and 1,000 spawned children (each with a persisted session file in the
 //! artifacts tree, none resident) must surface the full 1,001-row roster
 //! from `list --all`, performance-bounded (TS: 1,001 rows in 0.78s).
-// Style gate only, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`subscribe_after_spawn_then_shutdown_seeds_the_passive_child` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -22,7 +27,10 @@ const LIST_ALL_BOUND: Duration = Duration::from_secs(10);
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

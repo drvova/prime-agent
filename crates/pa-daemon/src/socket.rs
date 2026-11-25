@@ -198,10 +198,14 @@ async fn unlink_stale_socket(path: &Path, expected: SocketIdentity) -> Result<()
 /// # Errors
 ///
 /// Does not error: there is no path to prepare for a named pipe.
-// The signature stays async for the shared unix callers (the await is
-// the unix arm's own; the pipe arm has no path to prepare).
 #[cfg(not(unix))]
-#[cfg_attr(not(unix), allow(clippy::unused_async))]
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unused_async,
+        reason = "the signature stays async for the unix callers; a named pipe has no path to prepare"
+    )
+)]
 pub async fn prepare_socket_path(_path: &Path) -> Result<()> {
     Ok(())
 }

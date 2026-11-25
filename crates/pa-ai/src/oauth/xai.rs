@@ -50,6 +50,10 @@ struct XaiResponse {
 ///
 /// Returns an error when the login is cancelled ([`LOGIN_CANCELLED`]), the device
 /// authorization fails, the code expires, or the token response fails validation.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the device authorization, user prompt and token poll are one sequence; its cast exceptions count toward the limit"
+)]
 pub async fn login_xai(
     http: &dyn ProviderHttp,
     ui: &dyn OAuthLoginUi,
@@ -84,11 +88,16 @@ pub async fn login_xai(
     let verification_uri_raw = required_string(&response.body, "verification_uri")?;
     let url = verification_uri(&verification_uri_raw)?;
     let expires_in = positive_seconds(response.body.get("expires_in"))?;
-    // expires_in is positive_seconds' filtered positive second count; u64 is Duration's unit.
-    #[allow(clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "expires_in is the filtered positive second count; Duration takes u64"
+    )]
     let deadline = std::time::Instant::now() + Duration::from_secs(expires_in as u64);
-    // The wire's interval is a positive f64 second count; u64 ms is the poll's unit.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the wire's interval is a positive f64 second count; the poll waits in u64 ms"
+    )]
     let mut interval_ms = response
         .body
         .get("interval")
@@ -106,8 +115,10 @@ pub async fn login_xai(
             break;
         }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        // The remaining deadline (u128 millis) fits u64 comfortably; u64 ms is the request timeout's unit.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the remaining deadline (u128 millis) fits u64; the request timeout takes u64 ms"
+        )]
         let token = post_form(
             http,
             ui,
@@ -126,8 +137,11 @@ pub async fn login_xai(
         match token.body.get("error").and_then(serde_json::Value::as_str) {
             Some("authorization_pending") => {}
             Some("slow_down") => {
-                // The slow_down bump is a positive wire f64 second count; u64 ms is the poll's unit.
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "the slow_down bump is a positive wire f64 second count; the poll waits in u64 ms"
+                )]
                 let next = token
                     .body
                     .get("interval")
@@ -307,8 +321,10 @@ fn required_string(
         .ok_or_else(|| format!("Invalid xAI OAuth response field: {field}"))
 }
 
-// The wire's expires_in is an integer second count read through JSON f64; i64 is the port's unit.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the wire's expires_in is an integer second count read through JSON f64"
+)]
 fn positive_seconds(value: Option<&serde_json::Value>) -> Result<i64, String> {
     let seconds = value
         .and_then(serde_json::Value::as_f64)
@@ -350,8 +366,10 @@ async fn cancel_aware_sleep(ui: &dyn OAuthLoginUi, total: Duration) -> Result<()
     }
 }
 
-// Epoch millis fit i64 for ~292 million years.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "epoch milliseconds fit i64 for about 292 million years"
+)]
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -515,8 +533,10 @@ mod tests {
         assert_eq!(credentials.access, "grok-access");
         assert_eq!(credentials.refresh, "grok-refresh");
         // TS: expires = now + lifetime - min(5 minutes, lifetime / 2).
-        // Epoch millis fit i64; the assertion's tolerance covers the cast convention.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "epoch milliseconds fit i64; the assertion's tolerance covers the cast"
+        )]
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -563,8 +583,10 @@ mod tests {
         let ui = ScriptedUi::new();
         let credentials = login_xai(&http, &ui).await.unwrap();
         // The absent expires_in defaults to one hour (TS 3600).
-        // Epoch millis fit i64; the assertion's tolerance covers the cast convention.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "epoch milliseconds fit i64; the assertion's tolerance covers the cast"
+        )]
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -752,8 +774,10 @@ mod tests {
         // The endpoint omitted a refresh token: the prior one stays.
         assert_eq!(credentials.refresh, "grok-old");
         // The lifetime is capped: min(5 minutes, lifetime / 2) = 300s.
-        // Epoch millis fit i64; the assertion's tolerance covers the cast convention.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "epoch milliseconds fit i64; the assertion's tolerance covers the cast"
+        )]
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

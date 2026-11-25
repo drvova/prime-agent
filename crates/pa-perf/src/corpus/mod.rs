@@ -476,7 +476,10 @@ pub(crate) fn regenerate_for_suite(options: &CorpusOptions) -> anyhow::Result<Ma
 
 /// A one-child spawn through the product's ledger, then the recursion's row
 /// accounting.
-#[allow(clippy::too_many_arguments)] // the spawn inputs are the tree site's own facts
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the spawn inputs are the tree site's own facts"
+)]
 fn spawn_and_count(
     ledger: &RlmSpawnLedger,
     artifacts_root: &Path,

@@ -9,18 +9,16 @@
 //! sidecars). The bench harness drives the real release binary under a pty.
 //! The trials aggregation reads saved session files through pa-core's run
 //! metrics and aggregates them the `FrontierHarness` Eval way.
-// Pedantic-gate exceptions. Casts: the values are bounded by the corpus
-// shapes and the bench's own measurements (row and byte counts, pty sizes,
-// millisecond samples, the seeded generator's draws); the statistics are
-// floats by nature. too_many_lines: the corpus writers and the bench's
-// scenario table are flat sequences; splitting them adds indirection
-// without changing the flow.
-#![allow(
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
-    clippy::too_many_lines
+    reason = "values are bounded by the corpus shapes and the bench's own measurements; the statistics are floats"
+)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "the corpus writers and the bench's scenario table are flat sequences"
 )]
 
 pub mod bench;

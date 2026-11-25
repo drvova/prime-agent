@@ -1,5 +1,10 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures).
-#![allow(clippy::large_futures)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "a session's futures are large by design, as in src/lib.rs"
+    )
+)]
 
 //! Live kernel: a later cell re-reads a file the model already saw; the transcript shows one
 //! "unchanged since turn N" line with a handle instead of the file again.

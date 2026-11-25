@@ -2,8 +2,13 @@
 //! `get_context_tree` must answer from memory, never by walking the artifact
 //! tree inline (measured 14-19s per call before the cache). Every round trip
 //! stays under the sub-second ceiling, and the seeded children DO appear.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`get_context_tree_answers_from_memory_on_a_grown_store` is one scenario, top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;
@@ -32,7 +37,10 @@ const SEEDED_ASSISTANT_CONTENT_KB: usize = 12;
 
 struct Daemon {
     child: Child,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "the spawn records the socket path; the tests reach the daemon only through the client"
+    )]
     socket: PathBuf,
 }
 

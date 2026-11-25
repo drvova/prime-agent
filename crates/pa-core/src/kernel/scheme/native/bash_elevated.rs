@@ -51,8 +51,13 @@
 //! commands with their output piped back, until the session ends or the
 //! helper has been idle for ten minutes.
 
-// Off Windows only the tests use the wire: there is no helper to talk to.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(
+    not(windows),
+    expect(
+        dead_code,
+        reason = "off Windows there is no helper to talk to: only the tests use the wire"
+    )
+)]
 #[path = "bash_elevated/protocol.rs"]
 mod protocol;
 #[cfg(all(test, target_os = "linux"))]
