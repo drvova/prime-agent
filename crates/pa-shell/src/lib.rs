@@ -4,7 +4,6 @@
 #![allow(
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
     clippy::struct_excessive_bools
 )]

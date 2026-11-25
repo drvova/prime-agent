@@ -2,23 +2,8 @@
 //! over a seeded ~50MB session, `PA_COMPACTION_TRACE` capturing every phase
 //! boundary and the client recording the wire arrival times (the loader window
 //! a user sees). Measurement, not a behavioral contract; run with --ignored.
-#![allow(clippy::large_futures)]
-// 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 // Fn length is a style gate, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -211,8 +196,6 @@ fn serve(mut stream: TcpStream, requests: &Arc<Mutex<Vec<Value>>>) -> std::io::R
     )
 }
 
-// The child is reaped in Supervisor::drop (kill + wait); the lint cannot see the Drop guard.
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path, trace_path: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))

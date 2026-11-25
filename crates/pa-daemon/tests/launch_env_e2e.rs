@@ -7,9 +7,6 @@
 //! one session's forwarded env never bleeds into another's worker; the
 //! durable artifacts (descriptor, update-restart roster) never carry the
 //! client env; and an `rlm.spawn` child inherits the parent worker's env.
-// Pedantic-gate dispositions (fleet-uniform ruling; see kernel_dispose_e2e).
-#![allow(clippy::large_futures)]
-#![allow(clippy::too_many_lines)]
 #![cfg(unix)]
 
 mod common;

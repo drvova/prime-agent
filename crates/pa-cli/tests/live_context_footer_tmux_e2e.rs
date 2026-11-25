@@ -4,8 +4,6 @@
 //! while the reply still streams, before the turn ends. Every wait polls the rendered pane for an
 //! observable change; none sleeps a fixed interval to let the product catch up.
 #![cfg(unix)]
-// too_many_lines: style gate only (one linear user-level scenario).
-#![allow(clippy::too_many_lines)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

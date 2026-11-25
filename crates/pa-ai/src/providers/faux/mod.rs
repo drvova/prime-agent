@@ -133,7 +133,6 @@ pub type FauxResponseFactory = Arc<
 >;
 
 #[derive(Clone)]
-#[allow(clippy::large_enum_variant)] // the TS shape is a tagged union of the same payloads
 pub enum FauxResponseStep {
     Message(AssistantMessage),
     /// A message whose stream starts after `delay_ms` (harness pacing: the delay holds the request
@@ -509,7 +508,6 @@ async fn schedule_chunk(chunk: &str, tokens_per_second: Option<f64>) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 // Long by design: mirrors the provider's stream shape.
 #[allow(clippy::too_many_lines)]
 async fn stream_with_deltas(

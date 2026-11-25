@@ -7,8 +7,6 @@
 //! The
 //! rotation here is an unexpired replacement written to disk; the OAuth
 //! expiry-refresh path is pinned separately by the engine battery.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
 #![cfg(unix)]
 
 mod common;
@@ -156,7 +154,6 @@ fn serve(mut stream: TcpStream, recorded: &Arc<Mutex<Vec<String>>>) -> std::io::
     )
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let stderr_path = agent_dir.join("supervisor-stderr.log");

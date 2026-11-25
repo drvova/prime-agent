@@ -1,12 +1,5 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines/casts).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// Pedantic-gate dispositions as src/lib.rs (large_futures).
+#![allow(clippy::large_futures)]
 
 //! Verifier integration tests for the session-creation kernel prewarm: a main session with the
 //! config flag boots its kernel at creation (so a compaction with no `eval` use still lands the

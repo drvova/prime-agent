@@ -1,15 +1,6 @@
 // The exact-float `assert_eq!`s assert parsed fixture values (byte-identity
 // of JSON-written prices); an epsilon compare would weaken the assertion.
 #![allow(clippy::float_cmp)]
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines/casts).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 
 //! Verifiers for the live catalog wiring: the credentialed refresh lands the account's private
 //! `internal/*` models, the catalog-repo (layer A) entries, and live pricing; without credentials

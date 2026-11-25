@@ -2,23 +2,8 @@
 //! timing out at the 10s client cap): a client command must answer fast while a turn
 //! streams (TS bar: a synchronous read on the event loop); the mock holds the turn
 //! open, so every measurement runs provably mid-flight.
-#![allow(clippy::large_futures)]
-// 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 // Fn length is a style gate, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -147,7 +132,6 @@ fn serve(mut stream: TcpStream, requests: &Arc<Mutex<usize>>) -> std::io::Result
     stream.write_all(tail.as_bytes())
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
