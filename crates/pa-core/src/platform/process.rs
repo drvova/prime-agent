@@ -712,7 +712,6 @@ pub fn normalized_exit_code(status: &std::process::ExitStatus) -> Option<i32> {
 /// policy: pinned constants and externs, no windows-sys dependency).
 #[cfg(windows)]
 mod win32 {
-    #![allow(non_snake_case)]
 
     use std::ffi::c_void;
 

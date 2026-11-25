@@ -2,23 +2,8 @@
 //! `aborted` arm): a threshold compaction aborted mid-summarizer records the
 //! durable `cancelled` outcome row, broadcasts its pair before the aborted
 //! `compaction_end`, never commits an entry, and the session keeps working.
-#![allow(clippy::large_futures)]
-// 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 // Fn length is a style gate, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
@@ -216,7 +201,6 @@ fn serve(
     )
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))

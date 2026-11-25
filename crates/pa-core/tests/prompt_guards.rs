@@ -1,13 +1,3 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines/casts).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-
 //! Prompt guard tests: cache safety (static layers never contain dynamic content; the cached prefix
 //! is byte-identical across sessions) and tool surface (the API reference the prompt is spliced
 //! from documents exactly the functions the Scheme kernel's sources define, with their call forms;

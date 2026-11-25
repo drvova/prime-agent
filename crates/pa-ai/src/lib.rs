@@ -3,9 +3,9 @@
 //! The wire/domain types live in `pa-types` (the only dependency, one-way) and are re-exported
 //! from [`types`]; per-provider internals are `pub(crate)`.
 //!
-//! Wire-shape enums mirror the TS tagged unions 1:1, so `large_enum_variant` and
-//! `result_large_err` are allowed crate-wide rather than boxing payloads.
-#![allow(clippy::large_enum_variant, clippy::result_large_err)]
+//! Wire-shape enums mirror the TS tagged unions 1:1, so `result_large_err` is allowed
+//! crate-wide rather than boxing payloads.
+#![allow(clippy::result_large_err)]
 
 pub mod admission;
 pub mod billing;

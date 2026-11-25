@@ -1,14 +1,5 @@
-// large_futures: stack futures on hot paths by design. too_many_lines:
-// style gate only. Casts: 64-bit targets; narrowing sits at bounded
-// OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// too_many_lines: style gate only.
+#![allow(clippy::too_many_lines)]
 
 //! End-to-end verifier for the agents-view session search (Kevin's
 //! 2026-09-23 directive): queries match the session NAME, the durable
@@ -30,7 +21,6 @@ use pa_tui::interactive::SessionSelection;
 
 struct Supervisor {
     child: Child,
-    #[allow(dead_code)]
     socket: PathBuf,
 }
 
@@ -78,7 +68,6 @@ fn graceful_shutdown(socket: &Path) {
     let _ = reader.read_line(&mut response);
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     let socket = dir.join("daemon.sock");
     let agent_dir = dir.join("agent");

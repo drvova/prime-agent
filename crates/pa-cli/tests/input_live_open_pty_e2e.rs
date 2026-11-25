@@ -1,17 +1,3 @@
-// The Tier-C/D ruling (fleet-uniform, 2026-09-28): stack-resident futures
-// by design on hot paths; the fn-length threshold is a style gate, not
-// correctness; the harness fns are intentionally linear; 64-bit targets -
-// the narrowing sits at OS/protocol boundaries where the values are
-// bounded (pid syscalls, epoch/elapsed milliseconds).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-
 //! Real-pty e2e for the input-latency contract (the operator's
 //! "first page fast, time-to-type slow" report + AGENTS.md
 //! "Performance and the critical path"): a NEW session's interactive

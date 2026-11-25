@@ -25,8 +25,6 @@
 //! helper's own that the helper ends (`bash_elevated/windows.rs`, which also
 //! states that design's threat model).
 
-#![allow(non_snake_case)] // The Win32 functions keep their documented names.
-
 use std::collections::HashSet;
 use std::ffi::c_void;
 

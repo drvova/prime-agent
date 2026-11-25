@@ -1,12 +1,5 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines/casts).
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// Pedantic-gate dispositions as src/lib.rs (large_futures).
+#![allow(clippy::large_futures)]
 
 //! Live kernel: a cell prints far past the transcript cap, its result carries the
 //! spill's handle, and a later cell pages the middle back in with `ctx.page`

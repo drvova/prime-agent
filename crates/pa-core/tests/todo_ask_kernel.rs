@@ -1,5 +1,5 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines).
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+// Pedantic-gate dispositions as src/lib.rs (large_futures).
+#![allow(clippy::large_futures)]
 
 //! Verifier: the kernel `todo.*` and `ask(...)` APIs over a REAL kernel and the full
 //! session-engine tool path. Session one sets and updates a todo list and asks a question a

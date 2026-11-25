@@ -1,14 +1,3 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate
-// only. Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-
 //! The `prime-agent update` e2e (the TS->Rust migration path): the real
 //! binary, a mocked installer-script download (a local one-shot HTTP server),
 //! and a sandboxed HOME — the launcher lands under the sandbox prefix, the
