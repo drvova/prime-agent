@@ -5,6 +5,8 @@
 
 use std::collections::BTreeSet;
 
+use pa_types::event_log::MAX_HOPS;
+
 use super::*;
 
 /// The source the examples define, with its schema.
@@ -194,5 +196,64 @@ async fn a_topic_filter_subscription_hears_the_topics_it_matches() {
             )
         ))
     );
+    bed.runtime.shutdown().await;
+}
+
+/// Two sessions each subscribed to the other's `done` run a chain of tasks,
+/// each caused by the `done` before it, which ends at the hop limit: the
+/// task that would pass it is not queued, and one `system/loop_dropped`
+/// says so.
+#[tokio::test]
+async fn subscriptions_to_each_others_done_stop_at_the_hop_limit() {
+    let mut responses = vec![
+        eval_cell("(event-subscribe \"agent/+/done\" \"Again.\")"),
+        json!({ "text": "subscribed" }),
+        eval_cell("(event-subscribe \"agent/+/done\" \"Again.\")"),
+        json!({ "text": "subscribed" }),
+    ];
+    responses.extend(std::iter::repeat_n(
+        json!({ "text": "again" }),
+        2 * MAX_HOPS as usize,
+    ));
+    let mut bed = bed(Value::Array(responses)).await;
+    let first = bed.session.clone();
+    let second = second_session(&bed).await;
+    turn(&mut bed, &first, "subscribe").await;
+    // The second subscription's turn starts the chain: its `done` is the
+    // first's to hear.
+    bed.input_to(&second, "subscribe", None, Trust::Owner).await;
+    // A chain past the limit is a loop that did not stop: it is cut off
+    // where it would have, and fails the comparison.
+    let mut chain = Vec::new();
+    while chain.len() <= usize::from(MAX_HOPS) {
+        let heard = tokio::time::timeout(std::time::Duration::from_secs(60), bed.listener.recv())
+            .await
+            .expect("the chain ends")
+            .expect("the bus is open");
+        let Heard::Event(event) = heard else {
+            panic!("the listener lagged");
+        };
+        let topic = event.event.topic.as_str();
+        if topic == "system/loop_dropped" {
+            chain.push(("loop_dropped".to_string(), event.hops()));
+            break;
+        }
+        if topic.ends_with("/done") {
+            let session = event.event.session.clone().unwrap_or_default();
+            chain.push((session, event.hops()));
+        }
+    }
+    bed.runtime.cancel(&first).await.unwrap();
+    bed.runtime.cancel(&second).await.unwrap();
+    bed.runtime.idle(&first).await;
+    bed.runtime.idle(&second).await;
+    let mut expected: Vec<(String, u8)> = (1..MAX_HOPS)
+        .map(|hops| {
+            let session = if hops % 2 == 1 { &second } else { &first };
+            (session.clone(), hops)
+        })
+        .collect();
+    expected.push(("loop_dropped".to_string(), MAX_HOPS));
+    assert_eq!(chain, expected);
     bed.runtime.shutdown().await;
 }

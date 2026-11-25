@@ -15,7 +15,10 @@ SQLite implementations over `pa-log`.
   - **Loops**: an event a route causes is built with `Event::cause`, so it carries at most its
     cause's and the subscription's trust, and a chain of causes ends at `MAX_HOPS`. The event
     that would pass it is replaced by one `system/loop_dropped`, itself at the end of the
-    chain, so nothing it would cause is published or reported again.
+    chain, so nothing it would cause is published or reported again. A task an `Agent` route
+    queues publishes what its event causes (its `done`, its kernel's publications, its agent
+    messages, each one hop past the task's trigger), so an event on the end of the chain queues
+    no task: one `system/loop_dropped` is published in its place.
   - **Route failures** (a state write, model call or task hand-off that errs) publish
     `system/route_failed`, caused by the matching event.
   - **Live-only topics** (`Topic::is_live_only`: `agent/<id>/stream`, `agent/<id>/tool`) are
@@ -122,7 +125,11 @@ SQLite implementations over `pa-log`.
   a route sets off runs on a session's runtime.
 - **Agent routes** (`RuntimeTaskSink`): the target session is named, the event's own
   (`Origin`), or opened for the event (`Spawn`, in its `cwd` or the runtime's, recorded as a
-  subagent of the event's session); an empty route prompt takes the event's `AgentInput`. An
+  subagent of the event's session); an empty route prompt takes the event's `AgentInput`. The
+  task's trigger is the cause of what its turn publishes for others: its `done`, its kernel's
+  publications and its agent messages carry the task's trust and sit one hop past the trigger
+  (a task restored after a restart starts its chain again). The runtime's own routes queue no
+  task of their own (`RouteKind`: a subagent's `done`, the inbox, the kernel notices). An
   untrusted task's prompt is queued as `<untrusted-event source="<event source>">…</untrusted-event>`
   (the source escaped, a closing tag in the text neutralized); the system prompt is untouched.
 - **Trust gate** (`trust/`): the session's host sets the running task's trust as the task
@@ -148,7 +155,8 @@ SQLite implementations over `pa-log`.
   (`EventBusState::apply`: the daemon's names, limits, schema checks, ownership and refusals),
   its state kept in the agent dir's database as the daemon's is (the `event-bus.json` partition
   of the agent dir; no file). A publication is a stored event on `source/<name>/published`
-  (the checked payload, `source` the owner's name, `session` its id, `Owner` trust); its answer
+  (the checked payload, `source` the owner's name, `session` its id, the publishing task's trust,
+  caused by its trigger; `Owner` and no cause between tasks); its answer
   `{eventId, matched}` names that event. A subscription is a bus subscription
   `event-bus/<id>` on `source/<name>/#`, or on the topic filter it names (any text with `/`),
   its filter the `when` (each key's value equal), routed to its session at `FollowUp` or
@@ -168,8 +176,23 @@ SQLite implementations over `pa-log`.
   subtree). The parent hears the child through the subscription `subagent/<child>` on
   `agent/<child>/done`, whose route queues no task: it settles the child (its answer and
   verdict) and steers the no-reply notice or the failure row onto the parent's agent. The
-  family's `agent_message.*` delivers the same row through the same steer path, and starts a
-  settled child's next task. `rlm-collect` waits on the parent's activity (each settle fires
+  family's `agent_message.*` publishes the same row on the receiver's `agent/<to>/inbox`, and the
+  runtime's inbox subscription (`runtime/inbox`) delivers it as the daemon's receiving worker
+  does: refused while the receiver holds 20 undelivered rows, queued without spending a wake to a
+  receiver in a turn, and otherwise a wake of the idle receiver, at most 20 per sender per
+  receiver in 10 minutes (pa-core's constants; past them the receipt is `wake_refused` with
+  `retryAfterMs`, and nothing is delivered); the sending side keeps pa-core's message limit and
+  rate bucket. A delivered row is steered onto the receiver, and a settled child is given its
+  next task over it. The spawn's and the retask's empty inputs carry no cause: the depth bound
+  and the wake budget bound them. The kernel's notices (a background command's end, loss or
+  silence, a background cell's end, a factory milestone) are admitted by the session's notice
+  sink as the daemon's worker admits them, at once: a `Steer` one steers its row onto the
+  session's agent, a `WakeIdle` one (`[bash-quiet]`) too unless the session is in a turn,
+  where it is dropped, and a `Record` one is only kept; each is then stored on
+  `session/<id>/bash/quiet` (a `[bash-quiet]`) or `session/<id>/bash/done` (every other) as
+  `{taken: steered | recorded | dropped_busy, row}`, and the runtime's notice subscription
+  (`runtime/bash`) wakes the session for a steered one: its drive looks again and a settled
+  child is given its next task. `rlm-collect` waits on the parent's activity (each settle fires
   it) to its deadline, and ends with its cell when the kernel stops it; `rlm-list-subagents`,
   `rlm-delete-subagent` (the child and its subtree cancelled, their kernels disposed and
   sessions closed) and `rlm-rename` read and change the roster. A session is at rest when no
@@ -193,8 +216,9 @@ No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStor
 routes yet (behind `ModelCaller`). No event sources (`pa-sources`, publishing through `Intake`).
 No socket listener (the daemon accepts connections and hands each to `WireServer::serve`), and
 no query or call backend (behind `Handlers`). No model resolution for a subagent (its builder's, from its
-`SubagentSpec`). No persistence of other subscriptions yet (the kernel's event subscriptions are kept); a
-task's `done` carries no cause chain yet. Nothing bounds how wide a cascade grows within the hop
+`SubagentSpec`). No persistence of other subscriptions yet (the kernel's event subscriptions are kept).
+No `agent_message.wait` (it stays the daemon's), and no pause or clear of agent messages. Nothing
+bounds how wide a cascade grows within the hop
 limit, or how many events an `Intake` or the sessions' outbox buffers.
 
 ## Public API
@@ -211,8 +235,9 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 - `Runtime` (`open`, `publish`, `listen`, `create_session`, `cancel`, `idle`, `settle`, `finish`,
   `shutdown`), `RuntimeOptions`, `SessionBuilder` (`build(id, spec, seams)`), `SessionSeams`
   (the session's trust gate, the host requests the runtime answers - its `event.*` and its
-  family's `agent_message.*` - its `rlm.*` subagents, the late-receipt sink and the
-  background-bash wake, all of which the engine must install), `SessionSpec`, `SubagentSpec`,
+  family's `agent_message.*` - its `rlm.*` subagents, the late-receipt sink, the
+  background-settle wake and the kernel-notice sink, all of which the engine must install),
+  `SessionSpec`, `SubagentSpec`,
   `BuiltSession`, `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
   `TaskQueue::session_idle`.
 

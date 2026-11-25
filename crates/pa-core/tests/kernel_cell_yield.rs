@@ -138,6 +138,7 @@ async fn a_cell_past_its_window_continues_in_the_background_and_its_end_wakes_th
         on_background_work_settled: None,
         // Registers the in-process notice handlers (bash and cell) with this wake.
         bash_notice_wake: Some(std::sync::Arc::new(move || wake.notify_one())),
+        kernel_notice_sink: None,
         call_policy: None,
         queued_goal_context_purge: None,
         queued_steering_probe: None,

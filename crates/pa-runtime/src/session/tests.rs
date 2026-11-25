@@ -118,6 +118,7 @@ impl SessionBuilder for FauxBuilder {
                 prewarm_kernel: Some(true),
                 on_background_work_settled: None,
                 bash_notice_wake: None,
+                kernel_notice_sink: None,
                 call_policy: Some(seams.call_policy),
                 queued_goal_context_purge: None,
                 queued_steering_probe: None,

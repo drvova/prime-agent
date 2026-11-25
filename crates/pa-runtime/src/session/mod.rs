@@ -17,13 +17,13 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context as _;
 use pa_core::autonomous::AgentAutonomousConfig;
 use pa_core::kernel::{CallPolicy, HostRequestHandlers};
-use pa_core::session_engine::bash_notices::BashNoticeWake;
+use pa_core::session_engine::bash_notices::{BashNoticeWake, KernelNoticeSink};
 use pa_core::session_engine::engine::SessionEngine;
 use pa_core::session_engine::headless::HeadlessTerminalResult;
 use pa_core::session_engine::rlm_host::RlmSubagentHost;
 use pa_core::LateSentAgentMessageHandler;
 use pa_types::ai::{ImageContent, Model, ModelThinkingLevel};
-use pa_types::event_log::{AgentDone, EventId, NewEvent, Task, TaskState, Topic};
+use pa_types::event_log::{AgentDone, Cause, EventId, NewEvent, Task, TaskState, Topic};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::bus::Published;
@@ -195,10 +195,15 @@ pub struct SessionSeams {
     /// session is not at rest until it has
     /// (`SessionEngineConfig::on_late_sent_agent_message`).
     pub on_late_sent_agent_message: LateSentAgentMessageHandler,
-    /// Wakes the session's quiescence drive when a background command's
-    /// report lands or its work settles (`SessionEngineConfig`'s
-    /// `bash_notice_wake` and `on_background_work_settled`).
+    /// Wakes the session's quiescence drive when its background work
+    /// settles (`SessionEngineConfig::on_background_work_settled`).
     pub bash_wake: BashNoticeWake,
+    /// Admits the kernel's notices (a background command's end or silence,
+    /// a background cell's end, a factory milestone): steers each the
+    /// session takes onto its agent and publishes it on
+    /// `session/<id>/bash/done` or `/bash/quiet`, whose default subscription
+    /// wakes the session (`SessionEngineConfig::kernel_notice_sink`).
+    pub kernel_notices: KernelNoticeSink,
 }
 
 /// The topics a session publishes on.
@@ -235,8 +240,13 @@ impl SessionTopics {
 }
 
 /// The stored `agent/<id>/done` that reports how `task` ended, with the
-/// task's trust.
-pub(crate) fn done_event(topics: &SessionTopics, task: &Task, end: &host::TaskEnd) -> NewEvent {
+/// task's trust, caused by `cause` (the task's trigger): one hop past it.
+pub(crate) fn done_event(
+    topics: &SessionTopics,
+    task: &Task,
+    end: &host::TaskEnd,
+    cause: &Cause,
+) -> NewEvent {
     let (outcome, error) = match &end.outcome {
         crate::tasks::TaskOutcome::Done => (TaskState::Done, None),
         crate::tasks::TaskOutcome::Failed(error) => (TaskState::Failed, Some(error.clone())),
@@ -254,7 +264,7 @@ pub(crate) fn done_event(topics: &SessionTopics, task: &Task, end: &host::TaskEn
         session: Some(task.session.clone()),
         payload: serde_json::to_value(done).unwrap_or_default(),
         trust: task.trust,
-        cause: None,
+        cause: Some(cause.clone()),
         reply: None,
     }
 }
@@ -333,11 +343,19 @@ pub(crate) struct Sessions<B> {
     events: Arc<BusEvents>,
     subagents: Arc<Subagents>,
     hosts: Mutex<HashMap<String, Arc<SessionHost>>>,
-    /// The images of queued prompts, by task id, until their task runs: the
-    /// task store keeps a prompt's text only, so a task restored after a
-    /// restart runs without them (and a queued task cancelled before it ran
-    /// leaves its images here until the runtime closes).
-    images: Mutex<HashMap<String, Vec<ImageContent>>>,
+    /// What a queued task's store row does not keep, by task id, until it
+    /// runs: its prompt's images and its trigger as a cause. A task restored
+    /// after a restart runs without images, and its trigger counts as the
+    /// start of its chain; a queued task cancelled before it ran leaves its
+    /// entry here until the runtime closes.
+    queued: Mutex<HashMap<String, Queued>>,
+}
+
+/// What a queued task carries beside its store row.
+pub(crate) struct Queued {
+    pub(crate) images: Vec<ImageContent>,
+    /// The task's trigger, as the cause of the events its turn publishes.
+    pub(crate) cause: Cause,
 }
 
 impl<B: SessionBuilder> Sessions<B> {
@@ -353,20 +371,28 @@ impl<B: SessionBuilder> Sessions<B> {
             events,
             subagents,
             hosts: Mutex::new(HashMap::new()),
-            images: Mutex::new(HashMap::new()),
+            queued: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Keeps `images` for the task `task` until it runs.
-    pub(crate) fn attach_images(&self, task: &str, images: Vec<ImageContent>) {
-        if !images.is_empty() {
-            lock(&self.images).insert(task.to_string(), images);
-        }
+    /// Keeps `queued` for the task `task` until it runs.
+    pub(crate) fn attach(&self, task: &str, queued: Queued) {
+        lock(&self.queued).insert(task.to_string(), queued);
     }
 
-    /// The images the task `task` was queued with.
-    pub(crate) fn take_images(&self, task: &str) -> Vec<ImageContent> {
-        lock(&self.images).remove(task).unwrap_or_default()
+    /// What `task` was queued with: its images, and its trigger as a cause
+    /// (a restored task's trigger at the start of its chain).
+    pub(crate) fn take_queued(&self, task: &Task) -> Queued {
+        lock(&self.queued)
+            .remove(&task.id)
+            .unwrap_or_else(|| Queued {
+                images: Vec::new(),
+                cause: Cause {
+                    id: task.trigger.clone(),
+                    trust: task.trust,
+                    hops: 0,
+                },
+            })
     }
 
     /// Opens a session on its own host thread, which starts building its
@@ -406,6 +432,12 @@ impl<B: SessionBuilder> Sessions<B> {
 
     pub(crate) fn outbox(&self) -> &Outbox {
         &self.outbox
+    }
+
+    /// The sessions' family tree, for tests to reach its nodes.
+    #[cfg(test)]
+    pub(crate) fn subagents(&self) -> &Arc<Subagents> {
+        &self.subagents
     }
 
     /// Closes session `id` and waits until its thread has let go.

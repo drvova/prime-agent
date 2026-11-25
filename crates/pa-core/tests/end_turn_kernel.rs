@@ -137,6 +137,7 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
         prewarm_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: Some(wake),
+        kernel_notice_sink: None,
         call_policy: None,
         queued_goal_context_purge: None,
     })

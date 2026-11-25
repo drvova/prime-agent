@@ -12,8 +12,10 @@
 //! its cause's trust (and the subscription's), and a chain of causes ends at
 //! `MAX_HOPS`: the event that would pass it is dropped and
 //! `system/loop_dropped` is published in its place, itself at the end of the
-//! chain, so what it would cause is dropped without another report. A route
-//! that fails publishes `system/route_failed`.
+//! chain, so what it would cause is dropped without another report. A task
+//! an `Agent` route queues publishes what its event causes, so an event on
+//! the end of the chain queues none: `system/loop_dropped` is published in
+//! its place too. A route that fails publishes `system/route_failed`.
 //!
 //! A live-only event (`Topic::is_live_only`: a turn's stream and tool
 //! deltas) is fanned out without being stored: it gets no sequence number
@@ -28,7 +30,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pa_types::event_log::{Cause, Event, EventId, NewEvent, Route, Scope, Subscription, Topic};
+use pa_types::event_log::{
+    Cause, Event, EventId, NewEvent, Route, Scope, Subscription, Topic, MAX_HOPS,
+};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc};
 
@@ -357,6 +361,16 @@ where
                 prompt,
                 priority,
             } => {
+                // What the task publishes is caused by `event`: on the end of
+                // the chain it would pass it, so no task is queued.
+                if event.hops().saturating_add(1) >= MAX_HOPS {
+                    let payload = json!({
+                        "cause": event.id.0,
+                        "target": target,
+                        "subscription": subscription.id,
+                    });
+                    return loop_dropped(subscription, event, payload);
+                }
                 let request = TaskRequest {
                     subscription: subscription.id.clone(),
                     target: target.clone(),
@@ -389,37 +403,51 @@ fn caused(
 ) -> Option<NewEvent> {
     let id = &subscription.id;
     let source = format!("subscription:{id}");
-    match event.cause(topic.clone(), source, payload, subscription.trust) {
-        Ok(next) => Some(NewEvent {
+    if let Ok(next) = event.cause(topic.clone(), source, payload, subscription.trust) {
+        return Some(NewEvent {
             session: event.event.session.clone(),
             ..next
-        }),
-        Err(limit) => {
-            let loop_dropped = system_topic("loop_dropped");
-            if event.event.topic == loop_dropped {
-                tracing::warn!("{limit}: subscription {id:?} on a loop report");
-                return None;
-            }
-            Some(NewEvent {
-                topic: loop_dropped,
-                source: "runtime".to_string(),
-                session: event.event.session.clone(),
-                payload: json!({
-                    "cause": event.id.0,
-                    "topic": topic.as_str(),
-                    "subscription": id,
-                }),
-                trust: subscription.trust.lowest(event.event.trust),
-                // At the end of the chain, so nothing it causes is published.
-                cause: Some(Cause {
-                    id: event.id.clone(),
-                    trust: event.event.trust,
-                    hops: event.hops(),
-                }),
-                reply: None,
-            })
-        }
+        });
     }
+    let payload = json!({
+        "cause": event.id.0,
+        "topic": topic.as_str(),
+        "subscription": id,
+    });
+    loop_dropped(subscription, event, payload)
+}
+
+/// The `system/loop_dropped` (with `payload`) that reports what
+/// `subscription`'s route would have caused past the end of `event`'s chain;
+/// nothing when `event` is itself such a report.
+fn loop_dropped(
+    subscription: &Subscription,
+    event: &Event,
+    payload: serde_json::Value,
+) -> Option<NewEvent> {
+    let topic = system_topic("loop_dropped");
+    if event.event.topic == topic {
+        tracing::warn!(
+            "event {:?} ends its chain: subscription {:?} on a loop report",
+            event.id,
+            subscription.id
+        );
+        return None;
+    }
+    Some(NewEvent {
+        topic,
+        source: "runtime".to_string(),
+        session: event.event.session.clone(),
+        payload,
+        trust: subscription.trust.lowest(event.event.trust),
+        // At the end of the chain, so nothing it causes is published.
+        cause: Some(Cause {
+            id: event.id.clone(),
+            trust: event.event.trust,
+            hops: event.hops(),
+        }),
+        reply: None,
+    })
 }
 
 /// Runs a debounced route once its subscription has been quiet long enough.

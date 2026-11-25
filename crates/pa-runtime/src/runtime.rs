@@ -271,6 +271,12 @@ impl<B: SessionBuilder> Runtime<B> {
         Ok(())
     }
 
+    /// The sessions' family tree, for tests to reach its nodes.
+    #[cfg(test)]
+    pub(crate) fn subagents(&self) -> Arc<crate::subagents::Subagents> {
+        Arc::clone(self.sessions.subagents())
+    }
+
     /// Waits until `session` has no task queued or running.
     pub async fn idle(&self, session: &str) {
         self.queue.session_idle(session).await;

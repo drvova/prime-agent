@@ -98,6 +98,13 @@ pub struct SessionEngineConfig {
     /// row onto the session's agent and fire the wake. `None` installs nothing —
     /// the daemon keeps its worker-lane sinks via the extra handlers.
     pub bash_notice_wake: Option<super::bash_notices::BashNoticeWake>,
+    /// The embedding's own kernel-notice admission, in place of the
+    /// in-process sink [`SessionEngineConfig::bash_notice_wake`] wires: with
+    /// it the engine registers the same handlers over it (a consumed notice
+    /// still withdraws its queued row from the session's agent), and a
+    /// failed acceptance-check round admits through it too. It wins over
+    /// `bash_notice_wake`; `None` leaves that one in charge.
+    pub kernel_notice_sink: Option<super::bash_notices::KernelNoticeSink>,
     /// Asked before every call a cell makes that reaches past the kernel
     /// (each host request, each side-effecting native) runs; a refusal is
     /// the call's error (`crate::kernel::call_policy`). `None` admits every
@@ -898,17 +905,22 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // session's agent and fire the embedding's wake once the agent
     // exists (the slot binds below).
     let bash_notice_agent = super::bash_notices::BashNoticeAgentSlot::default();
-    if let Some(wake) = config.bash_notice_wake.clone() {
+    let notice_sink = match (&config.kernel_notice_sink, &config.bash_notice_wake) {
+        (Some(sink), _) => Some(std::sync::Arc::clone(sink)),
+        (None, Some(wake)) => Some(super::bash_notices::in_process_notice_sink(
+            wake,
+            &bash_notice_agent,
+        )),
+        (None, None) => None,
+    };
+    if let Some(notice_sink) = notice_sink {
         super::bash_notices::register_in_process_kernel_notice_handlers(
-            &wake,
+            &notice_sink,
             &bash_notice_agent,
             &mut handlers,
         );
-        // A failed acceptance-check round steers through the same in-process lane.
-        better.bind_notice_sink(super::bash_notices::in_process_notice_sink(
-            &wake,
-            &bash_notice_agent,
-        ));
+        // A failed acceptance-check round admits through the same sink.
+        better.bind_notice_sink(notice_sink);
     }
     // `bash.quiet` (the embedding's or the in-process one, registered above):
     // telemetry counts each notice, its jobs and back-off step, and whether it

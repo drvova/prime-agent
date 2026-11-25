@@ -47,7 +47,7 @@ pub enum NoticeDelivery {
     Steer,
     /// The row wakes an idle session as [`NoticeDelivery::Steer`] does; a session in a turn
     /// does not take it, since its model is at work and reaches what the row reports itself.
-    /// A daemonless embedding, which has no turn state at its sink, steers it.
+    /// The in-process sink, which has no turn state, steers it.
     WakeIdle,
     /// The row is only recorded: persisted and shown in the transcript, with no turn behind it.
     /// A daemonless embedding has no transcript to show it in and drops it.
@@ -535,18 +535,18 @@ pub fn in_process_notice_sink(
     })
 }
 
-/// The in-process sinks over one session's own agent (the daemonless
-/// embeddings): a notice steers its row (`[bash-done]` or
-/// `[factory-progress]`) onto the agent's steering queue and fires the
-/// embedding's wake (TS `queueIfBusy: true` + `resumeIfIdle: true` — the
-/// row rides the steering lane and the embedding resumes the idle run); a
-/// consumed notice withdraws the queued completion row.
+/// The notice handlers of a daemonless embedding over one session's own
+/// agent: each notice goes to `notice` (the in-process sink steers its row,
+/// `[bash-done]` or `[factory-progress]`, onto the agent's steering queue
+/// and fires the embedding's wake: TS `queueIfBusy: true` +
+/// `resumeIfIdle: true`; an embedding's own sink admits it its way); a
+/// consumed notice withdraws the queued completion row from the agent.
 pub fn register_in_process_kernel_notice_handlers(
-    wake: &BashNoticeWake,
+    notice: &KernelNoticeSink,
     agent_slot: &BashNoticeAgentSlot,
     handlers: &mut HostRequestHandlers,
 ) {
-    let notice = in_process_notice_sink(wake, agent_slot);
+    let notice = Arc::clone(notice);
     let consumed_slot = Arc::clone(agent_slot);
     let consumed: BackgroundJobConsumedSink = Arc::new(move |notice| {
         let Some(agent) = bound_agent(&consumed_slot) else {
@@ -624,7 +624,11 @@ mod tests {
             }) as BashNoticeWake
         };
         let mut handlers = HostRequestHandlers::default();
-        register_in_process_kernel_notice_handlers(&wake, &slot, &mut handlers);
+        register_in_process_kernel_notice_handlers(
+            &in_process_notice_sink(&wake, &slot),
+            &slot,
+            &mut handlers,
+        );
         (agent, slot, wakes, handlers)
     }
 
