@@ -344,8 +344,7 @@ fn load_jobs_state_in(log: Option<&pa_log::Log>, path: &Path) -> anyhow::Result<
         return Ok(CronJobsState::default());
     };
     Ok(serde_json::from_str::<serde_json::Value>(&raw)
-        .map(|parsed| jobs_state_from(&parsed))
-        .unwrap_or_default())
+        .map_or_default(|parsed| jobs_state_from(&parsed)))
 }
 
 /// [`read_jobs_state`] from `log` (another process's database).
