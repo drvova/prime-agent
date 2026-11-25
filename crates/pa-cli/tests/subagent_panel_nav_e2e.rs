@@ -1,14 +1,5 @@
-// large_futures: stack-resident futures on hot paths by design.
-// too_many_lines: style gate, not correctness. Casts: 64-bit targets;
-// narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// large_futures: stack futures on hot paths by design. too_many_lines: style gate only.
+#![allow(clippy::large_futures, clippy::too_many_lines)]
 
 //! End-to-end verifier for the subagent panel's keyboard path from the
 //! main chat (Kevin's live-dogfood ruling, TS parity): Down focuses the
@@ -76,7 +67,6 @@ fn graceful_shutdown(socket: &Path) {
     let _ = reader.read_line(&mut response);
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     // The in-process client forwards this process's env to the worker.
     support::scrub_ambient_provider_credentials();

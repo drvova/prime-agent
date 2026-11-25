@@ -1,13 +1,5 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate
-// only. Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// too_many_lines: style gate only.
+#![allow(clippy::too_many_lines)]
 
 //! End-to-end daemon-command tests: spawn the real `pa-daemon` supervisor on a
 //! temp socket, drive `prime-agent` list/stop/rename against it, and diff the
@@ -104,7 +96,6 @@ impl Drop for Daemon {
     }
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_daemon(binary: &Path, socket: &Path, agent_dir: &Path) -> Daemon {
     let mut command = Command::new(binary);
     command

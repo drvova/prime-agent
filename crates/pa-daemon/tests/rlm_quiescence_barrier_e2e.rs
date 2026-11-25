@@ -2,9 +2,6 @@
 //! `waitForRlmQuiescence` owns the parent's idle, then every admitted descendant
 //! run's settlement, looping back through the idle wait (work may start at the
 //! child-settlement boundary). Skips on machines without a live install.
-// zombie_processes: the timeout panic path cannot wait on the child; the test
-// process exits immediately afterwards, reaping it.
-#![allow(clippy::zombie_processes)]
 #![cfg(unix)]
 
 mod common;

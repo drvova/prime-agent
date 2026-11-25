@@ -2,15 +2,6 @@
 //! own must not leak the processes its `bash` commands started: its
 //! lifetime's end and the supervisor's reap of the journal take them out
 //! when the session is seen to have crashed.
-// 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
 #![cfg(unix)]
 
 mod common;
@@ -38,8 +29,6 @@ impl Drop for Daemon {
     }
 }
 
-// Ownership transfers to Daemon, whose Drop kills and waits for the child.
-#[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));

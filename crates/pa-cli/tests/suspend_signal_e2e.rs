@@ -1,14 +1,5 @@
-// large_futures: stack-resident futures on hot paths by design.
-// too_many_lines: style gate, not correctness. Casts: 64-bit targets;
-// narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
+#![allow(clippy::cast_possible_wrap)]
 
 //! Real-signal e2e for the `app.suspend` cycle (TS `handleCtrlZ`): the
 //! renderer runs on a pty in a child process group, driven like a shell.

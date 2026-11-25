@@ -83,7 +83,6 @@ pub(super) enum AdoptionOutcome {
 impl Supervisor {
     /// Emit the boot adoption pass's `worker_adoption` event: the boot kind
     /// and per-outcome counts, primitives only — never session payload.
-    #[allow(clippy::too_many_arguments)]
     fn note_worker_adoption(
         &self,
         boot: &str,

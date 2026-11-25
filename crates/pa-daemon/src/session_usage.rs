@@ -194,9 +194,6 @@ mod usage_bits {
     use super::{PersistedUsage, Usage};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    // serde's `serialize_with` contract pins `&T` - the lint's by-value
-    // form would not be callable as a serde attribute helper.
-    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub(super) fn serialize<S: Serializer>(
         value: &Usage,
         serializer: S,

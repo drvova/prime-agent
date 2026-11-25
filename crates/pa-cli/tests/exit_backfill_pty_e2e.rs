@@ -1,14 +1,6 @@
-// large_futures: stack-resident futures on hot paths by design.
-// too_many_lines: style gate, not correctness. Casts: 64-bit targets;
-// narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// large_futures: stack futures on hot paths by design. Casts: 64-bit targets; narrowing
+// sits at bounded OS/protocol boundaries.
+#![allow(clippy::large_futures, clippy::cast_possible_truncation)]
 
 //! Real-pty e2e for the exit/backfill contract: leaving the run must
 //! flush the history already loaded and never wait for an unfinished

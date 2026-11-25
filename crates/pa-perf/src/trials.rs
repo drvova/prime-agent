@@ -1,4 +1,4 @@
-//! Harness-eval aggregation over trial records, the FrontierHarness Eval
+//! Harness-eval aggregation over trial records, the `FrontierHarness` Eval
 //! method: a task's cost, time and steps are the mean over its attempts,
 //! a run's are the mean over tasks, a pass costs the per-task value divided
 //! by the pooled pass rate, and every estimate carries a 95% bootstrap over

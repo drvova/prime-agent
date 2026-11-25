@@ -92,7 +92,6 @@ fn read_elevation() -> Elevation {
 }
 
 #[cfg(windows)]
-#[allow(non_snake_case)] // The Win32 functions keep their documented names.
 mod windows {
     use std::ffi::c_void;
 
