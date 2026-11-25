@@ -1,14 +1,5 @@
-// large_futures: stack-resident futures on hot paths by design.
-// too_many_lines: style gate. Casts: 64-bit targets; narrowing sits at
-// bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
+#![allow(clippy::cast_possible_wrap)]
 
 //! The termios + process-tree exit audit (companion to the kitty fix and the
 //! terminal-state differential): the Ctrl+S output stop is RUNTIME state, not
@@ -23,7 +14,6 @@
 #[allow(dead_code)]
 mod harness;
 #[path = "terminal_state_differential_e2e/ledger.rs"]
-#[allow(dead_code)]
 mod ledger;
 
 use std::os::fd::{AsRawFd, OwnedFd};

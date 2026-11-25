@@ -69,7 +69,7 @@ pub(crate) fn write_artifact_dir(
             .map(|index| {
                 (
                     format!("{seed_text}-memory-{index}"),
-                    format!("corpus memory entry {index}: {}", seed_text),
+                    format!("corpus memory entry {index}: {seed_text}"),
                 )
             })
             .collect::<Vec<_>>();
@@ -86,7 +86,7 @@ pub(crate) fn write_artifact_dir(
                             HarnessEntry {
                                 id: id.clone(),
                                 kind: RefinementKind::Memory,
-                                title: format!("corpus memory {}", id),
+                                title: format!("corpus memory {id}"),
                                 content: content.clone(),
                                 path: "general".to_string(),
                                 scope: Some(HarnessScope::Local),

@@ -41,3 +41,6 @@ tempfile = "3"
 # The library's rows/entries ride the product's own serializers (pa-types
 # payloads inside pa-daemon's SessionEntry), so generated corpora exercise
 # the exact wire format the product reads.
+
+[lints]
+workspace = true

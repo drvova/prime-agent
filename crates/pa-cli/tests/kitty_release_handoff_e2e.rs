@@ -1,13 +1,5 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate
-// only. Casts: 64-bit targets; narrowing sits at bounded OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// large_futures: stack futures on hot paths by design.
+#![allow(clippy::large_futures)]
 
 //! Real-pty e2e for the kitty key-release contract around the chat->agents
 //! handoff (the `enhanced_keys` drain): the LEFT press's companion release is

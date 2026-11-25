@@ -1,9 +1,5 @@
-// Casts: bounded fixture arithmetic.
-#![allow(
-    clippy::too_many_lines,
-    clippy::large_futures,
-    clippy::cast_possible_truncation
-)]
+// large_futures: stack futures on hot paths by design.
+#![allow(clippy::large_futures)]
 
 //! Long-session transcript scrolling through a real daemon: a session file with
 //! thousands of rows and a compaction, attached headlessly and scrolled to the top.
@@ -65,7 +61,6 @@ impl Drop for Supervisor {
     }
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
     // The in-process client forwards this process's env to the worker.
     support::scrub_ambient_provider_credentials();

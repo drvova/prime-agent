@@ -377,7 +377,7 @@ mod tests {
         }
     }
 
-    fn event(event: Value) -> Value {
+    fn event(event: &Value) -> Value {
         json!({ "type": "session_event", "event": event })
     }
 
@@ -387,10 +387,10 @@ mod tests {
     #[test]
     fn cells_pair_by_call_id_and_a_raised_cell_fails_the_run() {
         let start = |id: &str, tool: &str| {
-            event(json!({ "type": "tool_execution_start", "toolCallId": id, "toolName": tool }))
+            event(&json!({ "type": "tool_execution_start", "toolCallId": id, "toolName": tool }))
         };
         let end = |id: &str, status: &str| {
-            event(json!({
+            event(&json!({
                 "type": "tool_execution_end",
                 "toolCallId": id,
                 "isError": false,

@@ -1,14 +1,5 @@
-// large_futures: stack futures on hot paths by design. too_many_lines:
-// style gate only. Casts: 64-bit targets; narrowing sits at bounded
-// OS/protocol boundaries.
-#![allow(
-    clippy::large_futures,
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+// large_futures: stack futures on hot paths by design. too_many_lines: style gate only.
+#![allow(clippy::large_futures, clippy::too_many_lines)]
 
 //! End-to-end verifier for the agents view's refusal panel: a session
 //! open refused by a live foreign lease holder (the operator's case)
@@ -37,7 +28,6 @@ impl Drop for Daemon {
     }
 }
 
-#[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     // The in-process client forwards this process's env to the worker.
     support::scrub_ambient_provider_credentials();

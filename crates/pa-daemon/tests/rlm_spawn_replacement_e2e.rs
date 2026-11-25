@@ -2,25 +2,8 @@
 //! admitted, a child whose session crashes and is rebuilt between admission
 //! and its task prompt still receives the prompt exactly once, and no
 //! admitted child is torn down.
-// Stack-resident futures by design on the daemon's hot paths.
-#![allow(clippy::large_futures)]
-// Narrowing casts sit at OS boundaries (pid/fd/time/size) where the kernel
-// bounds the values.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 // Style gate only, not correctness.
 #![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(
-    clippy::unnecessary_wraps,
-    clippy::zero_sized_map_values,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names
-)]
 #![cfg(unix)]
 
 mod common;
