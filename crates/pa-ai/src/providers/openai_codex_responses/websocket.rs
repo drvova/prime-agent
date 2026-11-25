@@ -166,8 +166,10 @@ mod ws_wire_tests {
     fn ws_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
         let mut frame = vec![0x80 | opcode];
         assert!(payload.len() < 126, "mock frames are small");
-        // The assert bounds the mock frame (< 126); the wire's small-frame length field is u8.
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the assert bounds the mock frame (< 126); the small-frame length field is u8"
+        )]
         frame.push(payload.len() as u8);
         frame.extend_from_slice(payload);
         frame

@@ -1,5 +1,17 @@
-// Pedantic-gate dispositions as src/lib.rs (large_futures/too_many_lines).
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "a session's futures are large by design, as in src/lib.rs"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the verifier is one scripted scenario, end to end"
+    )
+)]
 
 //! A cell still running when its `timeout` (the yield window) passes continues in
 //! the background, as Nodecode's evaluations do: the tool result says so with its

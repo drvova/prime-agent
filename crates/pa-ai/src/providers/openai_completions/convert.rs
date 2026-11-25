@@ -13,8 +13,10 @@ use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
 
 /// Convert a conversation into Chat Completions `messages` params, including tool-result bridging
 /// and image replay.
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over the message history, mirroring the TS conversion"
+)]
 pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompat) -> Vec<Value> {
     use crate::types::Message;
     let mut params: Vec<Value> = Vec::new();
@@ -459,8 +461,10 @@ pub(crate) fn parse_chunk_usage(
     // (https://openrouter.ai/docs/api-reference/overview). Trust it over the catalog-rate
     // estimate, whichever provider it came through, scaling the component breakdown to match.
     let reported_cost = reported_cost(raw_usage);
-    // Token counts sit far below f64's 2^53 exact-integer range; the cost apportioning math is f64 by design.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "token counts sit far below f64's 2^53 exact-integer range; the cost apportioning is f64"
+    )]
     if let Some(reported_cost) = reported_cost {
         if usage.cost.total.as_f64() > 0.0 {
             let scale = reported_cost / usage.cost.total.as_f64();
@@ -597,8 +601,10 @@ mod tests {
         WithUpstreamBill(f64),
     }
 
-    // Test-only helper; adapting its signature and call sites would churn test fixtures.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "a test-only helper; its fixtures pass owned values"
+    )]
     fn raw_usage(cost: f64, byok: ByokBilling) -> Value {
         let mut raw = json!({
             "prompt_tokens": 50_000,

@@ -181,7 +181,10 @@ impl ChangesPanel {
 
     /// The pane, at most `viewport_rows` tall. `cwd` is the session's directory: paths inside
     /// it show relative to it.
-    #[allow(clippy::too_many_arguments)] // the view's disjoint borrows, passed as they are
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the view's disjoint borrows, passed as they are"
+    )]
     pub(crate) fn render(
         &mut self,
         ledger: &mut ChangeLedger,
@@ -345,7 +348,10 @@ impl ChangesPanel {
         lines
     }
 
-    #[allow(clippy::too_many_arguments)] // the list pane's inputs plus the diff's cache key
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the list pane's inputs plus the diff's cache key"
+    )]
     fn render_diff(
         &mut self,
         row: &ChangeRow,

@@ -20,7 +20,10 @@ pub(crate) struct StatsUpdate {
 
 impl SessionUi {
     /// Create/attach per the session selection and return the live state.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the session's note channels are separate senders the open wires up"
+    )]
     pub(crate) async fn open(
         client: DaemonClient,
         options: &InteractiveOptions,

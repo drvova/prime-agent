@@ -2,8 +2,13 @@
 //! failing (then healing) OpenAI-compatible mock must retry per the shared
 //! policy, surface each retry (`auto_retry_start`/`auto_retry_end`), render
 //! the failed assistant message, and end the turn with the error.
-// Fn length is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "the retried-then-surfaced and retry-recovered scenarios each read top to bottom"
+    )
+)]
 #![cfg(unix)]
 
 mod common;

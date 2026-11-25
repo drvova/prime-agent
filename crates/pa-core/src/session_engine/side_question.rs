@@ -431,7 +431,10 @@ enum AttemptOutcome {
 /// One attempt: prompt (or recover by dropping the failed assistant turn and
 /// continuing), stream partial answers into `sink` while the run settles,
 /// and stop early on an external abort or a cancelled sink.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one attempt needs the agent, prompt state, abort signal, sink and the answer it builds"
+)]
 async fn run_attempt(
     side_agent: &Arc<Agent>,
     prompt: String,

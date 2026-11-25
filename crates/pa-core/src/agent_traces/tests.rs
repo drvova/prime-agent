@@ -176,8 +176,10 @@ fn the_header_validation_matches_ts() {
 }
 
 #[tokio::test]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn the_upload_sends_the_ts_request_and_records_the_cursor() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -243,8 +245,10 @@ async fn the_disabled_requirement_gate_matches_ts() {
 }
 
 #[tokio::test]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn a_missing_credential_short_circuits_the_request() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -256,8 +260,10 @@ async fn a_missing_credential_short_circuits_the_request() {
 }
 
 #[tokio::test]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn an_oversize_session_reports_the_limit() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -290,8 +296,10 @@ async fn an_oversize_session_reports_the_limit() {
 }
 
 #[tokio::test]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn an_error_response_carries_the_status_and_message() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -311,8 +319,10 @@ async fn an_error_response_carries_the_status_and_message() {
 }
 
 #[tokio::test]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn the_retriable_statuses_back_off_and_503_honors_retry_after() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -345,8 +355,10 @@ async fn the_retriable_statuses_back_off_and_503_honors_retry_after() {
 }
 
 #[tokio::test]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn the_outbox_cursor_makes_an_enabled_upload_unchanged() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -516,8 +528,10 @@ fn format_http_date(ms: u64) -> String {
 }
 
 #[tokio::test]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn the_upload_all_sweeps_with_the_gate_and_tallies() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -564,8 +578,10 @@ async fn the_upload_all_sweeps_with_the_gate_and_tallies() {
 }
 
 #[tokio::test(start_paused = true)]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn the_rate_gate_reports_the_wait_and_serializes() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();
@@ -604,8 +620,10 @@ async fn the_rate_gate_reports_the_wait_and_serializes() {
 }
 
 #[tokio::test]
-// The env lock is held across awaits by design (env must stay stable).
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the env lock stays held across the awaits so the environment stays stable"
+)]
 async fn the_cancel_stops_the_sweep_between_files() {
     let _env = env_lock();
     let _credentials = clear_trace_credentials();

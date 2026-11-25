@@ -10,8 +10,10 @@ use crate::providers::anthropic::{
 use crate::types::{Context, Model};
 use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
 
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one function builds the request parameters, mirroring the TS reference"
+)]
 pub(crate) fn build_params(
     model: &Model,
     context: &Context,

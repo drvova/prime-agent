@@ -387,7 +387,10 @@ fn provider_failure_event(entry: &IncidentLogEntry, worker_pids: &WorkerPidMap) 
 
 /// Classify one log entry into an incident event; `None` when the entry is noise (TS
 /// `classifyIncidentEntry`). One arm per incident kind, mirroring the TS switch.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per incident log message the classifier recognizes"
+)]
 pub fn classify_incident_entry(
     entry: &IncidentLogEntry,
     worker_pids: &WorkerPidMap,

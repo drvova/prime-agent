@@ -179,7 +179,10 @@ fn validate_run_fields(run: Option<&Map<String, Value>>, errors: &mut Vec<String
 /// Field rules shared by dag nodes (`noun` "node") and machine states
 /// (`noun` "state"): subagent forms, lifecycle, budgets, retries, failure
 /// policies, port lists, foreach, and the resident exclusions.
-#[allow(clippy::too_many_lines)] // one rule list, in the order its sentences are reported
+#[expect(
+    clippy::too_many_lines,
+    reason = "one rule list, in the order its sentences are reported"
+)]
 fn validate_state_fields(
     state: &Map<String, Value>,
     id: &str,
@@ -599,7 +602,10 @@ fn validate_guard(
 /// outgoing transitions; wait blocks are rejected; transitions reference
 /// existing states and may carry one guard over the from-state's latest
 /// settle; a transition from a list of states is a join. Cycles are legal.
-#[allow(clippy::too_many_lines)] // one rule list, in the order its sentences are reported
+#[expect(
+    clippy::too_many_lines,
+    reason = "one rule list, in the order its sentences are reported"
+)]
 pub(super) fn validate_factory_machine(machine: &Value) -> Vec<String> {
     let Some(machine) = machine.as_object() else {
         return vec!["factory machine must be a JSON object".to_string()];

@@ -161,7 +161,10 @@ pub(crate) fn write_artifact_dir(
 /// # Errors
 ///
 /// Propagates ledger and filesystem failures.
-#[allow(clippy::too_many_arguments)] // one node carries the ledger, parent identity and tree-generation context
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one node carries the ledger, parent identity and tree-generation context"
+)]
 pub(crate) fn spawn_child(
     ledger: &RlmSpawnLedger,
     artifacts_root: &Path,

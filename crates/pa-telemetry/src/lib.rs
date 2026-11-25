@@ -4,13 +4,11 @@
 //! [`TelemetryClient::track`], batched [`TelemetrySink`] delivery, and the
 //! pseudonymous installation identity.
 
-// Casts narrow values that are validated or structurally bounded (millisecond
-// durations, clamped property bounds, non-negative JSON numbers); guarded
-// conversions would add panic paths the bounds guarantee away.
-#![allow(
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    reason = "casts narrow values that are validated or structurally bounded (millisecond durations, clamped property bounds, non-negative JSON numbers)"
 )]
 
 mod catalog;

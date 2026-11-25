@@ -757,9 +757,10 @@ async fn cache_prefix_breaks_ride_the_run() {
 /// `telemetry.json` (one user across both products) and mirrors events to
 /// the local JSONL file under that id.
 #[tokio::test]
-// This test's delivery task reads the same process-wide env as the assertion.
-// The current-thread runtime's task never acquires this test-only mutex.
-#[allow(clippy::await_holding_lock)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the delivery task reads the same process-wide env; it never takes this test-only mutex"
+)]
 async fn build_client_reuses_the_ts_installation_id_and_mirrors() {
     let _env_lock = crate::packages::test_support::ENV_MUTEX
         .lock()
