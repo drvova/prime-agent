@@ -11,9 +11,10 @@
 /// Copilot a signed-in provider, and its models then ranked above the
 /// fixtures' in the `/model` picker. Call it before the daemon spawns and
 /// before the client runs.
-// Each test target compiles this module for itself, and not every one runs
-// the client in-process.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one runs the client in-process"
+)]
 pub fn scrub_ambient_provider_credentials() {
     static SCRUB: std::sync::Once = std::sync::Once::new();
     SCRUB.call_once(|| {
@@ -38,9 +39,10 @@ pub fn scrub_ambient_provider_credentials() {
 /// # Panics
 ///
 /// `child` exited first, or 15 seconds passed.
-// Each test target compiles this module for itself, and not every one waits
-// for a daemon through it.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one waits for a daemon through it"
+)]
 #[cfg(unix)]
 pub fn await_listening(socket: &std::path::Path, child: &mut std::process::Child) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);

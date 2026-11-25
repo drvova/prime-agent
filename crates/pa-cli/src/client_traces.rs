@@ -269,9 +269,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The process env must stay stable across the flow's awaits:
-    // the sync env lock is held for the whole test by design.
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the process env stays stable"
+    )]
     async fn the_credential_labels_follow_the_ts_precedence() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_API_KEY");
@@ -340,9 +341,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The process env must stay stable across the flow's awaits:
-    // the sync env lock is held for the whole test by design.
-    #[allow(clippy::await_holding_lock)]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the env lock stays held across the awaits so the process env stays stable"
+    )]
     async fn the_report_formats_the_engine_rows() {
         let _env = env_lock();
         std::env::remove_var("PRIME_AGENT_TRACES_API_KEY");

@@ -1,6 +1,11 @@
-// too_many_lines: style gate only. Casts: 64-bit targets; narrowing sits at bounded
-// OS/protocol boundaries.
-#![allow(clippy::too_many_lines, clippy::cast_possible_wrap)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "`write_corpus_fixture` writes the whole corpus in one pass"
+)]
+#![expect(
+    clippy::cast_possible_wrap,
+    reason = "the fixture's turn index is a small count added to a fixed epoch timestamp"
+)]
 
 //! End-to-end RPC-mode verification: the real binary serves the TS
 //! `modes/rpc` JSONL command surface over stdio, driven by the scripted

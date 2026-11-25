@@ -9,8 +9,10 @@
 //! so nothing on the client side can have started the daemon again.
 
 #![cfg(unix)]
-// too_many_lines: the one test spells out the window's full option set, as its siblings do.
-#![allow(clippy::too_many_lines)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "the one test spells out the window's full option set, as its siblings do"
+)]
 
 mod support;
 

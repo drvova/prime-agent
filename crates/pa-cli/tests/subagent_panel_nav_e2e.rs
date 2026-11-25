@@ -1,5 +1,17 @@
-// large_futures: stack futures on hot paths by design. too_many_lines: style gate only.
-#![allow(clippy::large_futures, clippy::too_many_lines)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::large_futures,
+        reason = "the headless `run_interactive` futures stay on the stack; each test awaits one at a time"
+    )
+)]
+#![cfg_attr(
+    unix,
+    expect(
+        clippy::too_many_lines,
+        reason = "`down_arrow_focuses_the_dock_and_enter_opens_the_scoped_agents_view` is one scenario, top to bottom"
+    )
+)]
 
 //! End-to-end verifier for the subagent panel's keyboard path from the
 //! main chat (Kevin's live-dogfood ruling, TS parity): Down focuses the
