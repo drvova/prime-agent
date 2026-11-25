@@ -181,12 +181,11 @@ fn read_saved_session(path: &Path) -> anyhow::Result<SavedSession> {
             messages
                 .iter()
                 .find(|(_, message)| role(message) == "user")
-                .map(|(_, message)| {
+                .map_or_default(|(_, message)| {
                     let text = text_of(message);
                     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
                     line.chars().take(TITLE_CHARS).collect()
                 })
-                .unwrap_or_default()
         });
     Ok(SavedSession {
         id: header
@@ -245,8 +244,7 @@ fn snippet(text: &str, lower: &str, term: &str) -> String {
 fn iso(time: std::time::SystemTime) -> String {
     let millis = time
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
+        .map_or_default(|duration| duration.as_millis());
     crate::session::manager::format_iso(i64::try_from(millis).unwrap_or(i64::MAX))
 }
 

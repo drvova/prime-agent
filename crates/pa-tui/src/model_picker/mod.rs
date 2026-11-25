@@ -987,8 +987,7 @@ impl ModelPicker {
     fn key_at(&self, index: usize) -> String {
         self.all_models
             .get(index)
-            .map(|model| Self::model_key_provider(&model.provider, &model.id))
-            .unwrap_or_default()
+            .map_or_default(|model| Self::model_key_provider(&model.provider, &model.id))
     }
 
     pub(crate) fn model_key_provider(provider: &str, id: &str) -> String {

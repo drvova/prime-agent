@@ -767,7 +767,7 @@ fn a_failing_rebuild_loop_leaves_nothing_behind() {
 
     // Nothing of the session survives the loop: no process under the daemon, no lease.
     let held_leases: Vec<PathBuf> = std::fs::read_dir(agent_dir.join("session-leases"))
-        .map(|entries| {
+        .map_or_default(|entries| {
             entries
                 .flatten()
                 .map(|entry| entry.path())
@@ -776,8 +776,7 @@ fn a_failing_rebuild_loop_leaves_nothing_behind() {
                         .is_some_and(|extension| extension == "lock")
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     assert_eq!(
         (child_pids_of(supervisor_pid), held_leases),
         (Vec::<u32>::new(), Vec::<PathBuf>::new()),

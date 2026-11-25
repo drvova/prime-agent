@@ -18,15 +18,12 @@ fn assistant_rows(events: &[EngineEvent]) -> Vec<serde_json::Value> {
 
 /// One reply's joined text.
 fn text_of(message: &serde_json::Value) -> String {
-    message["content"]
-        .as_array()
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|block| block.get("text").and_then(Value::as_str))
-                .collect::<String>()
-        })
-        .unwrap_or_default()
+    message["content"].as_array().map_or_default(|blocks| {
+        blocks
+            .iter()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<String>()
+    })
 }
 
 /// The `(retry starts, retry end successes)` one run emitted.

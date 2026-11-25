@@ -108,11 +108,10 @@ fn thinking_block_text(
     partial
         .content
         .get(content_index)
-        .map(|block| match block {
+        .map_or_default(|block| match block {
             pa_agent::types::AssistantContent::Thinking(thinking) => thinking.thinking.clone(),
             _ => String::new(),
         })
-        .unwrap_or_default()
 }
 
 /// Serialize one loop event to the TS `session_event` wire shape.

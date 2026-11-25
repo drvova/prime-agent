@@ -30,20 +30,18 @@ fn last_block<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 
 /// Parse one reply; the error is [`MISSING_REWRITE`].
 pub(crate) fn parse_reply(text: &str) -> Result<HelperReply, &'static str> {
-    let unresolved = last_block(text, "unresolved")
-        .map(|block| {
-            block
-                .lines()
-                .map(|line| {
-                    line.trim()
-                        .trim_start_matches(['-', '*', '\u{2022}'])
-                        .trim()
-                })
-                .filter(|line| !line.is_empty() && !line.eq_ignore_ascii_case("none"))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
+    let unresolved = last_block(text, "unresolved").map_or_default(|block| {
+        block
+            .lines()
+            .map(|line| {
+                line.trim()
+                    .trim_start_matches(['-', '*', '\u{2022}'])
+                    .trim()
+            })
+            .filter(|line| !line.is_empty() && !line.eq_ignore_ascii_case("none"))
+            .map(str::to_string)
+            .collect()
+    });
     match last_block(text, "rewrite").map(str::trim) {
         Some(rewrite) if !rewrite.is_empty() => Ok(HelperReply {
             rewrite: Some(rewrite.to_string()),

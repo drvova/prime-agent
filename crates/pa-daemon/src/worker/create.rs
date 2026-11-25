@@ -901,8 +901,7 @@ impl Worker {
             .get("env")
             .cloned()
             .and_then(|env| serde_json::from_value(env).ok())
-            .map(|env| crate::herdr::filter_client_env(&env))
-            .unwrap_or_default();
+            .map_or_default(|env| crate::herdr::filter_client_env(&env));
         // TS keys the child skip on the SPAWN OVERRIDE ONLY
         // (`sessionOptionsOverride?.rlmDepth`), never the persisted file
         // depth: a resumed subagent file opened as a top-level session

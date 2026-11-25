@@ -697,9 +697,7 @@ fn at_suggestions(provider: &CombinedAutocompleteProvider, text: &str) -> Option
 
 /// The `@` suggestion items of one provider query.
 fn at_values(provider: &CombinedAutocompleteProvider, text: &str) -> Vec<CompletionItem> {
-    at_suggestions(provider, text)
-        .map(|suggestions| suggestions.items)
-        .unwrap_or_default()
+    at_suggestions(provider, text).map_or_default(|suggestions| suggestions.items)
 }
 
 /// The `@` item values of one provider query.
@@ -996,8 +994,7 @@ fn at_index_matches_the_walk_on_random_trees() {
                             search,
                         )
                     })
-                    .map(|suggestions| suggestions.items)
-                    .unwrap_or_default();
+                    .map_or_default(|suggestions| suggestions.items);
                 let context = format!("seed {seed}, {entries} entries, query {at_prefix}");
                 assert_eq!(at_values(&indexed, &at_prefix), expected, "{context}");
                 if matched <= fuzzy_file_search::MAX_WALK_RESULTS {

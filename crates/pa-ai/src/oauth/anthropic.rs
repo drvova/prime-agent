@@ -572,8 +572,7 @@ mod tests {
             parsed
                 .query_pairs()
                 .find(|(key, _)| key == name)
-                .map(|(_, value)| value.to_string())
-                .unwrap_or_default()
+                .map_or_default(|(_, value)| value.to_string())
         };
         assert_eq!(param("code"), "true");
         assert_eq!(param("client_id"), ANTHROPIC_CLIENT_ID);

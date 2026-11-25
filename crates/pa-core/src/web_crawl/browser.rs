@@ -48,8 +48,7 @@ pub(crate) fn find() -> Option<PathBuf> {
         return crate::platform::is_executable(&named).then_some(named);
     }
     let on_path = pa_types::session_scope::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .unwrap_or_default();
+        .map_or_default(|paths| std::env::split_paths(&paths).collect::<Vec<_>>());
     let suffixes: &[&str] = if cfg!(windows) { &[".exe"] } else { &[""] };
     on_path
         .iter()
