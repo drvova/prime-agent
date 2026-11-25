@@ -51,7 +51,14 @@ impl SessionEngine for BurstStreamEngine {
                 return;
             }
             if self.spacing_ms > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(self.spacing_ms));
+                // Paced against the clock, not slept: a Windows sleep lasts a whole
+                // timer tick (about 15.6 ms), which would stretch the burst past the
+                // span the coalescing bound is drawn for.
+                let until =
+                    std::time::Instant::now() + std::time::Duration::from_millis(self.spacing_ms);
+                while std::time::Instant::now() < until {
+                    std::hint::spin_loop();
+                }
             }
         }
         if !emit(EngineEvent::AssistantMessage(Self::message_with(

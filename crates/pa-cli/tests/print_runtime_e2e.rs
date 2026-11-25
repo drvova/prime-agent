@@ -14,6 +14,7 @@
 //! HOME, and the scripted faux provider drive the complete pipeline from
 //! CLI parse to headless terminal selection, deterministically.
 
+use std::path::Path;
 use std::process::Command;
 
 fn run(args: &[&str], script: &serde_json::Value) -> (String, String, i32) {
@@ -447,6 +448,8 @@ fn overflow_error(delay_ms: u64) -> serde_json::Value {
 }
 
 /// `keepRecentTokens` keeps ~10 tokens, so recovery with pre-cut history summarizes it.
+// Used only by the unix-only long-prompt tests.
+#[cfg(unix)]
 fn compactable_settings() -> serde_json::Value {
     serde_json::json!({
         "compaction": { "enabled": true, "reserveTokens": 1, "keepRecentTokens": 10 }
@@ -454,11 +457,17 @@ fn compactable_settings() -> serde_json::Value {
 }
 
 /// The reported-overflow failure text (TS `_checkCompaction` verbatim).
+// Used only by the unix-only long-prompt tests.
+#[cfg(unix)]
 const OVERFLOW_RECOVERY_FAILED: &str = "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
 
 /// The full compact-and-retry cycle (verified against the TS binary): an
 /// overflow drops the failed turn, compacts once, re-issues, and the second
 /// overflow ends the run, exit 1.
+// Unix only: the prompt turns are 48,000-character arguments, past the 32,767
+// characters a Windows command line holds. Compaction is platform-independent
+// and runs on every Linux CI shard.
+#[cfg(unix)]
 #[test]
 fn print_mode_overflow_compacts_retries_once_then_reports() {
     let home = isolated_home();
@@ -512,6 +521,10 @@ fn print_mode_overflow_compacts_retries_once_then_reports() {
 }
 
 /// The retry on the compacted context recovers the turn (exit 0).
+// Unix only: the prompt turns are 48,000-character arguments, past the 32,767
+// characters a Windows command line holds. Compaction is platform-independent
+// and runs on every Linux CI shard.
+#[cfg(unix)]
 #[test]
 fn print_mode_overflow_retry_recovers_the_turn() {
     let home = isolated_home();
@@ -577,6 +590,10 @@ fn print_mode_overflow_skip_surfaces_the_warning_row() {
 /// against the TS binary): the `compaction_start`/`compaction_end` pair with
 /// `willRetry: true`, the retried turn without a new user message,
 /// and the reported failure surface.
+// Unix only: the prompt turns are 48,000-character arguments, past the 32,767
+// characters a Windows command line holds. Compaction is platform-independent
+// and runs on every Linux CI shard.
+#[cfg(unix)]
 #[test]
 fn print_mode_overflow_json_streams_the_compaction_events() {
     let home = isolated_home();
@@ -675,6 +692,10 @@ fn print_mode_overflow_json_streams_the_compaction_events() {
 /// The stale-overflow recovery across runs (the `--continue` shape,
 /// verified against the TS binary): the resumed run's pre-turn arm compacts
 /// the stale overflow before the admitted prompt.
+// Unix only: the prompt turns are 48,000-character arguments, past the 32,767
+// characters a Windows command line holds. Compaction is platform-independent
+// and runs on every Linux CI shard.
+#[cfg(unix)]
 #[test]
 fn print_mode_stale_overflow_recovers_before_the_next_prompt_after_a_resume() {
     let home = isolated_home();
@@ -837,6 +858,8 @@ fn print_mode_json_streams_the_message_update_deltas() {
 
 /// The context tokens a lone `seed turn` settles at: one print run under a window too large to
 /// compact, read from the last assistant `message_end` usage.
+// Used only by the unix-only long-prompt tests.
+#[cfg(unix)]
 fn seed_turn_context_tokens(home: &std::path::Path) -> u64 {
     let probe = isolated_home();
     std::fs::create_dir_all(probe.path().join(".prime/agent")).unwrap();
@@ -870,6 +893,10 @@ fn seed_turn_context_tokens(home: &std::path::Path) -> u64 {
 /// The threshold compaction arm (TS `_checkCompaction` Case 3): a settled
 /// turn crossing the reserve headroom streams the `compaction_start`/
 /// `compaction_end` pair with the `threshold` reason.
+// Unix only: the prompt turns are 48,000-character arguments, past the 32,767
+// characters a Windows command line holds. Compaction is platform-independent
+// and runs on every Linux CI shard.
+#[cfg(unix)]
 #[test]
 fn print_mode_json_streams_the_threshold_compaction_pair() {
     let home = isolated_home();
@@ -1017,9 +1044,14 @@ fn print_mode_fork_copies_the_session_into_a_new_file() {
     );
     let fork_entries = read_entries(fork);
     assert_ne!(fork_entries[0]["id"], session_id.as_str());
+    // Compared as paths: the recorded spelling may mix separators on Windows.
     assert_eq!(
-        fork_entries[0]["parentSession"],
-        source.display().to_string()
+        Path::new(
+            fork_entries[0]["parentSession"]
+                .as_str()
+                .expect("parent session")
+        ),
+        source.as_path()
     );
     let texts: Vec<&str> = fork_entries
         .iter()
@@ -1088,9 +1120,14 @@ fn print_mode_fork_imports_a_global_session_into_this_cwd() {
         project.display().to_string(),
         "the fork adopts the TARGET cwd"
     );
+    // Compared as paths: the recorded spelling may mix separators on Windows.
     assert_eq!(
-        fork_entries[0]["parentSession"],
-        files[0].display().to_string()
+        Path::new(
+            fork_entries[0]["parentSession"]
+                .as_str()
+                .expect("parent session")
+        ),
+        files[0].as_path()
     );
     let texts: Vec<&str> = fork_entries
         .iter()
