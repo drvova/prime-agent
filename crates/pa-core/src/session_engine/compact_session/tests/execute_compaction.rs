@@ -762,7 +762,7 @@ async fn an_early_user_constraint_survives_compaction_verbatim() {
         .unwrap();
     for entry in session_with_turns(tmp.path(), 6).get_entries() {
         if let FileEntry::Message { message, .. } = entry {
-            session.append_message(message.clone()).unwrap();
+            session.append_message(message).unwrap();
         }
     }
     let outcome = execute_compaction(

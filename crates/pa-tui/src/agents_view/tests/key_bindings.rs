@@ -26,7 +26,7 @@ fn page_keys_step_by_visible_list_rows() {
         let mut row = template.clone();
         row.identity = format!("row-{i}");
         row.title = row.identity.clone();
-        row.summary = serde_json::json!({ "sessionName": row.identity.clone() });
+        row.summary = serde_json::json!({ "sessionName": row.identity });
         mode.rows.push(row);
     }
     // The terminal height of the last frame sets the page step (`max(1, max(4, rows - 9))`),

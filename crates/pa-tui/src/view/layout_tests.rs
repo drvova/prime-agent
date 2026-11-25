@@ -611,8 +611,7 @@ fn a_push_after_a_user_row_folds_at_its_own_slot() {
     let row_text = |frame: &[crate::Line], row: usize| -> String {
         frame
             .get(row)
-            .map(|line| line.iter().map(|span| span.content.as_str()).collect())
-            .unwrap_or_default()
+            .map_or_default(|line| line.iter().map(|span| span.content.as_str()).collect())
     };
     let mut view = view();
     view.detail = Detail::Overview;
@@ -716,8 +715,7 @@ fn a_card_push_folds_at_the_pushed_slot() {
     let row_text = |frame: &[crate::Line], row: usize| -> String {
         frame
             .get(row)
-            .map(|line| line.iter().map(|span| span.content.as_str()).collect())
-            .unwrap_or_default()
+            .map_or_default(|line| line.iter().map(|span| span.content.as_str()).collect())
     };
     let mut view = view();
     view.detail = Detail::Overview;
@@ -779,8 +777,7 @@ fn a_card_growth_folds_at_its_own_slot() {
     let row_text = |frame: &[crate::Line], row: usize| -> String {
         frame
             .get(row)
-            .map(|line| line.iter().map(|span| span.content.as_str()).collect())
-            .unwrap_or_default()
+            .map_or_default(|line| line.iter().map(|span| span.content.as_str()).collect())
     };
     let mut view = view();
     view.detail = Detail::Overview;
@@ -848,8 +845,7 @@ fn a_card_pop_folds_at_the_popped_slot() {
     let row_text = |frame: &[crate::Line], row: usize| -> String {
         frame
             .get(row)
-            .map(|line| line.iter().map(|span| span.content.as_str()).collect())
-            .unwrap_or_default()
+            .map_or_default(|line| line.iter().map(|span| span.content.as_str()).collect())
     };
     let mut view = view();
     view.detail = Detail::Overview;
@@ -899,8 +895,7 @@ fn a_replayed_result_into_a_pending_card_folds_its_row_delta() {
     let row_text = |frame: &[crate::Line], row: usize| -> String {
         frame
             .get(row)
-            .map(|line| line.iter().map(|span| span.content.as_str()).collect())
-            .unwrap_or_default()
+            .map_or_default(|line| line.iter().map(|span| span.content.as_str()).collect())
     };
     let mut view = view();
     view.detail = Detail::Overview;
@@ -1009,8 +1004,7 @@ fn an_assistant_growth_folds_at_its_own_slot() {
     let row_text = |frame: &[crate::Line], row: usize| -> String {
         frame
             .get(row)
-            .map(|line| line.iter().map(|span| span.content.as_str()).collect())
-            .unwrap_or_default()
+            .map_or_default(|line| line.iter().map(|span| span.content.as_str()).collect())
     };
     let mut view = view();
     view.detail = Detail::Overview;

@@ -219,13 +219,12 @@ pub(crate) fn client_event_from_value(value: &Value) -> Option<DaemonClientEvent
             removed: value
                 .get("removed")
                 .and_then(Value::as_array)
-                .map(|ids| {
+                .map_or_default(|ids| {
                     ids.iter()
                         .filter_map(Value::as_str)
                         .map(str::to_string)
                         .collect()
-                })
-                .unwrap_or_default(),
+                }),
             resync: value.get("resync") == Some(&Value::Bool(true)),
         }),
         "heartbeats_changed" => Some(DaemonClientEvent::HeartbeatsChanged),
@@ -243,14 +242,13 @@ pub(crate) fn client_event_from_value(value: &Value) -> Option<DaemonClientEvent
             config: value
                 .get("config")
                 .and_then(Value::as_array)
-                .map(|names| {
+                .map_or_default(|names| {
                     names
                         .iter()
                         .filter_map(Value::as_str)
                         .map(str::to_string)
                         .collect()
-                })
-                .unwrap_or_default(),
+                }),
             error: value
                 .get("error")
                 .and_then(Value::as_str)

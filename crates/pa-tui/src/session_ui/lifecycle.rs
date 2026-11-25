@@ -88,8 +88,7 @@ impl SessionUi {
             model_favorite_models: options
                 .client_settings
                 .as_ref()
-                .map(|settings| settings.favorite_models())
-                .unwrap_or_default(),
+                .map_or_default(|settings| settings.favorite_models()),
             default_thinking_level: options.default_thinking_level.clone(),
             models_fetched_at: None,
             catalog_updates,
@@ -690,8 +689,7 @@ impl SessionUi {
     pub(super) fn loader_anchor_instant(prompt_ms: u64) -> Option<std::time::Instant> {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|since| since.as_millis() as u64)
-            .unwrap_or_default();
+            .map_or_default(|since| since.as_millis() as u64);
         let age = now_ms.checked_sub(prompt_ms)?;
         std::time::Instant::now().checked_sub(std::time::Duration::from_millis(age))
     }

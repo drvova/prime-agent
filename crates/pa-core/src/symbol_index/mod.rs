@@ -336,8 +336,7 @@ impl SymbolIndex {
         lock(&self.inner.state)
             .files
             .get(relative)
-            .map(|entry| entry.definitions.clone())
-            .unwrap_or_default()
+            .map_or_default(|entry| entry.definitions.clone())
     }
 
     /// The first full pass has finished.

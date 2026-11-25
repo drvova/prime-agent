@@ -329,8 +329,7 @@ pub(super) fn rehydrate(session: &Arc<Session>) -> Vec<Arc<Job>> {
                 Some(lasting),
             );
             let age = crate::cron::parse_iso_millis(&record.started_at)
-                .map(|started| crate::autonomous::now_millis().saturating_sub(started))
-                .unwrap_or_default();
+                .map_or_default(|started| crate::autonomous::now_millis().saturating_sub(started));
             job.started = Instant::now()
                 .checked_sub(Duration::from_millis(age))
                 .unwrap_or(job.started);

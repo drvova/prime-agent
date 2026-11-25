@@ -103,10 +103,7 @@ fn kill_worker(pid: u32) {
 #[cfg(target_os = "linux")]
 fn process_alive(pid: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-        let rest = stat
-            .rsplit_once(')')
-            .map(|(_, rest)| rest)
-            .unwrap_or_default();
+        let rest = stat.rsplit_once(')').map_or_default(|(_, rest)| rest);
         !rest.starts_with('Z')
     })
 }

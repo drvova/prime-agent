@@ -254,8 +254,7 @@ async fn delay(ms: u64, cancel: Option<&TraceUploadCancel>) {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_millis() as u64)
-        .unwrap_or_default()
+        .map_or_default(|since| since.as_millis() as u64)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,8 +273,7 @@ impl TraceUploadSignature {
             .modified()
             .ok()
             .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|since| since.as_millis() as u64)
-            .unwrap_or_default();
+            .map_or_default(|since| since.as_millis() as u64);
         Some(TraceUploadSignature {
             size: metadata.len(),
             mtime_ms,
@@ -702,9 +700,7 @@ pub fn log_agent_trace_outcome(
             message,
             ..
         } => {
-            let status = status_code
-                .map(|status| format!(" (HTTP {status})"))
-                .unwrap_or_default();
+            let status = status_code.map_or_default(|status| format!(" (HTTP {status})"));
             format!("upload failed{status}: {message}")
         }
         TraceUploadResult::TooLarge { size, max_bytes } => {
@@ -716,9 +712,7 @@ pub fn log_agent_trace_outcome(
         }
         _ => return,
     };
-    let suffix = session_file
-        .map(|path| format!(" [{}]", path.display()))
-        .unwrap_or_default();
+    let suffix = session_file.map_or_default(|path| format!(" [{}]", path.display()));
     append_rotating_log(
         &agent_traces_log_path(agent_dir),
         &format!(

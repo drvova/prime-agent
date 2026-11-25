@@ -166,8 +166,7 @@ pub(crate) fn derive(root: &Path) -> Derived {
     }
     let workflows = root.join(".github/workflows");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&workflows)
-        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
-        .unwrap_or_default();
+        .map_or_default(|entries| entries.flatten().map(|entry| entry.path()).collect());
     files.sort();
     for file in files {
         let Ok(text) = std::fs::read_to_string(&file) else {

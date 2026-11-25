@@ -1000,8 +1000,7 @@ impl Worker {
                 .get("env")
                 .cloned()
                 .and_then(|env| serde_json::from_value(env).ok())
-                .map(|env| crate::herdr::filter_client_env(&env))
-                .unwrap_or_default();
+                .map_or_default(|env| crate::herdr::filter_client_env(&env));
             if let Some(config) = crate::herdr::HerdrConfig::from_env(&client_env) {
                 let (active, session_ref, rlm_depth) = {
                     let core = self.core.lock().unwrap();

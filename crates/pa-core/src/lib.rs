@@ -15,9 +15,9 @@
 )]
 #![cfg_attr(
     test,
-    expect(
+    allow(
         clippy::float_cmp,
-        reason = "the exact-float `assert_eq!`s check parsed fixture values; an epsilon would weaken them"
+        reason = "the exact-float `assert_eq!`s check parsed fixture values; an epsilon would weaken them; an allow, not an expect: clippy 1.100 no longer flags exact-float asserts, 1.98 does"
     )
 )]
 
