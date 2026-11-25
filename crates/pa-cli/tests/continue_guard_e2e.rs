@@ -1,11 +1,3 @@
-#![cfg_attr(
-    unix,
-    expect(
-        clippy::too_many_lines,
-        reason = "`print_continue_refuses_an_active_daemon_session` is one scenario, top to bottom"
-    )
-)]
-
 //! End-to-end verifier for the print-mode active-session guard (B-11): a
 //! headless `-c`/`-r` must refuse to open a session file that a live daemon
 //! worker already hosts, with the exact TS `SessionAlreadyActiveError`
