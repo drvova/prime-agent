@@ -112,7 +112,9 @@ pub(crate) fn spelled(path: &Path) -> PathBuf {
 
 /// The store the process uses.
 enum Selected {
-    Files(FileTranscriptStore),
+    /// The file store, and why the database could not be opened when that is
+    /// why it is in use.
+    Files(FileTranscriptStore, Option<String>),
     /// The store, the agent dir whose database it opened, and the database.
     Sqlite(SqliteTranscriptStore, PathBuf, PathBuf),
 }
@@ -134,7 +136,7 @@ fn selected() -> &'static Selected {
         let _process = pa_types::session_scope::enter(None);
         match pa_types::platform::agent_dir() {
             Some(agent_dir) => select(agent_dir),
-            None => Selected::Files(FileTranscriptStore),
+            None => Selected::Files(FileTranscriptStore, None),
         }
     })
 }
@@ -162,7 +164,7 @@ pub fn use_agent_dir(agent_dir: &Path) -> bool {
 fn select(agent_dir: PathBuf) -> Selected {
     let settings = crate::settings::SettingsManager::create(&agent_dir, &agent_dir);
     match settings.global_settings().transcript_store.as_deref() {
-        Some("file") => return Selected::Files(FileTranscriptStore),
+        Some("file") => return Selected::Files(FileTranscriptStore, None),
         Some("sqlite") | None => {}
         Some(other) => eprintln!(
             "transcript store: unknown \"transcriptStore\": {other:?} (\"sqlite\" or \"file\"); \
@@ -173,11 +175,11 @@ fn select(agent_dir: PathBuf) -> Selected {
     match SqliteTranscriptStore::open(&database) {
         Ok(store) => Selected::Sqlite(store, agent_dir, database),
         Err(error) => {
-            eprintln!(
-                "transcript store: cannot open {} ({error:#}); sessions are kept as JSONL files",
-                database.display()
-            );
-            Selected::Files(FileTranscriptStore)
+            let reason = format!("{} ({error:#})", database.display());
+            // The daemon log is its standard error (no tracing subscriber is
+            // installed); the hello carries the reason to clients.
+            eprintln!("transcript store: cannot open {reason}; sessions are kept as JSONL files");
+            Selected::Files(FileTranscriptStore, Some(reason))
         }
     }
 }
@@ -186,7 +188,7 @@ fn select(agent_dir: PathBuf) -> Selected {
 #[must_use]
 pub fn store() -> &'static dyn TranscriptStore {
     match selected() {
-        Selected::Files(store) => store,
+        Selected::Files(store, _) => store,
         Selected::Sqlite(store, ..) => store,
     }
 }
@@ -208,7 +210,7 @@ pub fn open_database(database: &Path) -> anyhow::Result<Box<dyn TranscriptStore>
 #[must_use]
 pub fn database() -> Option<&'static Path> {
     match selected() {
-        Selected::Files(_) => None,
+        Selected::Files(..) => None,
         Selected::Sqlite(_, _, database) => Some(database),
     }
 }
@@ -217,7 +219,7 @@ pub fn database() -> Option<&'static Path> {
 /// the agent's other state ([`crate::agent_state`]) is kept in it too.
 pub(crate) fn database_log() -> Option<&'static pa_log::Log> {
     match selected() {
-        Selected::Files(_) => None,
+        Selected::Files(..) => None,
         Selected::Sqlite(store, ..) => Some(store.log()),
     }
 }
@@ -232,11 +234,24 @@ pub(crate) fn database_log_of(agent_dir: &Path) -> Option<&'static pa_log::Log> 
     (resolved(opened) == resolved(agent_dir)).then(|| store.log())
 }
 
+/// Why the process's [`store`] is the file store although the settings asked
+/// for the SQLite one: the database that could not be opened, and the error.
+/// `None` when the database is in use or the settings chose the file store.
+/// The daemon's hello carries it to clients, since nothing else of the
+/// fallback is visible to the user.
+#[must_use]
+pub fn fallback_reason() -> Option<&'static str> {
+    match selected() {
+        Selected::Files(_, reason) => reason.as_deref(),
+        Selected::Sqlite(..) => None,
+    }
+}
+
 /// Which store [`store`] is.
 #[must_use]
 pub fn store_kind() -> TranscriptStoreKind {
     match selected() {
-        Selected::Files(_) => TranscriptStoreKind::File,
+        Selected::Files(..) => TranscriptStoreKind::File,
         Selected::Sqlite(..) => TranscriptStoreKind::Sqlite,
     }
 }
@@ -383,7 +398,7 @@ pub fn session_trees(agent_dir: &Path) -> Vec<PathBuf> {
 /// The database could not be read.
 pub fn stored_locators() -> io::Result<Vec<PathBuf>> {
     match selected() {
-        Selected::Files(_) => Ok(Vec::new()),
+        Selected::Files(..) => Ok(Vec::new()),
         Selected::Sqlite(store, ..) => store.locators(),
     }
 }

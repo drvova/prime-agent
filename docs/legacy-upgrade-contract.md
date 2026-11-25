@@ -238,7 +238,9 @@ are brought in without a migration step the user runs.
   daemon log names it, the `agent transcripts imported` telemetry event
   counts it (counts and a size bucket only), its root keeps no marker, and
   the next boot retries it. A database that cannot be opened leaves the
-  process on the JSONL files, with the reason on standard error.
+  process on the JSONL files, with the reason in the daemon log and in the
+  daemon's hello (`transcriptStoreFallback`), which every attached window
+  shows as a warning.
 
 ### The agent's other state
 
