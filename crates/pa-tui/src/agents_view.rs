@@ -826,12 +826,10 @@ async fn run_agents_view_surface(
     crossterm::style::force_color_output(true);
     let session_activity = link
         .as_mut()
-        .map(|link| std::mem::take(&mut link.session_activity))
-        .unwrap_or_default();
+        .map_or_default(|link| std::mem::take(&mut link.session_activity));
     let persistent_shells = link
         .as_mut()
-        .map(|link| std::mem::take(&mut link.persistent_shells))
-        .unwrap_or_default();
+        .map_or_default(|link| std::mem::take(&mut link.persistent_shells));
     let mut activity_fetch = link.as_mut().and_then(|link| link.activity_fetch.take());
     // This pane may arrive already in TUI state (the chat's teardown preserves it), so a
     // roster-link failure here must hand the terminal back before the error escapes.
@@ -1598,8 +1596,7 @@ async fn run_agents_view_surface(
             scope_back: mode.scope_back,
             expanded_ancestors: opened
                 .as_ref()
-                .map(|row| row.expanded_ancestors.clone())
-                .unwrap_or_default(),
+                .map_or_default(|row| row.expanded_ancestors.clone()),
             selected_row_identity: opened.as_ref().map(|row| row.selected_row_identity.clone()),
             selected_key: opened.as_ref().map(|row| row.selected_key.clone()),
             opened_rlm_depth: opened.as_ref().and_then(|row| row.rlm_depth),

@@ -78,7 +78,7 @@ impl Sink for FileSink<'_> {
         // Claim one slot of the shared budget; none left stops every file.
         if self
             .budget
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                 left.checked_sub(1)
             })
             .is_err()

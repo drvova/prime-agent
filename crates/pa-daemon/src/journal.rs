@@ -677,9 +677,7 @@ impl WorkerRecoveryJournal {
             recorded_at: pickup.map_or_else(crate::util::now_iso, |previous| {
                 previous.recorded_at.clone()
             }),
-            running: pickup
-                .map(|previous| previous.running.clone())
-                .unwrap_or_default(),
+            running: pickup.map_or_default(|previous| previous.running.clone()),
             running_steering: pickup.is_some_and(|previous| previous.running_steering),
         };
         let verdict_unchanged = self.latest.get(active_session_id).is_some_and(|previous| {
@@ -903,29 +901,26 @@ fn parse_queue_snapshot_records(path: &Path) -> Result<HashMap<String, WorkerQue
 /// One snapshot lane: a version-2 entry is the full item record; a
 /// version-1 entry is the bare message text and restores as a plain row.
 fn parse_snapshot_lane(value: Option<&Value>) -> Vec<WorkerQueueItemRecord> {
-    value
-        .and_then(Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| match entry {
-                    Value::String(message) => Some(WorkerQueueItemRecord {
-                        message: message.clone(),
-                        priority: None,
-                        preview: None,
-                        custom_message: None,
-                        queue_key: None,
-                        queue_visible: true,
-                        policy: queue_policy_default(),
-                        forced_batch: false,
-                        images: Vec::new(),
-                    }),
-                    Value::Object(_) => serde_json::from_value(entry.clone()).ok(),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    value.and_then(Value::as_array).map_or_default(|entries| {
+        entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Value::String(message) => Some(WorkerQueueItemRecord {
+                    message: message.clone(),
+                    priority: None,
+                    preview: None,
+                    custom_message: None,
+                    queue_key: None,
+                    queue_visible: true,
+                    policy: queue_policy_default(),
+                    forced_batch: false,
+                    images: Vec::new(),
+                }),
+                Value::Object(_) => serde_json::from_value(entry.clone()).ok(),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]

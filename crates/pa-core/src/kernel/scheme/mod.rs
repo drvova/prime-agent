@@ -425,8 +425,7 @@ impl SchemeKernelProvisioner {
                 .artifact_dir
                 .as_deref()
                 .and_then(std::path::Path::file_name)
-                .map(|id| id.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+                .map_or_default(|id| id.to_string_lossy().into_owned()),
         )];
         for (name, path) in [
             ("PRIME_AGENT_CODING_AGENT_DIR", options.agent_dir.clone()),

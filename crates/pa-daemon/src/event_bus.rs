@@ -248,8 +248,7 @@ impl EventBus {
                         let label = subscription
                             .label
                             .as_deref()
-                            .map(|label| format!(" ({label})"))
-                            .unwrap_or_default();
+                            .map_or_default(|label| format!(" ({label})"));
                         Delivery {
                             message: format!(
                                 "Event `{source}` {event_id}, published by {publisher}, for \

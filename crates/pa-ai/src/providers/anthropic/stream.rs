@@ -193,9 +193,7 @@ async fn run_stream(
     output: &mut AssistantMessage,
     writer: &AssistantMessageEventWriter,
 ) -> Result<(), ProviderError> {
-    let base_options = options
-        .map(|options| options.base.clone())
-        .unwrap_or_default();
+    let base_options = options.map_or_default(|options| options.base.clone());
     let api_key = base_options
         .api_key
         .clone()

@@ -878,9 +878,7 @@ async fn captures_write_a_png_and_a_pdf_and_leave_no_browser() {
         )
     };
     let head = |path: &str| {
-        std::fs::read(dir.join(path))
-            .map(|bytes| bytes[..bytes.len().min(5)].to_vec())
-            .unwrap_or_default()
+        std::fs::read(dir.join(path)).map_or_default(|bytes| bytes[..bytes.len().min(5)].to_vec())
     };
     let heads = (head("shots/home.png"), head("home.pdf"));
     let _ = std::fs::remove_dir_all(&dir);

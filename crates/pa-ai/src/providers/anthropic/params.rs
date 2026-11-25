@@ -21,9 +21,7 @@ pub(crate) fn build_params(
     options: Option<&AnthropicOptions>,
     cache_control: Option<&CacheControl>,
 ) -> Value {
-    let base = options
-        .map(|options| options.base.clone())
-        .unwrap_or_default();
+    let base = options.map_or_default(|options| options.base.clone());
     let mut params = Map::new();
     params.insert("model".into(), json!(model.id));
     params.insert(

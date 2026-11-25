@@ -107,8 +107,7 @@ pub fn wire_session_runtime(
                 session_id: session.get_session_id().to_string(),
                 session_file: session
                     .get_session_file()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_default(),
+                    .map_or_default(|path| path.display().to_string()),
                 cwd: session.get_cwd().display().to_string(),
             },
         )

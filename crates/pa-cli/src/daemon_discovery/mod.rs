@@ -440,16 +440,12 @@ fn discover_daemons_with(root: &DaemonStateRoot, named_pipes: bool) -> Vec<Daemo
     let pinned_socket_file = is_socket_file(&root.default_socket_path);
     #[cfg(not(unix))]
     let pinned_socket_file = false;
-    let orphan_files: Vec<PathBuf> = root
-        .socket_dir
-        .as_deref()
-        .map(|dir| {
-            scan_socket_dir(Some(dir))
-                .into_iter()
-                .filter(|path| !is_worker_socket_path(path, dir))
-                .collect()
-        })
-        .unwrap_or_default();
+    let orphan_files: Vec<PathBuf> = root.socket_dir.as_deref().map_or_default(|dir| {
+        scan_socket_dir(Some(dir))
+            .into_iter()
+            .filter(|path| !is_worker_socket_path(path, dir))
+            .collect()
+    });
     let mut sockets: BTreeSet<PathBuf> = process_by_socket
         .keys()
         .cloned()

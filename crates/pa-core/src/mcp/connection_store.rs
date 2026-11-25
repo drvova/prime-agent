@@ -79,8 +79,7 @@ pub struct McpConnectionStore {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|since| since.as_millis() as u64)
-        .unwrap_or_default()
+        .map_or_default(|since| since.as_millis() as u64)
 }
 
 /// Keep only structurally valid records on load: a corrupt or partial entry
