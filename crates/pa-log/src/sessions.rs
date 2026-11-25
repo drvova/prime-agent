@@ -208,9 +208,7 @@ impl SessionFile {
             return Ok(ImportOutcome::Skipped {
                 reason: format!(
                     "session {session} of {source} is already stored{}",
-                    elsewhere
-                        .map(|other| format!(", from {other}"))
-                        .unwrap_or_default()
+                    elsewhere.map_or_default(|other| format!(", from {other}"))
                 ),
             });
         }

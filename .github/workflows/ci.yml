@@ -6,7 +6,7 @@
 # Two triggers, one
 # gate set mirroring `make check` exactly (fmt --all --check, clippy --workspace
 # --all-targets -- -D warnings, cargo test --workspace) on the pinned
-# toolchain (1.98.1) and runner image the continuous/release builds use:
+# toolchain (1.100.0) and runner image the continuous/release builds use:
 #
 #   push to main — every merge is a push. continuous.yml proves the
 #   release binaries link; THIS workflow proves the tip's test/bench/example
@@ -205,7 +205,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1 action pin; the SHA selects the toolchain
+      - uses: dtolnay/rust-toolchain@d5e4d57b030548f435d0befec15ff413a2c60eff # 1.100.0 action pin; the SHA selects the toolchain
         with:
           components: rustfmt
       - run: cargo fmt --all --check
@@ -251,7 +251,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1 action pin; the SHA selects the toolchain
+      - uses: dtolnay/rust-toolchain@d5e4d57b030548f435d0befec15ff413a2c60eff # 1.100.0 action pin; the SHA selects the toolchain
         with:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -300,7 +300,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1 action pin; the SHA selects the toolchain
+      - uses: dtolnay/rust-toolchain@d5e4d57b030548f435d0befec15ff413a2c60eff # 1.100.0 action pin; the SHA selects the toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
@@ -373,7 +373,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1 action pin; the SHA selects the toolchain
+      - uses: dtolnay/rust-toolchain@d5e4d57b030548f435d0befec15ff413a2c60eff # 1.100.0 action pin; the SHA selects the toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: test-shards
@@ -470,7 +470,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # the ref IS the 1.98.1 toolchain; the action ignores the toolchain input
+      - uses: dtolnay/rust-toolchain@d5e4d57b030548f435d0befec15ff413a2c60eff # the ref IS the 1.100.0 toolchain; the action ignores the toolchain input
         with:
           targets: x86_64-pc-windows-gnu
           components: clippy

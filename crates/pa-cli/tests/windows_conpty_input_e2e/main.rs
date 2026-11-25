@@ -209,8 +209,7 @@ fn spawn_supervisor(agent_dir: &Path) -> Supervisor {
     support::scrub_ambient_provider_credentials();
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|stamp| stamp.as_nanos())
-        .unwrap_or_default();
+        .map_or_default(|stamp| stamp.as_nanos());
     let socket = PathBuf::from(format!(
         r"\\.\pipe\prime-agent-conpty-{}-{unique}",
         std::process::id()
@@ -1187,8 +1186,7 @@ fn background_children_open_no_console_windows() {
     .expect("script");
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|stamp| stamp.as_nanos())
-        .unwrap_or_default();
+        .map_or_default(|stamp| stamp.as_nanos());
     let socket = PathBuf::from(format!(
         r"\\.\pipe\prime-agent-console-windows-{}-{unique}",
         std::process::id()

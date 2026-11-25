@@ -13,13 +13,6 @@
     clippy::cast_precision_loss,
     reason = "64-bit targets; the narrowing casts sit at bounded OS and protocol boundaries"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::float_cmp,
-        reason = "the exact-float `assert_eq!`s check parsed fixture values; an epsilon would weaken them; an allow, not an expect: clippy 1.100 no longer flags exact-float asserts, 1.98 does"
-    )
-)]
 
 //! Session engine: tools, skills, prompts, compaction, refinement, kernel/RLM
 //! manager, subagents, session manager, settings.

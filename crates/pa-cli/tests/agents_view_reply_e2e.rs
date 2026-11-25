@@ -401,8 +401,7 @@ async fn reply_to_saved_session_resumes_and_sends() {
         content = support::saved_transcripts(&agent_dir)
             .into_iter()
             .find(|(locator, _)| locator.file_name() == fixture.file_name())
-            .map(|(_, bytes)| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_default();
+            .map_or_default(|(_, bytes)| String::from_utf8_lossy(&bytes).into_owned());
         content.contains("resume me")
     });
     assert!(
