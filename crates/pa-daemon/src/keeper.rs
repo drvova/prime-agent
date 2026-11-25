@@ -105,8 +105,11 @@ static BOOT_DEATH: OnceLock<Option<DaemonDeathRecord>> = OnceLock::new();
 /// the values are kept for [`keeper_pid`] and [`boot_death`], and nothing
 /// this process starts (a session's commands, a nested daemon) inherits them.
 pub fn enter(
-    // Only unix has a keeper to split into.
-    #[cfg_attr(not(unix), allow(unused_variables))] daemon_launch: bool,
+    #[cfg_attr(
+        not(unix),
+        expect(unused_variables, reason = "only unix has a keeper to split into")
+    )]
+    daemon_launch: bool,
 ) {
     #[cfg(unix)]
     if daemon_launch && std::env::var_os(KEEPER_ENV).is_some() {

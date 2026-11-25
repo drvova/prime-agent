@@ -182,9 +182,10 @@ impl Worker {
         }
     }
 
-    // DaemonResponse is the wire response struct and is deliberately wide; the
-    // error channel here carries the whole response, so allow the large-err lint.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error channel carries the whole wire response, which is wide by design"
+    )]
     pub(crate) fn require_created(&self, command_type: &str) -> Result<(), DaemonResponse> {
         let core = self.core.lock().unwrap();
         if !core.created {

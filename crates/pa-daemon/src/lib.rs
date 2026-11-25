@@ -2,21 +2,26 @@
 //! the supervisor spawns one worker process per active session, supervises
 //! restarts with backoff, and routes clients; sessions persist as
 //! append-only JSONL in the same layout as the TS product.
-// Stack-resident futures by design on the daemon's hot paths; boxing the
-// call sites for a lint tick is a perf regression.
-#![allow(clippy::large_futures)]
-// 64-bit-only targets; the narrowing casts sit at OS boundaries
-// (pid/fd/time/size) where the values are bounded by the kernel.
-#![allow(
+#![expect(
+    clippy::large_futures,
+    reason = "stack-resident futures on the hot paths by design; boxing the call sites costs speed"
+)]
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    reason = "64-bit targets; the narrowing casts sit at OS boundaries (pid, fd, time, size) the kernel bounds"
 )]
-// The fn-length threshold is a style gate, not correctness.
-#![allow(clippy::too_many_lines)]
-// API-shape opinions, not defects; the surfaces are deliberate.
-#![allow(clippy::unnecessary_wraps, clippy::struct_excessive_bools)]
+#![expect(
+    clippy::too_many_lines,
+    reason = "the function-length threshold is a style gate, not correctness"
+)]
+#![expect(
+    clippy::unnecessary_wraps,
+    clippy::struct_excessive_bools,
+    reason = "API-shape opinions, not defects: the surfaces are deliberate"
+)]
 /// Session code logs with `eprintln!`, as it did when each session was a process with its own
 /// stderr. Sessions now share the daemon's, so in this crate the macro routes each line to
 /// the calling session's own log, tagged with the session (`worker_stderr::line`); a line

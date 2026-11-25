@@ -644,7 +644,10 @@ impl WorkerRecoveryJournal {
     ///
     /// Returns an error when either record cannot be serialized, the
     /// batched append fails, or the all-idle compaction fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one checkpoint records the queue, the turn and the active action together"
+    )]
     pub fn record_queue_checkpoint(
         &mut self,
         active_session_id: &str,

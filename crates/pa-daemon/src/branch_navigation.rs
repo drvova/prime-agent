@@ -345,7 +345,10 @@ impl TreeNavigation {
     /// `fork`'s prepare phase: settle the running turn first (the branch copy reads the
     /// store), resolve the fork point, and copy the active path into the new session file.
     /// A failed prepare never tears the live session down.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error channel carries the whole wire response, which is wide by design"
+    )]
     pub(crate) async fn prepare_fork(
         &self,
         payload: &Value,
