@@ -109,10 +109,14 @@ pub fn saved_transcripts_in(
     agent_dir: &std::path::Path,
     dir: &std::path::Path,
 ) -> Vec<(std::path::PathBuf, Vec<u8>)> {
-    let dir = pa_types::platform::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let canonical = pa_types::platform::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    // Each locator spelled under `dir` as the caller spells it (the spelling
+    // the product reports, e.g. a Windows short name), not the export's
+    // canonical one.
     saved_transcripts(agent_dir)
         .into_iter()
-        .filter(|(locator, _)| locator.parent() == Some(dir.as_path()))
+        .filter(|(locator, _)| locator.parent() == Some(canonical.as_path()))
+        .map(|(locator, bytes)| (dir.join(locator.file_name().unwrap_or_default()), bytes))
         .collect()
 }
 

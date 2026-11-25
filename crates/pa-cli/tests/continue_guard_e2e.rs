@@ -220,8 +220,7 @@ fn print_continue_refuses_an_active_daemon_session() {
     // line, then the holder's identity and the next steps.
     let first_line = format!(
         "Error: Session is already active in {active_session_id}: {}\n",
-        // The export's locators are canonical already.
-        session_path.display()
+        pa_daemon::lease::canonical_session_path(&session_path).display()
     );
     assert!(
         stderr.starts_with(&first_line),
