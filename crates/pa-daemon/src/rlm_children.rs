@@ -31,12 +31,11 @@ use pa_core::session_engine::rlm_host::{
 use retirement::Retirement;
 use run_state::{RunEvent, RunState, RunVerdict};
 
-use crate::rlm_child_model::{
-    assert_thinking_supported, cap_text, compact_rlm_text, resolve_child_cwd, resolve_child_model,
-    rlm_child_label, ANSWER_TEXT_MAX_CHARS,
-};
+use crate::rlm_child_model::{assert_thinking_supported, resolve_child_model, rlm_child_label};
 use crate::supervisor_link::SupervisorLink;
 use crate::util::now_ms;
+use pa_core::session_engine::rlm_host::resolve_child_cwd;
+use pa_core::session_engine::rlm_notices::{cap_text, compact_rlm_text, ANSWER_TEXT_MAX_CHARS};
 
 pub use pa_core::session_engine::rlm_host::DEFAULT_RLM_MAX_DEPTH;
 

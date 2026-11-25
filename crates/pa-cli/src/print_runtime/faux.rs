@@ -70,7 +70,7 @@ pub(crate) async fn build_faux_engine_with(
     // faux-provider models in models.json. A spawned child gets its own api
     // lane so its queue never interleaves with its parent's.
     let (api, child_queue) = match embedding {
-        HeadlessEmbedding::Child(overrides) => match &overrides.lane {
+        HeadlessEmbedding::Child { overrides, .. } => match &overrides.lane {
             ChildLane::Faux(queue) => (format!("faux-{}", queue.child_id), Some(queue)),
             ChildLane::Real(_) => {
                 return Err("a real-provider child builds through the headless builder".to_string());
@@ -107,7 +107,7 @@ pub(crate) async fn build_faux_engine_with(
     }
     let model = registration.get_model();
     let thinking_level = match embedding {
-        HeadlessEmbedding::Child(overrides) => {
+        HeadlessEmbedding::Child { overrides, .. } => {
             Some(pa_core::session_engine::provider_adapter::map_thinking_level(overrides.thinking))
         }
         HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => {

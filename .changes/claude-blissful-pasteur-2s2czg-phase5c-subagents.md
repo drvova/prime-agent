@@ -1,0 +1,1 @@
+- Subagents in headless runs (`--print`, `--mode json`) now each run as a session of the run's own runtime, with their parent's trust and its trust gate, and the kernel's `event-*` functions are available to them; spawning, collecting, messaging and the run's wait for every subagent behave as before.

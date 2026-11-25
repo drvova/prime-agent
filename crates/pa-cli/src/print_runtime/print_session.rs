@@ -4,6 +4,7 @@
 //! until the task's `done`, then the run's settle and finish, and this
 //! mode's exit contract.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -21,15 +22,19 @@ use crate::mode::{AppMode, RunOptions};
 /// stdout) before it loses the oldest; a json run that loses one fails.
 const LISTENER_CAPACITY: NonZeroUsize = NonZeroUsize::new(1 << 16).expect("non-zero");
 
-/// The print session's engine build: the headless assembly over the session
-/// manager the CLI flags selected, the inline-subagent root adopting the
-/// built engine, and the `--goal` seed. The first build reports its session
-/// header line (or its error) to the run; a print session is built once.
+/// The print run's engine builds: the headless assembly over the session
+/// manager the CLI flags selected and the `--goal` seed for the print
+/// session, and for each subagent it spawns, its model lane (a scripted
+/// child's queue under `children.<spawn name>`, or the catalog model the
+/// spawn names or the parent runs) over a transcript of its own under the
+/// parent's. The first build reports its session header line (or its error)
+/// to the run; every session is built once.
 struct PrintSession {
     options: RunOptions,
     faux: Option<serde_json::Value>,
-    root: Arc<crate::print_rlm::InlineSessionNode>,
     first: Mutex<Option<FirstBuild>>,
+    /// The subagents built so far.
+    children: Mutex<HashSet<String>>,
 }
 
 /// What the first build takes, and where it reports.
@@ -41,16 +46,176 @@ struct FirstBuild {
 impl SessionBuilder for PrintSession {
     fn build(
         &self,
-        _id: &str,
-        _spec: &SessionSpec,
+        id: &str,
+        spec: &SessionSpec,
         seams: pa_runtime::SessionSeams,
     ) -> impl Future<Output = anyhow::Result<BuiltSession>> + Send {
-        let first = self
-            .first
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let first = match &spec.subagent {
+            Some(_) => None,
+            None => self
+                .first
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        };
+        let first_child_build = spec.subagent.is_some()
+            && self
+                .children
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id.to_string());
         async move {
+            if let Some(subagent) = &spec.subagent {
+                anyhow::ensure!(first_child_build, "a print session's engine is built once");
+                let mut options = self.options.clone();
+                options.config.cwd.clone_from(&spec.cwd);
+                let config = &options.config;
+                let name = spec
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| subagent.child_id.clone());
+                // The child's thinking: the requested level, else the
+                // parent's; a real-provider child clamps it to what its model
+                // supports.
+                let thinking = subagent
+                    .thinking
+                    .as_deref()
+                    .and_then(pa_ai::models::thinking_level_from_str)
+                    .or(subagent.parent_thinking)
+                    .unwrap_or(pa_types::ai::ModelThinkingLevel::Medium);
+                let (lane, thinking) = if let Some(script) = self.faux.as_ref() {
+                    let queue = script
+                        .get("children")
+                        .and_then(|children| children.get(&name))
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "PRIME_AGENT_FAUX_SCRIPT has no \"children.{name}\" entry: a scripted print run \
+                                 must script every spawned child"
+                            )
+                        })?;
+                    let steps = super::faux_response_steps(
+                        queue
+                            .get("responses")
+                            .and_then(serde_json::Value::as_array)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "PRIME_AGENT_FAUX_SCRIPT children.{name} requires a responses array"
+                                )
+                            })?,
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                    let repeat_last = queue
+                        .get("repeatLastResponse")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    (
+                        super::ChildLane::Faux(super::FauxChildQueue {
+                            child_id: subagent.child_id.clone(),
+                            steps,
+                            repeat_last,
+                        }),
+                        thinking,
+                    )
+                } else {
+                    let selector = pa_daemon::rlm_child_model::resolve_child_model_unchecked(
+                        &config.agent_dir,
+                        subagent.model.as_deref(),
+                        subagent.parent_model.as_deref(),
+                        "subagent",
+                    )
+                    .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+                    pa_daemon::rlm_child_model::assert_thinking_supported(
+                        &config.agent_dir,
+                        subagent.thinking.as_deref(),
+                        &selector,
+                    )
+                    .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+                    let auth = pa_core::auth::AuthStorage::create(&config.agent_dir);
+                    let registry = pa_core::models::ModelRegistry::create(
+                        auth,
+                        config.agent_dir.join("models.json"),
+                    );
+                    let all: Vec<pa_types::ai::Model> = registry.get_all().to_vec();
+                    let resolved = pa_core::models::resolve_cli_model(
+                        /*cli_provider*/ None, &selector, &all,
+                    );
+                    if let Some(error) = resolved.error {
+                        return Err(anyhow::Error::msg(error));
+                    }
+                    let Some(model) = resolved.model else {
+                        return Err(anyhow::Error::msg("No matching model found."));
+                    };
+                    let thinking = pa_ai::models::clamp_thinking_level(&model, thinking);
+                    (super::ChildLane::Real(Box::new(model)), thinking)
+                };
+                // The child's session: its own directory under the parent's
+                // artifacts tree; a persisted parent gives the child its own
+                // file with the parent edge, a no-session parent keeps the
+                // child in memory, still pinned to the child's dir for its
+                // artifacts.
+                let child_dir = pa_core::session_engine::rlm_host::rlm_child_session_dir(
+                    &config.agent_dir,
+                    subagent
+                        .parent_session_file
+                        .is_some()
+                        .then_some(subagent.parent.as_str()),
+                    &subagent.child_id,
+                )?;
+                let mut manager = if let Some(parent_file) = &subagent.parent_session_file {
+                    let mut manager = pa_core::session::manager::SessionManager::persisted(
+                        &config.cwd,
+                        &child_dir,
+                    );
+                    manager.new_session(&pa_core::session::manager::NewSessionOptions {
+                        id: Some(id.to_string()),
+                        parent_session: Some(parent_file.clone()),
+                        rlm_depth: Some(u64::from(subagent.depth)),
+                    });
+                    manager
+                } else {
+                    let mut manager =
+                        pa_core::session::manager::SessionManager::in_memory_in_session_dir(
+                            &config.cwd,
+                            &child_dir,
+                        );
+                    manager.new_session(&pa_core::session::manager::NewSessionOptions {
+                        id: Some(id.to_string()),
+                        ..Default::default()
+                    });
+                    manager
+                };
+                manager
+                    .append_session_info(&name)
+                    .map_err(anyhow::Error::from)?;
+                let headless = super::build_engine(
+                    &options,
+                    self.faux.as_ref(),
+                    Some(manager),
+                    "subagent",
+                    &super::HeadlessEmbedding::Child {
+                        seams,
+                        overrides: Box::new(super::ChildEngineOverrides {
+                            lane,
+                            thinking,
+                            depth: subagent.depth,
+                            session_dir: child_dir,
+                            semantic_parent_session_id: Some(subagent.parent.clone()),
+                            spawned_by_request_id: subagent.spawned_by_request_id.clone(),
+                            factory_child: subagent.factory,
+                        }),
+                    },
+                )
+                .await
+                .map_err(anyhow::Error::msg)?;
+                return Ok(BuiltSession {
+                    engine: Arc::new(headless.engine),
+                    model: headless.model,
+                    api_key: headless.api_key,
+                    agent_dir: config.agent_dir.clone(),
+                    events: DriverEvents::Quiet,
+                    autonomous: None,
+                });
+            }
             let Some(FirstBuild { manager, opened }) = first else {
                 anyhow::bail!("a print session's engine is built once");
             };
@@ -60,14 +225,10 @@ impl SessionBuilder for PrintSession {
                     self.faux.as_ref(),
                     Some(manager),
                     self.options.app_mode.as_str(),
-                    &super::HeadlessEmbedding::Root {
-                        node: Arc::clone(&self.root),
-                        seams: Some(seams),
-                    },
+                    &super::HeadlessEmbedding::Root { seams },
                 )
                 .await?;
                 let engine = Arc::new(headless.engine);
-                crate::print_rlm::adopt_built_engine(&self.root, &engine, &headless.model).await;
                 // The CLI `--goal` seed: a fresh root branch starts the goal; a
                 // resumed branch keeps its persisted goal.
                 if let Some(goal) = &self.options.config.initial_goal {
@@ -93,9 +254,6 @@ impl SessionBuilder for PrintSession {
                         .autonomous
                         .as_ref()
                         .map(autonomous_runtime_config),
-                    subagents: Some(Arc::new(crate::print_rlm::PrintSubagents(Arc::clone(
-                        &self.root,
-                    )))),
                 };
                 Ok::<_, String>((built, header))
             }
@@ -184,11 +342,8 @@ pub(super) async fn print_mode_main(
     let session_manager = session_manager.unwrap_or_else(|| {
         pa_core::session::manager::SessionManager::in_memory(&options.config.cwd)
     });
-    // The print root's inline-subagent node: the quiescence drive, the
-    // host, and the messaging controller all hang off it. The faux
-    // script (when scripted) rides the recipe down to every child.
+    // The faux script (when scripted) scripts every spawned child too.
     let faux = super::faux_script_env()?;
-    let root = crate::print_rlm::root_node(options, &session_manager, faux.clone());
     let id = session_manager.get_session_id().to_string();
     let topic = |kind: &str| {
         Topic::new(format!("agent/{id}/{kind}"))
@@ -213,14 +368,16 @@ pub(super) async fn print_mode_main(
                 builder: PrintSession {
                     options: options.clone(),
                     faux,
-                    root,
                     first: Mutex::new(Some(FirstBuild {
                         manager: session_manager,
                         opened,
                     })),
+                    children: Mutex::new(HashSet::new()),
                 },
                 spare_kernels: 1,
-                max_concurrent_runs: NonZeroUsize::MIN,
+                // The print session and every subagent it spawns run at
+                // once: a parent's turn may wait on its children's.
+                max_concurrent_runs: NonZeroUsize::MAX,
                 listener_capacity: LISTENER_CAPACITY,
                 cwd: options.config.cwd.clone(),
                 // The print session's engine builds while the runtime's
@@ -230,6 +387,7 @@ pub(super) async fn print_mode_main(
                     name: None,
                     cwd: options.config.cwd.clone(),
                     env: std::collections::BTreeMap::new(),
+                    subagent: None,
                 }],
             },
         )

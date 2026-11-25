@@ -19,8 +19,11 @@ The headless print/json modes (`print_runtime/print_session.rs`) run on an
 in-process `pa_runtime::Runtime` over the agent dir's database (a scratch
 dir's for `--no-session`, removed after the run). pa-cli supplies the
 `SessionBuilder` (the headless engine assembly over the session the CLI
-flags selected, which keeps its `SessionLease`, plus the `--goal` seed and
-the inline-subagent root), publishes each prompt as the session's
+flags selected, which keeps its `SessionLease`, plus the `--goal` seed, and
+each spawned subagent's engine: its model lane - a scripted child's queue
+under `children.<spawn name>`, or the catalog model the spawn names or the
+parent runs, resolved through pa-daemon's `rlm_child_model` - over its own
+transcript under the parent's artifacts), publishes each prompt as the session's
 `agent/<id>/input` (the `@file` images with the first), prints the
 session's `agent/<id>/stream` payloads in json mode until each task's
 `done`, stops at a failed command (its raw error, exit 1) or turn (`Error:`),
@@ -28,18 +31,10 @@ arms the settle behind the last prompt, prints the session header and the
 exit contract (text mode's terminal result on stdout/stderr, the goal cap,
 the compaction outcomes, the autonomous gates), and finishes the run. What
 runs around each turn (the turn boundary, the goal and autonomous
-continuations, the session slash commands, the quiescence loop) is
-pa-runtime's.
-Inline subagents (print_rlm.rs): the daemonless print session hosts
-`rlm.spawn` children in-process over a tree of session nodes — the
-`RlmSubagentHost` impl (depth gate, name uniqueness, model resolution,
-the child session/engine build, the kickoff row), the
-`AgentMessageController` (family roster, one steer-lane delivery path),
-the quiescence drive that holds the run open until every admitted
-descendant settles and its replies and notices drain (the #2270 fix),
-and the exit disposal (kernels released, drivers joined; no child
-outlives the process), handed to the runtime's session as its
-`pa_runtime::InlineSubagents`.
+continuations, the session slash commands, the quiescence loop) and the
+subagents themselves (each a runtime session; the family's messages, the
+settle that waits for every descendant - the #2270 fix - and the exit
+disposal) are pa-runtime's.
 The json stream emits the TS session-event surface byte-for-shape: the
 session header row (version 3), the `message_update` streaming deltas with
 the slim `assistantMessageEvent` (the daemon wire drops the nested

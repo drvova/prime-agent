@@ -98,6 +98,11 @@ impl BusEvents {
         lock(&self.kept).open.insert(id.to_string());
     }
 
+    /// Records that the runtime no longer runs session `id`.
+    pub(crate) fn closed(&self, id: &str) {
+        lock(&self.kept).open.remove(id);
+    }
+
     /// Reads the state `log` keeps (on the blocking pool) and puts its
     /// subscriptions on the bus through `registry`. State that cannot be read
     /// is logged, and the bus starts empty, as the daemon's does.

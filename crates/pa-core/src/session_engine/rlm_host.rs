@@ -1037,6 +1037,27 @@ fn reject_unsupported_kwargs(
     anyhow::bail!("Unsupported {operation} kwargs: {}", unsupported.join(", "));
 }
 
+/// The directory a child starts in: a requested `cwd` resolves against the
+/// session cwd and is canonicalized (project-context discovery walks its
+/// ancestors), otherwise the child shares the session cwd.
+///
+/// # Errors
+/// Returns an error naming `operation` when the requested directory does not exist.
+pub fn resolve_child_cwd(
+    session_cwd: &std::path::Path,
+    requested: Option<&str>,
+    operation: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let Some(requested) = requested else {
+        return Ok(session_cwd.to_path_buf());
+    };
+    let joined = session_cwd.join(requested);
+    match pa_types::platform::canonicalize(&joined) {
+        Ok(cwd) if cwd.is_dir() => Ok(cwd),
+        _ => anyhow::bail!("{operation} cwd {} is not a directory", joined.display()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,9 +5,9 @@
 //! What a session's engine is built from is the embedder's: the runtime
 //! hands a [`SessionBuilder`] the session's id and [`SessionSpec`] on the
 //! session's own thread, inside its scope, and gets the engine back, with
-//! what the turn driver around it reports ([`DriverEvents`]), the autonomous
-//! run it starts with, and the embedder's [`InlineSubagents`] if it hosts
-//! any.
+//! what the turn driver around it reports ([`DriverEvents`]) and the
+//! autonomous run it starts with. A spawned subagent is a session too: its
+//! spec says where it sits under its parent ([`SubagentSpec`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -17,16 +17,19 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context as _;
 use pa_core::autonomous::AgentAutonomousConfig;
 use pa_core::kernel::{CallPolicy, HostRequestHandlers};
+use pa_core::session_engine::bash_notices::BashNoticeWake;
 use pa_core::session_engine::engine::SessionEngine;
 use pa_core::session_engine::headless::HeadlessTerminalResult;
-use pa_types::ai::{ImageContent, Model};
+use pa_core::session_engine::rlm_host::RlmSubagentHost;
+use pa_core::LateSentAgentMessageHandler;
+use pa_types::ai::{ImageContent, Model, ModelThinkingLevel};
 use pa_types::event_log::{AgentDone, EventId, NewEvent, Task, TaskState, Topic};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::bus::Published;
 use crate::events::BusEvents;
 use crate::lock;
-use crate::turn::boundary::TurnBoundary;
+use crate::subagents::Subagents;
 
 mod host;
 mod runner;
@@ -48,6 +51,37 @@ pub struct SessionSpec {
     /// The session's environment over the process's own
     /// (`pa_types::session_scope`).
     pub env: BTreeMap<String, String>,
+    /// Where a spawned subagent sits under its parent; `None` for any other
+    /// session.
+    pub subagent: Option<SubagentSpec>,
+}
+
+/// A subagent's place under the session that spawned it (`rlm-spawn`): what
+/// its builder makes its engine from. The runtime has decided its id, name,
+/// working directory and depth; the builder resolves the model and thinking
+/// level it runs and makes its transcript, under the parent's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentSpec {
+    /// The parent session's id.
+    pub parent: String,
+    /// The parent's session file, when it keeps one: the subagent's
+    /// transcript names it and lives under its artifacts.
+    pub parent_session_file: Option<String>,
+    /// The model (`provider/id`) and thinking level the parent runs, which
+    /// the subagent inherits unless the spawn names its own.
+    pub parent_model: Option<String>,
+    pub parent_thinking: Option<ModelThinkingLevel>,
+    /// The subagent's handle in its parent's roster (`rlm_child_id`).
+    pub child_id: String,
+    /// How deep it is: its parent's depth and one.
+    pub depth: u32,
+    /// The model and thinking level the spawn asked for.
+    pub model: Option<String>,
+    pub thinking: Option<String>,
+    /// The host request that spawned it.
+    pub spawned_by_request_id: Option<String>,
+    /// A factory state spawned it.
+    pub factory: bool,
 }
 
 /// A session's built engine, with the model and request auth its turns run on
@@ -65,10 +99,6 @@ pub struct BuiltSession {
     /// autonomous flags); `None` starts it disabled, and `/autonomous`
     /// rewrites it live.
     pub autonomous: Option<AgentAutonomousConfig>,
-    /// The subagents the embedder runs inside the session's process, which
-    /// the goal and autonomous continuations wait behind and a settle drives
-    /// to rest.
-    pub subagents: Option<Arc<dyn InlineSubagents>>,
 }
 
 /// What a session's turn driver (its compaction, refinement, goal and
@@ -81,40 +111,6 @@ pub enum DriverEvents {
     /// None on the stream; a background refinement that fails says so on
     /// stderr: the text print mode's surface.
     Quiet,
-}
-
-/// The subagents an embedder runs inside a session's process (the print
-/// modes' inline RLM children): the facts the turn driver reads about them,
-/// the drive that runs the session's turns their messages leave, and their
-/// end.
-///
-/// A session holds its embedder's subagents as a trait object, so the
-/// methods return boxed futures. `unsettled` answers from the live state
-/// (a running child, a row queued on a child's or the session's agent, live
-/// background work), never a stale flag. `drive_to_quiescence` runs every
-/// turn the queued rows ask for through `boundary`, waits out unsettled
-/// subagents, and returns once all of it is at rest; `dispose` ends every
-/// subagent (no kernel or driver outlives it) and is the last call.
-pub trait InlineSubagents: Send + Sync {
-    /// Whether any subagent work is unsettled.
-    fn unsettled(&self) -> pa_agent::BoxFut<'static, bool>;
-
-    /// Drives the session to quiescence; whether any turn ran.
-    ///
-    /// # Errors
-    ///
-    /// A turn, or the boundary around it, failed; the text is its reason.
-    fn drive_to_quiescence<'a>(
-        &'a self,
-        engine: &'a Arc<SessionEngine>,
-        boundary: &'a mut TurnBoundary,
-        model: &'a Model,
-        api_key: Option<String>,
-        global_harness_dir: PathBuf,
-    ) -> pa_agent::BoxFut<'a, Result<bool, String>>;
-
-    /// Ends every subagent.
-    fn dispose(&self) -> pa_agent::BoxFut<'_, ()>;
 }
 
 /// How a session's run ended once it settled ([`crate::Runtime::settle`]):
@@ -165,7 +161,10 @@ pub struct Finished {
 /// that needed the engine, with the error as its reason.
 ///
 /// `seams` is what the runtime gives the engine: the engine must install
-/// both ([`SessionSeams`]).
+/// all of it ([`SessionSeams`]). A subagent's `spec` carries its
+/// [`SubagentSpec`]: its engine runs at that depth, its transcript is made
+/// under `id` with the parent's edge, and the model it resolves is the
+/// spawn's (an error is the spawn's error).
 pub trait SessionBuilder: Send + Sync + 'static {
     /// Builds session `id`'s engine.
     fn build(
@@ -185,9 +184,21 @@ pub struct SessionSeams {
     /// run with an owner's reach.
     pub call_policy: Arc<dyn CallPolicy>,
     /// The host requests the runtime answers for the session (the kernel's
-    /// `event.*`, on the runtime's bus): merged into the engine's
-    /// (`SessionEngineConfig::extra_host_handlers`) over its defaults.
+    /// `event.*`, on the runtime's bus, and its family's `agent_message.*`):
+    /// merged into the engine's (`SessionEngineConfig::extra_host_handlers`)
+    /// over its defaults.
     pub host_handlers: HostRequestHandlers,
+    /// The session's `rlm.*` children, each a runtime session of its own
+    /// (`SessionEngineConfig::rlm_subagent_host`).
+    pub subagents: Arc<dyn RlmSubagentHost>,
+    /// Records a fire-and-forget `agent_message.send`'s late receipt; the
+    /// session is not at rest until it has
+    /// (`SessionEngineConfig::on_late_sent_agent_message`).
+    pub on_late_sent_agent_message: LateSentAgentMessageHandler,
+    /// Wakes the session's quiescence drive when a background command's
+    /// report lands or its work settles (`SessionEngineConfig`'s
+    /// `bash_notice_wake` and `on_background_work_settled`).
+    pub bash_wake: BashNoticeWake,
 }
 
 /// The topics a session publishes on.
@@ -320,6 +331,7 @@ pub(crate) struct Sessions<B> {
     builder: Arc<B>,
     outbox: Outbox,
     events: Arc<BusEvents>,
+    subagents: Arc<Subagents>,
     hosts: Mutex<HashMap<String, Arc<SessionHost>>>,
     /// The images of queued prompts, by task id, until their task runs: the
     /// task store keeps a prompt's text only, so a task restored after a
@@ -329,11 +341,17 @@ pub(crate) struct Sessions<B> {
 }
 
 impl<B: SessionBuilder> Sessions<B> {
-    pub(crate) fn new(builder: B, outbox: Outbox, events: Arc<BusEvents>) -> Self {
+    pub(crate) fn new(
+        builder: B,
+        outbox: Outbox,
+        events: Arc<BusEvents>,
+        subagents: Arc<Subagents>,
+    ) -> Self {
         Sessions {
             builder: Arc::new(builder),
             outbox,
             events,
+            subagents,
             hosts: Mutex::new(HashMap::new()),
             images: Mutex::new(HashMap::new()),
         }
@@ -366,9 +384,11 @@ impl<B: SessionBuilder> Sessions<B> {
         let topics = SessionTopics::of(&id)?;
         let mut hosts = lock(&self.hosts);
         anyhow::ensure!(!hosts.contains_key(&id), "session {id} is open already");
+        let node = self.subagents.node_for(&id, &spec);
         let host = SessionHost::start(
             id.clone(),
             spec,
+            node,
             topics,
             Arc::clone(&self.builder),
             self.outbox.clone(),
@@ -386,6 +406,15 @@ impl<B: SessionBuilder> Sessions<B> {
 
     pub(crate) fn outbox(&self) -> &Outbox {
         &self.outbox
+    }
+
+    /// Closes session `id` and waits until its thread has let go.
+    pub(crate) async fn close(&self, id: &str) {
+        let host = lock(&self.hosts).remove(id);
+        if let Some(host) = host {
+            host.close().await;
+        }
+        self.events.closed(id);
     }
 
     /// Closes every session and waits until their threads have let go.

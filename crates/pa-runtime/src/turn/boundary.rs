@@ -59,6 +59,8 @@ pub struct TurnBoundary {
 }
 
 impl TurnBoundary {
+    /// A boundary that prints its events on stdout (the tests' own).
+    #[cfg(test)]
     #[must_use]
     pub fn new(json_mode: bool) -> Self {
         Self {

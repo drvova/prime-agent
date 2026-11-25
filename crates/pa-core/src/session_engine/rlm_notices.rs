@@ -115,9 +115,56 @@ pub fn create_rlm_child_failure_message(
     }
 }
 
+/// Cap on the answer preview handed to the parent model.
+pub const ANSWER_PREVIEW_MAX_CHARS: usize = 160;
+/// Cap on the FULL final-answer text the collect envelope carries (the
+/// settle-binding data plane): the roster preview stays
+/// [`ANSWER_PREVIEW_MAX_CHARS`], while a consumer that binds outputs from
+/// the answer (the factory's output ports) needs the whole fenced JSON,
+/// so the lane is bounded instead of unbounded, never ballooning the
+/// collect reply for a runaway answer.
+pub const ANSWER_TEXT_MAX_CHARS: usize = 65_536;
+const ELLIPSIS: &str = "...";
+
+/// Collapse whitespace and cap at the roster limit.
+#[must_use]
+pub fn compact_rlm_text(text: &str) -> String {
+    let compact: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    cap_text(&compact, ANSWER_PREVIEW_MAX_CHARS)
+}
+
+/// Whitespace-collapsed text capped at `max` chars with an ellipsis.
+#[must_use]
+pub fn cap_text(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max - ELLIPSIS.len()).collect();
+    format!("{}{}", kept.trim_end(), ELLIPSIS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_binding_lane_keeps_far_more_than_the_preview_cap() {
+        // The collect envelope's full-answer lane: a fenced JSON output
+        // longer than the 160-character roster preview binds whole from
+        // it, so the bound stays far above the preview cap and only a
+        // genuinely oversized payload (over ANSWER_TEXT_MAX_CHARS) sees
+        // the ellipsis.
+        let long = "y".repeat(ANSWER_TEXT_MAX_CHARS + 50);
+        let capped = cap_text(&long, ANSWER_TEXT_MAX_CHARS);
+        assert_eq!(capped.chars().count(), ANSWER_TEXT_MAX_CHARS);
+        assert!(capped.ends_with("..."));
+        let wide_json = format!(
+            "{{\"blob\": \"{}\"}}",
+            "z".repeat(ANSWER_PREVIEW_MAX_CHARS * 4)
+        );
+        let lane = cap_text(&wide_json, ANSWER_TEXT_MAX_CHARS);
+        assert_eq!(lane, wide_json, "a wide-but-bounded JSON keeps its tail");
+    }
 
     #[test]
     fn no_reply_notice_matches_the_ts_shape() {

@@ -63,7 +63,6 @@ pub(crate) mod traces_login;
 /// into the `prime-agent` binary, plus the entry point that drives it.
 pub use mode::{AppMode, MissingSubsystem, RunOptions, Runtime, UnavailableRuntime};
 pub(crate) mod piped_stdin;
-pub(crate) mod print_rlm;
 pub mod print_runtime;
 pub mod update_flow;
 pub mod util_time;
