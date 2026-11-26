@@ -297,8 +297,22 @@ SQLite implementations over `pa-log`.
   branch's message counts, the context use against the open model's window), `session.tree`
   (`SessionTree` nodes and the leaf), `session.context_tree` (the root's label, model, spend and
   context use) and `session.breakdown` (`ContextBreakdown`: the open engine's
-  `context_categories`, the prompt-cache totals, the compactions, the spend); their subagent
-  rows are empty until phase 7e. `settings`, `models`, `sources` and `subscriptions` answer that
+  `context_categories`, the prompt-cache totals, the compactions, the spend); an open
+  session's tree has a child node and its breakdown an agent row for each subagent below it,
+  read from that subagent's engine (`Subagents::family_of`). **Families**
+  (`subagents/family.rs`): each spawn, settle (done), rename and delete is recorded in the
+  supervisor's RLM spawn ledger and the child's `rlm-subagent.json`
+  (`pa_core::session_engine::rlm_ledger`), the spawn's edge before the child is given its task
+  (a spawn it cannot record is refused); a root session opened (created, revived, woken)
+  reopens, off the open, the live children the ledger records under its transcript as settled
+  children on their own transcripts (`Subagents::reopen_children`). `agent_message.wait` parks
+  on each node's `AgentMessageWaits` (the inbox delivery reports every message it delivers) and
+  `wait_for_arrival` refuses a cycle from every open session's wait edge; `rlm-collect` reads
+  `waiting_on_you` from it and ends when a child starts waiting on the caller.
+  `agent_observe.list`, `get` and `recent` read the nuclear family the runtime runs
+  (`session_messages` is not yet there). A subagent's RLM heartbeats are armed on its spawn's
+  transcript and skipped once the runtime no longer runs it. The kernel's timer and watch
+  sources are kept (`Runtime::keep_kernel_sources`), so they run again after a restart. `settings`, `models`, `sources` and `subscriptions` answer that
   they are not yet in the runtime daemon. At start it
   closes standard input, raises the open-file limit, keeps the model catalog's caches warm as
   the supervisor does and, once the startup refresh settles, sends the `daemon event`

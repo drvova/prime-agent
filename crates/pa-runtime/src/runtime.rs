@@ -269,6 +269,14 @@ impl<B: SessionBuilder> Runtime<B> {
         self.sessions.attach_jobs(jobs);
     }
 
+    /// Keeps the kernel's timer and watch sources defined from now on in the
+    /// database, so a runtime opened after this one runs them again for the
+    /// subscriptions the bus keeps (the runtime daemon's). Once; a second
+    /// call changes nothing.
+    pub(crate) fn keep_kernel_sources(&self) {
+        self.sessions.events().keep_sources();
+    }
+
     /// Undefines the source `name` ([`Runtime::define_source`]), stopping
     /// it when it runs and removing a kept one from the database; a name
     /// not defined changes nothing.
@@ -550,8 +558,8 @@ impl<B: SessionBuilder> Runtime<B> {
         WireServer::new(self.bus.clone(), handlers, config)
     }
 
-    /// The sessions' family tree, for tests to reach its nodes.
-    #[cfg(test)]
+    /// The sessions' family tree: the runtime daemon attaches its family
+    /// records to it and its state queries read it.
     pub(crate) fn subagents(&self) -> Arc<crate::subagents::Subagents> {
         Arc::clone(self.sessions.subagents())
     }

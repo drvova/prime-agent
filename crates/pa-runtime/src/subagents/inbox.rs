@@ -22,9 +22,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use pa_core::session_engine::agent_messaging::{
-    assert_agent_message_queue_capacity, AgentMessageDeliveryStatus,
-    DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION, DEFAULT_AGENT_MESSAGE_WAKE_BUDGET,
-    DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS,
+    assert_agent_message_queue_capacity, create_agent_message_preview, AgentMessageArrival,
+    AgentMessageDeliveryStatus, AgentMessageKind, DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
+    DEFAULT_AGENT_MESSAGE_WAKE_BUDGET, DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS,
 };
 use pa_types::event_log::Event;
 use serde_json::{json, Value};
@@ -40,12 +40,18 @@ pub(crate) struct InboxMessage {
     pub(crate) from: String,
     /// The `agent_message` row the receiver takes.
     pub(crate) row: Value,
+    /// A direct message, or one of a broadcast's (which ends no wait).
+    pub(crate) kind: AgentMessageKind,
 }
 
 impl InboxMessage {
     /// The event payload.
     pub(crate) fn payload(&self) -> Value {
-        json!({ "id": self.id, "from": self.from, "row": self.row })
+        let mut payload = json!({ "id": self.id, "from": self.from, "row": self.row });
+        if let Some(kind) = self.kind.to_wire() {
+            payload["messageKind"] = json!(kind);
+        }
+        payload
     }
 
     /// The message a payload carries, when it carries one.
@@ -55,6 +61,7 @@ impl InboxMessage {
             id: text("id")?,
             from: text("from")?,
             row: payload.get("row")?.clone(),
+            kind: AgentMessageKind::from_wire(payload.get("messageKind").and_then(Value::as_str)),
         })
     }
 }
@@ -132,7 +139,23 @@ impl Subagents {
                     return Ok(AgentMessageDeliveryStatus::WakeRefused { retry_after_ms });
                 }
             }
+            let details = &message.row["details"];
+            let arrival = AgentMessageArrival {
+                message_id: message.id.clone(),
+                sender_ids: vec![message.from.clone()],
+                sender_name: details["from"]["sessionName"]
+                    .as_str()
+                    .unwrap_or(&message.from)
+                    .to_string(),
+                preview: create_agent_message_preview(
+                    details["message"].as_str().unwrap_or_default(),
+                ),
+                kind: message.kind,
+            };
             deliver_row(&receiver, message.row)?;
+            // The receiving side of the receiver's waits hears every
+            // delivery it took.
+            receiver.waits.deliver(arrival);
             retask_if_settled(&receiver, event.event.trust).await;
             anyhow::Ok(if queued {
                 AgentMessageDeliveryStatus::Queued

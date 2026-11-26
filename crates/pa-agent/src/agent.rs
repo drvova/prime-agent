@@ -1093,6 +1093,27 @@ impl Agent {
         removed
     }
 
+    /// Whether a queued steering or follow-up message matches `predicate`,
+    /// leaving every queue as it is.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `steering_queue` or `follow_up_queue` mutex is poisoned.
+    #[must_use]
+    pub fn any_queued_message(&self, predicate: impl Fn(&AgentMessage) -> bool) -> bool {
+        [&self.inner.steering_queue, &self.inner.follow_up_queue]
+            .into_iter()
+            .any(|queue| {
+                queue
+                    .lock()
+                    .unwrap()
+                    .batches
+                    .iter()
+                    .flatten()
+                    .any(&predicate)
+            })
+    }
+
     /// # Panics
     ///
     /// Panics if the `steering_queue` or `follow_up_queue` mutex is poisoned.

@@ -295,7 +295,17 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   claim and catch-up rule, and only while it is the selected daemon (the settings are read again
   before each job; a fire while it is not is a skip), so a job never fires in both daemons. An
   idle session it held when it died is held dormant and woken under its lease when a job of its
-  is due; a session stopped on purpose is not. The TUI and ACP still speak only to the
+  is due; a session stopped on purpose is not. Its sessions' subagents are runtime sessions
+  recorded in the supervisor's RLM spawn ledger and display files
+  (`pa_core::session_engine::rlm_ledger`, written by `crates/pa-runtime/src/subagents/family.rs`
+  at spawn, settle, rename and delete; a spawn whose edge is not written is refused), with RLM
+  heartbeats of their own; a parent it opens again (created, revived or woken) reopens the live
+  children the ledger records under its transcript, each on its own transcript, as settled
+  children. `agent_message.wait` parks on pa-core's receiving side
+  (`pa_core::session_engine::agent_messaging::wait_for_arrival`, the supervisor's too) and refuses
+  a cycle from the wait edges of every session it runs; `agent_observe.*` reads the family it
+  runs. Its kernel timer and watch sources are kept in the database and run again after a
+  restart for the subscriptions the bus keeps. The TUI and ACP still speak only to the
   supervisor.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,

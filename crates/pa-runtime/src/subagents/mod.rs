@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use pa_core::session_engine::agent_messaging::AgentMessageWaits;
 use pa_core::session_engine::engine::SessionEngine;
 use pa_core::session_engine::goal_boundary::custom_message_to_loop_row;
 use pa_core::session_engine::rlm_depth::{DelegationDepth, DepthBound};
@@ -49,6 +50,7 @@ use crate::subscriptions::{MemorySessionTree, Registry};
 use crate::trust::TaskTrust;
 use crate::turn::boundary::TurnBoundary;
 
+mod family;
 mod host;
 mod inbox;
 mod messages;
@@ -56,8 +58,9 @@ mod notices;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use family::DaemonFamily;
 pub(crate) use host::SessionSubagents;
-pub(crate) use messages::{late_sent_agent_message_sink, FamilyMessages};
+pub(crate) use messages::{late_sent_agent_message_sink, FamilyMessages, FamilyObserve};
 pub(crate) use notices::kernel_notice_sink;
 
 /// What names a child's `agent/<child>/done` subscription: this, then the
@@ -100,6 +103,9 @@ pub(crate) struct Subagents {
     attached: OnceLock<Attached>,
     /// The senders waiting to hear how their agent messages went.
     answers: inbox::InboxAnswers,
+    /// The runtime daemon's family features: its spawn ledger, and with it
+    /// `agent_message.wait` and `agent_observe.*`; unset in a headless run.
+    daemon: OnceLock<DaemonFamily>,
 }
 
 /// What the runtime gives the subagents once its bus is up.
@@ -118,7 +124,38 @@ impl Subagents {
             tree,
             attached: OnceLock::new(),
             answers: Mutex::new(HashMap::new()),
+            daemon: OnceLock::new(),
         }
+    }
+
+    /// Gives the tree the runtime daemon's family features: every spawn,
+    /// rename, settle and delete from now on is recorded in `family`, and
+    /// the sessions built from now on serve `agent_message.wait` and
+    /// `agent_observe.*`. Attached once; a second attach changes nothing.
+    pub(crate) fn attach_daemon(&self, family: DaemonFamily) {
+        let _ = self.daemon.set(family);
+    }
+
+    /// The runtime daemon's family features, when this runtime is one.
+    pub(crate) fn daemon(&self) -> Option<&DaemonFamily> {
+        self.daemon.get()
+    }
+
+    /// Every open session's wait edge, as the wait-cycle walk reads a
+    /// roster: its id, name, and the session its newest named wait waits on.
+    fn wait_roster(&self) -> Vec<Value> {
+        let nodes: Vec<Arc<Node>> = lock(&self.nodes).values().cloned().collect();
+        nodes
+            .iter()
+            .map(|node| {
+                json!({
+                    "activeSessionId": node.session_id,
+                    "sessionId": node.session_id,
+                    "sessionName": node.session_name(),
+                    "waitingOn": node.waits.waiting_on(),
+                })
+            })
+            .collect()
     }
 
     /// Gives the tree the bus's subscriptions and the runtime's sessions,
@@ -185,7 +222,8 @@ impl Subagents {
     }
 
     /// The node of the session `spec` opens as `id`: the one a spawn made for
-    /// it, or a new root.
+    /// it, or a new root (in the runtime daemon, whose recorded children
+    /// [`Subagents::reopen_children`] opens again).
     pub(crate) fn node_for(self: &Arc<Self>, id: &str, spec: &SessionSpec) -> Arc<Node> {
         let mut nodes = lock(&self.nodes);
         if let Some(node) = nodes.get(id) {
@@ -200,6 +238,27 @@ impl Subagents {
             /*parent*/ None,
         ));
         nodes.insert(id.to_string(), Arc::clone(&node));
+        drop(nodes);
+        // The runtime daemon opens again the family the ledger keeps under
+        // the session, off the open, once its engine is built.
+        if self.daemon().is_some() {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let (tree, id) = (Arc::clone(self), id.to_string());
+                handle.spawn(async move {
+                    match tree.reopen_children(&id).await {
+                        Ok(0) => {}
+                        Ok(reopened) => {
+                            tracing::info!("session {id}'s {reopened} subagents were opened again");
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                "session {id}'s subagents were not opened again: {error:#}"
+                            );
+                        }
+                    }
+                });
+            }
+        }
         node
     }
 
@@ -254,9 +313,82 @@ impl Subagents {
     }
 }
 
+/// One subagent below a session, as the state queries show it: its
+/// handle, name, depth below the session, roster status, session and its
+/// own subagents.
+pub(crate) struct FamilyMember {
+    pub(crate) child_id: String,
+    pub(crate) name: String,
+    pub(crate) depth: u32,
+    pub(crate) status: &'static str,
+    pub(crate) session_id: String,
+    pub(crate) children: Vec<FamilyMember>,
+}
+
+impl Subagents {
+    /// The subagents below open session `id`, each with its own, in spawn
+    /// order; none for a session the runtime does not run.
+    pub(crate) async fn family_of(&self, id: &str) -> Vec<FamilyMember> {
+        let Some(root) = self.node(id) else {
+            return Vec::new();
+        };
+        // Depth first, without recursion: walked in reverse, every member
+        // comes after its subtree and its siblings keep their spawn order.
+        let mut levels: Vec<(Arc<Node>, u32)> = vec![(root, 0)];
+        let mut members: HashMap<String, Vec<FamilyMember>> = HashMap::new();
+        let mut order = Vec::new();
+        while let Some((node, depth)) = levels.pop() {
+            order.push((Arc::clone(&node), depth));
+            for child in node.children.lock().await.iter() {
+                levels.push((Arc::clone(&child.node), depth + 1));
+            }
+        }
+        for (node, depth) in order.into_iter().rev() {
+            let Some(parent) = node.parent_node() else {
+                continue;
+            };
+            let child = parent
+                .children
+                .lock()
+                .await
+                .iter()
+                .find(|child| Arc::ptr_eq(&child.node, &node))
+                .cloned();
+            let Some(child) = child else {
+                continue;
+            };
+            let unsettled = child_is_unsettled(&child).await;
+            let status = if unsettled {
+                "running"
+            } else {
+                match child.state.lock().await.status {
+                    "done" => "completed",
+                    other => other,
+                }
+            };
+            let member = FamilyMember {
+                child_id: child.rlm_child_id.clone(),
+                name: node
+                    .session_name()
+                    .unwrap_or_else(|| child.rlm_child_id.clone()),
+                depth,
+                status,
+                session_id: node.session_id.clone(),
+                children: members.remove(&node.session_id).unwrap_or_default(),
+            };
+            members
+                .entry(parent.session_id.clone())
+                .or_default()
+                .push(member);
+        }
+        members.remove(id).unwrap_or_default()
+    }
+}
+
 /// One session's place in the family tree.
 pub(crate) struct Node {
-    tree: Weak<Subagents>,
+    /// The tree it is a node of.
+    pub(crate) tree: Weak<Subagents>,
     /// The session's id.
     pub(crate) session_id: String,
     /// Where it runs, and its environment: a child inherits both.
@@ -297,6 +429,9 @@ pub(crate) struct Node {
     wakes: inbox::WakeBudget,
     /// The outcome of the session's first engine build; `None` until then.
     built: watch::Sender<Option<Result<(), String>>>,
+    /// The session's `agent_message.wait`s: the receiving side every
+    /// message delivered to it reports to.
+    waits: Arc<AgentMessageWaits>,
 }
 
 /// What a node learns from its session's built engine.
@@ -345,6 +480,7 @@ impl Node {
             trust: TaskTrust::default(),
             wakes: inbox::WakeBudget::default(),
             built: watch::Sender::new(None),
+            waits: Arc::new(AgentMessageWaits::default()),
         }
     }
 
@@ -374,6 +510,27 @@ impl Node {
             self.delegation
                 .configure(0, DepthBound::resolved(max_depth, source));
         }
+        // A message waiting in the backlog counts while its row still waits
+        // on the agent, not once a turn has taken it into the context.
+        let queued_on = Arc::downgrade(engine);
+        // A child that starts or stops waiting wakes its parent's collect.
+        let parent = self.parent.clone();
+        self.waits.set_hooks(
+            Arc::new(move || {
+                if let Some(parent) = parent.as_ref().and_then(Weak::upgrade) {
+                    parent.activity.notify_waiters();
+                }
+            }),
+            Arc::new(move |message_id| {
+                queued_on.upgrade().is_some_and(|engine| {
+                    engine.session.agent().any_queued_message(|message| {
+                        matches!(message, pa_agent::types::AgentMessage::Custom(custom)
+                            if custom.payload.pointer("/details/id").and_then(Value::as_str)
+                                == Some(message_id))
+                    })
+                })
+            }),
+        );
         *lock(&self.adopted) = Adopted {
             engine: Arc::downgrade(engine),
             session_file,
@@ -653,6 +810,19 @@ async fn settle_child(child: &Arc<Child>, run_error: Option<String>, trust: Trus
             ))
         } else {
             state.status = "done";
+            // The runtime daemon's display entry reads completed before the
+            // parent hears the settle (the old daemon's order).
+            if let Some(family) = child
+                .node
+                .tree
+                .upgrade()
+                .as_ref()
+                .and_then(|tree| tree.daemon())
+            {
+                family
+                    .completed(child.node.session_dir(), child.rlm_child_id.clone())
+                    .await;
+            }
             (!state.replied_since_task).then(|| {
                 create_rlm_child_terminal_notice(
                     &RlmChildTerminalNotice::CompletedWithoutReply {

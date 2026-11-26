@@ -44,7 +44,11 @@ fn plain() -> Value {
 }
 
 /// Polls `probe` until it answers, or fails the test after `wait`.
-async fn until<T>(wait: Duration, what: &str, mut probe: impl AsyncFnMut() -> Option<T>) -> T {
+pub(super) async fn until<T>(
+    wait: Duration,
+    what: &str,
+    mut probe: impl AsyncFnMut() -> Option<T>,
+) -> T {
     let deadline = Instant::now() + wait;
     loop {
         if let Some(value) = probe().await {

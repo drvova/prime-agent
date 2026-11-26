@@ -6,15 +6,16 @@
 //!
 //! An open session's manager is read on the session's own runtime, inside
 //! its scope, under the same lock its turns write through; a saved one's is
-//! opened for the read. Nothing is written. The subagent rows of a context
-//! tree and a breakdown come with the daemon's subagents (phase 7e): until
-//! then they are empty.
+//! opened for the read. Nothing is written. An open session's context tree
+//! has a child node, and its breakdown an agent row, for each subagent below
+//! it (each read from that subagent's own engine); a saved one's has none.
 
 use anyhow::Context as _;
 use pa_core::session::manager::SessionManager;
 use pa_core::session::tree::SessionTree;
 use pa_types::context_breakdown::{
-    CacheTotals, CompactionHistory, ContextBreakdown, LastCompaction, RequestCache, SessionCost,
+    AgentContextRow, CacheTotals, CompactionHistory, ContextBreakdown, LastCompaction,
+    RequestCache, SessionCost,
 };
 use pa_types::session::FileEntry;
 use pa_types::usage::valid_assistant_usage;
@@ -22,8 +23,98 @@ use serde_json::{json, Value};
 
 use super::RuntimeHandlers;
 use crate::session::{LiveEngine, SessionBuilder};
+use crate::subagents::FamilyMember;
+
+/// What one subagent's engine says for the state queries.
+struct MemberState {
+    model: Option<(String, String)>,
+    usage: Value,
+    context_usage: Value,
+}
 
 impl<B: SessionBuilder> RuntimeHandlers<B> {
+    /// The state of subagent `member`'s session, read from its engine on its
+    /// own runtime; `None` once it no longer runs.
+    async fn member_state(&self, member: &FamilyMember) -> Option<MemberState> {
+        let live = self.runtime.session_engine(&member.session_id)?;
+        let persistence = live.engine.session.shared_persistence();
+        let (model, usage, branch) = live
+            .runtime
+            .spawn(async move {
+                let manager = persistence.lock().await;
+                let branch: Vec<FileEntry> =
+                    manager.get_branch(None).into_iter().cloned().collect();
+                (
+                    manager.active_context().model,
+                    pa_core::usage_host::session_usage_json(&manager),
+                    branch,
+                )
+            })
+            .await
+            .ok()?;
+        Some(MemberState {
+            model,
+            usage,
+            context_usage: context_usage_json(&branch, Some(&live)).await,
+        })
+    }
+
+    /// The context-tree nodes of `members` and their subtrees.
+    async fn member_nodes(&self, members: &[FamilyMember]) -> Vec<Value> {
+        // Depth first, without recursion: a node is built once its
+        // children's are.
+        let mut pending: Vec<(&FamilyMember, bool)> =
+            members.iter().rev().map(|member| (member, false)).collect();
+        let mut built: Vec<Value> = Vec::new();
+        while let Some((member, expanded)) = pending.pop() {
+            if !expanded {
+                pending.push((member, true));
+                pending.extend(member.children.iter().rev().map(|child| (child, false)));
+                continue;
+            }
+            let children = built.split_off(built.len() - member.children.len());
+            let state = self.member_state(member).await;
+            built.push(json!({
+                "id": member.child_id,
+                "sessionId": member.session_id,
+                "label": member.name,
+                "status": member.status,
+                "model": state.as_ref().and_then(|state| state.model.clone()).map(
+                    |(provider, model_id)| json!({ "provider": provider, "id": model_id })
+                ),
+                "ownUsage": state.as_ref().map_or(Value::Null, |state| state.usage["cost"]["own"].clone()),
+                "totalUsage": state.as_ref().map_or(Value::Null, |state| state.usage["cost"]["total"].clone()),
+                "contextUsage": state.as_ref().map_or(Value::Null, |state| state.context_usage.clone()),
+                "children": children,
+            }));
+        }
+        built
+    }
+
+    /// The breakdown's agent rows of `members` and their subtrees, each
+    /// below its parent.
+    async fn member_rows(&self, members: &[FamilyMember]) -> Vec<AgentContextRow> {
+        let mut pending: Vec<&FamilyMember> = members.iter().rev().collect();
+        let mut rows = Vec::new();
+        while let Some(member) = pending.pop() {
+            let state = self.member_state(member).await;
+            let context = state.as_ref().map(|state| &state.context_usage);
+            rows.push(AgentContextRow {
+                label: member.name.clone(),
+                depth: member.depth,
+                status: member.status.to_string(),
+                context_tokens: context.and_then(|usage| usage["tokens"].as_u64()),
+                context_window: context.and_then(|usage| usage["contextWindow"].as_u64()),
+                cost: state
+                    .as_ref()
+                    .and_then(|state| state.usage["cost"]["total"].as_f64())
+                    .unwrap_or_default(),
+            });
+            pending.extend(member.children.iter().rev());
+        }
+        rows
+    }
+
     /// Runs `read` over the session manager of the session `args.session`
     /// names, and gives the engine of an open one.
     async fn read<T: Send + 'static>(
@@ -161,7 +252,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             "ownUsage": usage["cost"]["own"],
             "totalUsage": usage["cost"]["total"],
             "contextUsage": context_usage_json(&branch, live.as_ref()).await,
-            "children": [],
+            "children": self.member_nodes(&self.runtime.subagents().family_of(&id).await).await,
         }))
     }
 
@@ -224,7 +315,9 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 own: usage["cost"]["own"].as_f64().unwrap_or_default(),
                 total: usage["cost"]["total"].as_f64().unwrap_or_default(),
             },
-            agents: Vec::new(),
+            agents: self
+                .member_rows(&self.runtime.subagents().family_of(&id).await)
+                .await,
         };
         let mut value = serde_json::to_value(breakdown)?;
         value["session"] = json!(id);

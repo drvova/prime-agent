@@ -231,6 +231,16 @@ pub async fn run<B: SessionBuilder>(
         options.selected,
     );
     runtime.attach_jobs(Arc::clone(&schedules) as Arc<dyn crate::session::SessionJobs>);
+    // Its sessions' timers and watches outlive it, as their subscriptions do.
+    runtime.keep_kernel_sources();
+    // Its sessions' families are recorded in the old daemon's ledger, wait
+    // on each other's messages and observe each other.
+    runtime
+        .subagents()
+        .attach_daemon(crate::subagents::DaemonFamily::new(
+            &options.agent_dir,
+            &options.session_dir,
+        ));
     // A session given up on is closed, and its lease released.
     let given_up = {
         let mut listener = runtime.listen();

@@ -230,15 +230,26 @@ pub(super) async fn build_subagent(
     // file with the parent edge, a no-session parent keeps the
     // child in memory, still pinned to the child's dir for its
     // artifacts.
-    let child_dir = pa_core::session_engine::rlm_host::rlm_child_session_dir(
-        &config.agent_dir,
-        subagent
-            .parent_session_file
-            .is_some()
-            .then_some(subagent.parent.as_str()),
-        &subagent.child_id,
-    )?;
-    let mut manager = if let Some(parent_file) = &subagent.parent_session_file {
+    // A child opened again (the runtime daemon's reopened family) keeps the
+    // transcript its spawn wrote, in its own directory.
+    let reopened = spec
+        .transcript
+        .as_ref()
+        .filter(|path| pa_core::session::store::store().exists(path));
+    let child_dir = match reopened.and_then(|path| path.parent()) {
+        Some(dir) => dir.to_path_buf(),
+        None => pa_core::session_engine::rlm_host::rlm_child_session_dir(
+            &config.agent_dir,
+            subagent
+                .parent_session_file
+                .is_some()
+                .then_some(subagent.parent.as_str()),
+            &subagent.child_id,
+        )?,
+    };
+    let mut manager = if let Some(path) = reopened {
+        pa_core::session::manager::SessionManager::open(&config.cwd, &child_dir, path)
+    } else if let Some(parent_file) = &subagent.parent_session_file {
         let mut manager =
             pa_core::session::manager::SessionManager::persisted(&config.cwd, &child_dir);
         manager.new_session(&pa_core::session::manager::NewSessionOptions {
@@ -258,9 +269,11 @@ pub(super) async fn build_subagent(
         });
         manager
     };
-    manager
-        .append_session_info(&name)
-        .map_err(anyhow::Error::from)?;
+    if reopened.is_none() {
+        manager
+            .append_session_info(&name)
+            .map_err(anyhow::Error::from)?;
+    }
     let headless = super::build_engine(
         &options,
         faux,

@@ -18,11 +18,15 @@
 //!   daemon delivers ([`BusEvents::deliver`]); a session's own events, and
 //!   sessions this runtime does not run, get none.
 //! - A timer or folder-watch source (`#:timer`, `#:watch`) is also one of
-//!   the runtime's sources ([`crate::sources`]) for the run only: defined
-//!   there as the bus accepts it (undone when the runtime refuses it),
-//!   undefined, and so stopped, when it is removed. A watch's path is
-//!   resolved against its session's working directory and must be under it.
-//!   A subscription naming a timer hears `timer/<name>`.
+//!   the runtime's sources ([`crate::sources`]): defined there as the bus
+//!   accepts it (undone when the runtime refuses it), undefined, and so
+//!   stopped, when it is removed. A headless run keeps it for the run only;
+//!   the runtime daemon keeps it in the database
+//!   ([`BusEvents::keep_sources`]), so the next daemon runs it again for the
+//!   subscriptions the bus's state keeps, catching up a timer's missed fires
+//!   as one. A watch's path is resolved against its session's working
+//!   directory and must be under it. A subscription naming a timer hears
+//!   `timer/<name>`.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -32,7 +36,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context as _;
 use pa_core::agent_state::{
     event_delivery_message, held_event_bus_in, store_event_bus_in, EventBusChange, EventBusState,
-    EventRequester, SourceKinds, TopicSubscriptions,
+    EventRequester, SourceKinds, StoredSources, TopicSubscriptions,
 };
 use pa_core::session_engine::agent_messaging::{
     create_agent_session_message_prompt, AgentMessagePromptPayload,
@@ -67,6 +71,9 @@ pub(crate) struct BusEvents {
     kept: Mutex<Kept>,
     /// The database and the bus's subscriptions, once the runtime has them.
     attached: OnceLock<Attached>,
+    /// How long the timer and watch sources it defines live: the run's
+    /// (unset), or kept in the database (the runtime daemon's).
+    kept_sources: OnceLock<SourceLifetime>,
 }
 
 struct Kept {
@@ -107,6 +114,24 @@ impl BusEvents {
                 open: HashSet::new(),
             }),
             attached: OnceLock::new(),
+            kept_sources: OnceLock::new(),
+        }
+    }
+
+    /// Keeps the timer and watch sources it defines from now on in the
+    /// database ([`SourceLifetime::Kept`]): the runtime's sources run them
+    /// again when it opens after a restart, for the subscriptions its state
+    /// keeps.
+    pub(crate) fn keep_sources(&self) {
+        let _ = self.kept_sources.set(SourceLifetime::Kept);
+    }
+
+    /// Which sources the bus's stored state keeps: its timers and watches
+    /// (and the subscriptions to them) too once they are kept.
+    fn stored(&self) -> StoredSources {
+        match self.kept_sources.get() {
+            Some(SourceLifetime::Kept) => StoredSources::Every,
+            Some(SourceLifetime::Run) | None => StoredSources::BusOnly,
         }
     }
 
@@ -199,7 +224,7 @@ impl BusEvents {
             let stored = self
                 .attached
                 .get()
-                .map(|attached| store_event_bus_in(&attached.log, &self.path, state))
+                .map(|attached| store_event_bus_in(&attached.log, &self.path, state, self.stored()))
                 .transpose()?;
             (message, stored)
         };
@@ -264,7 +289,11 @@ impl EventBusController for SessionEvents {
                     kind,
                     options,
                     owner: Some(self.requester.session_id.clone()),
-                    lifetime: SourceLifetime::Run,
+                    lifetime: events
+                        .kept_sources
+                        .get()
+                        .copied()
+                        .unwrap_or(SourceLifetime::Run),
                 });
                 (defines, None)
             }
@@ -298,7 +327,9 @@ impl EventBusController for SessionEvents {
             )?;
             sync(&mut kept, &attached.registry);
             let stored = saves
-                .then(|| store_event_bus_in(&attached.log, &events.path, &kept.state))
+                .then(|| {
+                    store_event_bus_in(&attached.log, &events.path, &kept.state, events.stored())
+                })
                 .transpose()?;
             (change, stored)
         };

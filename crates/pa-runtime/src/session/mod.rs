@@ -563,6 +563,11 @@ impl<B: SessionBuilder> Sessions<B> {
         &self.subagents
     }
 
+    /// The runtime's event bus, which its sessions' `event.*` reach.
+    pub(crate) fn events(&self) -> &Arc<BusEvents> {
+        &self.events
+    }
+
     /// Closes session `id` and waits until its thread has let go.
     pub(crate) async fn close(&self, id: &str) {
         let host = lock(&self.hosts).remove(id);

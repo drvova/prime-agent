@@ -30,11 +30,15 @@
 //! - **Waking.** A job due in a dormant session opens it under its lease
 //!   first: the old daemon's scheduled wake. A session stopped on purpose is
 //!   disarmed and not held, so nothing wakes it.
+//! - **Subagents.** A subagent's jobs (its RLM heartbeats) are armed on the
+//!   transcript its spawn writes; a due one runs in the child while the
+//!   runtime runs it, and is skipped once it does not (a child is never
+//!   woken as a session of its own).
 //! - **One daemon.** A job runs only while this daemon is the selected one
 //!   ([`super::DaemonOptions::selected`]); otherwise its fire is a skip, so
 //!   jobs never fire in both daemons.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -83,6 +87,9 @@ pub(super) struct Schedules<B: SessionBuilder> {
     /// Where the lanes run (arming is asked on a session's own thread).
     handle: tokio::runtime::Handle,
     armed: Mutex<HashMap<String, Arc<Armed>>>,
+    /// The subagent sessions among them: a due job of one the runtime no
+    /// longer runs is skipped, never woken as a session of its own.
+    subagents: Mutex<HashSet<String>>,
 }
 
 /// One session's armed jobs.
@@ -128,6 +135,7 @@ impl<B: SessionBuilder> Schedules<B> {
             selected,
             handle: tokio::runtime::Handle::current(),
             armed: Mutex::new(HashMap::new()),
+            subagents: Mutex::new(HashSet::new()),
         })
     }
 
@@ -308,8 +316,15 @@ impl<B: SessionBuilder> Schedules<B> {
             )?;
             return Ok(Some(SKIPPED));
         }
-        self.wake(&runtime, session, &path, Path::new(&armed.binding.cwd))
-            .await?;
+        // A session the runtime runs (a subagent among them) takes its job
+        // where it runs; a subagent it no longer runs is not woken.
+        if runtime.session_engine(session).is_none() {
+            if lock(&self.subagents).contains(session) {
+                return Ok(Some(SKIPPED));
+            }
+            self.wake(&runtime, session, &path, Path::new(&armed.binding.cwd))
+                .await?;
+        }
         let lane = runtime.lane(session);
         let activity = HeartbeatSessionActivity {
             is_streaming: lane.running.is_some(),
@@ -419,11 +434,27 @@ impl<B: SessionBuilder> Schedules<B> {
 
 impl<B: SessionBuilder> SessionJobs for Schedules<B> {
     fn wiring(&self, id: &str, spec: &SessionSpec) -> Option<KernelCronWiring> {
-        if spec.subagent.is_some() {
-            return None;
-        }
-        let path = spec.transcript.as_deref()?;
-        let armed = match self.arm(id, path, &spec.cwd) {
+        // A subagent's transcript is the one its spawn writes under its
+        // parent's artifacts (a parent kept in memory gives it none, and it
+        // keeps no jobs).
+        let path = match &spec.subagent {
+            Some(subagent) => {
+                subagent.parent_session_file.as_ref()?;
+                lock(&self.subagents).insert(id.to_string());
+                spec.transcript.clone().unwrap_or_else(|| {
+                    pa_core::session::manager::get_session_file_path(
+                        &self
+                            .agent_dir
+                            .join("session-artifacts")
+                            .join(&subagent.parent)
+                            .join(&subagent.child_id),
+                        id,
+                    )
+                })
+            }
+            None => spec.transcript.clone()?,
+        };
+        let armed = match self.arm(id, &path, &spec.cwd) {
             Ok(armed) => armed,
             Err(error) => {
                 tracing::warn!("session {id}'s scheduled jobs were not armed: {error:#}");

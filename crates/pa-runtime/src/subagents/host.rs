@@ -16,9 +16,10 @@ use pa_core::session_engine::rlm_host::{
 use pa_core::session_engine::rlm_notices::compact_rlm_text;
 use pa_types::event_log::{AgentTarget, Priority, Route, Scope, Subscription, TopicFilter, Trust};
 
+use super::family::SpawnRecord;
 use super::{
     child_is_unsettled, deliver_row, dispose_child, lock, now_ms, wake, Child, ChildState, Node,
-    SUBSCRIPTION_PREFIX,
+    Subagents, SUBSCRIPTION_PREFIX,
 };
 use crate::session::{SessionSpec, SubagentSpec};
 
@@ -132,13 +133,44 @@ impl RlmSubagentHost for SessionSubagents {
             // while the roster is held so disposal either takes this child
             // or admission rejects it; no child lands after the teardown.
             let mut children = node.children.lock().await;
-            if let Err(error) = outcome.and_then(|()| {
+            let admitted = outcome.and_then(|()| {
                 if node.is_disposed() {
                     Err("Cannot spawn from a disposed inline session".to_string())
                 } else {
                     Ok(())
                 }
-            }) {
+            });
+            // The runtime daemon records the edge before the child is given
+            // its task; one it cannot record is refused.
+            let recorded = match (&admitted, tree.daemon()) {
+                (Ok(()), Some(family)) => {
+                    let parent_file = lock(&node.adopted).session_file.clone();
+                    let (child_file, model) = {
+                        let adopted = lock(&child_node.adopted);
+                        (adopted.session_file.clone(), adopted.model_selector.clone())
+                    };
+                    match (parent_file, child_file) {
+                        (Some(parent_file), Some(child_file)) => family
+                            .spawned(SpawnRecord {
+                                child_id: child_id.clone(),
+                                parent_file,
+                                child_file,
+                                child_dir: child_node.session_dir(),
+                                depth: node.depth + 1,
+                                name: name.clone(),
+                                prompt: request.prompt.clone(),
+                                model: model.unwrap_or_default(),
+                                factory: request.factory.clone(),
+                                created_at: now_ms(),
+                            })
+                            .await
+                            .map_err(|error| format!("{error:#}")),
+                        (None, _) | (_, None) => Ok(()),
+                    }
+                }
+                (Ok(()), None) | (Err(_), _) => Ok(()),
+            };
+            if let Err(error) = admitted.and(recorded) {
                 drop(children);
                 dispose_child(&child).await;
                 anyhow::bail!(error);
@@ -148,25 +180,7 @@ impl RlmSubagentHost for SessionSubagents {
             drop(spawn_gate);
             tree.tree
                 .insert(session_id.clone(), node.session_id.clone());
-            // The parent hears the child's settle through its `done`.
-            if let Some(attached) = tree.attached.get() {
-                lock(&attached.registry).add(Subscription {
-                    id: format!("{SUBSCRIPTION_PREFIX}{session_id}"),
-                    scope: Scope::Global,
-                    filter: TopicFilter::new(format!("agent/{session_id}/done"))?,
-                    when: None,
-                    throttle_ms: 0,
-                    debounce_ms: 0,
-                    route: Route::Agent {
-                        target: AgentTarget::Session {
-                            session: node.session_id.clone(),
-                        },
-                        prompt: String::new(),
-                        priority: Priority::Steer,
-                    },
-                    trust: Trust::Owner,
-                })?;
-            }
+            subscribe_done(&tree, &session_id, &node.session_id)?;
             // The task rides the parent's `agent_message` row (TS
             // `spawnMessage`), delivered through the one steer path; the
             // empty input runs it.
@@ -240,6 +254,19 @@ impl RlmSubagentHost for SessionSubagents {
                 .lock()
                 .await
                 .retain(|other| !Arc::ptr_eq(other, &child));
+            let child_file = lock(&child.node.adopted).session_file.clone();
+            if let (Some(family), Some(child_file)) = (
+                node.tree.upgrade().as_ref().and_then(|tree| tree.daemon()),
+                child_file,
+            ) {
+                family
+                    .deleted(
+                        child.rlm_child_id.clone(),
+                        child_file,
+                        child.node.session_dir(),
+                    )
+                    .await;
+            }
             // The settle the parked parent drive waits for.
             node.activity.notify_waiters();
             Ok(RlmDeleteSubagentResult {
@@ -272,9 +299,14 @@ impl RlmSubagentHost for SessionSubagents {
                 tokio::pin!(notified);
                 notified.as_mut().enable();
                 let mut all_settled = true;
+                let mut waiting_on_parent = false;
                 let mut results = Vec::with_capacity(children.len());
                 for child in &children {
                     let unsettled = child_is_unsettled(child).await;
+                    let waiting_on_you = unsettled
+                        && child.node.waits.waiting_on().as_deref()
+                            == Some(node.session_id.as_str());
+                    waiting_on_parent |= waiting_on_you;
                     let state = child.state.lock().await;
                     all_settled &= !unsettled;
                     results.push(RlmChildResult {
@@ -288,7 +320,7 @@ impl RlmSubagentHost for SessionSubagents {
                         session_dir: Some(child.node.session_dir()),
                         status: if unsettled { "running" } else { state.status },
                         settled: !unsettled,
-                        waiting_on_you: false,
+                        waiting_on_you,
                         answer_preview: state.answer_text.as_deref().map(compact_rlm_text),
                         answer_text: state.answer_text.clone(),
                         error: state.error.clone(),
@@ -302,7 +334,7 @@ impl RlmSubagentHost for SessionSubagents {
                             .map(|engine| engine.better.check_status().as_str()),
                     });
                 }
-                if all_settled || deadline <= tokio::time::Instant::now() {
+                if all_settled || waiting_on_parent || deadline <= tokio::time::Instant::now() {
                     return Ok(results);
                 }
                 let _ = tokio::time::timeout_at(deadline, notified.as_mut()).await;
@@ -373,8 +405,174 @@ async fn rename_session(node: &Arc<Node>, name: &str) -> anyhow::Result<()> {
     session
         .append_session_info(name)
         .map_err(anyhow::Error::from)?;
+    drop(session);
     *lock(&node.session_name) = Some(name.to_string());
+    // A child's rename is its ledger edge's.
+    let tree = node.tree.upgrade();
+    if let (Some(parent), Some(family)) = (&parent, tree.as_ref().and_then(|tree| tree.daemon())) {
+        let child_id = parent
+            .children
+            .lock()
+            .await
+            .iter()
+            .find(|child| Arc::ptr_eq(&child.node, node))
+            .map(|child| child.rlm_child_id.clone());
+        let child_file = lock(&node.adopted).session_file.clone();
+        if let (Some(child_id), Some(child_file)) = (child_id, child_file) {
+            family.renamed(child_id, child_file, name.to_string()).await;
+        }
+    }
     Ok(())
+}
+
+/// Routes `child`'s `agent/<child>/done` to its parent `parent`: the parent
+/// hears the child's settle through it.
+fn subscribe_done(tree: &Subagents, child: &str, parent: &str) -> anyhow::Result<()> {
+    if let Some(attached) = tree.attached.get() {
+        lock(&attached.registry).add(Subscription {
+            id: format!("{SUBSCRIPTION_PREFIX}{child}"),
+            scope: Scope::Global,
+            filter: TopicFilter::new(format!("agent/{child}/done"))?,
+            when: None,
+            throttle_ms: 0,
+            debounce_ms: 0,
+            route: Route::Agent {
+                target: AgentTarget::Session {
+                    session: parent.to_string(),
+                },
+                prompt: String::new(),
+                priority: Priority::Steer,
+            },
+            trust: Trust::Owner,
+        })?;
+    }
+    Ok(())
+}
+
+impl Subagents {
+    /// Opens again, as settled children of open session `id`, the children
+    /// the runtime daemon's ledger records under its transcript and the
+    /// runtime does not run: each a runtime session on the transcript its
+    /// spawn wrote, so the parent's roster, collect, messages and observe
+    /// reach a family that outlived the daemon that spawned it. Waits for
+    /// the parent's engine; a child that cannot be opened is left out and
+    /// logged. Answers how many were opened.
+    ///
+    /// # Errors
+    ///
+    /// The session is not open, its engine was not built, or the ledger
+    /// could not be read.
+    pub(crate) async fn reopen_children(self: &Arc<Self>, id: &str) -> anyhow::Result<usize> {
+        let Some(family) = self.daemon() else {
+            return Ok(0);
+        };
+        let node = self
+            .node(id)
+            .ok_or_else(|| anyhow::anyhow!("session {id} is not open"))?;
+        let mut built = node.built.subscribe();
+        match built.wait_for(Option::is_some).await {
+            Ok(outcome) => {
+                if let Some(Err(error)) = outcome.as_ref() {
+                    anyhow::bail!("session {id}'s engine was not built: {error}");
+                }
+            }
+            Err(_) => anyhow::bail!("session {id} ended before its engine was built"),
+        }
+        let (parent_file, parent_model, parent_thinking) = {
+            let adopted = lock(&node.adopted);
+            (
+                adopted.session_file.clone(),
+                adopted.model_selector.clone(),
+                adopted.thinking,
+            )
+        };
+        let Some(parent_file) = parent_file else {
+            return Ok(0);
+        };
+        let edges = family
+            .children_of(std::path::PathBuf::from(&parent_file))
+            .await?;
+        let control = self.control()?;
+        let max_depth = node.delegation.max_depth();
+        let mut reopened = 0;
+        for edge in edges {
+            let child_file = std::path::PathBuf::from(&edge.child);
+            let Some(session_id) = child_file
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+            else {
+                continue;
+            };
+            if self.node(&session_id).is_some() {
+                continue;
+            }
+            let cwd = pa_core::session::manager::read_session_header(&child_file)
+                .map_or_else(|| node.cwd.clone(), |header| header.cwd.into());
+            let spec = SessionSpec {
+                id: Some(session_id.clone()),
+                name: Some(edge.name.clone()),
+                cwd,
+                env: node.env.clone(),
+                subagent: Some(SubagentSpec {
+                    parent: node.session_id.clone(),
+                    parent_session_file: Some(parent_file.clone()),
+                    parent_model: parent_model.clone(),
+                    parent_thinking,
+                    child_id: edge.child_id.clone(),
+                    depth: edge.depth,
+                    model: None,
+                    thinking: None,
+                    spawned_by_request_id: None,
+                    factory: edge.factory.is_some(),
+                }),
+                transcript: Some(child_file),
+            };
+            let child_node = Arc::new(Node::new(
+                self,
+                session_id.clone(),
+                &spec,
+                edge.depth,
+                DepthBound::Fixed(max_depth),
+                Some(Arc::downgrade(&node)),
+            ));
+            lock(&self.nodes).insert(session_id.clone(), Arc::clone(&child_node));
+            let mut built = child_node.built.subscribe();
+            let outcome = match control.open(spec) {
+                Ok(_) => match built.wait_for(Option::is_some).await {
+                    Ok(outcome) => outcome.clone().unwrap_or(Ok(())),
+                    Err(_) => Err("the subagent's session ended before it was built".to_string()),
+                },
+                Err(error) => Err(format!("{error:#}")),
+            };
+            let child = Arc::new(Child {
+                rlm_child_id: edge.child_id.clone(),
+                factory: edge.factory.is_some(),
+                node: Arc::clone(&child_node),
+                state: tokio::sync::Mutex::new(ChildState {
+                    status: "done",
+                    settled: true,
+                    answer_text: None,
+                    error: None,
+                    started_at_ms: now_ms(),
+                    replied_since_task: false,
+                }),
+            });
+            if let Err(error) = outcome {
+                tracing::warn!(
+                    "subagent {} of session {id} was not opened again: {error}",
+                    edge.child_id
+                );
+                dispose_child(&child).await;
+                continue;
+            }
+            node.children.lock().await.push(Arc::clone(&child));
+            self.tree
+                .insert(session_id.clone(), node.session_id.clone());
+            subscribe_done(self, &session_id, &node.session_id)?;
+            reopened += 1;
+        }
+        Ok(reopened)
+    }
 }
 
 fn roster_entry(child: &Arc<Child>, state: &ChildState, unsettled: bool) -> RlmSubagentEntry {

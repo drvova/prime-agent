@@ -34,7 +34,9 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use pa_core::agent_state::EventRequester;
-use pa_core::session_engine::agent_messaging::register_agent_message_host_handlers;
+use pa_core::session_engine::agent_messaging::{
+    register_agent_message_host_handlers, register_agent_observe_host_handlers,
+};
 use pa_core::session_engine::event_bus_host::register_event_bus_host_handlers;
 
 use super::faults::{
@@ -49,7 +51,7 @@ use crate::events::{BusEvents, SessionEvents};
 use crate::lock;
 use crate::subagents::{
     dispose, drive_to_quiescence, has_unsettled_rlm_work, kernel_notice_sink,
-    late_sent_agent_message_sink, FamilyMessages, Node, SessionSubagents,
+    late_sent_agent_message_sink, FamilyMessages, FamilyObserve, Node, SessionSubagents,
 };
 use crate::tasks::{Steered, TaskOutcome};
 use crate::trust::{RunningTask, TaskTrust, TrustGate, WorkingDir};
@@ -860,6 +862,18 @@ impl<B: SessionBuilder> Lifetime<B> {
                 Arc::new(FamilyMessages(Arc::clone(&self.node))),
                 &mut host_handlers,
             );
+            // The runtime daemon's sessions observe their families.
+            if self
+                .node
+                .tree
+                .upgrade()
+                .is_some_and(|tree| tree.daemon().is_some())
+            {
+                register_agent_observe_host_handlers(
+                    Arc::new(FamilyObserve(Arc::clone(&self.node))),
+                    &mut host_handlers,
+                );
+            }
             let seams = SessionSeams {
                 call_policy: Arc::new(gate),
                 host_handlers,

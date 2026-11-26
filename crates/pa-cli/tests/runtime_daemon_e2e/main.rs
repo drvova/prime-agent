@@ -15,8 +15,10 @@
 //!   revival after the daemon's death: [`reliability`].
 //! - The restart owner and the boot reap (phase 7c-2): [`keeper`].
 //! - Scheduled jobs and heartbeats (phase 7d): [`schedules`].
+//! - Subagents, agent messages and the event bus (phase 7e): [`family`].
 #![cfg(unix)]
 
+mod family;
 mod keeper;
 mod reliability;
 mod schedules;

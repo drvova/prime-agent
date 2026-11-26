@@ -118,7 +118,9 @@ pub(crate) fn import_state_file(
         StateFile::EventBus => {
             let state: event_bus::EventBusState =
                 serde_json::from_str(&text).map_err(|error| error.to_string())?;
-            let rows = state.rows().map_err(|error| format!("{error:#}"))?;
+            let rows = state
+                .rows(super::event_bus::StoredSources::BusOnly)
+                .map_err(|error| format!("{error:#}"))?;
             log.replace_sources(&scope, rows, origin)
         }
         StateFile::CrashLog => {
