@@ -94,13 +94,33 @@ pub fn track_worker_adoption(
     client.track("daemon event", properties);
 }
 
+/// Which daemon a `daemon event` comes from (its `daemon_kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonKind {
+    /// The supervisor (`pa-daemon`).
+    Old,
+    /// The runtime daemon (`pa_runtime::daemon`), opt-in until phase 8.
+    Runtime,
+}
+
+impl DaemonKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            DaemonKind::Old => "old",
+            DaemonKind::Runtime => "runtime",
+        }
+    }
+}
+
 /// Track the live-catalog warm-up settle's `daemon event` (schema v1, kind
-/// `catalog_refresh`): how many models the resolved no-cold-start chain serves after the
-/// startup refresh. A count only, never model ids, credentials, or catalog payloads.
-pub fn track_catalog_refresh(client: &TelemetryClient, count: usize) {
+/// `catalog_refresh`), once per daemon launch: how many models the resolved no-cold-start
+/// chain serves after the startup refresh, and which daemon launched. A count and the
+/// daemon kind only, never model ids, credentials, or catalog payloads.
+pub fn track_catalog_refresh(client: &TelemetryClient, count: usize, daemon_kind: DaemonKind) {
     let mut properties = base_properties("daemon");
     properties.set("kind", Value::from("catalog_refresh"));
     properties.set("count", Value::from(count));
+    properties.set("daemon_kind", Value::from(daemon_kind.as_str()));
     client.track("daemon event", properties);
 }
 

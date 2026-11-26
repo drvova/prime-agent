@@ -33,6 +33,7 @@ use crate::subagents::{SessionControl, Subagents};
 use crate::subscriptions::DuplicateSubscription;
 use crate::subscriptions::MemorySessionTree;
 use crate::tasks::TaskQueue;
+use crate::wire::{Handlers, WireConfig, WireServer};
 
 /// The id of the subscription that turns every session's input into its
 /// tasks.
@@ -324,6 +325,41 @@ impl<B: SessionBuilder> Runtime<B> {
         self.queue.cancel_queued(session).await?;
         self.runner.cancel_running(session);
         Ok(())
+    }
+
+    /// Closes `session`: cancels its queued tasks and its running one, then
+    /// closes it and waits until its thread has let go.
+    ///
+    /// # Errors
+    ///
+    /// The database failed to save a cancelled task; the session is closed
+    /// all the same.
+    pub(crate) async fn close_session(&self, session: &str) -> anyhow::Result<()> {
+        let cancelled = self.cancel(session).await;
+        self.sessions.close(session).await;
+        cancelled
+    }
+
+    /// The engine of `session`'s current lifetime, once it is built.
+    pub(crate) fn session_engine(&self, session: &str) -> Option<crate::session::LiveEngine> {
+        self.sessions.host(session)?.engine()
+    }
+
+    /// A wire2 server whose clients read and publish on the runtime's bus
+    /// and whose queries and calls `handlers` answers.
+    pub(crate) fn wire_server<H: Handlers>(
+        &self,
+        handlers: H,
+        config: WireConfig,
+    ) -> WireServer<
+        LogEventStore,
+        LogStateStore,
+        MemorySessionTree,
+        NoModelCalls,
+        RuntimeTaskSink<B>,
+        H,
+    > {
+        WireServer::new(self.bus.clone(), handlers, config)
     }
 
     /// The sessions' family tree, for tests to reach its nodes.

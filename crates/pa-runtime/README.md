@@ -240,14 +240,41 @@ SQLite implementations over `pa-log`.
   outlives the run.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
+- **Runtime daemon** (`daemon`, opt-in until phase 8: `PRIME_AGENT_RUNTIME_DAEMON=1` or the global
+  setting `"daemon": "runtime"` makes `prime-agent --mode daemon` start it instead of the
+  supervisor). `daemon::run(listener, DaemonOptions, shutdown)` opens a `Runtime` over the agent
+  dir and serves one `WireServer::serve` per connection on the listener the embedder bound at
+  `daemon::socket_path` (`daemon2.sock` beside the old daemon's socket; on Windows the old pipe
+  name with `2` appended), through `pa_types::platform::transport` as the old daemon's socket is.
+  The embedder holds `pa_core::platform::RuntimeDaemonLock` (an OS file lock on
+  `<agent dir>/runtime-daemon.lock`, its pid inside) for the process's life: a second runtime
+  daemon on the agent dir refuses to start, and the supervisor's boot reap spares the pid. Its
+  `Handlers`: `sessions.list` (the sessions dir's saved sessions and the open ones),
+  `session.snapshot` (header, name, model, thinking level, entry count, leaf, open) and
+  `transcript.page` (`{session, before?, limit?}`: the stored rows before `before`, at most 500)
+  read the transcript store; `session.create` (`{session?}` to open or create by id, or `{path}` to
+  open a transcript by its file, and `cwd`) takes the session's `SessionLease` and holds it until
+  `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
+  (`session_already_active`) and the old daemon is refused one this daemon holds;
+  `session.rename`, `session.label` and `session.set_effort` change an open session through its
+  engine (on the session's runtime) and a saved one under its lease; `session.set_model` and
+  `session.delete` change saved sessions only (a running session's model switch is phase 7b);
+  `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
+  `session.export` writes it as JSONL (`export_jsonl`). `settings`, `models`, `sources`,
+  `subscriptions` and `tasks` answer that they are not yet in the runtime daemon. At start it
+  closes standard input, raises the open-file limit, keeps the model catalog's caches warm as
+  the supervisor does and, once the startup refresh settles, sends the `daemon event`
+  `catalog_refresh` with `daemon_kind: runtime`, all off the accept path. Not yet: crash
+  records, self-heal, boot revival and a keeper (7c), lanes and prompt admission (7b), schedules
+  (7d), cross-session features (7e).
 
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
 `TaskStore`). No engine assembly (the embedder's `SessionBuilder`). No model calls for `Call`
 routes yet (behind `ModelCaller`). No source of its own: the sources are `pa-sources`', and
 webhooks wait for the daemon.
-No socket listener (the daemon accepts connections and hands each to `WireServer::serve`), and
-no query or call backend (behind `Handlers`). No model resolution for a subagent (its builder's, from its
+No socket binding or stale-socket cleanup (the embedder binds the runtime daemon's endpoint
+through the old daemon's socket lifecycle). No model resolution for a subagent (its builder's, from its
 `SubagentSpec`). No persistence of other subscriptions yet (the kernel's event subscriptions are kept).
 No `agent_message.wait` (it stays the daemon's), and no pause or clear of agent messages. Nothing
 bounds how wide a cascade grows within the hop
@@ -270,9 +297,10 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   (the session's trust gate, the host requests the runtime answers - its `event.*` and its
   family's `agent_message.*` - its `rlm.*` subagents, the late-receipt sink, the
   background-settle wake and the kernel-notice sink, all of which the engine must install),
-  `SessionSpec`, `SubagentSpec`,
+  `SessionSpec` (`transcript`: the file a daemon session opens), `SubagentSpec`,
   `BuiltSession`, `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
   `TaskQueue::session_idle`.
+- `daemon::{run, DaemonOptions, socket_path}`.
 
 Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-sources` (the timer and watch
 sources it starts and stops), `pa-core` (the session engine, the

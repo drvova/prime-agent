@@ -34,6 +34,7 @@ use crate::subagents::Subagents;
 mod host;
 mod runner;
 
+pub(crate) use host::LiveEngine;
 use host::SessionHost;
 pub(crate) use runner::{RuntimeTaskSink, SessionRunner};
 
@@ -54,6 +55,11 @@ pub struct SessionSpec {
     /// Where a spawned subagent sits under its parent; `None` for any other
     /// session.
     pub subagent: Option<SubagentSpec>,
+    /// The transcript the session opens, or creates under its id when it is
+    /// not there yet: a daemon session's, which the daemon holds the lease
+    /// of. `None` leaves it to the builder (the print session's selection, a
+    /// subagent's under its parent's).
+    pub transcript: Option<PathBuf>,
 }
 
 /// A subagent's place under the session that spawned it (`rlm-spawn`): what

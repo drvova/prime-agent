@@ -92,6 +92,7 @@ impl RlmSubagentHost for SessionSubagents {
                         spawned_by_request_id: request.spawned_by_request_id.clone(),
                         factory: request.factory.is_some(),
                     }),
+                    transcript: None,
                 }
             };
             let child_node = Arc::new(Node::new(

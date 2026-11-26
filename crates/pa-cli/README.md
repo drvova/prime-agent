@@ -6,13 +6,26 @@ The `prime-agent` binary.
 Argument parsing, mode selection (interactive/headless/json/daemon subcommands), binary wiring of crates into processes, exit codes and user-facing errors. The daemon-forensics CLI (`incident.rs`, TS `src/cli/incident.ts`): the `prime-agent incident` timeline command — log-source discovery (agent.jsonl plus its `.old` rotation, falling back to the newest per-daemon log), `--since`/`--until` window and `--session` filter parsing, and the report rendering; the shared classifier lives in pa-types (`pa_types::incident`) and the agents-view notice in pa-tui. Client-side MCP auth flows (`mcp_login.rs`): the `/mcp login`/`/mcp logout` hook the TUI calls — the TS interactive client's placement — resolving a server (settings `mcpServers` + the builtin catalog), running the pa-core OAuth login on the suspended terminal, and persisting through the shared auth store. The same placement serves the TUI's client-command hooks: provider auth (`provider_login.rs` — the `/login`/`/logout` catalog, the API-key store, the MCP device flow, the Prime Inference terminal login (`prime_inference_login.rs` — the API-key flow: prime-cli credential reuse, the paste prompt with the whoami access check, the numbered team selector); the subscription OAuth and the Prime browser challenge stay unported and report it), trace-sharing state (`client_traces.rs` — the settings flag writes and the credential resolution `/traces` shows; the upload subsystem stays unported), and the `/update` runner (`client_update.rs` — the out-of-band installer funnel with the output captured, the same body `prime-agent update` runs; `installer_update.rs` is that CLI command's own driver, `--check` included), plus the staged update flow (`update_flow/`, `self_update.rs` — the `package update` self target's body). The descriptor OAuth commands (`descriptor_login.rs`): `login <provider> [--device]` and `logout <provider>`, plus the `/login` panel flow for models.json providers whose `auth` block declares `oauth`; the sign-in itself is pa-core's.
 
 ## Non-goals
-No business logic; it composes pa-daemon, pa-core, pa-tui, pa-ai via their public APIs only.
+No business logic; it composes pa-daemon, pa-runtime, pa-core, pa-tui, pa-ai via their public APIs only.
 
 ## Public API
 The `prime-agent` executable surface (flags, subcommands, exit codes). Internal lib types `pub(crate)`, plus the daemon wiring (`interactive_mode::{ensure_daemon_running, ensure_daemon_running_with, resolve_socket_path}`) exported for the integration verifier.
 
 ## Depends on
 pa-types, pa-ai, pa-agent, pa-core, pa-daemon, pa-runtime, pa-tui (one-way, composition root).
+
+## Runtime daemon
+`--mode daemon` starts the supervisor, or, with `PRIME_AGENT_RUNTIME_DAEMON=1` or the global
+setting `"daemon": "runtime"`, the runtime daemon (`print_runtime/daemon_session.rs`): the agent
+dir's lock (`pa_core::platform::RuntimeDaemonLock`), then `daemon2.sock` beside the resolved daemon
+socket through the supervisor's socket lifecycle (`pa_daemon::socket`: stale-socket cleanup,
+owner-only permissions, the exit cleanup that spares a successor) and `pa_runtime::daemon::run`
+until SIGINT or SIGTERM. Its `SessionBuilder` opens the transcript a session's spec names
+(creating it under its id), builds the engine through the headless assembly (the faux provider
+under `PRIME_AGENT_FAUX_SCRIPT`), streams the turn driver's events, and builds subagents as the
+print run does (`print_session::build_subagent`). A kept launch still splits into the keeper
+first; the runtime daemon has no keeper of its own yet (phase 7c).
+`tests/runtime_daemon_e2e/` drives it over wire2 against the real binary.
 
 ## Print runtime
 The headless print/json modes (`print_runtime/print_session.rs`) run on an

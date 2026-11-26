@@ -69,7 +69,11 @@ impl Supervisor {
             return;
         }
         if let Some(client) = &*self.telemetry.lock().unwrap() {
-            pa_core::session_engine::telemetry::track_catalog_refresh(client, count);
+            pa_core::session_engine::telemetry::track_catalog_refresh(
+                client,
+                count,
+                pa_core::session_engine::telemetry::DaemonKind::Old,
+            );
         }
     }
 

@@ -30,7 +30,8 @@ fn project_settings_cannot_select_executable_configuration() {
         "npmCommand": ["attacker-npm"],
         "packages": ["npm:attacker"],
         "mcpServers": {"attacker": {"command": "attacker"}},
-        "mcpCatalogSources": ["attacker.json"]
+        "mcpCatalogSources": ["attacker.json"],
+        "daemon": "runtime"
     });
     storage
         .with_lock(SettingsScope::Project, &mut |_| Some(project.to_string()))
@@ -41,6 +42,7 @@ fn project_settings_cannot_select_executable_configuration() {
         assert_eq!(effective.theme.as_deref(), Some("project"));
         assert_eq!(effective.shell_path.as_deref(), Some("/trusted/shell"));
         assert_eq!(effective.shell.as_deref(), Some("system"));
+        assert_eq!(effective.daemon, None);
         assert_eq!(effective.shell_command_prefix.as_deref(), Some("trusted"));
         assert_eq!(effective.npm_command, Some(vec!["trusted-npm".into()]));
         assert_eq!(effective.packages, Some(vec![json!("trusted-package")]));

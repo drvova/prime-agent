@@ -105,6 +105,14 @@ impl TaskEnd {
     }
 }
 
+/// A lifetime's engine, and a handle on the runtime it runs on (whose
+/// threads carry the lifetime's scope).
+#[derive(Clone)]
+pub(crate) struct LiveEngine {
+    pub(crate) engine: Arc<pa_core::session_engine::engine::SessionEngine>,
+    pub(crate) runtime: tokio::runtime::Handle,
+}
+
 /// One session's host thread, as the runtime holds it.
 pub(crate) struct SessionHost {
     work: Mutex<Option<mpsc::UnboundedSender<Work>>>,
@@ -125,6 +133,9 @@ struct TurnControl {
 struct Turn {
     /// The engine's agent while a lifetime has one.
     agent: Option<Arc<Agent>>,
+    /// The lifetime's engine and the runtime it runs on, while it has one:
+    /// what a daemon call that changes the open session reaches.
+    engine: Option<LiveEngine>,
     /// The task running, if any.
     task: Option<String>,
     /// Whether the running task's turn still reads steering: from its start
@@ -321,6 +332,11 @@ impl SessionHost {
         true
     }
 
+    /// The engine of the session's current lifetime, once it is built.
+    pub(crate) fn engine(&self) -> Option<LiveEngine> {
+        lock(&self.control.turn).engine.clone()
+    }
+
     /// Closes the session: its thread finishes the task it runs, drops the
     /// tasks sent after it, and ends; waits until it has.
     pub(crate) async fn close(&self) {
@@ -392,7 +408,11 @@ fn serve<B: SessionBuilder>(lifetime: &Lifetime<B>, mut queued: mpsc::UnboundedR
             }
         };
         let ended = lifetime.run(&runtime, &mut queued);
-        lock(&lifetime.control.turn).agent = None;
+        {
+            let mut turn = lock(&lifetime.control.turn);
+            turn.agent = None;
+            turn.engine = None;
+        }
         // The lifetime is cut off from the session's durable state before its
         // runtime goes, so nothing it leaves running writes again.
         scope.end();
@@ -704,7 +724,14 @@ impl<B: SessionBuilder> Lifetime<B> {
                 built,
             }
         });
-        lock(&self.control.turn).agent = Some(agent);
+        {
+            let mut turn = lock(&self.control.turn);
+            turn.agent = Some(agent);
+            turn.engine = Some(LiveEngine {
+                engine: Arc::clone(&hosted.built.engine),
+                runtime: runtime.handle().clone(),
+            });
+        }
         self.node.built(Ok(()));
         Ok(hosted)
     }

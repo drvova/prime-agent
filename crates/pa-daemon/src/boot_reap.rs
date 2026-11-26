@@ -64,7 +64,10 @@ pub(crate) async fn reap_predecessors(supervisor: &Arc<Supervisor>) {
         // protected while the identity still matches (none recorded stays protected).
         let protected: HashSet<u32> = protected_worker_pids(&agent_dir, &socket_path);
         let mut targets = same_socket_worker_targets(&socket_path, &protected, None);
-        targets.extend(same_socket_supervisor_targets(&socket_path));
+        // The runtime daemon's command line names this socket too; it serves
+        // its own socket beside this one and is never a predecessor.
+        let runtime_daemon = pa_core::platform::RuntimeDaemonLock::recorded_pid(&agent_dir);
+        targets.extend(same_socket_supervisor_targets(&socket_path, runtime_daemon));
         targets
     })
     .await;
@@ -478,12 +481,18 @@ fn proc_environ_names_active_session(_pid: u32, _active_session: &str) -> bool {
 /// The wedged supervisors of this socket path, excluding this process. A healthy
 /// predecessor never reaches here: its listener refused this daemon's bind.
 #[cfg(target_os = "linux")]
-fn same_socket_supervisor_targets(socket_path: &Path) -> Vec<ReapTarget> {
+fn same_socket_supervisor_targets(
+    socket_path: &Path,
+    runtime_daemon: Option<u32>,
+) -> Vec<ReapTarget> {
     let socket = normalize_socket_spelling(socket_path);
     let mut targets = Vec::new();
     for pid in numeric_proc_entries() {
         // This daemon's restart owner runs the same command line; it is not a predecessor.
-        if pid == std::process::id() || Some(pid) == crate::keeper::keeper_pid() {
+        if pid == std::process::id()
+            || Some(pid) == crate::keeper::keeper_pid()
+            || Some(pid) == runtime_daemon
+        {
             continue;
         }
         // Identity-first capture, as the worker census.
@@ -514,7 +523,10 @@ fn same_socket_supervisor_targets(socket_path: &Path) -> Vec<ReapTarget> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn same_socket_supervisor_targets(_socket_path: &Path) -> Vec<ReapTarget> {
+fn same_socket_supervisor_targets(
+    _socket_path: &Path,
+    _runtime_daemon: Option<u32>,
+) -> Vec<ReapTarget> {
     Vec::new()
 }
 

@@ -40,6 +40,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "shellPath",
     "shell",
     "transcriptStore",
+    "daemon",
     "quietStartup",
     "shellCommandPrefix",
     "npmCommand",

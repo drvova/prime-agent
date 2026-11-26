@@ -187,6 +187,7 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                     cwd: cwd.map_or_else(|| self.cwd.clone(), PathBuf::from),
                     env: std::collections::BTreeMap::new(),
                     subagent: None,
+                    transcript: None,
                 })?;
                 if let Some(parent) = &event.session {
                     self.tree.insert(id.clone(), parent.clone());

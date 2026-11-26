@@ -47,15 +47,13 @@ impl crate::mode::Runtime for PrintRuntime {
                     Ok(1)
                 }
             },
-            AppMode::Daemon => {
-                match crate::daemon_mode::run_daemon_mode(options.daemon_socket.as_deref()) {
-                    Ok(code) => Ok(code),
-                    Err(error) => {
-                        eprintln!("Error: {error:#}");
-                        Ok(1)
-                    }
+            AppMode::Daemon => match crate::daemon_mode::run_daemon_mode(options) {
+                Ok(code) => Ok(code),
+                Err(error) => {
+                    eprintln!("Error: {error:#}");
+                    Ok(1)
                 }
-            }
+            },
             // ACP mode: a thin JSON-RPC stdio transport over a daemon
             // session.
             AppMode::Acp => match run_acp_mode(options) {
@@ -381,6 +379,9 @@ fn run_print_mode(options: &RunOptions) -> Result<i32, String> {
 
 /// The print and json modes' run on the event-driven runtime.
 mod print_session;
+
+/// The runtime daemon's composition: its session builder and endpoint.
+pub(crate) mod daemon_session;
 
 /// Own the print lease through runtime shutdown, including errors and unwinding.
 /// The operation seam lets the regression exercise a writer pending at shutdown.

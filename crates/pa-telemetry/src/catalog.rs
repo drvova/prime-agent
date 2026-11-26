@@ -1049,6 +1049,12 @@ const DAEMON_EVENT: EventRule = EventRule {
         ("root_identity_persist_failed_count", optional(count())),
         ("saved_sessions_list_count", optional(count())),
         ("saved_sessions_usage_rows_max", optional(count())),
+        // Which daemon emitted it: the old supervisor or the runtime daemon
+        // (phase 7, opt-in), on its launch event (`catalog_refresh`).
+        (
+            "daemon_kind",
+            optional(enum_rule(&["old", "runtime"], "old")),
+        ),
     ],
 };
 

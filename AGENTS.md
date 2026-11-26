@@ -194,11 +194,11 @@ The table summarizes each crate's current direct workspace dependencies:
 | `pa-agent` | Provider-independent agent loop | none |
 | `pa-shell` | Built-in bash-compatible shell and its utilities | `pa-types` |
 | `pa-log` | SQLite store: the event log, session transcripts and the agent's other state (the transcript store's database) | `pa-types` |
-| `pa-runtime` | Event-driven runtime: bus, subscriptions, task lanes and their SQLite stores, the sessions that run tasks as turns, the event sources its subscriptions start and stop, and the headless turn driver | `pa-types`, `pa-log`, `pa-core`, `pa-agent`, `pa-sources` |
+| `pa-runtime` | Event-driven runtime: bus, subscriptions, task lanes and their SQLite stores, the sessions that run tasks as turns, the event sources its subscriptions start and stop, the headless turn driver, and the runtime daemon (wire2 on its own socket, opt-in until phase 8) | `pa-types`, `pa-log`, `pa-core`, `pa-agent`, `pa-sources` |
 | `pa-sources` | Event sources: timers, folder watches, webhooks; the schedule grammar and evaluator timers and scheduled jobs share | `pa-types` |
 | `pa-ai` | Providers, model registry, streaming | `pa-types` |
 | `pa-models` | Live model catalog and transport | `pa-ai`, `pa-types` |
-| `pa-core` | Session engine, tools, skills, Scheme kernel, settings, transcript store | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-shell`, `pa-telemetry`, `pa-log`, `pa-sources` |
+| `pa-core` | Session engine, tools, skills, Scheme kernel, settings, transcript store, session leases | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-shell`, `pa-telemetry`, `pa-log`, `pa-sources` |
 | `pa-daemon` | Supervisor, hosted sessions, restart owner, wire protocol | `pa-types`, `pa-core`, `pa-agent`, `pa-ai`, `pa-telemetry`, `pa-models` |
 | `pa-tui` | Terminal UI, daemon-wire client | `pa-types` |
 | `pa-cli` | `prime-agent` binary, composition root | `pa-types`, `pa-core`, `pa-ai`, `pa-agent`, `pa-daemon`, `pa-runtime`, `pa-tui`, `pa-telemetry` |
@@ -259,6 +259,15 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   what the transcript shows was saved, a command its kernel left running is reaped and
   reported to the model, and an idle session with an armed scheduled job is woken when the
   job is due. Attached clients reconnect on their own and show what happened.
+- Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
+  old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
+  `"daemon": "runtime"` selects the runtime daemon (`pa_runtime::daemon`, wire2 on
+  `daemon2.sock` beside it, one per agent dir by an OS lock on `runtime-daemon.lock`, whose pid
+  the supervisor's boot reap spares though its command line names the same socket). Both
+  keep sessions in the same transcript store; a session is owned by whichever process holds its
+  session lease (`pa_core::session::lease`), so the two never write one session. The runtime
+  daemon has none of the recovery below yet (crash records, self-heal, boot revival, keeper:
+  phase 7c), and the TUI and ACP still speak only to the supervisor.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,
