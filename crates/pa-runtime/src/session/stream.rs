@@ -67,6 +67,10 @@ pub(crate) struct SessionStream {
     topic: Option<Topic>,
     /// The running task's trust, which the session's own events carry.
     trust: TaskTrust,
+    /// This stream's numbering: a fresh id per stream, so a client's resume
+    /// point from another (a session opened again, a daemon restarted) is
+    /// never read as this one's (the old daemon's cursor `generation`).
+    generation: String,
     state: Mutex<StreamState>,
 }
 
@@ -94,6 +98,7 @@ impl SessionStream {
             session: session.to_string(),
             topic: Topic::new(format!("agent/{session}/stream")).ok(),
             trust,
+            generation: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
             state: Mutex::new(StreamState::default()),
         }
     }
@@ -121,6 +126,12 @@ impl SessionStream {
     /// first, and in the json stream's shapes).
     pub(crate) fn last_sequence(&self) -> u64 {
         lock(&self.state).sequence
+    }
+
+    /// The stream's cursor: its numbering's generation and the last
+    /// `meta.sequence` it consumed, read together.
+    pub(crate) fn cursor(&self) -> (String, u64) {
+        (self.generation.clone(), self.last_sequence())
     }
 
     /// Publishes one of the session's own frames (a driver event, a child's

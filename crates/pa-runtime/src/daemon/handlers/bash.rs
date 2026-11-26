@@ -57,6 +57,14 @@ impl UserBashes {
         }
     }
 
+    /// Whether session `id`'s `!` command is running.
+    pub(in crate::daemon) fn running(&self, id: &str) -> bool {
+        lock(&self.slots)
+            .slots
+            .get(id)
+            .is_some_and(|slot| slot.is_running())
+    }
+
     /// [`Self::close`] for every session: the daemon is stopping.
     pub(in crate::daemon) async fn close_all(&self) {
         let ids: Vec<String> = lock(&self.slots).slots.keys().cloned().collect();

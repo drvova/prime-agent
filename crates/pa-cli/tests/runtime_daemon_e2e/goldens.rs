@@ -38,12 +38,22 @@
 //!   one of them sends, or a field that differs). A new difference, or one
 //!   that went away, fails the test; `PA_BLESS_INBOUND_GOLDENS=1` rewrites
 //!   the lists after a deliberate change.
-//! - **What this cannot replay.** The recordings' replies (`attach`,
-//!   `get_state`, `get_messages`, `get_commands`, `get_model_catalog`,
-//!   `get_session_stats`, `heartbeats_list`, `list_kernel_bash`,
-//!   `roster_subscribe`, `detach`) and `roster_update` frames have no wire2
-//!   form yet (phases 8c and 8d): only the session stream is compared.
-
+//! - **The replies.** The session reads the recordings answered through
+//!   the compat layer (`attach`, `get_state`, `get_messages`) are sent
+//!   through it too (`pa_tui::wire2_request_frame`), and the old responses
+//!   their replies become (`pa_tui::wire2_response_frame`) are compared,
+//!   each with the recording's first response to the same command, under
+//!   the same mask; their differences follow the frames' in the list, a
+//!   leaf per line, an array aligned on its equal items (a row one side
+//!   has more is one line). The
+//!   replay attaches and reads the state as the session opens, as the
+//!   recording did; `attach_paging` opens the recording's seeded transcript
+//!   (`seed` in its script: 260 question-and-answer turns) and pages to its
+//!   start, as the TUI scrolled there.
+//! - **What this cannot replay.** The recordings' other replies
+//!   (`get_commands`, `get_model_catalog`, `get_session_stats`,
+//!   `heartbeats_list`, `list_kernel_bash`, `roster_subscribe`, `detach`)
+//!   and `roster_update` frames have no wire2 form yet (phases 8c and 8d).
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
@@ -58,8 +68,12 @@ fn fixture_path(name: &str, extension: &str) -> std::path::PathBuf {
         .join(format!("{name}.{extension}"))
 }
 
-/// The recorded supervisor stream's `session_event` frames.
-fn recorded(name: &str) -> Vec<Value> {
+/// The session reads whose replies the replay compares, in the order it
+/// sends them.
+const READS: [&str; 3] = ["attach", "get_state", "get_messages"];
+
+/// Every frame the recorded supervisor stream received.
+fn recorded_frames(name: &str) -> Vec<Value> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../pa-tui/tests/goldens/inbound")
         .join(format!("{name}.jsonl"));
@@ -67,14 +81,116 @@ fn recorded(name: &str) -> Vec<Value> {
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("a recorded line")["frame"].clone())
+        .collect()
+}
+
+/// The recorded supervisor stream's `session_event` frames.
+fn recorded(name: &str) -> Vec<Value> {
+    recorded_frames(name)
+        .into_iter()
         .filter(|frame| frame["type"] == "session_event")
         .collect()
 }
 
+/// The recording's first response to each of [`READS`], by command,
+/// without the request id the supervisor's link added.
+fn recorded_replies(name: &str) -> Vec<(String, Value)> {
+    let frames = recorded_frames(name);
+    READS
+        .iter()
+        .filter_map(|command| {
+            let mut frame = frames
+                .iter()
+                .find(|frame| frame["type"] == "response" && frame["command"] == *command)?
+                .clone();
+            frame.as_object_mut()?.remove("id");
+            Some(((*command).to_string(), frame))
+        })
+        .collect()
+}
+
+/// Writes the transcript `seed` describes under `root/seed`: the
+/// recording's header, model and level rows, then `turns` question and
+/// answer pairs (`u0001`/`a0001`, ...) a millisecond apart; its path.
+fn write_seed(root: &Path, cwd: &Path, seed: &Value) -> std::path::PathBuf {
+    let id = seed["session"].as_str().expect("the seed's session id");
+    let created = seed["created"].as_str().expect("the seed's header time");
+    let mut ms = seed["firstTimestamp"]
+        .as_u64()
+        .expect("the seed's first time");
+    let mut rows = vec![
+        json!({ "type": "session", "version": 3, "id": id, "timestamp": created,
+                "cwd": cwd }),
+        json!({ "type": "model_change", "id": "seedmodl", "parentId": null,
+                "timestamp": created, "provider": "faux", "modelId": "faux-1" }),
+        json!({ "type": "thinking_level_change", "id": "seedthnk", "parentId": "seedmodl",
+                "timestamp": created, "thinkingLevel": "off" }),
+    ];
+    let mut parent = "seedthnk".to_string();
+    for turn in 1..=seed["turns"].as_u64().expect("the seed's turn count") {
+        let (user, assistant) = (format!("u{turn:04}"), format!("a{turn:04}"));
+        rows.push(json!({ "type": "message", "id": user, "parentId": parent,
+            "timestamp": created, "message": { "role": "user",
+                "content": [{ "type": "text", "text": format!("q{turn:03} asked") }],
+                "timestamp": ms } }));
+        rows.push(
+            json!({ "type": "message", "id": assistant, "parentId": user,
+            "timestamp": created, "message": { "role": "assistant",
+                "content": [{ "type": "text", "text": format!("answer {turn:03}") }],
+                "api": "faux:1", "provider": "faux", "model": "faux-1",
+                "usage": { "input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0,
+                           "totalTokens": 2, "cost": { "input": 0, "output": 0,
+                           "cacheRead": 0, "cacheWrite": 0, "total": 0 } },
+                "stopReason": "stop", "timestamp": ms + 1 } }),
+        );
+        parent = assistant;
+        ms += 2;
+    }
+    let dir = root.join("seed");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{id}.jsonl"));
+    let mut text = rows
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    text.push('\n');
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+/// Sends `command` through the compat layer on `session`'s connection; the
+/// old response its reply becomes.
+async fn read(session: &mut Attached, command: &Value) -> Value {
+    let command: pa_types::daemon::DaemonCommand =
+        serde_json::from_value(command.clone()).expect("a TUI command");
+    let name = serde_json::to_value(&command).unwrap()["type"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let request = session.request_id();
+    let frame = pa_tui::wire2_request_frame(request, command)
+        .expect("a mapped command")
+        .expect("the layer carries the read");
+    let outcome = session.request(&frame).await;
+    pa_tui::wire2_response_frame(&name, outcome).expect("a response frame")
+}
+
+/// What a replay received through the compat layer: the stream's frames,
+/// and the responses to the session reads, by command.
+struct Replayed {
+    frames: Vec<Value>,
+    replies: Vec<(String, Value)>,
+}
+
 /// Runs scenario `name` on the runtime daemon; the old frames its session's
-/// stream became through the compat layer, paths normalized as the
-/// recording's were.
-async fn replay(name: &str) -> Vec<Value> {
+/// stream became and the old responses to its reads, through the compat
+/// layer, paths normalized as the recording's were.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a replay's steps read in the order the recording took them"
+)]
+async fn replay(name: &str) -> Replayed {
     let scenario: Value =
         serde_json::from_str(&std::fs::read_to_string(fixture_path(name, "json")).unwrap())
             .unwrap();
@@ -97,10 +213,37 @@ async fn replay(name: &str) -> Vec<Value> {
     .unwrap();
     let _daemon = bed.runtime_daemon(&script);
     let steps = scenario["steps"].as_array().unwrap();
-    if steps.is_empty() {
-        return Vec::new();
-    }
-    let mut session = Attached::open(&bed, &cwd).await;
+    let mut session = match scenario.get("seed") {
+        Some(seed) => {
+            let path = write_seed(root, &cwd, seed);
+            Attached::create(&bed, json!({ "path": path, "cwd": cwd })).await
+        }
+        None => Attached::open(&bed, &cwd).await,
+    };
+    // The TUI's attach as the recording sent it: its client id and
+    // capabilities, then its state read.
+    let recorded_reads = recorded_replies(name);
+    let recorded_client = &recorded_reads
+        .iter()
+        .find(|(command, _)| command == "attach")
+        .expect("the recording attached")
+        .1["data"]["client"];
+    let mut replies = Vec::new();
+    let id = session.id.clone();
+    let attach = read(
+        &mut session,
+        &json!({ "type": "attach", "activeSessionId": id,
+                 "clientId": recorded_client["id"],
+                 "capabilities": recorded_client["capabilities"] }),
+    )
+    .await;
+    replies.push(("attach".to_string(), attach.clone()));
+    let state = read(
+        &mut session,
+        &json!({ "type": "get_state", "activeSessionId": id }),
+    )
+    .await;
+    replies.push(("get_state".to_string(), state));
     for step in steps {
         if let Some(text) = step["prompt"].as_str() {
             let accepted = session.publish(text, None).await;
@@ -128,6 +271,21 @@ async fn replay(name: &str) -> Vec<Value> {
             session.done(&accepted["task"]).await;
         }
     }
+    // A scrolled-up transcript pages back to its start, as the TUI's view
+    // asked for it: the head before the window's first row, on the
+    // attached branch.
+    let snapshot = &attach["data"]["snapshot"];
+    if let Some(before) = snapshot["historyBeforeEntryId"].as_str() {
+        let page = read(
+            &mut session,
+            &json!({ "type": "get_messages", "activeSessionId": id,
+                     "page": { "from": "start", "until": before, "limit": 256 },
+                     "capabilities": recorded_client["capabilities"],
+                     "historyLeafId": snapshot["state"]["leafId"] }),
+        )
+        .await;
+        replies.push(("get_messages".to_string(), page));
+    }
     let frames = pa_tui::wire2_live_frames(&session.events("stream")).expect("mapped frames");
     let agent_dir = bed.agent_dir().display().to_string();
     let root = root.display().to_string();
@@ -136,17 +294,21 @@ async fn replay(name: &str) -> Vec<Value> {
             .unwrap()
             .display()
             .to_string();
-    frames
-        .into_iter()
-        .map(|frame| {
-            let text = frame
-                .to_string()
-                .replace(&agent_dir, &format!("/tmp/pa-golden/{prefix}/agent"))
-                .replace(&root, "/tmp/pa-golden")
-                .replace(&checkout, "/home/user/prime-agent");
-            serde_json::from_str(&text).unwrap()
-        })
-        .collect()
+    let normalized = |frame: Value| -> Value {
+        let text = frame
+            .to_string()
+            .replace(&agent_dir, &format!("/tmp/pa-golden/{prefix}/agent"))
+            .replace(&root, "/tmp/pa-golden")
+            .replace(&checkout, "/home/user/prime-agent");
+        serde_json::from_str(&text).unwrap()
+    };
+    Replayed {
+        frames: frames.into_iter().map(normalized).collect(),
+        replies: replies
+            .into_iter()
+            .map(|(command, reply)| (command, normalized(reply)))
+            .collect(),
+    }
 }
 
 /// The numbers the recordings' comparison masks by key.
@@ -175,7 +337,13 @@ fn is_token_count(parent: Option<&str>, key: &str) -> bool {
         Some("usage" | "lastRequest") => {
             matches!(
                 key,
-                "input" | "output" | "cacheRead" | "cacheWrite" | "totalTokens"
+                "input"
+                    | "output"
+                    | "cacheRead"
+                    | "cacheWrite"
+                    | "totalTokens"
+                    | "inputTokens"
+                    | "outputTokens"
             )
         }
         Some("contextUsage") => matches!(key, "tokens" | "percent"),
@@ -404,8 +572,21 @@ fn signature(frame: &Value) -> String {
     kind
 }
 
+/// How [`leaf_diffs`] compares two arrays.
+#[derive(Clone, Copy)]
+enum Arrays {
+    /// Item by item when their lengths agree, else as one leaf, both values
+    /// whole (a frame's).
+    ByIndex,
+    /// Aligned on their equal items (a longest common subsequence), as a
+    /// reply's transcript window is: a row one side has more is one line,
+    /// not a shift of every row after it; between two equal items, the
+    /// unequal ones pair up by position, the rest stand alone.
+    Aligned,
+}
+
 /// Where two masked values differ: one line per differing leaf, by path.
-fn leaf_diffs(path: &str, golden: &Value, runtime: &Value, out: &mut Vec<String>) {
+fn leaf_diffs(path: &str, golden: &Value, runtime: &Value, arrays: Arrays, out: &mut Vec<String>) {
     match (golden, runtime) {
         (Value::Object(left), Value::Object(right)) => {
             let mut keys: Vec<&String> = left.keys().chain(right.keys()).collect();
@@ -416,18 +597,78 @@ fn leaf_diffs(path: &str, golden: &Value, runtime: &Value, out: &mut Vec<String>
                     &format!("{path}.{key}"),
                     left.get(key).unwrap_or(&Value::Null),
                     right.get(key).unwrap_or(&Value::Null),
+                    arrays,
                     out,
                 );
             }
         }
+        (Value::Array(left), Value::Array(right)) if matches!(arrays, Arrays::Aligned) => {
+            aligned_diffs(path, left, right, out);
+        }
         (Value::Array(left), Value::Array(right)) if left.len() == right.len() => {
             for (index, (left, right)) in left.iter().zip(right).enumerate() {
-                leaf_diffs(&format!("{path}[{index}]"), left, right, out);
+                leaf_diffs(&format!("{path}[{index}]"), left, right, arrays, out);
             }
         }
         _ if golden == runtime => {}
         _ => out.push(format!("{path}: golden {golden} | runtime {runtime}")),
     }
+}
+
+/// [`leaf_diffs`] of two arrays aligned on their equal items (see
+/// [`Arrays::Aligned`]); a path's index is the golden side's, or the
+/// runtime's for an item only it has.
+fn aligned_diffs(path: &str, left: &[Value], right: &[Value], out: &mut Vec<String>) {
+    let mut table = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+    for i in (0..left.len()).rev() {
+        for j in (0..right.len()).rev() {
+            table[i][j] = if left[i] == right[j] {
+                table[i + 1][j + 1] + 1
+            } else {
+                table[i + 1][j].max(table[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j) = (0, 0);
+    let (mut lefts, mut rights): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
+    let flush = |lefts: &mut Vec<usize>, rights: &mut Vec<usize>, out: &mut Vec<String>| {
+        for pair in 0..lefts.len().max(rights.len()) {
+            match (lefts.get(pair), rights.get(pair)) {
+                (Some(&l), Some(&r)) => {
+                    leaf_diffs(
+                        &format!("{path}[{l}]"),
+                        &left[l],
+                        &right[r],
+                        Arrays::Aligned,
+                        out,
+                    );
+                }
+                (Some(&l), None) => {
+                    out.push(format!("{path}[{l}]: golden {} | runtime -", left[l]));
+                }
+                (None, Some(&r)) => {
+                    out.push(format!("{path}[{r}]: golden - | runtime {}", right[r]));
+                }
+                (None, None) => {}
+            }
+        }
+        lefts.clear();
+        rights.clear();
+    };
+    while i < left.len() || j < right.len() {
+        if i < left.len() && j < right.len() && left[i] == right[j] {
+            flush(&mut lefts, &mut rights, out);
+            i += 1;
+            j += 1;
+        } else if j < right.len() && (i == left.len() || table[i][j + 1] >= table[i + 1][j]) {
+            rights.push(j);
+            j += 1;
+        } else {
+            lefts.push(i);
+            i += 1;
+        }
+    }
+    flush(&mut lefts, &mut rights, out);
 }
 
 /// The differences between the recorded frames and the replayed ones, under
@@ -469,7 +710,7 @@ fn differences(golden: &[Value], runtime: &[Value]) -> Vec<String> {
     while i < left.len() || j < right.len() {
         if i < left.len() && j < right.len() && left[i] == right[j] {
             let mut leaves = Vec::new();
-            leaf_diffs("", &golden[i], &runtime[j], &mut leaves);
+            leaf_diffs("", &golden[i], &runtime[j], Arrays::ByIndex, &mut leaves);
             for leaf in leaves {
                 out.push(format!("~ {}: {leaf}", left[i]));
             }
@@ -486,11 +727,41 @@ fn differences(golden: &[Value], runtime: &[Value]) -> Vec<String> {
     out
 }
 
+/// The differences between the recorded responses to the session reads and
+/// the replayed ones, under the mask: a read only one side answered is one
+/// line, and a pair that differs is one line per differing leaf.
+fn reply_differences(golden: &[(String, Value)], runtime: &[(String, Value)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for command in READS {
+        let find = |side: &[(String, Value)]| {
+            side.iter()
+                .find(|(read, _)| read == command)
+                .map(|(_, reply)| masked(reply, None))
+        };
+        match (find(golden), find(runtime)) {
+            (Some(golden), Some(runtime)) => {
+                let mut leaves = Vec::new();
+                leaf_diffs("", &golden, &runtime, Arrays::Aligned, &mut leaves);
+                out.extend(
+                    leaves
+                        .into_iter()
+                        .map(|leaf| format!("~ reply {command}: {leaf}")),
+                );
+            }
+            (Some(_), None) => out.push(format!("- reply {command}")),
+            (None, Some(_)) => out.push(format!("+ reply {command}")),
+            (None, None) => {}
+        }
+    }
+    out
+}
+
 /// Replays `name` and checks what differs from its recording is exactly the
 /// committed list.
 async fn verify(name: &str) {
     let runtime = replay(name).await;
-    let found = differences(&recorded(name), &runtime);
+    let mut found = differences(&recorded(name), &runtime.frames);
+    found.extend(reply_differences(&recorded_replies(name), &runtime.replies));
     let path = fixture_path(name, "diff");
     let mut text = found.join("\n");
     text.push('\n');

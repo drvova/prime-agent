@@ -30,6 +30,7 @@ use crate::session::{SessionBuilder, SessionSpec};
 use crate::wire::{Attached, Call, ConnectionId, Handlers, Query};
 pub(super) use bash::UserBashes;
 
+mod attach;
 mod bash;
 mod bus;
 mod children;
@@ -438,8 +439,15 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
     async fn query(&self, query: Query, args: Value) -> anyhow::Result<Value> {
         match query {
             Query::SessionsList => self.list(&args).await,
-            Query::SessionSnapshot => self.snapshot(&args),
-            Query::TranscriptPage => self.page(&args),
+            Query::SessionSnapshot => match optional_string_arg(&args, "shape")? {
+                Some(shape) => self.shaped_snapshot(&args, &shape).await,
+                None => self.snapshot(&args),
+            },
+            Query::TranscriptPage => match optional_string_arg(&args, "shape")?.as_deref() {
+                Some("messages") => self.messages_page(&args).await,
+                Some(other) => anyhow::bail!("transcript.page has no shape {other:?} (messages)"),
+                None => self.page(&args),
+            },
             Query::Tasks => self.tasks(&args),
             Query::SessionContext => self.context(&args).await,
             Query::SessionUsage => self.usage(&args).await,

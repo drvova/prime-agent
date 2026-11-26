@@ -45,8 +45,14 @@ pub(super) struct Attached {
 impl Attached {
     /// Creates a session in `cwd` and subscribes to its topics.
     pub(super) async fn open(bed: &Bed, cwd: &std::path::Path) -> Self {
+        Self::create(bed, json!({ "cwd": cwd })).await
+    }
+
+    /// Creates (or opens) the session `session.create` `args` name and
+    /// subscribes to its topics.
+    pub(super) async fn create(bed: &Bed, args: Value) -> Self {
         let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
-        let created = ok(client.call("session.create", json!({ "cwd": cwd })).await);
+        let created = ok(client.call("session.create", args).await);
         let id = created["session"]
             .as_str()
             .expect("a session id")
@@ -103,6 +109,24 @@ impl Attached {
             })
             .await;
         ok(self.client.reply(&request, &mut self.frames).await)
+    }
+
+    /// Sends `frame` (its id one of [`Self::request_id`]'s) and waits for
+    /// its reply, keeping the frames that arrive first.
+    pub(super) async fn request(&mut self, frame: &ClientFrame) -> pa_types::wire2::Outcome {
+        let id = match frame {
+            ClientFrame::Publish { id, .. }
+            | ClientFrame::Query { id, .. }
+            | ClientFrame::Call { id, .. } => id.clone(),
+            other => panic!("not a request: {other:?}"),
+        };
+        self.client.send(frame).await;
+        self.client.reply(&id, &mut self.frames).await
+    }
+
+    /// A fresh request id on this client's connection.
+    pub(super) fn request_id(&mut self) -> String {
+        self.client.id()
     }
 
     pub(super) async fn query(&mut self, name: &str) -> Value {

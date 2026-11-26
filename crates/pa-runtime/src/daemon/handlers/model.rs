@@ -167,7 +167,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     /// provider and id (with its thinking-level map), else the agent's own
     /// descriptor, which carries no map (a model the registry does not list,
     /// such as one an engine registered for itself).
-    async fn full_model(
+    pub(super) async fn full_model(
         &self,
         running: &pa_agent::types::Model,
     ) -> anyhow::Result<pa_types::ai::Model> {

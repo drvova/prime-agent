@@ -42,17 +42,29 @@
 //!
 //! Outbound, the input commands become one publish each on `agent/<id>/input` (owner trust): the
 //! payload is the command's own JSON without `type` and `activeSessionId`, plus `kind` - the old
-//! command type (`prompt`, `steer`, `follow_up`). Every other command stays on the old wire.
+//! command type (`prompt`, `steer`, `follow_up`).
+//!
+//! The session reads become one query each, whose reply's result is the old response's `data`
+//! verbatim ([`response_from_reply`]; an error reply is the old failure with its message):
+//!
+//! | command | query | arguments |
+//! | --- | --- | --- |
+//! | `attach` | `session.snapshot` | `shape: "attach"`, `clientId`, `capabilities`, `resumeCursor` |
+//! | `get_state` | `session.snapshot` | `shape: "state"` |
+//! | `get_messages` | `transcript.page` | `shape: "messages"`, `page`, `historyLeafId`, `capabilities` |
+//!
+//! each with `session`, the command's `activeSessionId`; an argument the command does not carry is
+//! left out. Every other command stays on the old wire.
 //!
 //! # Not mapped yet (phase 7 types these queries and calls)
 //!
 //! - Queries: `sessions.list` (`list`, `list_saved_sessions` and its `session_list_item` /
-//!   `session_list_progress` stream), `session.snapshot` (`attach`, `get_state`, the chunked
-//!   `session_snapshot_*` frames, `session_attached`, `session_resynced`, `session_replaced`),
-//!   `transcript.page` (`get_messages_page`), `settings` (`get_settings`), `models`
-//!   (`get_model_catalog`, `get_available_models`, `model_catalog_changed`), `subscriptions` and
-//!   `tasks` (`heartbeats_list`, `heartbeats_changed`, `list_kernel_bash`, `factory_activity`),
-//!   `get_session_stats`, `get_commands`, `get_rlm_children`, `roster_subscribe`'s snapshot.
+//!   `session_list_progress` stream), the chunked `session_snapshot_*` frames (a TUI attach does
+//!   not ask for them), `session_attached`, `session_resynced`, `session_replaced`, `settings`
+//!   (`get_settings`), `models` (`get_model_catalog`, `get_available_models`,
+//!   `model_catalog_changed`), `subscriptions` and `tasks` (`heartbeats_list`,
+//!   `heartbeats_changed`, `list_kernel_bash`, `factory_activity`), `get_session_stats`,
+//!   `get_commands`, `get_rlm_children`, `roster_subscribe`'s snapshot.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
 //!   `fork`, `label`, `export`, the auth commands, `abort`/`abort_and_send_queued`,
 //!   `abort_compaction`, `compact`, the queue mutations, `detach`.
@@ -63,11 +75,11 @@
 
 use anyhow::{anyhow, Context, Result};
 use pa_types::daemon::{
-    DaemonCommand, DaemonEventMeta, DaemonOutbound, DaemonProtocolInfo, DaemonSessionClosedReason,
-    DAEMON_PROTOCOL_NAME, DAEMON_PROTOCOL_VERSION,
+    DaemonCommand, DaemonEventMeta, DaemonOutbound, DaemonProtocolInfo, DaemonResponse,
+    DaemonSessionClosedReason, DAEMON_PROTOCOL_NAME, DAEMON_PROTOCOL_VERSION,
 };
 use pa_types::event_log::{Event, Topic};
-use pa_types::wire2::ClientFrame;
+use pa_types::wire2::{ClientFrame, Outcome};
 use serde_json::{Map, Value};
 
 /// How an event reached the client: in a subscription's replay, or live after it.
@@ -82,6 +94,8 @@ pub(crate) enum Delivery {
 pub(crate) enum Outgoing {
     /// An input command, published on `agent/<id>/input`.
     Publish(ClientFrame),
+    /// A session read: its reply's result is the old response's `data` ([`response_from_reply`]).
+    Query(ClientFrame),
     /// A command wire2 does not carry yet (see the module docs); it stays on the old wire.
     Unmapped(Box<DaemonCommand>),
 }
@@ -190,13 +204,28 @@ pub fn live_frames(events: &[Event]) -> Result<Vec<Value>> {
     Ok(frames)
 }
 
-/// `command` as wire2 carries it: an input command becomes a publish with `request_id` as its
-/// frame id; every other command comes back unmapped.
+/// `command` as wire2 carries it: an input command becomes a publish and a session read a query,
+/// each with `request_id` as its frame id; every other command comes back unmapped.
 ///
 /// # Errors
 ///
 /// The command's session id is not a topic level.
 pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Outgoing> {
+    let query = |name: &str, session: &str, shape: &str, rest: Vec<(&str, Option<Value>)>| {
+        let mut args = Map::new();
+        args.insert("session".to_string(), Value::from(session));
+        args.insert("shape".to_string(), Value::from(shape));
+        for (key, value) in rest {
+            if let Some(value) = value {
+                args.insert(key.to_string(), value);
+            }
+        }
+        Ok(Outgoing::Query(ClientFrame::Query {
+            id: request_id.clone(),
+            name: name.to_string(),
+            args: Value::Object(args),
+        }))
+    };
     let active_session_id = match &command {
         DaemonCommand::Prompt {
             active_session_id, ..
@@ -207,6 +236,48 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
         | DaemonCommand::FollowUp {
             active_session_id, ..
         } => active_session_id.clone(),
+        DaemonCommand::Attach {
+            active_session_id,
+            client_id,
+            capabilities,
+            resume_cursor,
+            ..
+        } => {
+            return query(
+                "session.snapshot",
+                active_session_id,
+                "attach",
+                vec![
+                    (
+                        "clientId",
+                        client_id.as_ref().map(|id| Value::from(id.as_str())),
+                    ),
+                    ("capabilities", member(capabilities.as_ref())),
+                    ("resumeCursor", member(resume_cursor.as_ref())),
+                ],
+            )
+        }
+        DaemonCommand::GetState {
+            active_session_id, ..
+        } => return query("session.snapshot", active_session_id, "state", Vec::new()),
+        DaemonCommand::GetMessages {
+            active_session_id,
+            page,
+            capabilities,
+            rest,
+            ..
+        } => {
+            return query(
+                "transcript.page",
+                active_session_id,
+                "messages",
+                vec![
+                    ("page", member(page.as_ref())),
+                    ("historyLeafId", rest.get("historyLeafId").cloned()),
+                    ("capabilities", member(capabilities.as_ref())),
+                ],
+            )
+        }
         // The rest is the module docs' list of commands wire2 does not carry yet.
         _ => return Ok(Outgoing::Unmapped(Box::new(command))),
     };
@@ -225,6 +296,62 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
         topic,
         payload: Value::Object(payload),
     }))
+}
+
+/// An optional command member a mapped query forwards: its JSON, `None` when it is absent.
+fn member<T: serde::Serialize>(value: Option<&T>) -> Option<Value> {
+    value.and_then(|value| serde_json::to_value(value).ok())
+}
+
+/// The old response to the `command` a mapped query stood for (request `id`), from the query's
+/// reply: its result is the response's `data`, its error the failure's message.
+pub(crate) fn response_from_reply(
+    command: &str,
+    id: Option<String>,
+    outcome: Outcome,
+) -> DaemonOutbound {
+    let (success, data, error) = match outcome {
+        Outcome::Ok { result } => (true, Some(result), None),
+        Outcome::Error { message } => (false, None, Some(message)),
+    };
+    DaemonOutbound::Response {
+        response: DaemonResponse {
+            id,
+            command: command.to_string(),
+            success,
+            data,
+            error,
+            error_info: None,
+        },
+    }
+}
+
+/// The wire2 frame `command` becomes (request `request_id`), or `None` for a command wire2 does
+/// not carry yet; the test seam pa-cli's `runtime_daemon_e2e` drives the layer's outbound half
+/// through, against a real runtime daemon.
+///
+/// # Errors
+///
+/// The command's session id is not a topic level.
+#[doc(hidden)]
+pub fn request_frame(request_id: String, command: DaemonCommand) -> Result<Option<ClientFrame>> {
+    Ok(match outgoing(request_id, command)? {
+        Outgoing::Publish(frame) | Outgoing::Query(frame) => Some(frame),
+        Outgoing::Unmapped(_) => None,
+    })
+}
+
+/// The old response frame, as JSON, a client of this layer receives for the reply to a mapped
+/// `command`'s query; the inbound half of [`request_frame`]'s seam.
+///
+/// # Errors
+///
+/// The frame does not serialize (it always does).
+#[doc(hidden)]
+pub fn response_frame(command: &str, outcome: Outcome) -> Result<Value> {
+    Ok(serde_json::to_value(response_from_reply(
+        command, None, outcome,
+    ))?)
 }
 
 #[cfg(test)]

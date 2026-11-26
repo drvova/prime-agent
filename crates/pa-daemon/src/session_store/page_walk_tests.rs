@@ -2,6 +2,7 @@
 //! full-branch reference (the pre-index walk) pins its rows.
 
 use super::*;
+use serde_json::json;
 
 fn user(text: &str) -> Value {
     json!({ "role": "user", "content": text, "timestamp": 1000 })

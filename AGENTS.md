@@ -277,7 +277,15 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   on the agent (`session/stream/actions.rs`), and frames a session command's task as a run
   (`agent_start` … `agent_end`); the turn driver's own projection is not sent there. pa-cli's
   `runtime_daemon_e2e` `goldens` replays pa-tui's five inbound goldens through `wire2_compat`
-  and pins what still differs from the recording (`tests/fixtures/inbound_goldens/*.diff`).
+  and pins what still differs from the recording (`tests/fixtures/inbound_goldens/*.diff`),
+  the replies to the session reads included.
+- One display transcript: the rows the old worker's attach window and `get_messages` pages
+  serve, where a page may be cut (never at a tool result or custom row, never between a call
+  and its result) and the attach's image elision are `pa_core::session::display_transcript`,
+  shared by pa-daemon's session store and the runtime daemon's old-shape reads
+  (`session.snapshot {shape: "attach" | "state"}`, `transcript.page {shape: "messages"}`,
+  `pa-runtime` `daemon/handlers/attach.rs`), which `wire2_compat` maps `attach`, `get_state`
+  and `get_messages` to.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

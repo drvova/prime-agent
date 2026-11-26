@@ -9,6 +9,7 @@ used by settings deserialization, persistence, runtime policy, and the TUI.
 Wire and domain types + serde only: AI messages/content blocks/tool calls/usage/stream events, session JSONL entry schema, daemon wire protocol messages, worker frames.
 
 Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui/pa-cli) live here because pa-tui depends on pa-types alone:
+- `daemon::replay_info`: the attach's replay verdict for a resume cursor (TS `createDaemonReplayInfo`), shared by the supervisor's worker and the runtime daemon's attach snapshot.
 - `daemon::framing`: the private-frame codec of the worker socket (direct-attach clients speak it too).
 - `daemon::message_delta`: the `message_update_delta` attach capability's codec — the
   per-connection encoder the serving side (supervisor client writer, worker direct link) runs

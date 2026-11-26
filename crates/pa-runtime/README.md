@@ -328,7 +328,15 @@ SQLite implementations over `pa-log`.
   entry count, leaf, open, and while it is open the stream's last `meta.sequence` as
   `lastEventSequence`) and
   `transcript.page` (`{session, before?, limit?}`: the stored rows before `before`, at most 500)
-  read the transcript store; `session.create` (`{session?}` to open or create by id, or `{path}` to
+  read the transcript store; with a `shape` they answer the old worker's replies, which pa-tui's
+  `wire2_compat` maps `attach`, `get_state` and `get_messages` to (`daemon/handlers/attach.rs`):
+  `session.snapshot {shape: "attach", clientId?, capabilities?, resumeCursor?}` the attach
+  result (summary, connection state, the display window of a `windowed_snapshot` client with
+  `historyBeforeEntryId` and `lastUserPromptMs`, `lastEventCursor` from the stream's generation
+  and counter, `replay`), `{shape: "state"}` the summary, and `transcript.page {shape:
+  "messages", page?, historyLeafId?}` the old cursor page (`firstEntryId`, `lastEntryId`,
+  `more`, `historyLeafId`; "History branch changed" for an anchor off the branch), the rows and
+  cuts from `pa_core::session::display_transcript`; `session.create` (`{session?}` to open or create by id, or `{path}` to
   open a transcript by its file, and `cwd`) takes the session's `SessionLease` and holds it until
   `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
   (`session_already_active`) and the old daemon is refused one this daemon holds; a session it

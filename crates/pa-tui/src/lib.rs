@@ -158,7 +158,10 @@ pub mod width;
 )]
 mod wire2_compat;
 #[doc(hidden)]
-pub use wire2_compat::live_frames as wire2_live_frames;
+pub use wire2_compat::{
+    live_frames as wire2_live_frames, request_frame as wire2_request_frame,
+    response_frame as wire2_response_frame,
+};
 
 use ratatui::style::Style;
 

@@ -623,6 +623,14 @@ impl<B: SessionBuilder> Runtime<B> {
             .map(|stream| stream.last_sequence())
     }
 
+    /// Open session `session`'s stream cursor (its generation and last
+    /// `meta.sequence`) and its queue view, read from its stream: the attach
+    /// snapshot's `lastEventCursor` and `sessionActions`.
+    pub(crate) fn stream_view(&self, session: &str) -> Option<((String, u64), serde_json::Value)> {
+        let stream = self.sessions.subagents().stream(session)?;
+        Some((stream.cursor(), stream.actions()))
+    }
+
     /// The engine of `session`'s current lifetime, once it is built.
     pub(crate) fn session_engine(&self, session: &str) -> Option<crate::session::LiveEngine> {
         self.sessions.host(session)?.engine()

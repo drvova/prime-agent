@@ -11,5 +11,11 @@
     "responses": [],
     "contextWindow": 128000
   },
-  "steps": []
+  "steps": [],
+  "seed": {
+    "session": "01a21012-ef57-724d-ac04-3e4bd2df1794",
+    "created": "2026-11-25T00:20:06.103Z",
+    "firstTimestamp": 1795566006212,
+    "turns": 260
+  }
 }

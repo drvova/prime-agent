@@ -2,6 +2,7 @@
 pub mod billed_row;
 pub mod crash;
 pub mod discovery;
+pub mod display_transcript;
 pub mod hosted;
 pub mod lease;
 pub mod manager;

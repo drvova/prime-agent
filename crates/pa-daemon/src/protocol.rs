@@ -425,66 +425,9 @@ pub fn create_daemon_event_meta(
     }
 }
 
-/// Build the daemon replay info (TS `createDaemonReplayInfo`).
-#[must_use]
-pub fn create_daemon_replay_info(
-    resume_cursor: Option<&DaemonResumeCursor>,
-    last_event_sequence: DaemonEventSequence,
-    generation: &str,
-) -> DaemonReplayInfo {
-    let to_cursor = DaemonEventCursor {
-        generation: generation.to_string(),
-        sequence: last_event_sequence,
-    };
-    let Some(resume) = resume_cursor else {
-        return DaemonReplayInfo {
-            status: DaemonReplayStatus::Complete,
-            from_sequence: None,
-            to_sequence: last_event_sequence,
-            from_cursor: None,
-            to_cursor: Some(to_cursor),
-            reason: None,
-        };
-    };
-    let resume_sequence = resume
-        .sequence
-        .or(resume.event_sequence)
-        .unwrap_or_default();
-    let from_cursor = resume
-        .generation
-        .as_deref()
-        .map(|generation| DaemonEventCursor {
-            generation: generation.to_string(),
-            sequence: resume_sequence,
-        });
-    let unavailable = |reason: &str| DaemonReplayInfo {
-        status: DaemonReplayStatus::Unavailable,
-        from_sequence: Some(resume_sequence),
-        to_sequence: last_event_sequence,
-        from_cursor: from_cursor.clone(),
-        to_cursor: Some(to_cursor.clone()),
-        reason: Some(reason.to_string()),
-    };
-    if let Some(from) = &from_cursor {
-        if from.generation != generation {
-            return unavailable("event_generation_changed");
-        }
-    }
-    if resume_sequence > last_event_sequence {
-        return unavailable("resume_cursor_ahead_of_session");
-    }
-    if resume_sequence == last_event_sequence {
-        return DaemonReplayInfo {
-            status: DaemonReplayStatus::Complete,
-            from_sequence: Some(resume_sequence),
-            to_sequence: last_event_sequence,
-            from_cursor,
-            to_cursor: Some(to_cursor),
-            reason: None,
-        };
-    }
-    unavailable("event_replay_not_available")
-}
+/// Build the daemon replay info (TS `createDaemonReplayInfo`); shared with
+/// the runtime daemon's attach snapshot.
+pub use pa_types::daemon::replay_info as create_daemon_replay_info;
 
 /// Response constructors with the TS shape (standalone responses add the
 /// `type: "response"` tag here).

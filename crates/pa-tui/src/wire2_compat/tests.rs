@@ -3,10 +3,10 @@
 
 use pa_types::daemon::{DaemonCommand, DaemonOutbound, PromptInput};
 use pa_types::event_log::{Event, EventId, NewEvent, Topic, Trust};
-use pa_types::wire2::ClientFrame;
+use pa_types::wire2::{ClientFrame, Outcome};
 use serde_json::{json, Map, Value};
 
-use super::{outbound_from_event, outgoing, Delivery, Outgoing};
+use super::{outbound_from_event, outgoing, response_from_reply, Delivery, Outgoing};
 
 /// The recorded scenarios under `tests/goldens/inbound/`.
 const GOLDENS: [&str; 5] = [
@@ -311,6 +311,7 @@ fn input_commands_publish_on_the_session_input_topic() {
         .map(
             |(index, command)| match outgoing(format!("p{index}"), command.clone()).unwrap() {
                 Outgoing::Publish(frame) => read_back(frame),
+                Outgoing::Query(frame) => panic!("a query: {frame:?}"),
                 Outgoing::Unmapped(command) => panic!("unmapped: {command:?}"),
             },
         )
@@ -333,4 +334,126 @@ fn input_commands_publish_on_the_session_input_topic() {
             Outgoing::Unmapped(Box::new(detach))
         )
     );
+}
+
+/// The session reads go out as their queries, each argument the command carries forwarded and
+/// none it lacks; every recorded reply to one comes back from its query's result as the response
+/// the TUI received, and an error reply as the old failure.
+#[test]
+fn session_reads_query_and_their_replies_round_trip() {
+    let capabilities = vec!["windowed_snapshot".to_string()];
+    let commands = [
+        DaemonCommand::Attach {
+            id: None,
+            active_session_id: "s1".to_string(),
+            client_id: Some("tui:1".to_string()),
+            capabilities: Some(capabilities.clone()),
+            resume_cursor: None,
+            telemetry_disabled: Some(true),
+            recovery_config: None,
+            env: None,
+            launch_env: None,
+            rest: Map::new(),
+        },
+        DaemonCommand::GetState {
+            id: None,
+            active_session_id: "s1".to_string(),
+            rest: Map::new(),
+        },
+        DaemonCommand::GetMessages {
+            id: None,
+            active_session_id: "s1".to_string(),
+            page: Some(pa_types::daemon::TranscriptPage::Start {
+                after: None,
+                until: Some("u5".to_string()),
+                limit: 256,
+            }),
+            capabilities: Some(capabilities),
+            rest: Map::from_iter([("historyLeafId".to_string(), json!("a9"))]),
+        },
+        DaemonCommand::GetMessages {
+            id: None,
+            active_session_id: "s1".to_string(),
+            page: None,
+            capabilities: None,
+            rest: Map::new(),
+        },
+    ];
+    let queries: Vec<ClientFrame> = commands
+        .into_iter()
+        .map(
+            |command| match outgoing("q".to_string(), command).unwrap() {
+                Outgoing::Query(frame) => frame,
+                other => panic!("not a query: {other:?}"),
+            },
+        )
+        .collect();
+    let query = |name: &str, args: Value| ClientFrame::Query {
+        id: "q".to_string(),
+        name: name.to_string(),
+        args,
+    };
+    assert_eq!(
+        queries,
+        [
+            query(
+                "session.snapshot",
+                json!({ "session": "s1", "shape": "attach", "clientId": "tui:1",
+                        "capabilities": ["windowed_snapshot"] })
+            ),
+            query(
+                "session.snapshot",
+                json!({ "session": "s1", "shape": "state" })
+            ),
+            query(
+                "transcript.page",
+                json!({ "session": "s1", "shape": "messages",
+                        "page": { "from": "start", "until": "u5", "limit": 256 },
+                        "historyLeafId": "a9", "capabilities": ["windowed_snapshot"] })
+            ),
+            query(
+                "transcript.page",
+                json!({ "session": "s1", "shape": "messages" })
+            ),
+        ]
+    );
+    let mut expected = Vec::new();
+    let mut actual = Vec::new();
+    for name in GOLDENS {
+        for frame in recorded_frames(name) {
+            let command = frame["command"].as_str().unwrap_or_default();
+            if frame["type"] != "response"
+                || !matches!(command, "attach" | "get_state" | "get_messages")
+            {
+                continue;
+            }
+            let back = response_from_reply(
+                command,
+                frame["id"].as_str().map(str::to_string),
+                Outcome::Ok {
+                    result: frame["data"].clone(),
+                },
+            );
+            actual.push(serde_json::to_value(back).unwrap());
+            expected.push(frame);
+        }
+    }
+    assert_eq!(
+        expected.len(),
+        11,
+        "every golden attaches and reads its state"
+    );
+    let failed = response_from_reply(
+        "get_messages",
+        None,
+        Outcome::Error {
+            message: "History branch changed".to_string(),
+        },
+    );
+    actual.push(serde_json::to_value(failed).unwrap());
+    expected.push(
+        json!({ "type": "response", "command": "get_messages", "success": false,
+                          "error": "History branch changed" }),
+    );
+    assert_eq!(actual, expected);
 }

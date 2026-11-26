@@ -227,15 +227,17 @@ the supervisor on the faux engine with a debug build's `PA_TUI_RECORD_INBOUND` t
 (`src/inbound_recording.rs`, absent from release builds), each with the frame it ends on;
 `tests/inbound_goldens_headless.rs` replays them through the real client decode and event pump.
 `src/wire2_compat.rs` maps wire2 events (`agent/<id>/stream`, `side_question`, `closed`,
-`runtime/roster`) to the `DaemonOutbound` frames they stand for and the input commands to a publish
-on `agent/<id>/input`; its module docs state the contract the runtime honours (the stream is live
+`runtime/roster`) to the `DaemonOutbound` frames they stand for, the input commands to a publish
+on `agent/<id>/input`, and the session reads (`attach`, `get_state`, `get_messages`) to the
+`session.snapshot` and `transcript.page` queries whose results are the old responses' `data`; its module docs state the contract the runtime honours (the stream is live
 only, so the session's event counter rides in the payload's `meta.sequence`) and list what is left
 to map. Every recorded frame round-trips through it. A session's stored fault topics
 (`agent/<id>/crashed`, `recovered`, `failed`) map to their `session_event` only when replayed, so a
 client that attaches after a fault (one a daemon's death left) sees it, while live the stream's
-copy is the frame. `wire2_live_frames` (`#[doc(hidden)]`) is the layer's test seam: pa-cli's
-`runtime_daemon_e2e` replays the five goldens' scripts against a real runtime daemon and compares
-what this layer makes of its events with the recordings.
+copy is the frame. `wire2_live_frames`, `wire2_request_frame` and `wire2_response_frame`
+(`#[doc(hidden)]`) are the layer's test seams: pa-cli's `runtime_daemon_e2e` replays the five
+goldens' scripts against a real runtime daemon, sends their session reads through the layer, and
+compares what it makes of the events and replies with the recordings.
 
 ## Transcript caching
 

@@ -156,6 +156,12 @@ impl SessionStream {
         self.send_view(state);
     }
 
+    /// The queue view as it stands (the old summary's `sessionActions`).
+    pub(crate) fn actions(&self) -> Value {
+        let state = lock(&self.state);
+        render(&state.view, state.agent.upgrade().as_deref())
+    }
+
     /// Sends the view when it changed, in the session-event shapes.
     fn send_view(&self, state: &mut StreamState) {
         if !state.sequenced {
