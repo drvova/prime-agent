@@ -625,7 +625,6 @@ impl<B: SessionBuilder> Sessions<B> {
         subagents: Arc<Subagents>,
         faults: SessionFaults,
         jobs: JobsSlot,
-        unstored: crate::log_stores::Unstored,
     ) -> Self {
         Sessions {
             builder: Arc::new(builder),
@@ -634,10 +633,15 @@ impl<B: SessionBuilder> Sessions<B> {
             subagents,
             faults,
             jobs,
-            unstored,
+            unstored: crate::log_stores::Unstored::default(),
             hosts: Mutex::new(HashMap::new()),
             queued: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The sessions the runtime's stores keep nothing of.
+    pub(crate) fn unstored(&self) -> &crate::log_stores::Unstored {
+        &self.unstored
     }
 
     /// Attaches the runtime daemon's scheduled jobs (once; a second attach
