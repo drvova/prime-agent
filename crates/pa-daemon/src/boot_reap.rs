@@ -30,6 +30,13 @@ pub(crate) struct ReapTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReapKind {
     /// A leftover session worker of a previous daemon on this socket.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "only the linux /proc census finds leftover workers; elsewhere the reap's target list is empty"
+        )
+    )]
     Worker,
     /// A wedged supervisor process bound to this socket path (linux census only).
     #[cfg(target_os = "linux")]
