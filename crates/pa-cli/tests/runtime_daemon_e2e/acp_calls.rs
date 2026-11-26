@@ -126,9 +126,28 @@ async fn cancel_task_wait_idle_model_effort_and_the_roster_answer_the_acp_client
         .await);
     let dropped = publish(&mut client, &id, "never").await;
     let cancel = json!({ "session": id, "task": dropped["task"] });
-    let cancelled = ok(client.call("session.cancel_task", cancel.clone()).await);
-    let again = ok(client.call("session.cancel_task", cancel).await);
-    let dropped_done = done_of(&mut client, &id, &dropped["task"]).await;
+    // Its `done` can come ahead of the cancel's reply.
+    let mut early = Vec::new();
+    let cancelled = ok(client
+        .call_keeping("session.cancel_task", cancel.clone(), &mut early)
+        .await);
+    let again = ok(client
+        .call_keeping("session.cancel_task", cancel, &mut early)
+        .await);
+    let done_topic = format!("agent/{id}/done");
+    let early_done = early.into_iter().find_map(|frame| match frame {
+        ServerFrame::Event { event, .. }
+            if event.event.topic.to_string() == done_topic
+                && event.event.payload["task"] == dropped["task"] =>
+        {
+            Some(event.event.payload)
+        }
+        _ => None,
+    });
+    let dropped_done = match early_done {
+        Some(done) => done,
+        None => done_of(&mut client, &id, &dropped["task"]).await,
+    };
     ok(client
         .call(
             "session.release_input",
