@@ -204,6 +204,7 @@ impl RpcSession {
 
     /// Retire the queued-input pumps: the signal exit paths call this
     /// the instant the abort fires, so no pump delivers before the exit.
+    #[cfg(unix)]
     pub fn retire_pumps(&self) {
         self.pump_epoch.fetch_add(1, Ordering::SeqCst);
     }
@@ -216,6 +217,7 @@ impl RpcSession {
 
     /// Begin the signal exit (SIGTERM/SIGHUP): in-flight replacements'
     /// settles abort and new replacements are refused.
+    #[cfg(unix)]
     pub fn fire_shutdown(&self) {
         self.signal_shutdown.cancel();
     }
