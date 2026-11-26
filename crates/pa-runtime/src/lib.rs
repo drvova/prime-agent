@@ -49,6 +49,7 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+pub mod acp;
 mod bus;
 pub mod daemon;
 mod events;

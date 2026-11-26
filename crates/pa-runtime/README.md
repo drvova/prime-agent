@@ -2,8 +2,8 @@
 
 Prime Agent's event-driven runtime: the bus every event goes through, the subscriptions that
 turn events into work, the per-session task lanes that run it, and the sessions that run each
-task as an agent turn. The print and json modes run on it, and the RPC mode (`rpc`) lives here
-beside them. Storage is behind the traits defined here, with
+task as an agent turn. The print and json modes run on it, and the RPC mode (`rpc`) and the ACP
+mode (`acp`) live here beside them. Storage is behind the traits defined here, with
 SQLite implementations over `pa-log`.
 
 ## Scope
@@ -431,6 +431,14 @@ SQLite implementations over `pa-log`.
   unparked). Under the print modes (`Runtime::open`) a panic still only fails its task and the
   next one runs on a fresh engine.
 
+- **ACP mode** (`acp`, `prime-agent --mode acp`): the Agent Client Protocol JSON-RPC surface on
+  stdio (initialize, session/new, session/load, session/list, session/prompt, session/cancel,
+  session/close, session/set_config_option, and the outgoing session/update notifications with
+  the namespaced `_meta` correlation), served over a session of the supervisor (`pa-daemon`),
+  which it reaches as a socket client on the old wire (`pa_types::daemon`): it links no daemon
+  code. The TS capture corpus it is checked against is `testdata/acp/`. It does not yet drive
+  the runtime daemon.
+
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
 `TaskStore`). No engine assembly (the embedder's `SessionBuilder`). No model calls for `Call`
@@ -466,6 +474,8 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `SessionSpec` (`transcript`: the file a daemon session opens), `SubagentSpec`,
   `BuiltSession` (`queue_modes`: `QueueModes`), `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
   `TaskQueue::session_idle`.
+- `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions}` (pa-cli dispatches `--mode
+  acp` through it).
 - `daemon::{run, DaemonOptions, socket_path}` (`DaemonOptions::selected`: whether the daemon
   is the selected one, asked before each scheduled job). On the wire (strings, not Rust surface): the
   queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,

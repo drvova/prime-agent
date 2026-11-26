@@ -39,7 +39,6 @@ macro_rules! eprintln {
     };
 }
 
-pub mod acp;
 pub mod agent_engine;
 pub mod agent_message_broadcast;
 pub mod agent_message_ingest;

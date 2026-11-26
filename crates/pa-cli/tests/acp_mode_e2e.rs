@@ -2,7 +2,7 @@
 //! JSON-RPC surface over stdio on the daemon-attached transport (a
 //! sandboxed supervisor hosting a scripted faux worker), and the emitted
 //! frames are checked against the TS capture corpus
-//! (`crates/pa-daemon/testdata/acp`).
+//! (`crates/pa-runtime/testdata/acp`).
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};

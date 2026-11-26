@@ -223,6 +223,10 @@ pub fn acp_stop_reason_for_status(
     if cancelled {
         return super::types::AcpStopReason::Cancelled;
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "milliseconds since the epoch fit u64 for the next 500 million years"
+    )]
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or_default(|duration| duration.as_millis() as u64);

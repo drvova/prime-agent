@@ -1,4 +1,10 @@
 //! ACP stdio mode served over a daemon session; see `daemon.rs`.
+#![expect(
+    clippy::too_many_lines,
+    reason = "the serve loop, the session admission, the prompt turn and the event mapping \
+              each follow one TS function arm by arm; the function-length threshold is a \
+              style gate, not correctness"
+)]
 
 mod config_options;
 pub mod daemon;

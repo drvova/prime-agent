@@ -194,7 +194,7 @@ The table summarizes each crate's current direct workspace dependencies:
 | `pa-agent` | Provider-independent agent loop | none |
 | `pa-shell` | Built-in bash-compatible shell and its utilities | `pa-types` |
 | `pa-log` | SQLite store: the event log, session transcripts and the agent's other state (the transcript store's database) | `pa-types` |
-| `pa-runtime` | Event-driven runtime: bus, subscriptions, task lanes and their SQLite stores, the sessions that run tasks as turns, the event sources its subscriptions start and stop, the headless turn driver, the RPC mode, and the runtime daemon (wire2 on its own socket, opt-in until phase 8) | `pa-types`, `pa-log`, `pa-core`, `pa-agent`, `pa-ai`, `pa-sources` |
+| `pa-runtime` | Event-driven runtime: bus, subscriptions, task lanes and their SQLite stores, the sessions that run tasks as turns, the event sources its subscriptions start and stop, the headless turn driver, the RPC and ACP modes, and the runtime daemon (wire2 on its own socket, opt-in until phase 8) | `pa-types`, `pa-log`, `pa-core`, `pa-agent`, `pa-ai`, `pa-sources` |
 | `pa-sources` | Event sources: timers, folder watches, webhooks; the schedule grammar and evaluator timers and scheduled jobs share | `pa-types` |
 | `pa-ai` | Providers, model registry, streaming | `pa-types` |
 | `pa-models` | Live model catalog and transport | `pa-ai`, `pa-types` |
@@ -334,7 +334,9 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `bash_start`/`bash_output`/`bash_end` on `agent/<id>/stream`, its row saved and joined to the
   model's context, or steered into a running turn) and `session.abort_bash`; stopping a session
   or the daemon kills its running command first and admits none while it stops (phase 7g-3).
-  The TUI and ACP still speak only to the supervisor.
+  The TUI and ACP still speak only to the supervisor. The ACP mode lives in pa-runtime
+  (`crates/pa-runtime/src/acp/`, phase 7g-4) as a client of the supervisor's socket on the old
+  wire; it links no pa-daemon code.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,

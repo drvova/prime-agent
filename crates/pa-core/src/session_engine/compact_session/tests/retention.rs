@@ -6,7 +6,7 @@
 //! needs, by class (the user's constraints, decisions, files touched, open
 //! tasks, unfixed failures, the goal), and held-out follow-up questions. Every
 //! fixture is generated, and its `provenance` says so: the repository's real
-//! captures (the ACP corpus in `crates/pa-daemon/testdata/acp/`) are two-turn
+//! captures (the ACP corpus in `crates/pa-runtime/testdata/acp/`) are two-turn
 //! exchanges, too short to compact, and state no constraints.
 //!
 //! The deterministic mode compacts each fixture through the real

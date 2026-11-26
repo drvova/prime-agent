@@ -102,12 +102,14 @@ async fn acp_mode_main(options: &RunOptions) -> Result<i32, String> {
         .await
         .map_err(|error| format!("{error:#}"))?;
     let (actual_cwd, create) = daemon_acp_create(options)?;
-    pa_daemon::acp::daemon::run_daemon_attached_acp_mode(pa_daemon::acp::daemon::DaemonAcpOptions {
-        socket_path,
-        actual_cwd,
-        product_version: crate::config::version().to_string(),
-        create,
-    })
+    pa_runtime::acp::daemon::run_daemon_attached_acp_mode(
+        pa_runtime::acp::daemon::DaemonAcpOptions {
+            socket_path,
+            actual_cwd,
+            product_version: crate::config::version().to_string(),
+            create,
+        },
+    )
     .await
     .map_err(|error| format!("{error:#}"))
 }
