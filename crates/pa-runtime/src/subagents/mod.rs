@@ -198,6 +198,36 @@ impl Subagents {
         lock(&self.nodes).get(id).cloned()
     }
 
+    /// Waits until every subagent below open session `id` has settled and
+    /// no late receipt of its is pending: the subtree's settle. The session's
+    /// own lane and agent are its caller's to wait on. Answers at once for a
+    /// session not open.
+    pub(crate) async fn subtree_settled(&self, id: &str) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        loop {
+            // The wake registers before the checks: a settle that lands
+            // mid-scan still wakes the wait.
+            let notified = node.activity.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let mut unsettled = node.pending_receipts.load(Ordering::SeqCst) > 0;
+            if !unsettled {
+                for child in node.children.lock().await.iter() {
+                    if child_is_unsettled(child).await {
+                        unsettled = true;
+                        break;
+                    }
+                }
+            }
+            if !unsettled || node.is_disposed() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     /// Delivers `row` to open session `id` ([`deliver_row`]) once its
     /// engine is built.
     ///

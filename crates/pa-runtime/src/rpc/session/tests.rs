@@ -1,6 +1,10 @@
 //! A same-path reopen replaces the engine: the replaced session's kernel ends with
 //! everything it started, and the reopened one starts clean. An in-memory fork rebuilds in
 //! place: a refinement planned on the abandoned branch must not commit onto it.
+#![expect(
+    clippy::large_futures,
+    reason = "the replacement beds hold whole engines on the stack; boxing every call site costs clarity"
+)]
 
 use std::path::Path;
 use std::sync::Arc;
@@ -278,7 +282,6 @@ async fn an_in_memory_fork_cancels_a_refinement_planned_on_the_abandoned_branch(
     let state = Arc::new(crate::rpc::commands::RpcState {
         session: Arc::new(RpcSession::adopt(handle, None, writer.clone()).await),
         writer,
-        cwd,
         agent_dir,
         compacting: Arc::default(),
         autonomous: Arc::new(tokio::sync::Mutex::new(

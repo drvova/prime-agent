@@ -2,7 +2,8 @@
 
 Prime Agent's event-driven runtime: the bus every event goes through, the subscriptions that
 turn events into work, the per-session task lanes that run it, and the sessions that run each
-task as an agent turn. The print and json modes run on it; the RPC mode moves onto it next. Storage is behind the traits defined here, with
+task as an agent turn. The print and json modes run on it, and the RPC mode (`rpc`) lives here
+beside them. Storage is behind the traits defined here, with
 SQLite implementations over `pa-log`.
 
 ## Scope
@@ -256,6 +257,19 @@ SQLite implementations over `pa-log`.
   `source/<name>/#`; its turn reads `[agent-message from event <name>]`. pa-core leaves these
   sources, and the subscriptions naming them, out of the bus's stored rows, so nothing of them
   outlives the run.
+- **RPC mode** (`rpc`, `prime-agent --mode rpc`, moved from pa-daemon in phase 7f): JSON
+  commands on stdin, responses and the session's events on stdout, in the TS `modes/rpc`
+  shapes. `rpc::run_rpc_mode(RpcOptions)` serves one in-process session engine the composition
+  root assembles (`RpcEngineHandle`, holding the session's lease) and replaces it whole through
+  the root's `RpcEngineFactory` (`RpcEngineRequest`) for `new_session`, `switch_session` and
+  `fork`, whose branched file `SessionManager::create_branched_file` writes. Events are buffered
+  while a prompt's response is pending, so the response comes first; `prompt` answers at
+  admission; `steer`/`follow_up` queue on the agent and a pump delivers the queue turn by turn,
+  parked by `abort` until the next prompt-family command; stdin's end settles the turn and exits
+  0, SIGTERM/SIGHUP exit 143/129. The daemon-only families answer the TS in-process errors. Its
+  commands drive the engine directly, not the runtime's task lanes: the RPC semantics (a prompt
+  refused while a turn streams, a follow-up folded into the running run, parked rows folded
+  into the next prompt's run) are the agent's own queue's, not a lane's.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
 - **Runtime daemon** (`daemon`, opt-in until phase 8: `PRIME_AGENT_RUNTIME_DAEMON=1` or the global
@@ -288,7 +302,10 @@ SQLite implementations over `pa-log`.
   (input published meanwhile is admitted `parked`) until `session.resume_queue`;
   `session.abort_and_send_queued` keeps the lane going, so those steers run next, together;
   `session.withdraw` cancels the queued tasks and answers them in run order;
-  `session.restore` (`{messages}`) publishes them back as steers; `session.compact`
+  `session.restore` (`{messages}`) publishes them back as steers; `session.wait_idle` answers
+  once the session is at rest (`Runtime::at_rest`: nothing queued or running in its lane, and
+  every subagent below it settled, `Subagents::subtree_settled`; the old daemon's `wait_for_idle`
+  with `waitForRlmQuiescence`); `session.compact`
   (`{instructions?}`) queues `/compact` in the lane, refused while it is parked, and answers its
   task's outcome with the `compaction_end` it streamed; the `tasks` query answers the lane
   (running, queued, parked). The state queries (`daemon/handlers/state.rs`) read the session

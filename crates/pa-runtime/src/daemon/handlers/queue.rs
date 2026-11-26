@@ -56,6 +56,14 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         }))
     }
 
+    /// Answers once the open session is at rest, its subagents' settles
+    /// included (the old daemon's `wait_for_idle` with `waitForRlmQuiescence`).
+    pub(super) async fn wait_idle(&self, args: &Value) -> anyhow::Result<Value> {
+        let id = self.open_session(args)?;
+        self.runtime.at_rest(&id).await;
+        Ok(json!({ "session": id }))
+    }
+
     pub(super) fn resume_queue(&self, args: &Value) -> anyhow::Result<Value> {
         let id = self.open_session(args)?;
         let resumed = self.runtime.resume_queue(&id);

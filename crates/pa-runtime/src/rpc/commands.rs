@@ -25,7 +25,6 @@ use super::COMPACT_FRAME_FLUSH_BUDGET;
 pub struct RpcState {
     pub session: Arc<RpcSession>,
     pub writer: LineWriter,
-    pub cwd: std::path::PathBuf,
     pub agent_dir: std::path::PathBuf,
     /// The compact handler's in-flight flag: `get_state` reports it while a compact command runs.
     pub compacting: Arc<AtomicUsize>,
@@ -45,16 +44,9 @@ pub struct RpcState {
 }
 
 impl RpcState {
-    /// Publish the current goal state as a `goal_update` session event when it changed.
-    pub async fn publish_goal_update(&self) {
-        let handle = self.session.handle().await;
-        let goal = handle.engine.goal_state().await;
-        drop(handle);
-        self.publish_goal_update_for(&goal).await;
-    }
-
-    /// The same publication over an already-held goal state:
-    /// re-acquiring the handle there can starve behind a queued writer.
+    /// Publish `goal` as a `goal_update` session event when it changed; the
+    /// caller passes the goal state it holds (re-acquiring the handle here
+    /// can starve behind a queued writer).
     pub async fn publish_goal_update_for(&self, goal: &pa_core::goals::GoalState) {
         let goal = goal.clone();
         let changed = {

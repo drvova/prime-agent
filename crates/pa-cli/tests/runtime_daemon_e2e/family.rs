@@ -8,6 +8,8 @@
 //!   parent's context tree and breakdown show it, and after the daemon is
 //!   killed and started again the reopened parent finds it (roster, observe,
 //!   delete, whose tombstone the ledger records);
+//! - `session.wait_idle` answers only once the subagents below the session
+//!   have settled, not when its own task ends;
 //! - `agent_message.wait` ends on the awaited sibling's message, answers a
 //!   wait that would close a cycle at once, and times out;
 //! - a kernel timer source keeps firing for its subscription after the
@@ -228,6 +230,48 @@ async fn a_childs_family_is_recorded_shown_and_reopened_after_a_restart() {
             Some("deleted".to_string())
         )
     );
+}
+
+/// `session.wait_idle` waits for the subagents too (the old daemon's
+/// `wait_for_idle` with `waitForRlmQuiescence`): the parent's task ends while
+/// its child's held turn still runs, and the wait answers only once the child
+/// has settled.
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_for_idle_waits_for_the_subagents_to_settle() {
+    let bed = Bed::new();
+    let records = bed.dir.path().join("records");
+    std::fs::create_dir_all(&records).unwrap();
+    let spawn = record(
+        r#"(rlm-spawn "run the lane task" #:name "kid")"#,
+        "spawn",
+        &records,
+    );
+    let _daemon = bed.runtime_daemon(&json!({
+        "responses": [cell("spawning", &spawn), "spawn turn done"],
+        "repeatLastResponse": true,
+        "children": { "kid": { "responses": [{ "text": "kid done", "delayMs": 5_000 }] } },
+    }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = ok(client.call("session.create", json!({})).await);
+    let id = created["session"].as_str().unwrap().to_string();
+    client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
+    run_turn(&mut client, &id, "spawn the kid").await;
+    recorded(&records, "spawn").await;
+    let status = async |client: &mut Client| {
+        ok(client
+            .query("session.context_tree", json!({ "session": id }))
+            .await)["children"][0]["status"]
+            .clone()
+    };
+    // The parent's task is done; its child's held turn runs on.
+    assert_eq!(status(&mut client).await, json!("running"));
+    assert_eq!(
+        ok(client
+            .call("session.wait_idle", json!({ "session": id }))
+            .await),
+        json!({ "session": id })
+    );
+    assert_eq!(status(&mut client).await, json!("completed"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

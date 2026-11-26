@@ -216,35 +216,17 @@ async fn fork_at(
             .ok_or_else(|| "Persisted session is missing a session file".to_string())?
             .to_path_buf();
         let session_dir = manager.get_session_dir().to_path_buf();
-        // The source session's own cwd: the fresh fork records the
-        // source's, not the CLI startup cwd.
-        let source_cwd = manager.get_cwd().display().to_string();
         drop(manager);
         drop(handle);
-        let store = crate::session_store::SessionFile::open(&session_file)
-            .map_err(|error| format!("{error:#}"))?;
-        if let Some(leaf) = target_leaf.as_deref() {
-            store
-                .create_branched_file(leaf, &session_dir)
-                .map_err(|error| format!("{error:#}"))?
-                .path
-        } else {
-            // Fork at the root: a fresh session under the source, carrying
-            // the source's RLM depth (a depth-N session's children stay
-            // depth-N, so depth-0-only behavior follows the fork).
-            let mut forked = crate::session_store::SessionFile::create(
-                &source_cwd,
-                session_file.to_str(),
-                store.rlm_depth().unwrap_or(0),
-            );
-            let file =
-                session_dir.join(crate::session_store::session_file_name(forked.session_id()));
-            forked.set_path(file);
-            if forked.rewrite().is_err() {
-                return Err("Failed to create forked session".to_string());
-            }
-            forked.path
-        }
+        // The branch to the target leaf, or at the root a fresh session
+        // under the source; either carries the source's RLM depth (a depth-N
+        // session's children stay depth-N, so depth-0-only behavior follows
+        // the fork).
+        pa_core::session::manager::SessionManager::create_branched_file(
+            &session_file,
+            target_leaf.as_deref(),
+            &session_dir,
+        )?
     };
     let outcome = state
         .session
@@ -551,10 +533,15 @@ async fn get_session_stats(state: &Arc<RpcState>) -> Result<ResponseData, String
             }
             None => messages.iter().map(estimate_tokens).sum(),
         };
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "token counts stay far below 2^52, where f64 is exact"
+        )]
+        let percent = tokens as f64 / context_window as f64 * 100.0;
         session_stats["contextUsage"] = json!({
             "tokens": tokens,
             "contextWindow": context_window,
-            "percent": tokens as f64 / context_window as f64 * 100.0,
+            "percent": percent,
         });
     }
     Ok(ResponseData::Present(session_stats))

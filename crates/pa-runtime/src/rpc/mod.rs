@@ -3,12 +3,12 @@
 //! stdin close settles the running turn, SIGTERM/SIGHUP exit 143/129; the
 //! in-process transport answers daemon-only surfaces with daemon-mode errors.
 
-pub mod commands;
-pub mod model_commands;
-pub mod prompt_commands;
-pub mod protocol;
-pub mod session;
-pub mod session_commands;
+mod commands;
+mod model_commands;
+mod prompt_commands;
+mod protocol;
+mod session;
+mod session_commands;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -17,7 +17,8 @@ use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
 
 use protocol::{ParsedLine, RpcCommand};
-use session::{RpcEngineFactory, RpcEngineHandle, RpcSession};
+use session::RpcSession;
+pub use session::{RpcEngineFactory, RpcEngineHandle, RpcEngineRequest};
 
 /// Everything the composition root hands the mode.
 pub struct RpcOptions {
@@ -25,8 +26,6 @@ pub struct RpcOptions {
     pub engine: RpcEngineHandle,
     /// The whole-session replacement seam (`new_session` / `switch_session` / `fork`), when wired.
     pub engine_factory: Option<RpcEngineFactory>,
-    /// The session's cwd (the engine replacement reads it).
-    pub cwd: std::path::PathBuf,
     /// The agent dir (model registry auth, refinement history).
     pub agent_dir: std::path::PathBuf,
     /// The CLI autonomous flags seeding the host-owned autonomous state (`None` starts disabled).
@@ -36,7 +35,7 @@ pub struct RpcOptions {
 /// The ordered stdout writer: one queue for responses and events, in
 /// publication order. The queue depth is tracked so exit paths drain.
 #[derive(Clone)]
-pub struct LineWriter {
+pub(crate) struct LineWriter {
     tx: tokio::sync::mpsc::UnboundedSender<Value>,
     /// Frames queued but not yet written by the writer task (incremented
     /// on `write`, decremented once the task wrote the frame).
@@ -132,7 +131,6 @@ pub async fn run_rpc_mode(options: RpcOptions) -> anyhow::Result<i32> {
     let state = Arc::new(commands::RpcState {
         session: Arc::clone(&session),
         writer: writer.clone(),
-        cwd: options.cwd,
         agent_dir: options.agent_dir.clone(),
         compacting: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         autonomous: Arc::new(tokio::sync::Mutex::new(

@@ -37,6 +37,10 @@
 //!   `pa-sources`) defined on the runtime and kept in its database, each
 //!   running while a subscription hears it.
 //!
+//! - [`rpc`]: the RPC mode (`prime-agent --mode rpc`), a headless mode:
+//!   JSON commands on stdin drive one in-process session engine the
+//!   composition root assembles, and its responses and events go to stdout.
+//!
 //! - [`daemon`]: the runtime daemon, serving wire2 to the clients of its
 //!   socket over a [`Runtime`] of the agent dir, opt-in beside the old
 //!   daemon.
@@ -50,6 +54,7 @@ pub mod daemon;
 mod events;
 mod log_stores;
 mod routes;
+pub mod rpc;
 mod runtime;
 mod session;
 mod sources;

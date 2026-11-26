@@ -14,7 +14,12 @@ pa-log.workspace = true
 pa-sources.workspace = true
 pa-core = { path = "../pa-core" }
 pa-agent.workspace = true
+# The RPC mode's model commands read pa-ai's registry and model types
+# (`set_model`, `cycle_model`, `get_available_models`).
+pa-ai.workspace = true
 tokio.workspace = true
+# The RPC mode's signal exit cancels an in-flight session replacement.
+tokio-util = "0.7"
 serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
@@ -28,9 +33,9 @@ uuid = { version = "1", features = ["v4", "v7"] }
 # lane-cap tests run on paused time.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
-# The turn-driver and session-runner tests drive real engines on pa-ai's faux
-# provider, and the boundary's telemetry test reads pa-telemetry's mock sink.
-pa-ai.workspace = true
+# The boundary's telemetry test reads pa-telemetry's mock sink (the turn-driver
+# and session-runner tests drive real engines on pa-ai's faux provider, a
+# normal dependency).
 pa-telemetry.workspace = true
 futures.workspace = true
 

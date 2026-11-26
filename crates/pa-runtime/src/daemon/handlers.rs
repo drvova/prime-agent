@@ -458,6 +458,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionWithdraw => self.withdraw(&args).await,
             Call::SessionRestore => self.restore(&args).await,
             Call::SessionCompact => self.compact(&args).await,
+            Call::SessionWaitIdle => self.wait_idle(&args).await,
         }
     }
 }

@@ -1,0 +1,1 @@
+- The opt-in runtime daemon answers `session.wait_idle`, which waits until a session and every subagent below it have settled.

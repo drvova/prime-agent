@@ -126,6 +126,9 @@ pub enum Call {
     /// `session.compact`: compacts the session's context in its lane and
     /// answers how it went.
     SessionCompact,
+    /// `session.wait_idle`: answers once the session is at rest: nothing
+    /// queued or running in its lane, and every subagent below it settled.
+    SessionWaitIdle,
 }
 
 impl FromStr for Call {
@@ -148,6 +151,7 @@ impl FromStr for Call {
             "session.withdraw" => Call::SessionWithdraw,
             "session.restore" => Call::SessionRestore,
             "session.compact" => Call::SessionCompact,
+            "session.wait_idle" => Call::SessionWaitIdle,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

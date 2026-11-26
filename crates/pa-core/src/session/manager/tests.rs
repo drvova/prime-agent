@@ -470,3 +470,64 @@ fn replay_admitted_user_rows_stays_windowed_and_reuses_only_registered_ids() {
         "the worker-owned durable file is untouched by mirrored replay"
     );
 }
+
+#[test]
+fn a_branched_file_holds_the_path_to_its_leaf_and_the_labels_on_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("sessions");
+    let mut source = SessionManager::persisted(tmp.path(), &dir);
+    let first = source.append_custom_entry("first", None).unwrap();
+    let second = source.append_custom_entry("second", None).unwrap();
+    source.append_label_change(&first, Some("start")).unwrap();
+    source.append_custom_entry("past the leaf", None).unwrap();
+    source.flush_now().unwrap();
+    let source_file = source.get_session_file().unwrap().to_path_buf();
+
+    let rows = |path: &Path| {
+        let entries = load_entries_from_file(path, false);
+        let header = entries.iter().find_map(|entry| match entry {
+            FileEntry::Header { header } => Some((
+                header.parent_session.clone(),
+                header.rlm_depth,
+                header.git.is_none(),
+            )),
+            _ => None,
+        });
+        let rows: Vec<(String, Option<String>)> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                FileEntry::Custom { payload, base } => {
+                    Some((payload.custom_type.clone(), base.parent_id.clone()))
+                }
+                FileEntry::Label { payload, base } => Some((
+                    format!("label {} {:?}", payload.target_id, payload.label),
+                    base.parent_id.clone(),
+                )),
+                _ => None,
+            })
+            .collect();
+        (header, rows)
+    };
+    let source_name = Some(source_file.display().to_string());
+    let branched = SessionManager::create_branched_file(&source_file, Some(&second), &dir).unwrap();
+    let (header, branch_rows) = rows(&branched);
+    assert_eq!(
+        (
+            header.map(|(parent, depth, _)| (parent, depth)),
+            branch_rows
+        ),
+        (
+            Some((source_name.clone(), Some(0))),
+            vec![
+                ("first".to_string(), None),
+                ("second".to_string(), Some(first.clone())),
+                (format!("label {first} Some(\"start\")"), Some(second)),
+            ]
+        )
+    );
+    let root = SessionManager::create_branched_file(&source_file, None, &dir).unwrap();
+    assert_eq!(
+        rows(&root),
+        (Some((source_name, Some(0), true)), Vec::new())
+    );
+}

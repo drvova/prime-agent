@@ -244,12 +244,11 @@ async fn rpc_mode_main(options: &RunOptions) -> Result<i32, String> {
             .map_err(|error| format!("{error:#}"))?;
     }
     let factory = rpc_engine_factory(options);
-    let mut engine_handle = pa_daemon::rpc::session::RpcEngineHandle::from(parts);
+    let mut engine_handle = pa_runtime::rpc::RpcEngineHandle::from(parts);
     engine_handle.session_lease = initial_lease;
-    let exit_code = pa_daemon::rpc::run_rpc_mode(pa_daemon::rpc::RpcOptions {
+    let exit_code = pa_runtime::rpc::run_rpc_mode(pa_runtime::rpc::RpcOptions {
         engine: engine_handle,
         engine_factory: Some(factory),
-        cwd: config.cwd.clone(),
         agent_dir: config.agent_dir.clone(),
         autonomous_config: options
             .config
@@ -264,7 +263,7 @@ async fn rpc_mode_main(options: &RunOptions) -> Result<i32, String> {
 
 /// The engine-replacement seam the RPC mode's `new_session`/`switch_session`/
 /// `fork` commands drive: pa-cli owns the assembly, the mode owns the swap.
-fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngineFactory {
+fn rpc_engine_factory(options: &RunOptions) -> pa_runtime::rpc::RpcEngineFactory {
     let options = options.clone();
     std::sync::Arc::new(move |request| {
         let mut options = options.clone();
@@ -275,7 +274,7 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
         options.session.fork = None;
         Box::pin(async move {
             let (manager, opened_lease) = match &request {
-                pa_daemon::rpc::session::RpcEngineRequest::New {
+                pa_runtime::rpc::RpcEngineRequest::New {
                     parent_session,
                     cwd,
                 } => {
@@ -310,7 +309,7 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
                     .with_info_sidecar(pa_daemon::session_store::write_info_sidecar);
                     (manager, Some(lease))
                 }
-                pa_daemon::rpc::session::RpcEngineRequest::Open {
+                pa_runtime::rpc::RpcEngineRequest::Open {
                     session_path,
                     reuse_lease,
                     ..
@@ -341,7 +340,7 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
                 &HeadlessEmbedding::Rpc,
             )
             .await?;
-            let mut handle = pa_daemon::rpc::session::RpcEngineHandle::from(engine);
+            let mut handle = pa_runtime::rpc::RpcEngineHandle::from(engine);
             handle.session_lease = opened_lease;
             Ok(handle)
         })
@@ -356,7 +355,7 @@ fn replacement_session_dir(options: &RunOptions) -> std::path::PathBuf {
         .unwrap_or_else(|| options.config.agent_dir.join("sessions"))
 }
 
-impl From<HeadlessEngine> for pa_daemon::rpc::session::RpcEngineHandle {
+impl From<HeadlessEngine> for pa_runtime::rpc::RpcEngineHandle {
     fn from(parts: HeadlessEngine) -> Self {
         Self {
             engine: std::sync::Arc::new(parts.engine),

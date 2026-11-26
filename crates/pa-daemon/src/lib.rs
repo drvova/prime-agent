@@ -10,8 +10,14 @@
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     reason = "64-bit targets; the narrowing casts sit at OS boundaries (pid, fd, time, size) the kernel bounds"
+)]
+#![cfg_attr(
+    test,
+    expect(
+        clippy::cast_precision_loss,
+        reason = "the roster push benchmark reports its ratios as floats"
+    )
 )]
 #![expect(
     clippy::too_many_lines,
@@ -100,7 +106,6 @@ pub mod rlm_children;
 pub(crate) mod rlm_roster;
 pub mod rlm_surface;
 pub(crate) mod roster_activity;
-pub mod rpc;
 pub(crate) mod saved_session_commands;
 pub(crate) mod scheduled_jobs;
 pub(crate) mod scheduling_catalog;

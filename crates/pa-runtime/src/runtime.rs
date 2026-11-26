@@ -569,6 +569,21 @@ impl<B: SessionBuilder> Runtime<B> {
         self.queue.session_idle(session).await;
     }
 
+    /// Waits until `session` is at rest: no task queued or running, and every
+    /// subagent below it settled ([`crate::subagents::Subagents::subtree_settled`]).
+    /// A child's settle can queue work, so the wait goes back to the lane until
+    /// both hold at once. Answers at once for a session not open.
+    pub(crate) async fn at_rest(&self, session: &str) {
+        loop {
+            self.idle(session).await;
+            self.sessions.subagents().subtree_settled(session).await;
+            let lane = self.queue.lane(session);
+            if lane.running.is_none() && lane.queued.is_empty() {
+                return;
+            }
+        }
+    }
+
     /// Runs `session` to rest `after` the work it names, on the session's
     /// own thread: drives its subagents to quiescence and runs the turns
     /// they leave, the goal's owed continuation, the autonomous one held

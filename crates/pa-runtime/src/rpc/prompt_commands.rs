@@ -96,6 +96,10 @@ async fn write_command_row(state: &RpcState, message: &CustomMessage) {
 
 /// Execute one session command the prompt admitted: the executor
 /// persists the echo/result rows; the goal publishes on change.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the command's frames are written in the order the client reads them, one after another"
+)]
 async fn run_session_command(
     state: &Arc<RpcState>,
     engine: Arc<pa_core::session_engine::engine::SessionEngine>,
@@ -275,12 +279,11 @@ fn user_prompt_message(text: &str, images: &[pa_agent::types::ImageContent]) -> 
     AgentMessage::Standard(pa_agent::types::Message::User(
         pa_agent::types::UserMessage {
             content: pa_agent::types::UserContent::Parts(parts),
-            timestamp: now_millis() as i64,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+                }),
         },
     ))
-}
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis() as u64)
 }
