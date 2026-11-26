@@ -358,7 +358,7 @@ impl SessionFile {
             .and_then(|entry| entry.fields.get("state"))
             .and_then(|state| state.get("status"))
             .and_then(Value::as_str)
-            .map(normalize_state_status)
+            .map(pa_core::session::catalog::normalize_state_status)
     }
 
     /// The branch's conversation, compacted view first: a `compactionSummary`
@@ -880,18 +880,11 @@ fn entry_bears_message(entry: &SessionEntry) -> bool {
 fn compaction_summary_message(entry: &SessionEntry, retained_count: Option<usize>) -> Value {
     pa_core::session::display_transcript::compaction_summary_message(
         &entry.fields,
-        crate::util::iso_to_unix_ms(&entry.timestamp).unwrap_or(0),
+        pa_core::session::manager::iso_to_unix_ms(&entry.timestamp).unwrap_or(0),
         retained_count,
     )
 }
 
 pub(super) fn message_text(message: &Value) -> String {
     crate::types::message_text(message)
-}
-
-pub(super) fn normalize_state_status(status: &str) -> String {
-    match status {
-        "hidden" | "sleep" => "archived".to_string(),
-        other => other.to_string(),
-    }
 }

@@ -43,6 +43,7 @@ mod messaging;
 mod model;
 mod owned;
 mod queue;
+mod saved;
 mod state;
 mod summary;
 
@@ -451,7 +452,11 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
     async fn query(&self, query: Query, args: Value) -> anyhow::Result<Value> {
         match query {
-            Query::SessionsList => self.list(&args).await,
+            Query::SessionsList => match optional_string_arg(&args, "shape")?.as_deref() {
+                Some("saved") => self.saved_list(&args).await,
+                Some(other) => anyhow::bail!("sessions.list has no shape {other:?} (saved)"),
+                None => self.list(&args).await,
+            },
             Query::SessionSnapshot => match optional_string_arg(&args, "shape")? {
                 Some(shape) => self.shaped_snapshot(&args, &shape).await,
                 None => self.snapshot(&args),

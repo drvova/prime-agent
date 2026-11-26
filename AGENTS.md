@@ -293,6 +293,14 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   built off every turn's path (`pa-runtime` `daemon/handlers/feeds.rs`: one task hears the
   bus, another composes the due entries from the same summary the attach serves). The inbox
   reports a delivery's traffic once it landed, from the runtime daemon only.
+- One saved-session catalog: the rows both daemons list, their fold and its warm cache and
+  sidecar, the walk's pages and cursor, and a row's wire form are `pa_core::session::catalog`,
+  and a session's own usage and its billing split are `pa_core::session::usage_scan`, read by
+  the old daemon's `list_saved_sessions` and summaries and by the runtime daemon's
+  `sessions.list {shape: "saved"}` and summaries. The runtime daemon streams a list's rows on
+  the request's live-only `runtime/session_list/<request>` while it walks the store, never
+  waiting for a slow reader, and its reply is the catalog (`pa-runtime`
+  `daemon/handlers/saved.rs`); `wire2_compat` maps `list_saved_sessions` to it.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

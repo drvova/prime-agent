@@ -47,7 +47,7 @@ impl Admission {
             directories: Vec::new(),
             record: json!({"version":1,"token":uuid::Uuid::new_v4().to_string(),
                 "pid":identity.pid,"createdAt":now,"updatedAt":now,
-                "expiresAt":pa_daemon::util::iso_from_unix_ms(crate::util_time::now_ms()+LEASE_MS)}),
+                "expiresAt":pa_core::session::manager::iso_from_unix_ms(crate::util_time::now_ms()+LEASE_MS)}),
         };
         if let Some(start_id) = identity.process_start_id {
             admission.record["processStartId"] = json!(start_id);
@@ -88,7 +88,7 @@ impl Admission {
                 "another TypeScript daemon shutdown is still running"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
-            admission.record["expiresAt"] = json!(pa_daemon::util::iso_from_unix_ms(
+            admission.record["expiresAt"] = json!(pa_core::session::manager::iso_from_unix_ms(
                 crate::util_time::now_ms() + LEASE_MS
             ));
         }
@@ -96,7 +96,7 @@ impl Admission {
 
     pub(super) async fn refresh(&mut self) -> Result<()> {
         self.record["updatedAt"] = json!(crate::util_time::now_iso8601());
-        self.record["expiresAt"] = json!(pa_daemon::util::iso_from_unix_ms(
+        self.record["expiresAt"] = json!(pa_core::session::manager::iso_from_unix_ms(
             crate::util_time::now_ms() + LEASE_MS
         ));
         for directory in &self.directories {
@@ -142,7 +142,7 @@ fn read_record(path: &Path) -> Result<Option<Value>> {
                     && value["pid"].as_u64().is_some_and(|pid| pid > 0)
                     && value["expiresAt"]
                         .as_str()
-                        .and_then(pa_daemon::util::iso_to_unix_ms)
+                        .and_then(pa_core::session::manager::iso_to_unix_ms)
                         .is_some(),
                 "invalid TypeScript shutdown admission at {}",
                 path.display()
@@ -157,7 +157,7 @@ fn read_record(path: &Path) -> Result<Option<Value>> {
 fn record_is_active(record: &Value) -> bool {
     let unexpired = record["expiresAt"]
         .as_str()
-        .and_then(pa_daemon::util::iso_to_unix_ms)
+        .and_then(pa_core::session::manager::iso_to_unix_ms)
         .is_some_and(|expires| expires > crate::util_time::now_ms());
     if !unexpired {
         return false;

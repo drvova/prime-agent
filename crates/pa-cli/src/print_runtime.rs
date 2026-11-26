@@ -324,7 +324,7 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_runtime::rpc::RpcEngineFactory
                         &options.config.agent_dir,
                     )
                     .map_err(|error| format!("{error:#}"))?
-                    .with_info_sidecar(pa_daemon::session_store::write_info_sidecar);
+                    .with_info_sidecar(pa_core::session::catalog::write_info_sidecar);
                     (manager, Some(lease))
                 }
                 pa_runtime::rpc::RpcEngineRequest::Open {
@@ -1359,7 +1359,7 @@ fn lease_fresh_manager(
                 &crate::config::get_agent_dir(),
             ) {
                 Ok(lease) => {
-                    Some(lease.with_info_sidecar(pa_daemon::session_store::write_info_sidecar))
+                    Some(lease.with_info_sidecar(pa_core::session::catalog::write_info_sidecar))
                 }
                 Err(error) => {
                     eprintln!("prime-agent: could not lease the fresh session file: {error:#}");
@@ -1435,7 +1435,7 @@ fn session_open_guard(
     // Acquire, not observe: a probe leaves a window where another process acquires
     // between the check and this open — two writers on one file.
     match pa_core::session::lease::acquire_runtime_session_lease(session_path, &agent_dir) {
-        Ok(lease) => Ok(lease.with_info_sidecar(pa_daemon::session_store::write_info_sidecar)),
+        Ok(lease) => Ok(lease.with_info_sidecar(pa_core::session::catalog::write_info_sidecar)),
         Err(error) => {
             let Some(active) =
                 error.downcast_ref::<pa_core::session::lease::SessionAlreadyActiveError>()

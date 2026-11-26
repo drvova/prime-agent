@@ -48,9 +48,10 @@ impl SessionNavigation {
         // Prime the new store's usage fold before it enters the core: the
         // resume summaries read from this cache and fold only the appended tail.
         let primed = new_path.clone();
-        let _ =
-            tokio::task::spawn_blocking(move || crate::session_store::read_session_info(&primed))
-                .await;
+        let _ = tokio::task::spawn_blocking(move || {
+            pa_core::session::catalog::read_session_info(&primed)
+        })
+        .await;
         let (previous, traces) = {
             let mut core = self.core.lock().unwrap();
             if file.trace_upload.is_none() {

@@ -29,6 +29,9 @@
 //!   [`goldens`].
 //! - The agents view's roster feed from a session's open to its stop
 //!   (phase 8c-2): [`agents_view`].
+//! - The agents view's saved-session catalog, streamed through
+//!   `wire2_compat` as the old daemon streams it (phase 8c-3):
+//!   [`saved_list`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -39,6 +42,7 @@ mod family;
 mod goldens;
 mod keeper;
 mod reliability;
+mod saved_list;
 mod schedules;
 mod stream;
 #[path = "../support/mod.rs"]

@@ -9,12 +9,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use pa_core::session::store::{read_first_line_bounded, store as transcripts, TranscriptReader};
-
-use crate::session_store::{
-    parse_session_header_line, persist_info_sidecar, read_session_info_from, SessionInfo,
-    SESSION_LIST_HEADER_READ_MAX_BYTES,
-};
+use super::info::{read_session_info_from, SessionInfo};
+use super::info_sidecar::persist_info_sidecar;
+use super::{parse_session_header_line, SESSION_LIST_HEADER_READ_MAX_BYTES};
+use crate::session::store::{read_first_line_bounded, store as transcripts, TranscriptReader};
 
 /// The bounded header read's verdict for one roster file.
 enum HeaderGate {
@@ -213,8 +211,8 @@ pub fn list_sessions_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_store::{read_session_info, session_file_name, SessionFile};
-    use serde_json::json;
+    use crate::session::catalog::read_session_info;
+    use serde_json::{json, Value};
     use std::fs;
     use std::time::SystemTime;
 
@@ -225,25 +223,55 @@ mod tests {
     }
 
     /// Write one valid session file with `message_count` user/assistant turns
-    /// and return its path, as a JSONL file the scan reads as it is.
+    /// and return its path, as a JSONL file the scan reads as it is (an
+    /// original the transcript store has not imported).
     fn write_session(dir: &Path, cwd: &str, name: Option<&str>, message_count: usize) -> PathBuf {
-        let mut session = SessionFile::create(cwd, None, 0);
+        static WRITTEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = uuid::Uuid::new_v4().to_string();
+        let stamp = "2026-09-23T00:00:00.000Z";
+        let mut lines = vec![json!({
+            "type": "session", "version": 3, "id": id, "timestamp": stamp, "cwd": cwd,
+        })];
+        let mut bodies = Vec::new();
         if let Some(name) = name {
-            session.append_session_info(name);
+            bodies.push(json!({ "type": "session_info", "name": name }));
         }
         for turn in 0..message_count {
-            session.append_message(&json!({
+            bodies.push(json!({ "type": "message", "message": {
                 "role": "user", "content": format!("user {turn}"), "timestamp": (turn + 1) as u64
-            }));
-            session.append_message(&json!({
+            }}));
+            bodies.push(json!({ "type": "message", "message": {
                 "role": "assistant", "content": format!("assistant {turn}"),
                 "provider": "p", "model": "m", "timestamp": (turn + 1) as u64
-            }));
+            }}));
         }
-        let path = dir.join(session_file_name(session.session_id()));
-        session.set_path(path.clone());
-        session.rewrite().unwrap();
-        crate::session_store::test_support::into_original_file(&path);
+        let mut parent = Value::Null;
+        for (index, mut body) in bodies.into_iter().enumerate() {
+            let entry = format!("e{index}");
+            body["id"] = json!(entry);
+            body["parentId"] = parent;
+            body["timestamp"] = json!(stamp);
+            parent = json!(entry);
+            lines.push(body);
+        }
+        let path = dir.join(format!("{id}.jsonl"));
+        let mut text = String::new();
+        for line in &lines {
+            text.push_str(&line.to_string());
+            text.push('\n');
+        }
+        fs::write(&path, text).unwrap();
+        // Each file a second newer than the last written: a filesystem's
+        // coarse mtime must not tie two writes and let the name order them.
+        let written = WRITTEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(
+                SystemTime::now() - Duration::from_hours(2) + Duration::from_secs(written),
+            )
+            .unwrap();
         path
     }
 
@@ -322,11 +350,8 @@ mod tests {
         // A session header preceded by a parseable non-session record: TS marks
         // the file invalid (`acc.invalid`) — skipped even though a header follows.
         let mistyped = dir.join("mistyped.jsonl");
-        let mut session = SessionFile::create("/repo/mistyped", None, 0);
-        session.set_path(mistyped.clone());
-        session.rewrite().unwrap();
-        crate::session_store::test_support::into_original_file(&mistyped);
-        let header_line = fs::read_to_string(&mistyped).unwrap();
+        let header_line = "{\"type\":\"session\",\"version\":3,\"id\":\"m1\",\
+            \"timestamp\":\"2026-09-23T00:00:00.000Z\",\"cwd\":\"/repo/mistyped\"}\n";
         fs::write(
             &mistyped,
             format!("{{\"type\":\"message\",\"id\":\"x1\"}}\n{header_line}"),
@@ -377,7 +402,7 @@ mod tests {
         assert_eq!(scanned.len(), 1);
         assert_eq!(
             scanned[0],
-            read_session_info(&dir.join(session_file_name(&scanned[0].id))).unwrap()
+            read_session_info(&dir.join(format!("{}.jsonl", scanned[0].id))).unwrap()
         );
         assert_eq!(scanned[0].cwd, long_cwd);
     }

@@ -134,7 +134,7 @@ pub(crate) fn shell_rows(agent_dir: &Path) -> Vec<Value> {
             } else {
                 Some(crate::util::now_ms())
             };
-            row["durationMs"] = json!(crate::util::iso_to_unix_ms(&shell.started_at)
+            row["durationMs"] = json!(pa_core::session::manager::iso_to_unix_ms(&shell.started_at)
                 .zip(ended_ms)
                 .map(|(started, ended)| ended.saturating_sub(started)));
             row

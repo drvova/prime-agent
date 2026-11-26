@@ -824,7 +824,7 @@ fn saved_session_rows_publish_deleted_descendant_usage() {
     let path = dir.join(format!("{}.jsonl", session.session_id()));
     session.set_path(path.clone());
     session.rewrite().unwrap();
-    let mut info = crate::session_store::read_session_info(&path).unwrap();
+    let mut info = pa_core::session::catalog::read_session_info(&path).unwrap();
     assert!(
         info.deleted_descendant_usage.is_none(),
         "the file scan never sets the ledger-derived field"
@@ -866,7 +866,7 @@ async fn saved_session_rows_count_the_sessions_stored_factory_specs() {
     let path = sessions.join(format!("{}.jsonl", session.session_id()));
     session.set_path(path.clone());
     session.rewrite().unwrap();
-    let info = crate::session_store::read_session_info(&path).unwrap();
+    let info = pa_core::session::catalog::read_session_info(&path).unwrap();
     let shells = std::collections::HashMap::new();
     let specs = super::sessions::stored_factory_specs(vec![info.clone()])
         .await
@@ -1036,7 +1036,7 @@ fn saved_session_rows_carry_the_persisted_thinking_level() {
     session.append_thinking_level_change("high");
     session.append_message(&json!({"role": "user", "content": "hi", "timestamp": 1u64}));
     session.rewrite().unwrap();
-    let info = crate::session_store::read_session_info(&path).unwrap();
+    let info = pa_core::session::catalog::read_session_info(&path).unwrap();
     assert_eq!(info.thinking_level.as_deref(), Some("high"));
     let summary = saved_session_summary(&info);
     assert_eq!(summary["thinkingLevel"], json!("high"));
@@ -1054,7 +1054,7 @@ fn saved_session_rows_carry_the_persisted_thinking_level() {
     let draft_path = dir.join(format!("{}.jsonl", draft.session_id()));
     draft.set_path(draft_path.clone());
     draft.rewrite().unwrap();
-    let draft_info = crate::session_store::read_session_info(&draft_path).unwrap();
+    let draft_info = pa_core::session::catalog::read_session_info(&draft_path).unwrap();
     assert_eq!(draft_info.thinking_level, None);
     assert!(saved_session_summary(&draft_info)
         .get("thinkingLevel")
@@ -1087,7 +1087,7 @@ fn saved_session_rows_publish_the_own_usage_summary() {
         }
     }));
     session.rewrite().unwrap();
-    let info = crate::session_store::read_session_info(&path).unwrap();
+    let info = pa_core::session::catalog::read_session_info(&path).unwrap();
     let row = saved_session_row(
         &info,
         &std::collections::HashMap::new(),
@@ -1107,7 +1107,7 @@ fn saved_session_rows_publish_the_own_usage_summary() {
     let draft_path = dir.join(format!("{}.jsonl", draft.session_id()));
     draft.set_path(draft_path.clone());
     draft.rewrite().unwrap();
-    let draft_info = crate::session_store::read_session_info(&draft_path).unwrap();
+    let draft_info = pa_core::session::catalog::read_session_info(&draft_path).unwrap();
     assert!(saved_session_row(
         &draft_info,
         &std::collections::HashMap::new(),
@@ -1156,7 +1156,7 @@ fn saved_session_rows_match_the_catalog_row_golden() {
     }));
     session.rewrite().unwrap();
 
-    let info = crate::session_store::read_session_info(&path).unwrap();
+    let info = pa_core::session::catalog::read_session_info(&path).unwrap();
     assert_eq!(
         saved_session_row(
             &info,
@@ -1194,7 +1194,7 @@ fn saved_session_summaries_carry_the_parent_binding() {
     bound.set_path(bound_path.clone());
     bound.append_message(&json!({"role": "user", "content": "hi", "timestamp": 1u64}));
     bound.rewrite().unwrap();
-    let bound_info = crate::session_store::read_session_info(&bound_path).unwrap();
+    let bound_info = pa_core::session::catalog::read_session_info(&bound_path).unwrap();
     let summary = saved_session_summary(&bound_info);
     assert_eq!(
         (summary.get("parentSessionPath"), summary.get("rlmDepth")),
@@ -1206,7 +1206,7 @@ fn saved_session_summaries_carry_the_parent_binding() {
     root.set_path(root_path.clone());
     root.append_message(&json!({"role": "user", "content": "hi", "timestamp": 1u64}));
     root.rewrite().unwrap();
-    let root_info = crate::session_store::read_session_info(&root_path).unwrap();
+    let root_info = pa_core::session::catalog::read_session_info(&root_path).unwrap();
     let summary = saved_session_summary(&root_info);
     assert_eq!(
         (summary.get("parentSessionPath"), summary.get("rlmDepth")),
@@ -1274,7 +1274,7 @@ async fn adoption_settles_then_seeds_the_roster_once() {
     );
     let ledger =
         pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
-            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
     ledger
         .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-9".to_string(),

@@ -8,7 +8,7 @@ use super::{
     ResidentWorker, Result, RosterFamilySeedOwner, RouteAdmission, Supervisor, Value,
     ROUTE_TIMEOUT_MS, SUMMARY_TIMEOUT_MS,
 };
-use crate::session_scan::list_sessions_with;
+use pa_core::session::catalog::{list_sessions_with, saved_session_row};
 
 /// One spawn-name reservation held across a fresh-launch create (TS #2396): the only
 /// cross-create serializer for a same-name admission.
@@ -294,7 +294,7 @@ impl Supervisor {
         // The scan's parse trees folded and freed inside the blocking task; return their
         // arena high-water to the OS at the phase boundary (live cache untouched).
         pa_types::memory_release::trim_freed_heap();
-        let crate::session_scan::SessionPage {
+        let pa_core::session::catalog::SessionPage {
             mut infos,
             remaining,
             next_cursor,
@@ -824,7 +824,7 @@ struct ResidentRoot {
     active_session_id: Option<String>,
 }
 
-pub(super) fn saved_session_summary(info: &crate::session_store::SessionInfo) -> Value {
+pub(super) fn saved_session_summary(info: &pa_core::session::catalog::SessionInfo) -> Value {
     let mut row = json!({
         "id": info.id,
         // TS `inactiveLifecycleForSession`: archived/crash markers stay archived;
@@ -895,7 +895,7 @@ fn offline_summary(worker_id: &str) -> Value {
 /// Read one session's stored factory specs (its local harness store's factory entries) into a
 /// listing's map: a listing reads each store once, and only sessions holding specs get an entry.
 fn count_factory_specs(
-    info: &crate::session_store::SessionInfo,
+    info: &pa_core::session::catalog::SessionInfo,
     factory_specs: &mut std::collections::HashMap<String, usize>,
 ) {
     let specs = crate::scheduled_jobs::session_artifact_dir(&info.path, &info.id)
@@ -909,7 +909,7 @@ fn count_factory_specs(
 
 /// The sessions' stored factory specs, read off the async executor.
 pub(super) async fn stored_factory_specs(
-    infos: Vec<crate::session_store::SessionInfo>,
+    infos: Vec<pa_core::session::catalog::SessionInfo>,
 ) -> Result<std::collections::HashMap<String, usize>> {
     tokio::task::spawn_blocking(move || {
         let mut factory_specs = std::collections::HashMap::new();
@@ -920,64 +920,6 @@ pub(super) async fn stored_factory_specs(
     })
     .await
     .map_err(|error| anyhow!("saved-session factory spec reader failed: {error}"))
-}
-
-pub(super) fn saved_session_row(
-    info: &crate::session_store::SessionInfo,
-    persistent_shells: &std::collections::HashMap<String, Vec<Value>>,
-    factory_specs: &std::collections::HashMap<String, usize>,
-) -> Value {
-    let mut row = json!({
-        "path": info.path.to_string_lossy(),
-        "id": info.id,
-        "cwd": info.cwd,
-        "rlmDepth": info.rlm_depth,
-        "created": info.created,
-        "modified": info.modified,
-        "messageCount": info.message_count,
-        "firstMessage": info.first_message,
-        "state": info.state.as_ref().map(|state| json!({ "status": state })),
-    });
-    let object = row.as_object_mut().expect("row object");
-    if let Some(name) = &info.name {
-        object.insert("name".to_string(), json!(name));
-    }
-    if let Some(parent) = &info.parent_session_path {
-        object.insert("parentSessionPath".to_string(), json!(parent));
-    }
-    if let Some((provider, model_id)) = &info.model {
-        object.insert(
-            "model".to_string(),
-            json!({ "provider": provider, "modelId": model_id }),
-        );
-    }
-    // TS `serializeSavedSessionInfo` publishes the scan's own-usage summary:
-    // the spend columns and the archived-row keep-condition read
-    // `saved.usage.cost`, so rollups never double count.
-    if let Some(usage) = &info.usage {
-        object.insert("usage".to_string(), json!(usage));
-    }
-    // TS #2506 `serializeSavedSessionInfo`'s optional `deletedDescendantUsage`: the
-    // recursive spend of tombstoned descendants — the deleted child keeps no row anywhere,
-    // its spend bills here exactly once.
-    if let Some(deleted) = &info.deleted_descendant_usage {
-        object.insert("deletedDescendantUsage".to_string(), json!(deleted));
-    }
-    // The persisted thinking level rides the catalog row too: the TUI merges it into
-    // live summaries that lack one.
-    if let Some(level) = &info.thinking_level {
-        object.insert("thinkingLevel".to_string(), json!(level));
-    }
-    // Persistent `bash()` shells outlive the session's kernel: an inactive row still
-    // shows the live ones (kernel activity row shape). Its stored factory specs are
-    // durable harness entries, readable without a kernel too.
-    if let Some(shells) = persistent_shells.get(&info.id) {
-        object.insert("persistentShells".to_string(), json!(shells));
-    }
-    if let Some(specs) = factory_specs.get(&info.id) {
-        object.insert("factorySpecs".to_string(), json!(specs));
-    }
-    row
 }
 
 #[cfg(test)]

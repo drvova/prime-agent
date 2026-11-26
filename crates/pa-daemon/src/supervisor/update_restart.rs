@@ -107,7 +107,7 @@ impl Supervisor {
                 Some(json!({
                     "updateId": update_id,
                     "state": state.wire_name(),
-                    "acceptedAt": util::iso_from_unix_ms(accepted_at_ms),
+                    "acceptedAt": pa_core::session::manager::iso_from_unix_ms(accepted_at_ms),
                 })),
             ),
             BeginOutcome::Started {
@@ -282,7 +282,7 @@ impl Supervisor {
         Ok(json!({
             "updateId": update_id,
             "state": "prepared",
-            "acceptedAt": util::iso_from_unix_ms(accepted_at_ms),
+            "acceptedAt": pa_core::session::manager::iso_from_unix_ms(accepted_at_ms),
             "expiresAt": marker.expires_at,
         }))
     }

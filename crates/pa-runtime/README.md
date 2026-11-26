@@ -339,7 +339,14 @@ SQLite implementations over `pa-log`.
   and counter, `replay`), `{shape: "state"}` the summary, and `transcript.page {shape:
   "messages", page?, historyLeafId?}` the old cursor page (`firstEntryId`, `lastEntryId`,
   `more`, `historyLeafId`; "History branch changed" for an anchor off the branch), the rows and
-  cuts from `pa_core::session::display_transcript`. The agents view's feeds, which
+  cuts from `pa_core::session::display_transcript`. One row differs from the old daemon's by
+  design: the harness digest (`[harness-digest]`, pa-core `session_engine::harness_digest`) is
+  stored as the engine writes it, at a session's open when its context is not empty (a stale
+  digest appended without events) and with the first turn's prompt otherwise, as the TS
+  product, print mode and RPC mode on the same engine store it. The old worker kept its engine's
+  session manager in memory and dropped the digest from what it saved, so on the runtime daemon
+  a reopened session's transcript holds one more row, and an attach window over it starts one
+  row later; `attach_paging.diff` pins that offset. The agents view's feeds, which
   `wire2_compat` maps `roster_subscribe` and `agent_traffic_subscribe` to
   (`daemon/handlers/feeds.rs`): `runtime.roster` answers `{roster}`, one old `AgentRosterEntry`
   per open session and per subagent below one (`agentId`, the attach's summary without
@@ -350,6 +357,19 @@ SQLite implementations over `pa-log`.
   stops or is given up on, or a subagent is deleted, with the subagents below it;
   `runtime.traffic` answers `{entries}`, each root's newest 200 traffic entries, roots in order.
   Neither waits on a turn: one task hears the bus and marks entries due, another composes them;
+  the agents view's saved-session catalog, which `wire2_compat` maps `list_saved_sessions` to
+  (`daemon/handlers/saved.rs`, the old supervisor's handler over `pa_core::session::catalog`):
+  `sessions.list {shape: "saved", stream?, activeSessionId? | cwd, sessionDir?, scope?, limit?,
+  cursor?}` walks the sessions dir newest first and, with `stream`, publishes on the live-only
+  `runtime/session_list/<stream>` one old `session_list_item` (without its `type`) per row as
+  its file folds, each followed by its `session_list_progress`, then the walk's completion
+  (`loaded == total`); the walk never waits for the topic (a full queue drops the progress,
+  then the row), and the reply is the old response's `data` (`sessions`, each with its deleted
+  subagents' spend, `remaining`, `nextCursor`), the catalog. A summary's `usage` is the
+  catalog's own-usage fold of the transcript with its billing split, and its `modified` is the
+  session's creation before its transcript has a row, as the old worker's were. Not yet: a
+  saved row's live persistent shells and stored factory specs, and subagents only the spawn
+  ledger keeps (the old daemon's passive walk);
   `session.create` (`{session?}` to open or create by id, or `{path}` to
   open a transcript by its file, and `cwd`) takes the session's `SessionLease` and holds it until
   `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
@@ -586,8 +606,9 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   is the selected one, asked before each scheduled job). On the wire (strings, not Rust surface): the
   queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,
   `session.breakdown`, `session.model`, `session.system_prompt`, `session.children`,
-  `runtime.roster`, `runtime.traffic`, the live-only topics `runtime/roster` and
-  `runtime/traffic`, and the calls `session.abort`,
+  `runtime.roster`, `runtime.traffic`, `sessions.list {shape: "saved"}`, the live-only topics
+  `runtime/roster`, `runtime/traffic` and `runtime/session_list/<request>`, and the calls
+  `session.abort`,
   `session.abort_and_send_queued`, `session.resume_queue`, `session.withdraw`,
   `session.restore`, `session.compact`, `session.pause_input`, `session.release_input`,
   `session.cancel_task`, `session.cancel_child`.

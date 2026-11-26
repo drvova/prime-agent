@@ -31,7 +31,11 @@
 //!   faux provider's chunking, so a run compares as its last update and its
 //!   summary as one delta; and `meta.id` and `meta.sequence` (the numbers a
 //!   superseded update consumed follow the same timer) are compared by their
-//!   form, in the list's first line.
+//!   form, in the list's first line. A collect's `queued_ms` is only there
+//!   when the child waited a millisecond or more for its start (both
+//!   daemons leave a zero out: pa-core `RlmCollectResult`), which a replay's
+//!   timing decides, so an entry that holds a count is left out on both
+//!   sides; one that holds anything else stays, and differs.
 //! - **The verdict.** What still differs is listed, frame by frame, in
 //!   `<name>.diff` beside the script, and must be exactly that: each line a
 //!   difference between the two daemons that is understood (a frame only
@@ -418,14 +422,13 @@ async fn replay(name: &str) -> Replayed {
 }
 
 /// The numbers the recordings' comparison masks by key.
-const VOLATILE: [&str; 15] = [
+const VOLATILE: [&str; 14] = [
     "timestamp",
     "workerPid",
     "supervisorPid",
     "pid",
     "durationMs",
     "duration_ms",
-    "queued_ms",
     "lastUserPromptMs",
     "expiresAt",
     "emittedAt",
@@ -464,8 +467,11 @@ fn masked(value: &Value, key: Option<&str>) -> Value {
         Value::Object(object) => Value::Object(
             object
                 .iter()
-                .filter(|(name, _)| {
-                    !(key == Some("meta") && matches!(name.as_str(), "cursor" | "id" | "sequence"))
+                .filter(|(name, item)| {
+                    let unnumbered = key == Some("meta")
+                        && matches!(name.as_str(), "cursor" | "id" | "sequence");
+                    let timed = name.as_str() == "queued_ms" && item.is_u64();
+                    !(unnumbered || timed)
                 })
                 .map(|(name, item)| {
                     let item = match item {
@@ -589,6 +595,9 @@ fn masked_text(text: &str) -> String {
     let text = replace_matches(&text, |rest| {
         (digits(rest) >= 13).then(|| (13, "T".to_string()))
     });
+    // A printed collect's `queued_ms` entry, when it holds a count: present
+    // only when the child's start waited (see the module docs).
+    let text = text.replace("\n    'queued_ms: N,", "");
     entries_sorted(&text)
 }
 

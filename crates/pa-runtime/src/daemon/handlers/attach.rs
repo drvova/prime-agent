@@ -353,7 +353,6 @@ struct EngineState {
     compactions: usize,
     warning_shown: bool,
     tool_calls: u64,
-    usage: Value,
     auto_compaction: bool,
     goal: Value,
     context_usage: Option<pa_types::usage::ContextUsage>,
@@ -447,7 +446,6 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                         .count(),
                     warning_shown,
                     tool_calls: crate::subagents::branch_tool_calls(&manager),
-                    usage: pa_core::usage_host::session_usage_json(&manager),
                     auto_compaction: engine.session.auto_compaction_enabled(),
                     goal: Value::Null,
                     context_usage,
@@ -511,21 +509,31 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             .any(|child| child["status"] == "running");
         let queued = actions["queuedCount"].as_u64().unwrap_or_default();
         let attached = self.attached.clients_of(&id);
-        let transcript = {
+        // The usage is the catalog's own-usage fold of the transcript (the
+        // old worker's summary read the same fold), with its billing split.
+        let (transcript, usage) = {
             let (path, leaf) = (path.clone(), read.leaf.clone());
-            tokio::task::spawn_blocking(move || Transcript::read(&path, true, leaf))
-                .await
-                .context("the transcript's thread panicked")??
+            tokio::task::spawn_blocking(move || {
+                let usage =
+                    pa_core::session::catalog::read_session_info(&path).and_then(|info| info.usage);
+                Transcript::read(&path, true, leaf).map(|transcript| (transcript, usage))
+            })
+            .await
+            .context("the transcript's thread panicked")??
         };
         let messages = transcript.context_messages();
+        let created = read.header.as_ref().map(|header| header.timestamp.clone());
+        // The transcript's time; before its first row is stored, the
+        // session's creation (the old worker wrote its file's header at
+        // create, so its `modified` was that time until the first turn).
         let modified = store()
             .stat(&path)
             .ok()
             .and_then(|stat| stat.modified)
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .and_then(|since| i64::try_from(since.as_millis()).ok())
-            .map(pa_core::session::manager::format_iso);
-        let created = read.header.as_ref().map(|header| header.timestamp.clone());
+            .map(pa_core::session::manager::format_iso)
+            .or_else(|| created.clone());
         let last_activity_at = messages
             .iter()
             .filter_map(|message| message["timestamp"].as_u64())
@@ -540,15 +548,6 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             .filter(|row| row["type"] == "message" && row["message"]["role"] == "user")
             .map(|row| message_text(&row["message"]))
             .find(|text| !text.is_empty());
-        let usage = {
-            let tokens = &read.usage["tokens"];
-            let count = |key: &str| tokens[key].as_u64().unwrap_or_default();
-            let input = count("input") + count("cacheRead") + count("cacheWrite");
-            let output = count("output");
-            let cost = read.usage["cost"]["own"].as_f64().unwrap_or_default();
-            (input > 0 || output > 0 || cost != 0.0)
-                .then(|| json!({ "inputTokens": input, "outputTokens": output, "cost": cost }))
-        };
         let message_count = transcript.message_count();
         let session_file = read.session_file.as_ref().map_or_else(
             || path.display().to_string(),
@@ -629,8 +628,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             put("parentSessionId", json!(lineage.parent_id));
             put("rlmChildId", json!(lineage.child_id));
         }
-        if let Some(usage) = usage {
-            put("usage", usage);
+        if let Some(usage) = &usage {
+            put("usage", json!(usage));
         }
         put("workerState", json!("ready"));
         put("workerPid", json!(std::process::id()));

@@ -227,12 +227,16 @@ the supervisor on the faux engine with a debug build's `PA_TUI_RECORD_INBOUND` t
 (`src/inbound_recording.rs`, absent from release builds), each with the frame it ends on;
 `tests/inbound_goldens_headless.rs` replays them through the real client decode and event pump.
 `src/wire2_compat.rs` maps wire2 events (`agent/<id>/stream`, `side_question`, `closed`,
-`runtime/roster`, `runtime/traffic`) to the `DaemonOutbound` frames they stand for, the input
+`runtime/roster`, `runtime/traffic`, `runtime/session_list/<request>`) to the `DaemonOutbound`
+frames they stand for, the input
 commands to a publish on `agent/<id>/input`, the session reads (`attach`, `get_state`,
 `get_messages`) to the `session.snapshot` and `transcript.page` queries whose results are the old
 responses' `data`, and the agents view's feeds (`roster_subscribe`, `agent_traffic_subscribe`)
 to a subscription on their live-only topic and the `runtime.roster` / `runtime.traffic` query
-whose result is the old reply (their unsubscribes to an unsubscribe the layer answers itself);
+whose result is the old reply (their unsubscribes to an unsubscribe the layer answers itself),
+and `list_saved_sessions` to a subscription on its request's live-only topic, the `sessions.list
+{shape: "saved"}` query whose result is the old response, and an unsubscribe at its reply
+(`Outgoing::Stream`);
 its module docs state the contract the runtime honours (the stream is live
 only, so the session's event counter rides in the payload's `meta.sequence`) and list what is left
 to map. Every recorded frame round-trips through it. A session's stored fault topics

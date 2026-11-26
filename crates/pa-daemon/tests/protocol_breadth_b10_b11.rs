@@ -420,7 +420,7 @@ fn wave_b10_scheduled_prompt_fires() {
     // A one-shot `at` schedule a couple of seconds out (the `in` form takes no unit).
     let at = format!(
         "at {}",
-        pa_daemon::util::iso_from_unix_ms(pa_daemon::util::now_ms() + 2500)
+        pa_core::session::manager::iso_from_unix_ms(pa_daemon::util::now_ms() + 2500)
     );
     client.send_command(
         "f1",
@@ -617,7 +617,7 @@ fn wave_b11_saved_sessions_wire_shapes() {
     // own agent dir's); this process reads its own store.
     common::mirror_into_process_store(&saved_path);
     let info =
-        pa_daemon::session_store::read_session_info(&saved_path).expect("saved session readable");
+        pa_core::session::catalog::read_session_info(&saved_path).expect("saved session readable");
     assert_eq!(info.name.as_deref(), Some("renamed"));
 
     // The offline delete: the file and its artifact partition go.

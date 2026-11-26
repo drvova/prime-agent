@@ -459,9 +459,10 @@ impl TreeNavigation {
         // summaries the swap's roster pushes read resume from this cache
         // and fold only the appended tail.
         let primed = new_path.clone();
-        let _ =
-            tokio::task::spawn_blocking(move || crate::session_store::read_session_info(&primed))
-                .await;
+        let _ = tokio::task::spawn_blocking(move || {
+            pa_core::session::catalog::read_session_info(&primed)
+        })
+        .await;
         let (previous, transferred) = {
             let mut core = self.core.lock().unwrap();
             // A navigating fork replaces its source: when the prepare could not

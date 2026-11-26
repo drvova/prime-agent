@@ -2,6 +2,7 @@
 //! attribution folds, the wire shapes, and the resumable scan.
 
 use super::*;
+use pa_core::session::catalog::read_session_info;
 use serde_json::json;
 
 fn temp_dir() -> (tempfile::TempDir, PathBuf) {
@@ -978,49 +979,6 @@ fn durable_compaction_row_serializes_in_the_ts_key_order() {
 }
 
 #[test]
-fn resume_tail_window_matches_the_rolling_reference() {
-    let mut state =
-        SessionScanState::fresh(pa_core::session::store::TranscriptGeneration::default());
-    let mut reference = [b'\n'; SESSION_SCAN_RESUME_TAIL_BYTES];
-    let rolling_reference = |tail: &mut [u8; SESSION_SCAN_RESUME_TAIL_BYTES], line: &[u8]| {
-        let keep = SESSION_SCAN_RESUME_TAIL_BYTES - 1;
-        let mut combined = Vec::with_capacity(SESSION_SCAN_RESUME_TAIL_BYTES + line.len() + 1);
-        if line.len() >= keep {
-            combined.extend_from_slice(&line[line.len() - keep..]);
-        } else {
-            combined.extend_from_slice(tail);
-            combined.extend_from_slice(line);
-        }
-        combined.push(b'\n');
-        let start = combined
-            .len()
-            .saturating_sub(SESSION_SCAN_RESUME_TAIL_BYTES);
-        tail.copy_from_slice(&combined[start..]);
-    };
-    let lines: Vec<Vec<u8>> = [
-        &b""[..],
-        b"x",
-        b"fourteen xx",
-        &b"exactly fifteen"[..],
-        b"sixteen bytes..",
-        &b"a much longer line than the window will ever keep"[..],
-        b"",
-        "multibyte 世界未詠 line".as_bytes(),
-        &b"final"[..],
-    ]
-    .into_iter()
-    .map(<[u8]>::to_vec)
-    .collect();
-    for line in &lines {
-        state.advance_tail(line);
-        rolling_reference(&mut reference, line);
-        assert_eq!(state.tail, reference, "line {line:?}");
-    }
-    // The prefix-intact read keeps proving resumes from the same bytes.
-    assert_eq!(state.tail, reference);
-}
-
-#[test]
 fn session_header_line_leads_with_the_type_tag() {
     let header = SessionHeader {
         version: Some(3),
@@ -1083,7 +1041,6 @@ fn listing_and_frozen_usage_agree_on_duplicate_attribution_ids() {
         "timestamp": "2026-10-11T00:00:00.000Z",
         "childUsage": usage(20, 2, 2.0), "aggregateUsage": usage(120, 12, 10.0)
     });
-    serde_json::from_str::<super::info::SessionInfoEntry<'_>>(&attributed.to_string()).unwrap();
     let append = || {
         pa_core::session::store::store()
             .append(&path, format!("{attributed}\n").as_bytes())
@@ -1104,8 +1061,8 @@ fn listing_and_frozen_usage_agree_on_duplicate_attribution_ids() {
     assert!(grown_len > prefix_len);
     assert_eq!(read_session_info(&path).unwrap().usage, expected);
     assert_eq!(
-        crate::session_usage::read_session_usage(&path),
-        Some(crate::session_usage::SessionUsageTotals {
+        pa_core::session::usage_scan::read_session_usage(&path),
+        Some(pa_core::session::usage_scan::SessionUsageTotals {
             own: serde_json::from_value(usage(100, 10, 8.0)).unwrap(),
             total: serde_json::from_value(usage(120, 12, 10.0)).unwrap(),
         })

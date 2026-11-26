@@ -283,7 +283,7 @@ impl Supervisor {
                         log.append(&format!("[{}] {message}", util::now_iso()));
                     },
                 )
-                .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage)),
+                .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage)),
             ));
         }
         let mut cached = self.rlm_ledger.lock().await;
@@ -302,7 +302,7 @@ impl Supervisor {
                     log.append(&format!("[{}] {message}", util::now_iso()));
                 },
             )
-            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage)),
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage)),
         );
         *cached = Some(std::sync::Arc::clone(&ledger));
         Ok(ledger)

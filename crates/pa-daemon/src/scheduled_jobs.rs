@@ -70,7 +70,7 @@ impl QueueHooks {
         if job.session_file.is_empty() {
             return true;
         }
-        match crate::session_store::read_session_info(Path::new(&job.session_file)) {
+        match pa_core::session::catalog::read_session_info(Path::new(&job.session_file)) {
             None => true,
             Some(info) => info.id != job.session_id || info.state.as_deref() != Some("active"),
         }

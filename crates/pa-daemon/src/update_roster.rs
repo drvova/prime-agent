@@ -17,8 +17,8 @@ use pa_types::daemon::{
 };
 use serde_json::{json, Map, Value};
 
-use crate::util::iso_from_unix_ms;
 use pa_core::session::lease::canonical_session_path;
+use pa_core::session::manager::iso_from_unix_ms;
 use pa_core::session_engine::rlm_ledger::{read_rlm_subagent_display, RlmSpawnLedger};
 
 /// One resident worker's collected data for the roster: its durable
@@ -488,7 +488,7 @@ mod tests {
             std::fs::write(sessions_dir.join(format!("{session_id}.jsonl")), "").unwrap();
         }
         let ledger = RlmSpawnLedger::new(agent_dir, &sessions_dir, |_| {})
-            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
             .append_spawn(&RlmSpawnInput {
                 parent: sessions_file(&sessions_dir, "p1"),

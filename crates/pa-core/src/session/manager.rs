@@ -30,6 +30,8 @@ use super::window;
 mod ids;
 use ids::{create_session_id, generate_id};
 pub use ids::{format_iso, format_iso_now, get_session_file_path};
+mod unix_iso;
+pub use unix_iso::{iso_from_unix_ms, iso_to_unix_ms};
 
 mod header;
 pub use header::read_session_header;

@@ -110,14 +110,16 @@ impl Topic {
     }
 
     /// Whether events on this topic are live only, never stored: exactly
-    /// `agent/<id>/stream`, `agent/<id>/tool`, `runtime/roster` or
-    /// `runtime/traffic`.
+    /// `agent/<id>/stream`, `agent/<id>/tool`, `runtime/roster`,
+    /// `runtime/traffic` or `runtime/session_list/<request>` (one saved-session
+    /// list request's rows as it walks the store).
     #[must_use]
     pub fn is_live_only(&self) -> bool {
         let mut levels = self.levels();
         match (levels.next(), levels.next(), levels.next(), levels.next()) {
             (Some("agent"), Some(_), Some(kind), None) => LIVE_ONLY_KINDS.contains(&kind),
             (Some("runtime"), Some(feed), None, None) => LIVE_ONLY_FEEDS.contains(&feed),
+            (Some("runtime"), Some("session_list"), Some(_), None) => true,
             _ => false,
         }
     }

@@ -306,10 +306,11 @@ mod tests {
             "{outcome:?}"
         );
         // The resume picker's scan over the fork's own dir lists the imported chats.
-        let mut listed: Vec<String> = crate::session_scan::list_sessions(&fork.join("sessions"))
-            .into_iter()
-            .map(|info| info.id)
-            .collect();
+        let mut listed: Vec<String> =
+            pa_core::session::catalog::list_sessions(&fork.join("sessions"))
+                .into_iter()
+                .map(|info| info.id)
+                .collect();
         listed.sort();
         assert_eq!(listed, ids);
     }

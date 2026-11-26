@@ -541,3 +541,77 @@ fn the_feeds_follow_their_topics_and_their_frames_round_trip() {
         )
     );
 }
+
+/// `list_saved_sessions` streams on its request's topic: the subscription, the saved-shape query
+/// with the command's arguments, and the unsubscribe at its reply; the topic's row and progress
+/// events come back as the old frames, tagged with the request's id.
+#[test]
+fn the_saved_session_list_streams_on_its_request_topic_and_its_frames_round_trip() {
+    let command: DaemonCommand = serde_json::from_value(json!({
+        "type": "list_saved_sessions", "cwd": "/work", "scope": "current", "limit": 2,
+        "cursor": "snapshot:c:2",
+    }))
+    .unwrap();
+    let item = json!({
+        "type": "session_list_item", "id": "l1", "command": "list_saved_sessions",
+        "session": { "path": "/s/a.jsonl", "id": "a", "cwd": "/work", "created": "c",
+            "modified": "m", "messageCount": 2, "firstMessage": "hi", "rlmDepth": 0 },
+    });
+    let progress = json!({
+        "type": "session_list_progress", "id": "l1", "command": "list_saved_sessions",
+        "loaded": 1, "total": 3,
+    });
+    let without_type = |frame: &Value| {
+        let mut payload = frame.clone();
+        payload.as_object_mut().unwrap().remove("type");
+        payload
+    };
+    let frames: Vec<Value> = [&item, &progress]
+        .into_iter()
+        .map(|frame| {
+            let event = Event {
+                id: EventId("live-1".to_string()),
+                seq: 0,
+                ts: 0,
+                event: NewEvent {
+                    topic: Topic::new("runtime/session_list/l1").unwrap(),
+                    source: "runtime".to_string(),
+                    session: None,
+                    payload: without_type(frame),
+                    trust: Trust::Owner,
+                    cause: None,
+                    reply: None,
+                },
+            };
+            serde_json::to_value(
+                outbound_from_event(&event, Delivery::Live)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        (outgoing("l1".to_string(), command).unwrap(), frames),
+        (
+            Outgoing::Stream {
+                subscribe: ClientFrame::Subscribe {
+                    sub_id: "compat:list:l1".to_string(),
+                    filter: pa_types::event_log::TopicFilter::new("runtime/session_list/l1")
+                        .unwrap(),
+                    since: pa_types::wire2::Since::Now,
+                },
+                query: ClientFrame::Query {
+                    id: "l1".to_string(),
+                    name: "sessions.list".to_string(),
+                    args: json!({ "shape": "saved", "stream": "l1", "cwd": "/work",
+                        "scope": "current", "limit": 2, "cursor": "snapshot:c:2" }),
+                },
+                unsubscribe: ClientFrame::Unsubscribe {
+                    sub_id: "compat:list:l1".to_string(),
+                },
+            },
+            vec![item, progress],
+        )
+    );
+}

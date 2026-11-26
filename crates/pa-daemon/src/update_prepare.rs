@@ -16,7 +16,8 @@ use pa_types::daemon::{
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use crate::util::{iso_from_unix_ms, now_ms};
+use crate::util::now_ms;
+use pa_core::session::manager::iso_from_unix_ms;
 
 /// Wire names of the supervisor-side prepare states (TS `draining`/`prepared`
 /// phases, extended with the spec's `fenced`/`snapshotted`/`stopping`).

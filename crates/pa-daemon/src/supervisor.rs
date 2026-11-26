@@ -47,7 +47,10 @@ use pa_core::session::crash::{MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS};
     unused_imports,
     reason = "only this facade's in-file test modules call them; the lib build sees the import unused"
 )]
-use sessions::{saved_session_row, saved_session_summary};
+use sessions::saved_session_summary;
+// The saved-row tests in this facade's test modules read the catalog's row.
+#[cfg(test)]
+use pa_core::session::catalog::saved_session_row;
 
 pub(crate) use options::ClientRouting;
 pub use options::SupervisorOptions;
@@ -104,12 +107,12 @@ use crate::registry::{
     WorkerTransition,
 };
 use crate::saved_session_commands::{name_unavailable_error, reservation_key, NameScope};
-use crate::session_store::list_sessions;
 use crate::snapshot_stream::{attach_client_capabilities, stream_attach, wants_chunked};
 use crate::update_prepare::{
     marker_expires_at_iso, update_gate_refuses, write_prepared_artifacts, AbortOutcome,
     BeginOutcome, MutationDrainLatch, PrepareCoordinator, PrepareOp, UPDATE_PREPARING_MESSAGE,
 };
+use pa_core::session::catalog::list_sessions;
 // The drain-state machine that names it is the unix signal path.
 #[cfg(unix)]
 use crate::update_prepare::PrepareState;

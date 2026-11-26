@@ -3,12 +3,21 @@
 //! raw spans, the derived `SessionInfo`, and the most-recent-session
 //! lookup.
 
-use pa_core::session::store::{store as transcripts, TranscriptGeneration, TranscriptReader};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use super::{
-    info_sidecar, list_sessions, normalize_state_status, Cow, Deserialize, HashMap, Path, PathBuf,
-    Serialize, SessionHeader, Usage, Value,
-};
+use pa_types::ai::Usage;
+use pa_types::session::SessionHeader;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::{content_to_text, info_sidecar, list_sessions, normalize_state_status};
+use crate::session::billed_row::{billed_line, ScanUsage};
+use crate::session::manager::{iso_from_unix_ms, iso_to_unix_ms};
+use crate::session::store::{store as transcripts, TranscriptGeneration, TranscriptReader};
+use crate::session::usage_scan::UsageScan;
+use crate::session::usage_summary::SessionUsageSummary;
 
 /// The durable metadata the daemon list surfaces for one session file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,11 +39,11 @@ pub struct SessionInfo {
     pub first_message: String,
     /// The own-usage summary — assistant aggregates plus summarization calls,
     /// minus every attributed child block; `None` when the session recorded no billable work.
-    pub usage: Option<pa_core::session::usage_summary::SessionUsageSummary>,
+    pub usage: Option<SessionUsageSummary>,
     /// The recursive spend of ledger-tombstoned descendants, attached by the
     /// catalog's listing arm from the spawn ledger. Never set by the file
     /// scan: ledger-derived, not transcript-derived.
-    pub deleted_descendant_usage: Option<pa_core::session::usage_summary::SessionUsageSummary>,
+    pub deleted_descendant_usage: Option<SessionUsageSummary>,
 }
 
 /// The scan's read-buffer size: one 64 KiB fill reads the typical session in
@@ -158,7 +167,7 @@ pub(super) struct SessionScanAccumulator {
     pub(super) message_count: usize,
     pub(super) first_message: String,
     last_activity_ms: Option<u64>,
-    usage_scan: crate::session_usage::UsageScan,
+    usage_scan: UsageScan,
 }
 
 /// One cached scan state (TS `SessionScanState`): the generation the state
@@ -278,10 +287,10 @@ pub(super) struct SessionInfoMessage<'a> {
     pub(super) model: Option<&'a serde_json::value::RawValue>,
     #[serde(default, borrow)]
     pub(super) timestamp: Option<&'a serde_json::value::RawValue>,
-    /// The lenient scan-side shape ([`crate::session_usage::ScanUsage`]):
+    /// The lenient scan-side shape ([`ScanUsage`]):
     /// a partial persisted block must not reject the row.
     #[serde(default)]
-    usage: Option<crate::session_usage::ScanUsage>,
+    usage: Option<ScanUsage>,
     /// Borrowed `content` span (zero copy): read only when the fold's guard passes.
     #[serde(default, borrow)]
     pub(super) content: Option<&'a serde_json::value::RawValue>,
@@ -314,18 +323,16 @@ pub(super) struct SessionInfoEntry<'a> {
     #[serde(borrow, default)]
     pub(super) target_id: Option<Cow<'a, str>>,
     #[serde(default)]
-    child_usage: Option<crate::session_usage::ScanUsage>,
+    child_usage: Option<ScanUsage>,
     #[serde(default)]
-    aggregate_usage: Option<crate::session_usage::ScanUsage>,
+    aggregate_usage: Option<ScanUsage>,
 }
 
 /// A transcript's own usage through [`read_session_info`]'s resumable scan:
 /// the RLM ledger's deleted-spend fallback for a tombstone that predates its
 /// usage snapshot (`RlmSpawnLedger::with_legacy_usage`).
 #[must_use]
-pub fn legacy_ledger_usage(
-    path: &Path,
-) -> Option<pa_core::session::usage_summary::SessionUsageSummary> {
+pub fn legacy_ledger_usage(path: &Path) -> Option<SessionUsageSummary> {
     read_session_info(path).and_then(|info| info.usage)
 }
 
@@ -342,7 +349,7 @@ pub fn read_session_info(path: &Path) -> Option<SessionInfo> {
 /// The flag is true when no in-process state served and the persisted sidecar
 /// did not cover the whole file (absent, unloadable, or behind): the fold read
 /// bytes a sidecar would have spared.
-pub(crate) fn read_session_info_from(
+pub(super) fn read_session_info_from(
     file: &mut dyn TranscriptReader,
     path: &Path,
 ) -> Option<(SessionInfo, bool)> {
@@ -494,9 +501,9 @@ impl SessionScanState {
         let modified_ms = acc
             .last_activity_ms
             .filter(|ms| *ms > 0)
-            .or_else(|| crate::util::iso_to_unix_ms(&header.timestamp))
+            .or_else(|| iso_to_unix_ms(&header.timestamp))
             .or_else(stats_mtime_ms);
-        let modified = modified_ms.map_or_default(crate::util::iso_from_unix_ms);
+        let modified = modified_ms.map_or_default(iso_from_unix_ms);
         Some(SessionInfo {
             path: path.to_path_buf(),
             id: header.id.clone(),
@@ -527,7 +534,7 @@ impl SessionScanState {
 /// `None` content and an unparsable span both read as empty text.
 pub(super) fn message_content_text(content: Option<&serde_json::value::RawValue>) -> String {
     content.map_or_default(|raw| {
-        crate::types::content_to_text(&serde_json::from_str::<Value>(raw.get()).unwrap_or_default())
+        content_to_text(&serde_json::from_str::<Value>(raw.get()).unwrap_or_default())
     })
 }
 
@@ -627,9 +634,7 @@ pub(super) fn fold_scan_entry(acc: &mut SessionScanAccumulator, raw: &str) -> Op
                 }
             }
         }
-        type_ => acc
-            .usage_scan
-            .fold_billed_row(crate::session_usage::billed_line(type_, trimmed)),
+        type_ => acc.usage_scan.fold_billed_row(billed_line(type_, trimmed)),
     }
     Some(())
 }

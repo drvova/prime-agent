@@ -2,7 +2,7 @@
 //! local day and provider/model. A call bills where it ran: each assistant row's own usage block
 //! (the raw call, never the child-attributed aggregate, so a parent and its children's files never
 //! count one call twice) plus the [`billed_line`] rows (compactions, branch summaries,
-//! `model_usage`). The session-stats fold ([`crate::session_usage::UsageScan`]) sums one
+//! `model_usage`). The session-stats fold ([`pa_core::session::usage_scan::UsageScan`]) sums one
 //! session's totals without timestamps or models, so it cannot serve a per-day history.
 //!
 //! Files are cached by length and modification time: a reopened page rescans only the sessions
@@ -24,7 +24,7 @@ use pa_types::provider_usage::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::session_usage::{billed_line, ScanUsage};
+use pa_core::session::billed_row::{billed_line, ScanUsage};
 
 /// The history's day span (the spark and the `30 days` total).
 pub(crate) const HISTORY_DAYS: i64 = 30;
@@ -93,10 +93,12 @@ struct ScanMessage {
 fn date_key(epoch_ms: i64) -> String {
     match pa_types::platform::local_civil(epoch_ms) {
         Some(civil) => format!("{:04}-{:02}-{:02}", civil.year, civil.month, civil.day),
-        None => crate::util::iso_from_unix_ms(u64::try_from(epoch_ms).unwrap_or_default())
-            .chars()
-            .take(10)
-            .collect(),
+        None => {
+            pa_core::session::manager::iso_from_unix_ms(u64::try_from(epoch_ms).unwrap_or_default())
+                .chars()
+                .take(10)
+                .collect()
+        }
     }
 }
 
@@ -157,7 +159,7 @@ fn scan_file(path: &Path) -> FileSpend {
         let entry_ms = entry
             .timestamp
             .as_deref()
-            .and_then(crate::util::iso_to_unix_ms)
+            .and_then(pa_core::session::manager::iso_to_unix_ms)
             .and_then(|ms| i64::try_from(ms).ok());
         if let Some(row) = billed_line(&entry.type_, &line) {
             let (provider, model) = row

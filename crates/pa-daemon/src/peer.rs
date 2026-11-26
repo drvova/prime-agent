@@ -14,9 +14,9 @@ use pa_types::daemon::{
 use serde_json::Value;
 
 use crate::protocol::{response_failure, response_success, DaemonResponse};
-use crate::util::iso_to_unix_ms;
 use crate::worker::AuthOutcome;
 use crate::worker::Worker;
+use pa_core::session::manager::iso_to_unix_ms;
 
 /// TS `PEER_GRANT_TTL_LIMIT_MS`: a grant whose expiry is further out than
 /// this is invalid at registration, so a supervisor cannot mint long-lived
@@ -393,7 +393,7 @@ mod tests {
     }
 
     fn soon(now_ms: u64, delta_ms: i64) -> String {
-        crate::util::iso_from_unix_ms(((now_ms as i64) + delta_ms) as u64)
+        pa_core::session::manager::iso_from_unix_ms(((now_ms as i64) + delta_ms) as u64)
     }
 
     const NOW: u64 = 1_000_000;

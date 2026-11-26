@@ -1,9 +1,9 @@
 //! The persisted scan-state sidecar: `<stem>.info-cache.json`, written
 //! beside the session file when the runtime lease is released and loaded
 //! on a process-cache miss, so a warm resume folds only the appended tail
-//! instead of rescanning the whole file. pa-daemon owns the sidecar:
-//! the scan state is this crate's type, and it certifies differently from
-//! pa-core's window snapshot (an exact generation there, a grown-file
+//! instead of rescanning the whole file. The catalog owns the sidecar:
+//! the scan state is its type, and it certifies differently from the
+//! window snapshot (an exact generation there, a grown-file
 //! resume with a prefix check here). Two writers: the lease holder at
 //! release, and the catalog scan for a file it had to fold. Both persist
 //! only certified states and every load re-validates the generation or
@@ -21,7 +21,7 @@ use super::info::{session_info_cache, SessionScanState};
 /// scan, the behavior without a sidecar. Bump when an OLD sidecar's state
 /// would be wrong for this build - a new field or changed fold semantics
 /// in [`SessionScanAccumulator`](super::info::SessionScanAccumulator) or
-/// [`UsageScan`](crate::session_usage::UsageScan). Removing a field needs
+/// [`UsageScan`](crate::session::usage_scan::UsageScan). Removing a field needs
 /// no bump: the plain `Deserialize` (no `deny_unknown_fields`) ignores the
 /// stale key, and the remaining state is exactly what this build's fold
 /// would have written, so the store stays warm.
@@ -57,7 +57,7 @@ pub(super) fn load(path: &Path) -> Option<SessionScanState> {
 /// either the old or the new whole file. A miss writes nothing; a failed
 /// write costs the next open its warm resume, nothing more - the same
 /// error policy as the window sidecar's flush.
-pub(crate) fn persist_info_sidecar(path: &Path) {
+pub(super) fn persist_info_sidecar(path: &Path) {
     let Some(state) = session_info_cache()
         .states
         .get(path)

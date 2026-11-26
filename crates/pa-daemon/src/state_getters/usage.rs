@@ -118,7 +118,7 @@ pub(crate) fn compute_own_and_total_usage(
                     add_usage(&mut total, usage);
                 }
             }
-        } else if let Some(row) = crate::session_usage::billed_store_row(entry) {
+        } else if let Some(row) = entry.billed_row() {
             add_usage(&mut total, &usage_value(&row.usage));
         }
     }
@@ -222,7 +222,7 @@ pub(crate) fn compute_own_usage_by_model(
                 }
             }
             _ => {
-                let Some(row) = crate::session_usage::billed_store_row(entry) else {
+                let Some(row) = entry.billed_row() else {
                     continue;
                 };
                 // A billed row's recorded serving model (TS #2411's auxiliary routing)

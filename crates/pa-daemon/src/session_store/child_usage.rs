@@ -203,11 +203,13 @@ impl SessionFile {
             }
             let header_line = pa_core::session::store::read_first_line_bounded(
                 &mut *file,
-                super::SESSION_LIST_HEADER_READ_MAX_BYTES,
+                pa_core::session::catalog::SESSION_LIST_HEADER_READ_MAX_BYTES,
             )
             .context("attribution recovery header unreadable")?;
-            let header = super::parse_session_header_line(std::str::from_utf8(&header_line)?)
-                .context("attribution recovery header invalid")?;
+            let header = pa_core::session::catalog::parse_session_header_line(std::str::from_utf8(
+                &header_line,
+            )?)
+            .context("attribution recovery header invalid")?;
             ensure!(
                 header_matches_receipt(&header, &receipt),
                 "attribution recovery header changed"

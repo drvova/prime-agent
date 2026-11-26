@@ -1,6 +1,9 @@
 //! Whole-file own-usage scan: the single source of truth for a session's own
 //! token/cost summary — assistant usage keyed by entry id, aggregates
 //! replacing raw blocks, child spend subtracted so rollups never double count.
+//! Both daemons read it: the old daemon's saved catalog and live rows, and the
+//! runtime daemon's session summaries ([`UsageScan::fold_entry`] over a
+//! transcript's stored rows).
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -9,9 +12,9 @@ use pa_types::ai::{Usage, UsageCost};
 use pa_types::JsNumber;
 use serde::{Deserialize, Serialize};
 
-pub(crate) use pa_core::session::billed_row::{billed_line, BilledRow, ScanUsage};
-use pa_core::session::usage_summary::SessionUsageSummary;
-use pa_core::session_engine::compaction_exec::{add_assistant_usage, subtract_assistant_usage};
+use crate::session::billed_row::{billed_fields, billed_line, BilledRow, ScanUsage};
+use crate::session::usage_summary::SessionUsageSummary;
+use crate::session_engine::compaction_exec::{add_assistant_usage, subtract_assistant_usage};
 
 /// `None` (absent wire field) when the session recorded no billable work at all.
 #[must_use]
@@ -249,6 +252,19 @@ impl UsageScan {
         }
     }
 
+    /// One stored entry (its `type`, `id`, and the rest of its fields) folded as a whole-file
+    /// scan folds its line: an entry whose fields do not parse contributes nothing.
+    pub fn fold_entry(&mut self, type_: &str, id: &str, fields: &serde_json::Value) {
+        // `type`/`id` may live on the caller's envelope; the usage-bearing fields deserialize
+        // borrowed.
+        let Ok(mut parsed) = ScanEntry::deserialize(fields) else {
+            return;
+        };
+        type_.clone_into(&mut parsed.type_);
+        id.clone_into(&mut parsed.id);
+        parsed.fold_into(self, billed_fields(type_, fields));
+    }
+
     /// The totals behind [`summary`](Self::summary): `own` subtracts the attributed child spend,
     /// `total` keeps it (the deletion capture reads both from the child's frozen file).
     #[must_use]
@@ -287,11 +303,6 @@ impl UsageScan {
             }
         })
     }
-}
-
-/// [`billed_fields`](pa_core::session::billed_row::billed_fields) over an in-memory store entry.
-pub(crate) fn billed_store_row(entry: &crate::session_store::SessionEntry) -> Option<BilledRow> {
-    pa_core::session::billed_row::billed_fields(&entry.type_, &entry.fields)
 }
 
 /// The standalone scanner's minimal entry parse: only the usage fold's fields.
@@ -345,7 +356,7 @@ impl ScanEntry {
 
 /// Whole-file scan over every parsable line; invalid lines contribute nothing.
 fn scan_file(path: &Path) -> Option<UsageScan> {
-    let file = pa_core::session::store::store().open(path).ok()?;
+    let file = crate::session::store::store().open(path).ok()?;
     let mut scan = UsageScan::default();
     let mut reader = BufReader::new(file);
     let mut line = String::new();
@@ -368,11 +379,11 @@ fn scan_file(path: &Path) -> Option<UsageScan> {
 }
 
 /// Whole-file own usage (the saved-row summary) for the one-off readers
-/// outside the resumable scan: the saved-delete capture
-/// (`saved_session_commands`), which reads the file once while it is
-/// still alive. The listing surfaces, the worker's live row, and the
-/// spawn ledger's tombstone fallback (`rlm_ledger`) all read the
-/// resumable `session_store::read_session_info` instead.
+/// outside the resumable scan: the old daemon's saved-delete capture, which
+/// reads the file once while it is still alive. The listing surfaces, the
+/// worker's live row, and the spawn ledger's tombstone fallback (`rlm_ledger`)
+/// all read the resumable [`read_session_info`](crate::session::catalog::read_session_info)
+/// instead.
 #[must_use]
 pub fn read_own_usage_summary(path: &Path) -> Option<SessionUsageSummary> {
     scan_file(path).and_then(|scan| scan.summary())
@@ -383,26 +394,6 @@ pub fn read_own_usage_summary(path: &Path) -> Option<SessionUsageSummary> {
 #[must_use]
 pub fn read_session_usage(path: &Path) -> Option<SessionUsageTotals> {
     scan_file(path).map(|scan| scan.totals())
-}
-
-/// The same fold over a store's in-memory entries (the pathless worker has
-/// no file to scan, but its live entries carry the rows a flush would write).
-/// An entry that does not parse contributes nothing.
-pub(crate) fn own_usage_summary_of(
-    entries: &[crate::session_store::SessionEntry],
-) -> Option<SessionUsageSummary> {
-    let mut scan = UsageScan::default();
-    for entry in entries {
-        // `type`/`id` live on the envelope (`#[serde(flatten)] fields` keeps only
-        // the rest); the usage-bearing fields deserialize borrowed.
-        let Ok(mut parsed) = ScanEntry::deserialize(&entry.fields) else {
-            continue;
-        };
-        parsed.type_.clone_from(&entry.type_);
-        parsed.id.clone_from(&entry.id);
-        parsed.fold_into(&mut scan, billed_store_row(entry));
-    }
-    scan.summary()
 }
 
 #[cfg(test)]

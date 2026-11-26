@@ -279,7 +279,7 @@ impl Worker {
                         let lease = pa_core::session::lease::acquire_runtime_session_lease(
                             &path, &agent_dir,
                         )?
-                        .with_info_sidecar(crate::session_store::write_info_sidecar);
+                        .with_info_sidecar(pa_core::session::catalog::write_info_sidecar);
                         pa_core::session::store::store().repair_tail(&path);
                         let mut store = SessionFile::open_windowed(&path)?;
                         store.lease = Some(Arc::new(lease));
@@ -361,7 +361,7 @@ impl Worker {
                         // tail.
                         let primed = path.clone();
                         let _ = tokio::task::spawn_blocking(move || {
-                            crate::session_store::read_session_info(&primed)
+                            pa_core::session::catalog::read_session_info(&primed)
                         })
                         .await;
                         opened
@@ -383,7 +383,9 @@ impl Worker {
                     tokio::task::spawn_blocking(move || {
                         pa_core::session::lease::acquire_runtime_session_lease(&path, &agent_dir)
                             .map(|lease| {
-                                lease.with_info_sidecar(crate::session_store::write_info_sidecar)
+                                lease.with_info_sidecar(
+                                    pa_core::session::catalog::write_info_sidecar,
+                                )
                             })
                     })
                     .await
@@ -425,7 +427,9 @@ impl Worker {
                     tokio::task::spawn_blocking(move || {
                         pa_core::session::lease::acquire_runtime_session_lease(&path, &agent_dir)
                             .map(|lease| {
-                                lease.with_info_sidecar(crate::session_store::write_info_sidecar)
+                                lease.with_info_sidecar(
+                                    pa_core::session::catalog::write_info_sidecar,
+                                )
                             })
                     })
                     .await

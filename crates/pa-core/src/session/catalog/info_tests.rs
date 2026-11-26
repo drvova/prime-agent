@@ -1,6 +1,59 @@
-//! Compare the streaming listing fold against the previous whole-file fold.
-use super::*;
+//! Compare the streaming listing fold against the previous whole-file fold
+//! (moved from pa-daemon's session store with the fold).
+use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use pa_types::session::SessionHeader;
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+#[cfg(unix)]
+use super::info::SESSION_SCAN_MAX_CACHED_STATES;
+use super::info::{
+    message_content_text, raw_string, raw_u64, read_session_info_from, session_info_cache,
+    SessionInfoEntry, SessionInfoScanCache, SessionScanState, SESSION_SCAN_RESUME_TAIL_BYTES,
+};
+// Only the unix-only sidecar tests persist one: only Unix certifies a state.
+#[cfg(unix)]
+use super::info_sidecar::persist_info_sidecar;
+#[cfg(unix)]
+use super::write_info_sidecar;
+use super::{content_to_text, normalize_state_status, read_session_info, SessionInfo};
+use crate::session::manager::{iso_from_unix_ms, iso_to_unix_ms};
+use crate::session::usage_scan::UsageScan;
+
+/// One stored entry as the old daemon's store parsed it: the envelope, and
+/// the rest of the row as `fields` (the legacy fold's view of a line).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionEntry {
+    #[serde(rename = "type")]
+    type_: String,
+    id: String,
+    #[serde(default)]
+    parent_id: Option<String>,
+    timestamp: String,
+    #[serde(flatten)]
+    fields: Value,
+}
+
+/// Set the file's modification time (the old tests' `filetime::set_file_mtime`).
+fn set_mtime(path: &Path, modified: SystemTime) {
+    fs::File::open(path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+}
+
+fn message_role(message: &Value) -> Option<&str> {
+    message.get("role").and_then(Value::as_str)
+}
+
+fn message_text(message: &Value) -> String {
+    message.get("content").map_or_default(content_to_text)
+}
 
 fn legacy_read_session_info(path: &Path) -> Option<SessionInfo> {
     let content = fs::read_to_string(path).ok()?;
@@ -11,7 +64,7 @@ fn legacy_read_session_info(path: &Path) -> Option<SessionInfo> {
     let mut thinking_level = None;
     let mut message_count = 0usize;
     let mut first_message = String::new();
-    let mut usage_scan = crate::session_usage::UsageScan::default();
+    let mut usage_scan = UsageScan::default();
     let mut last_activity_ms: Option<u64> = None;
     for line in content.lines() {
         let trimmed = line.trim();
@@ -109,7 +162,10 @@ fn legacy_read_session_info(path: &Path) -> Option<SessionInfo> {
                     }
                 }
             }
-            _ => usage_scan.fold_billed_row(crate::session_usage::billed_store_row(&entry)),
+            _ => usage_scan.fold_billed_row(crate::session::billed_row::billed_fields(
+                &entry.type_,
+                &entry.fields,
+            )),
         }
     }
     let header = header?;
@@ -117,7 +173,7 @@ fn legacy_read_session_info(path: &Path) -> Option<SessionInfo> {
     // timestamp, then the file's mtime - never scan time.
     let modified_ms = last_activity_ms
         .filter(|ms| *ms > 0)
-        .or_else(|| crate::util::iso_to_unix_ms(&header.timestamp))
+        .or_else(|| iso_to_unix_ms(&header.timestamp))
         .or_else(|| {
             fs::metadata(path).ok().and_then(|meta| {
                 meta.modified()
@@ -126,7 +182,7 @@ fn legacy_read_session_info(path: &Path) -> Option<SessionInfo> {
                     .map(|duration| duration.as_millis() as u64)
             })
         });
-    let modified = modified_ms.map_or_default(crate::util::iso_from_unix_ms);
+    let modified = modified_ms.map_or_default(iso_from_unix_ms);
     Some(SessionInfo {
         path: path.to_path_buf(),
         id: header.id,
@@ -243,7 +299,7 @@ fn cache_rejects_replacement_and_same_length_in_place_rewrite() {
     let saved_mtime = fs::metadata(&path).unwrap().modified().unwrap();
     let original = fs::read_to_string(&path).unwrap();
     fs::write(&path, original.replace("bravo", "delta")).unwrap();
-    filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(saved_mtime)).unwrap();
+    set_mtime(&path, saved_mtime);
     assert_eq!(fs::metadata(&path).unwrap().len(), original.len() as u64);
     assert_fold_matches(&path);
     assert_eq!(
@@ -292,7 +348,7 @@ fn captured_fixture_cold_and_warm_timings() {
         let start = std::time::Instant::now();
         let reference = legacy_read_session_info(path);
         legacy.push(start.elapsed());
-        super::session_info_cache().drop_state(path);
+        session_info_cache().drop_state(path);
         let start = std::time::Instant::now();
         let result = read_session_info(path);
         cold.push(start.elapsed());
@@ -432,7 +488,7 @@ fn a_failed_prefix_check_rescans_from_byte_zero() {
     let file = fs::File::open(&path).unwrap();
     let _ = file.set_modified(past);
     drop(file);
-    let mut file = pa_core::session::store::store().open(&path).unwrap();
+    let mut file = crate::session::store::store().open(&path).unwrap();
     let (second, sidecar_behind) = read_session_info_from(&mut *file, &path).unwrap();
     assert!(
         sidecar_behind,
@@ -495,7 +551,7 @@ fn a_persisted_scan_state_resumes_like_the_full_fold() {
     // The lease-release write persists the certified state beside the
     // file; the in-process copy is gone, so the next read can only be
     // served by the sidecar.
-    super::persist_info_sidecar(&path);
+    persist_info_sidecar(&path);
     assert!(
         path.with_extension("info-cache.json").is_file(),
         "the release write persists the state"
@@ -503,10 +559,10 @@ fn a_persisted_scan_state_resumes_like_the_full_fold() {
     // The sidecar carries message text (the search corpus, the first
     // message): it is owner-only like the session files it derives from.
     assert_eq!(
-        pa_core::platform::perms::file_mode(&path.with_extension("info-cache.json")),
-        Some(pa_core::platform::perms::PRIVATE_FILE_MODE)
+        crate::platform::perms::file_mode(&path.with_extension("info-cache.json")),
+        Some(crate::platform::perms::PRIVATE_FILE_MODE)
     );
-    super::session_info_cache().drop_state(&path);
+    session_info_cache().drop_state(&path);
     append_rows(
         &path,
         &[attribution("x2", "a2", 0.02, 0.52), assistant("a4", 0.4)],
@@ -523,7 +579,7 @@ fn a_persisted_scan_state_resumes_like_the_full_fold() {
         ],
     );
     fs::rename(&replacement, &path).unwrap();
-    super::session_info_cache().drop_state(&path);
+    session_info_cache().drop_state(&path);
     assert_fold_matches(&path);
     fs::remove_dir_all(dir).unwrap();
 }
@@ -551,9 +607,9 @@ fn a_symlinked_lease_release_persists_a_sidecar_the_next_read_serves() {
                 "message":{"role":"user","content":"hi","timestamp":1_790_110_000_000_u64}}),
         ],
     );
-    let lease = pa_core::session::lease::acquire_runtime_session_lease(&path, &dir)
+    let lease = crate::session::lease::acquire_runtime_session_lease(&path, &dir)
         .unwrap()
-        .with_info_sidecar(super::write_info_sidecar);
+        .with_info_sidecar(write_info_sidecar);
     let cold = read_session_info(&path).unwrap();
     drop(lease);
     let sidecar = real_dir.join("s.info-cache.json");
@@ -572,7 +628,7 @@ fn a_symlinked_lease_release_persists_a_sidecar_the_next_read_serves() {
         ("{".to_string(), &cold),
     ] {
         fs::write(&sidecar, contents).unwrap();
-        super::session_info_cache().drop_state(&path);
+        session_info_cache().drop_state(&path);
         assert_eq!(read_session_info(&path).as_ref(), Some(expected));
     }
     fs::remove_dir_all(dir).unwrap();
@@ -617,7 +673,7 @@ fn a_panic_while_the_scan_cache_was_held_fails_no_later_scan() {
         &[json!({"type":"session","id":"p","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/test"})],
     );
     let poisoned = std::thread::spawn(|| {
-        let _held = super::session_info_cache();
+        let _held = session_info_cache();
         panic!("a scan panics while it holds the cache");
     })
     .join();
@@ -648,9 +704,9 @@ fn zero_usage_states_are_capped_by_count_not_only_the_usage_budget() {
     }
     // The cache really populated past the cap and stayed capped: LRU-first eviction
     // dropped the earliest-written files, the latest stay resident.
-    let cache = super::session_info_cache();
+    let cache = session_info_cache();
     assert_eq!(
-        super::SESSION_SCAN_MAX_CACHED_STATES,
+        SESSION_SCAN_MAX_CACHED_STATES,
         cache.states.len(),
         "the state count must sit exactly at the cap, got {}",
         cache.states.len()
@@ -659,10 +715,9 @@ fn zero_usage_states_are_capped_by_count_not_only_the_usage_budget() {
     assert_eq!(cache.ordinal_by_path.len(), cache.states.len());
     assert!(!cache.states.contains_key(&dir.join("zero-0.jsonl")));
     assert!(!cache.states.contains_key(&dir.join("zero-7.jsonl")));
-    assert!(cache.states.contains_key(&dir.join(format!(
-        "zero-{}.jsonl",
-        super::SESSION_SCAN_MAX_CACHED_STATES + 7
-    ))));
+    assert!(cache
+        .states
+        .contains_key(&dir.join(format!("zero-{}.jsonl", SESSION_SCAN_MAX_CACHED_STATES + 7))));
 }
 
 #[test]
@@ -671,7 +726,7 @@ fn scan_cache_recency_tracks_updates_and_removals_without_growth() {
     let paths: Vec<PathBuf> = (0..3)
         .map(|index| dir.join(format!("lru-{index}.jsonl")))
         .collect();
-    let generation = pa_core::session::store::store()
+    let generation = crate::session::store::store()
         .stat(&dir)
         .unwrap()
         .generation;
@@ -726,7 +781,7 @@ fn no_timestamp_record_modified_is_the_header_time_across_rescans() {
     );
     // A stamped mtime distinct from both the header time and the scan time: whichever value
     // `modified` carries names its source.
-    filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1_790_110_000, 0)).unwrap();
+    set_mtime(&path, UNIX_EPOCH + Duration::from_secs(1_790_110_000));
     let info = read_session_info(&path).unwrap();
     assert_eq!(info.created, "2026-09-20T12:00:00.000Z");
     assert_eq!(info.modified, "2026-09-20T12:00:00.000Z");
@@ -736,7 +791,7 @@ fn no_timestamp_record_modified_is_the_header_time_across_rescans() {
         read_session_info(&path).unwrap().modified,
         "2026-09-20T12:00:00.000Z"
     );
-    filetime::set_file_mtime(&path, filetime::FileTime::now()).unwrap();
+    set_mtime(&path, SystemTime::now());
     assert_eq!(
         read_session_info(&path).unwrap().modified,
         "2026-09-20T12:00:00.000Z"
@@ -754,17 +809,14 @@ fn unparseable_header_modified_falls_back_to_the_file_mtime() {
         &path,
         &[json!({"type":"session","id":"legacy","timestamp":"not-a-date","cwd":"/test"})],
     );
-    filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1_790_110_000, 0)).unwrap();
+    set_mtime(&path, UNIX_EPOCH + Duration::from_secs(1_790_110_000));
     let info = read_session_info(&path).unwrap();
     assert_eq!(info.created, "not-a-date");
-    assert_eq!(
-        info.modified,
-        crate::util::iso_from_unix_ms(1_790_110_000_000)
-    );
-    filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1_790_120_000, 0)).unwrap();
+    assert_eq!(info.modified, iso_from_unix_ms(1_790_110_000_000));
+    set_mtime(&path, UNIX_EPOCH + Duration::from_secs(1_790_120_000));
     assert_eq!(
         read_session_info(&path).unwrap().modified,
-        crate::util::iso_from_unix_ms(1_790_120_000_000)
+        iso_from_unix_ms(1_790_120_000_000)
     );
     assert_fold_matches(&path);
     fs::remove_dir_all(dir).unwrap();
@@ -783,12 +835,9 @@ fn message_timestamps_still_win_over_the_header_fallback() {
         ],
     );
     // A future mtime proves the message timestamp wins over it too.
-    filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1_800_000_000, 0)).unwrap();
+    set_mtime(&path, UNIX_EPOCH + Duration::from_hours(500_000));
     let info = read_session_info(&path).unwrap();
-    assert_eq!(
-        info.modified,
-        crate::util::iso_from_unix_ms(1_790_110_001_000)
-    );
+    assert_eq!(info.modified, iso_from_unix_ms(1_790_110_001_000));
     assert_fold_matches(&path);
     fs::remove_dir_all(dir).unwrap();
 }
@@ -805,13 +854,10 @@ fn impossible_calendar_date_header_falls_back_to_the_file_mtime() {
             json!({"type":"session","id":"feb","timestamp":"2026-02-31T00:00:00.000Z","cwd":"/test"}),
         ],
     );
-    filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(1_790_110_000, 0)).unwrap();
+    set_mtime(&path, UNIX_EPOCH + Duration::from_secs(1_790_110_000));
     let info = read_session_info(&path).unwrap();
     assert_eq!(info.created, "2026-02-31T00:00:00.000Z");
-    assert_eq!(
-        info.modified,
-        crate::util::iso_from_unix_ms(1_790_110_000_000)
-    );
+    assert_eq!(info.modified, iso_from_unix_ms(1_790_110_000_000));
     assert_fold_matches(&path);
     fs::remove_dir_all(dir).unwrap();
 }
@@ -825,7 +871,7 @@ fn epoch_zero_mtime_renders_the_epoch_not_blank() {
         &path,
         &[json!({"type":"session","id":"epoch","timestamp":"not-a-date","cwd":"/test"})],
     );
-    filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(0, 0)).unwrap();
+    set_mtime(&path, UNIX_EPOCH + Duration::from_secs(0));
     let info = read_session_info(&path).unwrap();
     assert_eq!(info.modified, "1970-01-01T00:00:00.000Z");
     assert_fold_matches(&path);
@@ -1169,7 +1215,7 @@ fn borrowed_metadata_reads_match_full_parse_across_shape_matrix() {
     // and missing-message rows.
     assert_eq!(info.message_count, 12);
     assert_eq!(info.first_message, "ts float");
-    assert_eq!(info.modified, crate::util::iso_from_unix_ms(456));
+    assert_eq!(info.modified, iso_from_unix_ms(456));
 
     // The abort rows kill the whole file's row on both paths.
     for aborting in [rows[15], rows[16], rows[17]] {
@@ -1211,4 +1257,46 @@ fn a_non_holder_fold_writes_no_sidecar() {
         "only the lease holder's release writes a sidecar"
     );
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn resume_tail_window_matches_the_rolling_reference() {
+    let mut state = SessionScanState::fresh(crate::session::store::TranscriptGeneration::default());
+    let mut reference = [b'\n'; SESSION_SCAN_RESUME_TAIL_BYTES];
+    let rolling_reference = |tail: &mut [u8; SESSION_SCAN_RESUME_TAIL_BYTES], line: &[u8]| {
+        let keep = SESSION_SCAN_RESUME_TAIL_BYTES - 1;
+        let mut combined = Vec::with_capacity(SESSION_SCAN_RESUME_TAIL_BYTES + line.len() + 1);
+        if line.len() >= keep {
+            combined.extend_from_slice(&line[line.len() - keep..]);
+        } else {
+            combined.extend_from_slice(tail);
+            combined.extend_from_slice(line);
+        }
+        combined.push(b'\n');
+        let start = combined
+            .len()
+            .saturating_sub(SESSION_SCAN_RESUME_TAIL_BYTES);
+        tail.copy_from_slice(&combined[start..]);
+    };
+    let lines: Vec<Vec<u8>> = [
+        &b""[..],
+        b"x",
+        b"fourteen xx",
+        &b"exactly fifteen"[..],
+        b"sixteen bytes..",
+        &b"a much longer line than the window will ever keep"[..],
+        b"",
+        "multibyte 世界未詠 line".as_bytes(),
+        &b"final"[..],
+    ]
+    .into_iter()
+    .map(<[u8]>::to_vec)
+    .collect();
+    for line in &lines {
+        state.advance_tail(line);
+        rolling_reference(&mut reference, line);
+        assert_eq!(state.tail, reference, "line {line:?}");
+    }
+    // The prefix-intact read keeps proving resumes from the same bytes.
+    assert_eq!(state.tail, reference);
 }

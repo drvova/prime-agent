@@ -20,8 +20,8 @@ use crate::protocol::{
 };
 use crate::registry::{canonical_session_file_string, ResidentWorker};
 use crate::scheduled_jobs::session_artifact_dir;
-use crate::session_store::read_session_info;
 use crate::supervisor::{client_command_payload, Supervisor};
+use pa_core::session::catalog::read_session_info;
 
 const CATALOG_FORWARD_TIMEOUT_MS: u64 = 5000;
 
@@ -29,7 +29,7 @@ const CATALOG_FORWARD_TIMEOUT_MS: u64 = 5000;
 #[derive(Clone)]
 pub(crate) struct PassiveJob {
     pub(crate) job: AgentCronJob,
-    pub(crate) info: crate::session_store::SessionInfo,
+    pub(crate) info: pa_core::session::catalog::SessionInfo,
     canonical_session_file: String,
 }
 
@@ -290,7 +290,7 @@ impl Supervisor {
 
     /// A passive job's artifact store: the same partitioned store the owning worker
     /// uses, so a passive mutation is the durable write a woken worker would have made.
-    fn passive_job_store(info: &crate::session_store::SessionInfo) -> AgentCronJobStore {
+    fn passive_job_store(info: &pa_core::session::catalog::SessionInfo) -> AgentCronJobStore {
         let store = AgentCronJobStore::for_session_artifacts();
         if let Some(dir) = session_artifact_dir(&info.path, &info.id) {
             store.register_session_artifact(&info.id, &dir);

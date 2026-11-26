@@ -135,7 +135,7 @@ impl Session {
         self.job(bed)
             .next_run_at
             .as_deref()
-            .and_then(pa_daemon::util::iso_to_unix_ms)
+            .and_then(pa_core::session::manager::iso_to_unix_ms)
     }
 }
 

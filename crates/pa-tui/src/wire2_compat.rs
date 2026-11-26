@@ -15,6 +15,7 @@
 //! | `agent/<id>/crashed`, `recovered`, `failed`, replayed only | today's `session_crashed` / `session_recovered` / `session_failed` event, verbatim | `session_event` |
 //! | `runtime/roster` | today's `roster_update` frame without `type` (`changed`, `removed`, `resync`) | `roster_update` |
 //! | `runtime/traffic` | today's `agent_traffic` frame's `entry` | `agent_traffic` |
+//! | `runtime/session_list/<request>` | today's `session_list_item` (a `session`) or `session_list_progress` frame without `type` | `session_list_item` / `session_list_progress` |
 //!
 //! `<id>` is the session's active id, the one `DaemonCommand`s address. On the agent topics the
 //! event's metadata becomes the frame's `meta`: `id` is the event id, `emittedAt` its `ts`
@@ -69,12 +70,21 @@
 //! | `agent_traffic_subscribe` | `compat:traffic`, `runtime/traffic` | `runtime.traffic` (`{entries}`) |
 //! | `roster_unsubscribe`, `agent_traffic_unsubscribe` | unsubscribed | none |
 //!
+//! The saved-session catalog streams: `list_saved_sessions` becomes a subscription
+//! (`compat:list:<request>`, `Since::Now`) on its request's live-only topic
+//! `runtime/session_list/<request>`, then, once its `backfilled` arrived, the query
+//! `sessions.list {shape: "saved", stream: <request>}` with the command's `activeSessionId`,
+//! `cwd`, `sessionDir`, `scope`, `limit` and `cursor` (those it carries). The topic's events
+//! become the old `session_list_item` and `session_list_progress` frames (their `id` is the
+//! request's), the reply the old response; the transport unsubscribes at the reply, which is
+//! the catalog (a row that reaches the client after it is one the old daemon's full queue
+//! would have skipped).
+//!
 //! Every other command stays on the old wire.
 //!
 //! # Not mapped yet (phase 7 types these queries and calls)
 //!
-//! - Queries: `sessions.list` (`list`, `list_saved_sessions` and its `session_list_item` /
-//!   `session_list_progress` stream), the chunked `session_snapshot_*` frames (a TUI attach does
+//! - Queries: `sessions.list` for `list`, the chunked `session_snapshot_*` frames (a TUI attach does
 //!   not ask for them), `session_attached`, `session_resynced`, `session_replaced`, `settings`
 //!   (`get_settings`), `models` (`get_model_catalog`, `get_available_models`,
 //!   `model_catalog_changed`), `subscriptions` and `tasks` (`heartbeats_list`,
@@ -115,6 +125,14 @@ pub(crate) enum Outgoing {
     Follow {
         subscribe: ClientFrame,
         query: ClientFrame,
+    },
+    /// A streamed read: the subscription to its rows' topic, the query (sent once the
+    /// subscription's `backfilled` arrived) whose reply is the old response, and the
+    /// unsubscribe the transport sends at that reply.
+    Stream {
+        subscribe: ClientFrame,
+        query: ClientFrame,
+        unsubscribe: ClientFrame,
     },
     /// A feed no longer followed: the unsubscribe, and the old response the layer answers.
     Unfollow {
@@ -203,6 +221,20 @@ pub(crate) fn outbound_from_event(
             frame.insert("type".to_string(), Value::from("roster_update"));
             serde_json::from_value(Value::Object(frame)).context("runtime/roster: the payload")?
         }
+        ["runtime", "session_list", _] => {
+            let mut frame = payload
+                .as_object()
+                .cloned()
+                .ok_or_else(|| anyhow!("{}: the payload is not an object", event.event.topic))?;
+            let kind = if frame.contains_key("session") {
+                "session_list_item"
+            } else {
+                "session_list_progress"
+            };
+            frame.insert("type".to_string(), Value::from(kind));
+            serde_json::from_value(Value::Object(frame))
+                .with_context(|| format!("{}: the payload", event.event.topic))?
+        }
         ["runtime", "traffic"] => DaemonOutbound::AgentTraffic {
             entry: serde_json::from_value(payload.clone())
                 .context("runtime/traffic: the payload")?,
@@ -238,8 +270,8 @@ pub fn live_frames(events: &[Event]) -> Result<Vec<Value>> {
 const ROSTER_FEED: (&str, &str, &str) = ("compat:roster", "runtime/roster", "runtime.roster");
 const TRAFFIC_FEED: (&str, &str, &str) = ("compat:traffic", "runtime/traffic", "runtime.traffic");
 
-/// `command` as wire2 carries it: an input command becomes a publish, a session read a query, and
-/// a feed's subscribe and unsubscribe its subscription's, each request with `request_id` as its
+/// `command` as wire2 carries it: an input command becomes a publish, a session read a query, a
+/// feed's subscribe and unsubscribe its subscription's, the saved-session list a stream, each request with `request_id` as its
 /// frame id; every other command comes back unmapped.
 ///
 /// # Errors
@@ -312,6 +344,52 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                     ("capabilities", member(capabilities.as_ref())),
                 ],
             )
+        }
+        DaemonCommand::ListSavedSessions {
+            active_session_id,
+            cwd,
+            session_dir,
+            scope,
+            limit,
+            cursor,
+            ..
+        } => {
+            let mut args = Map::new();
+            args.insert("shape".to_string(), Value::from("saved"));
+            args.insert("stream".to_string(), Value::from(request_id.as_str()));
+            for (key, value) in [
+                (
+                    "activeSessionId",
+                    active_session_id.clone().map(Value::from),
+                ),
+                ("cwd", cwd.clone().map(Value::from)),
+                ("sessionDir", session_dir.clone().map(Value::from)),
+                (
+                    "scope",
+                    Some(scope.clone()).filter(|scope| !scope.is_null()),
+                ),
+                ("limit", limit.map(Value::from)),
+                ("cursor", cursor.clone().map(Value::from)),
+            ] {
+                if let Some(value) = value {
+                    args.insert(key.to_string(), value);
+                }
+            }
+            let sub_id = format!("compat:list:{request_id}");
+            return Ok(Outgoing::Stream {
+                subscribe: ClientFrame::Subscribe {
+                    sub_id: sub_id.clone(),
+                    filter: TopicFilter::new(format!("runtime/session_list/{request_id}"))
+                        .with_context(|| format!("request {request_id:?} cannot name a stream"))?,
+                    since: Since::Now,
+                },
+                query: ClientFrame::Query {
+                    id: request_id,
+                    name: "sessions.list".to_string(),
+                    args: Value::Object(args),
+                },
+                unsubscribe: ClientFrame::Unsubscribe { sub_id },
+            });
         }
         DaemonCommand::RosterSubscribe { .. } => return follow(request_id, ROSTER_FEED),
         DaemonCommand::AgentTrafficSubscribe { .. } => return follow(request_id, TRAFFIC_FEED),
@@ -419,7 +497,10 @@ pub(crate) fn response_from_reply(
 pub fn request_frames(request_id: String, command: DaemonCommand) -> Result<Vec<ClientFrame>> {
     Ok(match outgoing(request_id, command)? {
         Outgoing::Publish(frame) | Outgoing::Query(frame) => vec![frame],
-        Outgoing::Follow { subscribe, query } => vec![subscribe, query],
+        Outgoing::Follow { subscribe, query }
+        | Outgoing::Stream {
+            subscribe, query, ..
+        } => vec![subscribe, query],
         Outgoing::Unfollow { unsubscribe, .. } => vec![unsubscribe],
         Outgoing::Unmapped(_) => Vec::new(),
     })

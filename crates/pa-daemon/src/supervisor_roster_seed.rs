@@ -10,8 +10,8 @@ use std::sync::Arc;
 use pa_types::daemon::agent_roster::{roster_agent_id_for_summary, AgentRosterEntry};
 use serde_json::{json, Value};
 
-use crate::session_store::read_session_info;
 use crate::supervisor::Supervisor;
+use pa_core::session::catalog::read_session_info;
 use pa_core::session::lease::canonical_session_path;
 use pa_core::session::usage_summary::SessionUsageSummary;
 use pa_core::session_engine::rlm_ledger::RlmLedgerEdge;
@@ -653,7 +653,7 @@ pub(crate) mod tests {
             sessions_dir,
             |_| {},
         )
-        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
             .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: child_id.to_string(),
@@ -1114,7 +1114,7 @@ pub(crate) mod tests {
             &sessions_dir,
             |_| {},
         )
-        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
             .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-gone".to_string(),

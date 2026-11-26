@@ -70,6 +70,21 @@ impl DaemonFamily {
             .context("the ledger's thread panicked")?
     }
 
+    /// The deleted subagents' spend by their parent's canonical transcript
+    /// path (the agents view's cost rollup bills it to the parent).
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be replayed.
+    pub(crate) async fn deleted_descendant_usage(
+        &self,
+    ) -> anyhow::Result<
+        std::collections::HashMap<String, pa_core::session::usage_summary::SessionUsageSummary>,
+    > {
+        self.on_ledger(RlmSpawnLedger::deleted_descendant_usage_by_parent)
+            .await
+    }
+
     /// Records a spawn: its edge, then its `running` display entry.
     ///
     /// # Errors

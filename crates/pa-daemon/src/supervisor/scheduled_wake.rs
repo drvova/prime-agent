@@ -157,6 +157,6 @@ fn earliest_active_run(jobs_file: &Path) -> Option<u64> {
         .iter()
         .filter(|job| job.status == JobStatus::Active)
         .filter_map(|job| job.next_run_at.as_deref())
-        .filter_map(crate::util::iso_to_unix_ms)
+        .filter_map(pa_core::session::manager::iso_to_unix_ms)
         .min()
 }

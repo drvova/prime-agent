@@ -352,12 +352,13 @@ impl Supervisor {
             1 => {
                 let edge = matches.pop().expect("one match");
                 let session_file = edge.child.clone();
-                let (cwd, depth) =
-                    crate::session_store::read_session_info(std::path::Path::new(&session_file))
-                        .map_or_else(
-                            || ("/".to_string(), edge.depth),
-                            |info| (info.cwd, info.rlm_depth),
-                        );
+                let (cwd, depth) = pa_core::session::catalog::read_session_info(
+                    std::path::Path::new(&session_file),
+                )
+                .map_or_else(
+                    || ("/".to_string(), edge.depth),
+                    |info| (info.cwd, info.rlm_depth),
+                );
                 Some(
                     self.launch_ledger_child_wake(&session_file, cwd, &edge.child_id, depth)
                         .await,

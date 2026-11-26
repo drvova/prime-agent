@@ -34,7 +34,7 @@ fn local_noon(base: i64) -> i64 {
 fn local_date(epoch_ms: i64) -> String {
     pa_types::platform::local_civil(epoch_ms).map_or_else(
         || {
-            crate::util::iso_from_unix_ms(u64::try_from(epoch_ms).unwrap())
+            pa_core::session::manager::iso_from_unix_ms(u64::try_from(epoch_ms).unwrap())
                 .chars()
                 .take(10)
                 .collect()
@@ -46,7 +46,7 @@ fn local_date(epoch_ms: i64) -> String {
 fn assistant(id: &str, at_ms: i64, model: &str, input: u64, output: u64, cost: f64) -> String {
     json!({
         "type": "message", "id": id, "parentId": null,
-        "timestamp": crate::util::iso_from_unix_ms(at_ms as u64),
+        "timestamp": pa_core::session::manager::iso_from_unix_ms(at_ms as u64),
         "message": {
             "role": "assistant", "provider": "anthropic", "model": model,
             "stopReason": "stop", "timestamp": at_ms,
@@ -112,14 +112,14 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
         assistant("a1", noon - 2 * 3_600_000, "claude-opus", 120, 12, 0.5),
         json!({
             "type": "child_usage_attributed", "id": "c1", "targetId": "a1",
-            "timestamp": crate::util::iso_from_unix_ms((noon - 3_600_000) as u64),
+            "timestamp": pa_core::session::manager::iso_from_unix_ms((noon - 3_600_000) as u64),
             "childUsage": {"input": 999, "output": 999, "cost": {"total": 9.0}},
             "aggregateUsage": {"input": 1119, "output": 1011, "cost": {"total": 9.5}},
         })
         .to_string(),
         json!({
             "type": "compaction", "id": "k1", "summary": "…", "firstKeptEntryId": "a1",
-            "timestamp": crate::util::iso_from_unix_ms((noon - 10 * DAY_MS) as u64),
+            "timestamp": pa_core::session::manager::iso_from_unix_ms((noon - 10 * DAY_MS) as u64),
             "provider": "anthropic", "modelId": "claude-haiku",
             "usage": {"input": 50, "output": 5, "cost": {"total": 0.125}},
         })
@@ -127,7 +127,7 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
         assistant("a2", noon - 40 * DAY_MS, "claude-opus", 1000, 100, 2.0),
         json!({
             "type": "message", "id": "e1",
-            "timestamp": crate::util::iso_from_unix_ms((noon - 3_600_000) as u64),
+            "timestamp": pa_core::session::manager::iso_from_unix_ms((noon - 3_600_000) as u64),
             "message": {
                 "role": "assistant", "provider": "openai-codex", "model": "gpt-5", "stopReason": "error",
                 "timestamp": noon - 3_600_000,
@@ -232,7 +232,7 @@ fn spend_history_splits_spend_by_billing_mode() {
     let row = |id: &str, provider: &str, model: &str, cost: f64, billing: serde_json::Value| {
         json!({
             "type": "message", "id": id,
-            "timestamp": crate::util::iso_from_unix_ms(noon as u64),
+            "timestamp": pa_core::session::manager::iso_from_unix_ms(noon as u64),
             "message": {
                 "role": "assistant", "provider": provider, "model": model,
                 "stopReason": "stop", "timestamp": noon,
