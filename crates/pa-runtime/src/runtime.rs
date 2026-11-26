@@ -325,6 +325,12 @@ impl<B: SessionBuilder> Runtime<B> {
         self.bus.remove_subscription(id)
     }
 
+    /// The subscriptions on the bus, in id order (`Bus::subscriptions`).
+    #[must_use]
+    pub fn subscriptions(&self) -> Vec<Subscription> {
+        self.bus.subscriptions()
+    }
+
     /// Defines a timer or folder-watch source, kept in the agent's
     /// database when its lifetime is `Kept`: it runs while a subscription's filter matches a topic it
     /// publishes on (`timer/<name>`, `source/<name>/changed` or
@@ -533,6 +539,7 @@ impl<B: SessionBuilder> Runtime<B> {
     pub(crate) async fn close_session(&self, session: &str) -> anyhow::Result<()> {
         let cancelled = self.cancel(session).await;
         self.sessions.close(session).await;
+        self.sessions.subagents().forget_root(session).await;
         cancelled
     }
 

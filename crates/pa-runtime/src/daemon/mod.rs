@@ -121,6 +121,26 @@ fn session_env(agent_dir: &Path, id: &str) -> BTreeMap<String, String> {
     )])
 }
 
+/// The `kv` scope the options a client created a daemon session with are
+/// kept under, one key per session (`options:<id>`), so a session the daemon
+/// opens again (its revival, a scheduled wake) is built as it was created.
+const OPTIONS_SCOPE: &str = "runtime-daemon";
+
+/// The options session `id` was created with; the default when it was
+/// created with none, or they cannot be read (logged).
+fn session_options(log: &pa_log::Log, id: &str) -> crate::SessionOptions {
+    let read = || -> anyhow::Result<crate::SessionOptions> {
+        match log.value(OPTIONS_SCOPE, &format!("options:{id}"))? {
+            Some(text) => crate::SessionOptions::from_json(&serde_json::from_str(&text)?),
+            None => Ok(crate::SessionOptions::default()),
+        }
+    };
+    read().unwrap_or_else(|error| {
+        tracing::warn!("session {id}'s options could not be read: {error:#}");
+        crate::SessionOptions::default()
+    })
+}
+
 /// What a runtime daemon is started with.
 pub struct DaemonOptions<B> {
     /// The agent dir: its database, settings and session leases.

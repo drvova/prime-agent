@@ -250,6 +250,21 @@ impl Subagents {
         deliver_row(&node, serde_json::to_value(row)?, Delivery::Steer)
     }
 
+    /// Lets go of closed root session `id`'s node when no subagent sits below
+    /// it, so the session opened again waits for its new engine's build
+    /// ([`Subagents::built_node`]) instead of reading the old one's.
+    pub(crate) async fn forget_root(&self, id: &str) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        if node.parent.is_none() && node.children.lock().await.is_empty() {
+            let mut nodes = lock(&self.nodes);
+            if nodes.get(id).is_some_and(|held| Arc::ptr_eq(held, &node)) {
+                nodes.remove(id);
+            }
+        }
+    }
+
     /// The node of open session `id` once its engine is built.
     ///
     /// # Errors

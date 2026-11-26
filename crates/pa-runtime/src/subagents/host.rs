@@ -94,6 +94,7 @@ impl RlmSubagentHost for SessionSubagents {
                         factory: request.factory.is_some(),
                     }),
                     transcript: None,
+                    options: crate::SessionOptions::default(),
                 }
             };
             let child_node = Arc::new(Node::new(
@@ -530,6 +531,7 @@ impl Subagents {
                     factory: edge.factory.is_some(),
                 }),
                 transcript: Some(child_file),
+                options: crate::SessionOptions::default(),
             };
             let child_node = Arc::new(Node::new(
                 self,

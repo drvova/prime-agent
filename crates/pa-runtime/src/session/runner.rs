@@ -226,6 +226,7 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                         env: std::collections::BTreeMap::new(),
                         subagent: None,
                         transcript: None,
+                        options: crate::SessionOptions::default(),
                     },
                     super::Opening::Fresh,
                 )?;

@@ -422,6 +422,7 @@ pub(super) async fn print_mode_main(
                     env: std::collections::BTreeMap::new(),
                     subagent: None,
                     transcript: None,
+                    options: pa_runtime::SessionOptions::default(),
                 }],
             },
         )

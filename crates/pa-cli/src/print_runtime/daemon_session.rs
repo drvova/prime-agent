@@ -13,8 +13,11 @@ use crate::mode::RunOptions;
 
 /// The runtime daemon's engine builds: a session opens the transcript its
 /// spec names (creating it under its id the first time), runs in the cwd
-/// the client gave it, and streams the turn driver's events; each subagent
-/// it spawns is built as the print run builds its children.
+/// the client gave it with the options it chose over the daemon's own (the
+/// launch flags an ACP client forwards: model, thinking level, system
+/// prompt, resources, autonomous run, goal), and streams the turn driver's
+/// events; each subagent it spawns is built as the print run builds its
+/// children.
 struct DaemonSessions {
     options: RunOptions,
     faux: Option<serde_json::Value>,
@@ -40,6 +43,36 @@ impl SessionBuilder for DaemonSessions {
         }
         let mut options = self.options.clone();
         options.config.cwd.clone_from(&spec.cwd);
+        let chosen = &spec.options;
+        let mode = match chosen.execution_mode.as_deref() {
+            None | Some("daemon") => crate::mode::AppMode::Daemon,
+            Some("acp") => crate::mode::AppMode::Acp,
+            Some(other) => anyhow::bail!("unknown execution mode {other:?} (acp, daemon)"),
+        };
+        if chosen.provider.is_some() {
+            options.config.provider.clone_from(&chosen.provider);
+        }
+        if chosen.model.is_some() {
+            options.config.model.clone_from(&chosen.model);
+        }
+        if chosen.thinking.is_some() {
+            options.config.thinking = chosen.thinking;
+        }
+        if chosen.system_prompt.is_some() {
+            options
+                .config
+                .system_prompt
+                .clone_from(&chosen.system_prompt);
+        }
+        options
+            .config
+            .append_system_prompt
+            .extend(chosen.append_system_prompt.iter().cloned());
+        options.config.skills.extend(chosen.skills.iter().cloned());
+        options
+            .config
+            .prompt_templates
+            .extend(chosen.prompt_templates.iter().cloned());
         let transcript = spec.transcript.clone().unwrap_or_else(|| {
             pa_core::session::manager::get_session_file_path(
                 &super::replacement_session_dir(&options),
@@ -64,18 +97,26 @@ impl SessionBuilder for DaemonSessions {
             &options,
             self.faux.as_ref(),
             Some(manager),
-            crate::mode::AppMode::Daemon.as_str(),
+            mode.as_str(),
             &super::HeadlessEmbedding::Root { seams },
         )
         .await
         .map_err(anyhow::Error::msg)?;
+        let engine = Arc::new(headless.engine);
+        // A fresh branch starts the chosen goal; a resumed one keeps its own.
+        if let Some(goal) = &chosen.goal {
+            engine
+                .seed_initial_goal(&goal.objective, goal.token_budget)
+                .await
+                .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+        }
         Ok(BuiltSession {
-            engine: Arc::new(headless.engine),
+            engine,
             model: headless.model,
             api_key: headless.api_key,
             agent_dir: options.config.agent_dir.clone(),
             events: DriverEvents::Stream,
-            autonomous: None,
+            autonomous: chosen.autonomous.clone(),
             // A daemon session's modes follow the settings as they change.
             queue_modes: pa_runtime::QueueModes::Settings,
         })

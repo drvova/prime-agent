@@ -137,6 +137,9 @@ pub enum Call {
     /// from the client (or from another session), opening a saved session
     /// for it.
     SessionSend,
+    /// `session.set_mcp_servers`: replaces the MCP servers one client (an
+    /// owner id) supplies an open session.
+    SessionSetMcpServers,
     /// `schedule.add`: schedules a prompt on a session.
     ScheduleAdd,
     /// `schedule.cancel`: cancels a scheduled job.
@@ -165,6 +168,7 @@ impl FromStr for Call {
             "session.compact" => Call::SessionCompact,
             "session.wait_idle" => Call::SessionWaitIdle,
             "session.send" => Call::SessionSend,
+            "session.set_mcp_servers" => Call::SessionSetMcpServers,
             "schedule.add" => Call::ScheduleAdd,
             "schedule.cancel" => Call::ScheduleCancel,
             unknown => {

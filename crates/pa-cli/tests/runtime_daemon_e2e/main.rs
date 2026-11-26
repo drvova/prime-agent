@@ -16,8 +16,11 @@
 //! - The restart owner and the boot reap (phase 7c-2): [`keeper`].
 //! - Scheduled jobs and heartbeats (phase 7d): [`schedules`].
 //! - Subagents, agent messages and the event bus (phase 7e): [`family`].
+//! - What an ACP client needs (phase 7g-2): create options, model switches,
+//!   MCP servers, schedule changes and the bus queries: [`client_surface`].
 #![cfg(unix)]
 
+mod client_surface;
 mod family;
 mod keeper;
 mod reliability;

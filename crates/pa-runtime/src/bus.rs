@@ -210,6 +210,12 @@ where
         lock(&self.inner.registry).remove(id)
     }
 
+    /// The subscriptions on the bus, in id order.
+    #[must_use]
+    pub fn subscriptions(&self) -> Vec<Subscription> {
+        lock(&self.inner.registry).subscriptions()
+    }
+
     /// The bus's subscriptions, for the kernel's event bus to add and remove
     /// its own on any thread.
     pub(crate) fn registry(&self) -> Arc<Mutex<Registry>> {

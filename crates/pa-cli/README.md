@@ -21,7 +21,10 @@ dir's lock (`pa_core::platform::RuntimeDaemonLock`), then `daemon2.sock` beside 
 socket through the supervisor's socket lifecycle (`pa_daemon::socket`: stale-socket cleanup,
 owner-only permissions, the exit cleanup that spares a successor) and `pa_runtime::daemon::run`
 until SIGINT or SIGTERM. Its `SessionBuilder` opens the transcript a session's spec names
-(creating it under its id), builds the engine through the headless assembly (the faux provider
+(creating it under its id), applies the client's `SessionOptions` over the daemon's own run
+options (provider, model, thinking, system prompt and appended ones, skills, prompt templates;
+the autonomous run on `BuiltSession`, the goal seeded on a fresh branch, `executionMode` `acp` as
+the telemetry mode), builds the engine through the headless assembly (the faux provider
 under `PRIME_AGENT_FAUX_SCRIPT`), streams the turn driver's events, and builds subagents as the
 print run does (`print_session::build_subagent`); a session's engine binds its kernel's
 `schedule.*` and `rlm_heartbeat.*` to the seams' `scheduled_jobs` (a print run has none, so its

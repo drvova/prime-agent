@@ -23,8 +23,10 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         Ok(json!({ "jobs": jobs }))
     }
 
-    pub(super) fn schedule_add(&self, args: &Value) -> anyhow::Result<Value> {
+    pub(super) async fn schedule_add(&self, args: &Value) -> anyhow::Result<Value> {
         let id = self.open_session(args)?;
+        // A session's jobs are armed as its engine is built.
+        self.runtime.built_engine(&id).await?;
         let job = self.schedules.add(
             &id,
             &string_arg(args, "schedule")?,

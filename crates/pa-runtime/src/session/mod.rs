@@ -42,7 +42,7 @@ pub(crate) use host::{LiveEngine, Opening};
 pub(crate) use runner::{RuntimeTaskSink, SessionRunner, SCHEDULE_PREFIX};
 
 /// A session to open.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionSpec {
     /// The session's id: the `<id>` of its `agent/<id>/*` topics, and the id
     /// the builder opens or creates its transcript under. `None` mints a new
@@ -63,6 +63,195 @@ pub struct SessionSpec {
     /// of. `None` leaves it to the builder (the print session's selection, a
     /// subagent's under its parent's).
     pub transcript: Option<PathBuf>,
+    /// What a client chose for the session beyond the embedder's defaults
+    /// (`session.create`'s `options`: the flags an ACP launch gives its
+    /// session). The default chooses nothing.
+    pub options: SessionOptions,
+}
+
+/// A client's choices for one session's build, over the embedder's own
+/// (the launch flags a print run takes from its command line): its model,
+/// thinking level, system prompt, resources, autonomous run and goal.
+/// Each `None` or empty field leaves the embedder's choice.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SessionOptions {
+    /// `--provider`.
+    pub provider: Option<String>,
+    /// `--model`, a selector the model registry resolves.
+    pub model: Option<String>,
+    /// `--thinking`.
+    pub thinking: Option<ModelThinkingLevel>,
+    /// `--system-prompt`.
+    pub system_prompt: Option<String>,
+    /// `--append-system-prompt`, each in order.
+    pub append_system_prompt: Vec<String>,
+    /// `--skill` paths.
+    pub skills: Vec<PathBuf>,
+    /// `--prompt-template` paths.
+    pub prompt_templates: Vec<PathBuf>,
+    /// The autonomous run the session starts with (`--autonomous` and its
+    /// limits and gates).
+    pub autonomous: Option<AgentAutonomousConfig>,
+    /// `--goal`: a fresh session starts it; a resumed one keeps its own.
+    pub goal: Option<SessionGoal>,
+    /// The telemetry execution mode the session reports (`acp`); `None` is
+    /// the embedder's.
+    pub execution_mode: Option<String>,
+}
+
+/// The goal a session starts with (`--goal`, `--goal-token-budget`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionGoal {
+    pub objective: String,
+    pub token_budget: Option<u64>,
+}
+
+impl SessionOptions {
+    /// The options a client gave as JSON (`{"provider", "model", "thinking",
+    /// "systemPrompt", "appendSystemPrompt", "skills", "promptTemplates",
+    /// "autonomous", "goal": {"objective", "tokenBudget"},
+    /// "executionMode"}`), refusing a key it does not know.
+    ///
+    /// # Errors
+    ///
+    /// `value` is not an object, names an unknown key, or a value has the
+    /// wrong shape.
+    pub fn from_json(value: &serde_json::Value) -> anyhow::Result<Self> {
+        use serde_json::Value;
+        let object = value
+            .as_object()
+            .context("the session options must be an object")?;
+        let text = |key: &str, value: &Value| -> anyhow::Result<String> {
+            value
+                .as_str()
+                .map(str::to_string)
+                .with_context(|| format!("the `{key}` option must be a string"))
+        };
+        let texts = |key: &str, value: &Value| -> anyhow::Result<Vec<String>> {
+            value
+                .as_array()
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .map(|item| item.as_str().map(str::to_string))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .with_context(|| format!("the `{key}` option must be a list of strings"))
+        };
+        let mut options = SessionOptions::default();
+        for (key, value) in object {
+            if value.is_null() {
+                continue;
+            }
+            match key.as_str() {
+                "provider" => options.provider = Some(text(key, value)?),
+                "model" => options.model = Some(text(key, value)?),
+                "thinking" => {
+                    options.thinking = Some(
+                        serde_json::from_value(value.clone())
+                            .with_context(|| format!("unknown thinking level {value}"))?,
+                    );
+                }
+                "systemPrompt" => options.system_prompt = Some(text(key, value)?),
+                "appendSystemPrompt" => options.append_system_prompt = texts(key, value)?,
+                "skills" => {
+                    options.skills = texts(key, value)?.into_iter().map(PathBuf::from).collect();
+                }
+                "promptTemplates" => {
+                    options.prompt_templates =
+                        texts(key, value)?.into_iter().map(PathBuf::from).collect();
+                }
+                "autonomous" => {
+                    options.autonomous = Some(
+                        serde_json::from_value(value.clone())
+                            .context("the `autonomous` option is not an autonomous config")?,
+                    );
+                }
+                "goal" => {
+                    let objective = value
+                        .get("objective")
+                        .and_then(Value::as_str)
+                        .filter(|objective| !objective.trim().is_empty())
+                        .context("the `goal` option needs an `objective`")?;
+                    let token_budget = match value.get("tokenBudget") {
+                        None | Some(Value::Null) => None,
+                        Some(budget) => Some(
+                            budget
+                                .as_u64()
+                                .context("the goal's `tokenBudget` must be a whole number")?,
+                        ),
+                    };
+                    options.goal = Some(SessionGoal {
+                        objective: objective.to_string(),
+                        token_budget,
+                    });
+                }
+                "executionMode" => options.execution_mode = Some(text(key, value)?),
+                unknown => anyhow::bail!("unknown session option `{unknown}`"),
+            }
+        }
+        Ok(options)
+    }
+
+    /// The options as [`SessionOptions::from_json`] reads them, the chosen
+    /// ones only.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut object = serde_json::Map::new();
+        let mut put = |key: &str, value: serde_json::Value| {
+            object.insert(key.to_string(), value);
+        };
+        if let Some(provider) = &self.provider {
+            put("provider", provider.clone().into());
+        }
+        if let Some(model) = &self.model {
+            put("model", model.clone().into());
+        }
+        if let Some(thinking) = self.thinking {
+            put(
+                "thinking",
+                serde_json::to_value(thinking).unwrap_or_default(),
+            );
+        }
+        if let Some(system_prompt) = &self.system_prompt {
+            put("systemPrompt", system_prompt.clone().into());
+        }
+        if !self.append_system_prompt.is_empty() {
+            put(
+                "appendSystemPrompt",
+                self.append_system_prompt.clone().into(),
+            );
+        }
+        let paths = |paths: &[PathBuf]| -> serde_json::Value {
+            paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .into()
+        };
+        if !self.skills.is_empty() {
+            put("skills", paths(&self.skills));
+        }
+        if !self.prompt_templates.is_empty() {
+            put("promptTemplates", paths(&self.prompt_templates));
+        }
+        if let Some(autonomous) = &self.autonomous {
+            put(
+                "autonomous",
+                serde_json::to_value(autonomous).unwrap_or_default(),
+            );
+        }
+        if let Some(goal) = &self.goal {
+            put(
+                "goal",
+                serde_json::json!({ "objective": goal.objective, "tokenBudget": goal.token_budget }),
+            );
+        }
+        if let Some(mode) = &self.execution_mode {
+            put("executionMode", mode.clone().into());
+        }
+        serde_json::Value::Object(object)
+    }
 }
 
 /// A subagent's place under the session that spawned it (`rlm-spawn`): what

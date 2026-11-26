@@ -20,6 +20,10 @@
 //!   nothing ran fires once, and its next run counts from that fire. A
 //!   timer's own claim (`lastFiredMs`) is cleared whenever it is defined,
 //!   so it never holds back a run the store owes.
+//! - **Changes.** A job made, changed or cancelled (by the kernel, or by
+//!   `schedule.add` and `schedule.cancel`) publishes `agent/<id>/schedules`
+//!   (`{"active": <its active jobs>}`) at the lane's next pass: the old
+//!   daemon's `heartbeats_changed`, which an ACP client reports.
 //! - **Routing**, as the old daemon's: a plain job is a `follow_up` task
 //!   over its prompt; a heartbeat steers its `heartbeat_prompt` row onto the
 //!   session's agent (a running turn reads it at its next step) and queues
@@ -40,6 +44,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::Context as _;
@@ -111,6 +116,9 @@ struct Armed {
     pass: Arc<Notify>,
     /// The timer each job has, by job id: the next run it fires at.
     timers: tokio::sync::Mutex<HashMap<String, String>>,
+    /// A job was made, changed or cancelled since the lane's last pass: the
+    /// pass publishes `agent/<id>/schedules`.
+    changed: Arc<AtomicBool>,
     lane: tokio::task::JoinHandle<()>,
 }
 
@@ -204,6 +212,7 @@ impl<B: SessionBuilder> Schedules<B> {
             binding,
             pass,
             timers: tokio::sync::Mutex::new(HashMap::new()),
+            changed: Arc::new(AtomicBool::new(false)),
             lane,
         });
         armed.insert(id.to_string(), Arc::clone(&session));
@@ -303,6 +312,7 @@ impl<B: SessionBuilder> Schedules<B> {
             schedule_text: schedule.to_string(),
             ..Default::default()
         })?;
+        armed.changed.store(true, Ordering::Release);
         armed.pass.notify_one();
         Ok(job)
     }
@@ -319,6 +329,7 @@ impl<B: SessionBuilder> Schedules<B> {
         let sessions: Vec<Arc<Armed>> = lock(&self.armed).values().cloned().collect();
         for armed in sessions {
             if let Some(cancelled) = armed.store.cancel(job, pa_core::autonomous::now_millis())? {
+                armed.changed.store(true, Ordering::Release);
                 armed.pass.notify_one();
                 return Ok(cancelled);
             }
@@ -350,6 +361,7 @@ impl<B: SessionBuilder> Schedules<B> {
             .filter(|job| job.status == JobStatus::Active)
             .filter_map(|job| Some((job.id, job.next_run_at?)))
             .collect();
+        let changed = armed.changed.swap(false, Ordering::AcqRel);
         let mut timers = armed.timers.lock().await;
         let moved: Vec<String> = timers
             .iter()
@@ -369,6 +381,26 @@ impl<B: SessionBuilder> Schedules<B> {
                     timers.insert(job, at);
                 }
                 Err(error) => tracing::warn!("job {job}'s timer was not defined: {error:#}"),
+            }
+        }
+        if changed {
+            // With its timers in place, the clients following the session
+            // learn its jobs changed (the old daemon's `heartbeats_changed`).
+            let changed = async {
+                runtime
+                    .publish(NewEvent {
+                        topic: Topic::new(format!("agent/{id}/schedules"))?,
+                        source: "schedules".to_string(),
+                        session: Some(id.to_string()),
+                        payload: json!({ "active": timers.len() }),
+                        trust: Trust::Owner,
+                        cause: None,
+                        reply: None,
+                    })
+                    .await
+            };
+            if let Err(error) = changed.await {
+                tracing::warn!("session {id}'s schedule change was not published: {error:#}");
             }
         }
     }
@@ -503,6 +535,7 @@ impl<B: SessionBuilder> Schedules<B> {
                 env: super::session_env(&self.agent_dir, id),
                 subagent: None,
                 transcript: Some(path.to_path_buf()),
+                options: super::session_options(runtime.log(), id),
             })
             .await?;
         self.open
@@ -549,7 +582,7 @@ impl<B: SessionBuilder> SessionJobs for Schedules<B> {
                 return None;
             }
         };
-        let pass = Arc::clone(&armed.pass);
+        let (pass, changed) = (Arc::clone(&armed.pass), Arc::clone(&armed.changed));
         Some(KernelCronWiring {
             store: Arc::clone(&armed.store),
             binding: Some(KernelCronBinding {
@@ -561,6 +594,7 @@ impl<B: SessionBuilder> SessionJobs for Schedules<B> {
             // A job made, changed or cancelled: the lane's next pass moves
             // its timer.
             mutation_hook: Some(Arc::new(move |_mutation| {
+                changed.store(true, Ordering::Release);
                 pass.notify_one();
                 Box::pin(std::future::ready(()))
             })),

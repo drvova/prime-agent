@@ -318,7 +318,15 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `schedule`) speak wire2 to it while it is selected (`crates/pa-cli/src/daemon_command.rs`:
   `sessions.list` rows in the supervisor's summary shape, `session.send` delivering the
   supervisor's `agent_message` row and waking a saved session, `schedules`/`schedule.add`/
-  `schedule.cancel` on the same job store). The TUI and ACP still speak only to the supervisor.
+  `schedule.cancel` on the same job store). For the ACP client it answers what that client asks
+  of the supervisor (phase 7g-2): `session.create` takes the client's launch `options` (model,
+  thinking level, system prompt, resources, autonomous run, goal, execution mode), kept in the
+  database so the session's revival or wake builds it the same way; `session.set_model`
+  switches a running session within the settings' `allowedModels` (failing closed on unreadable
+  settings); `session.set_mcp_servers` admits one client's MCP servers, fenced by its owner id;
+  a scheduled job made or cancelled publishes `agent/<id>/schedules`; and the `models`,
+  `settings`, `sources` and `subscriptions` queries answer. A root session stopped and opened
+  again waits for its new engine's build. The TUI and ACP still speak only to the supervisor.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,

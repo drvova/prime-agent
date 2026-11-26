@@ -71,8 +71,8 @@ pub use log_stores::{LogEventStore, LogStateStore, LogTaskStore};
 pub use routes::{Announced, ModelCall, ModelCaller, TaskRequest, TaskSink};
 pub use runtime::{Runtime, RuntimeOptions};
 pub use session::{
-    BuiltSession, DriverEvents, Finished, QueueModes, SessionBuilder, SessionSeams, SessionSpec,
-    SettleAfter, Settled, SubagentSpec,
+    BuiltSession, DriverEvents, Finished, QueueModes, SessionBuilder, SessionGoal, SessionOptions,
+    SessionSeams, SessionSpec, SettleAfter, Settled, SubagentSpec,
 };
 pub use sources::{SourceDefinition, SourceLifetime};
 pub use store::{EventStore, MemoryEventStore, MemoryStateStore, StateKey, StateStore, StateWrite};

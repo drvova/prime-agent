@@ -27,8 +27,11 @@ use crate::runtime::{AfterAbort, Runtime};
 use crate::session::{SessionBuilder, SessionSpec};
 use crate::wire::{Attached, Call, Handlers, Query};
 
+mod bus;
 mod jobs;
+mod mcp;
 mod messaging;
+mod model;
 mod queue;
 mod state;
 mod summary;
@@ -144,6 +147,10 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         let named = optional_string_arg(&args, "session")?;
         let given_path = optional_string_arg(&args, "path")?.map(PathBuf::from);
         let given_cwd = optional_string_arg(&args, "cwd")?.map(PathBuf::from);
+        let options = match args.get("options") {
+            None | Some(Value::Null) => None,
+            Some(options) => Some(crate::SessionOptions::from_json(options)?),
+        };
         let (id, path) = match (named, given_path) {
             (Some(_), Some(_)) => {
                 anyhow::bail!("give session.create a `session` or a `path`, not both")
@@ -181,6 +188,25 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 .await
                 .context("the lease's thread panicked")??
         };
+        // Given options are kept for the session's later builds (its
+        // revival, a scheduled wake); a session created again without any
+        // keeps the ones it was created with.
+        let options = match options {
+            Some(options) => {
+                self.runtime
+                    .log()
+                    .put_value(
+                        super::OPTIONS_SCOPE,
+                        &format!("options:{id}"),
+                        options.to_json().to_string(),
+                        pa_log::Origin::Written,
+                    )
+                    .wait()
+                    .await?;
+                options
+            }
+            None => super::session_options(self.runtime.log(), &id),
+        };
         self.runtime
             .create_session(SessionSpec {
                 id: Some(id.clone()),
@@ -189,6 +215,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 env: super::session_env(&self.agent_dir, &id),
                 subagent: None,
                 transcript: Some(path.clone()),
+                options,
             })
             .await?;
         self.open
@@ -290,34 +317,6 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             "deleted": true,
             "trash": removal == pa_core::session::store::TranscriptRemoval::Trash,
         }))
-    }
-
-    async fn set_model(&self, args: &Value) -> anyhow::Result<Value> {
-        let (id, path) = self.saved_session(
-            args,
-            "changing its model (a running session's model changes in phase 7b)",
-        )?;
-        let selector = string_arg(args, "model")?;
-        let auth = pa_core::auth::AuthStorage::create(&self.agent_dir);
-        let registry =
-            pa_core::models::ModelRegistry::create(auth, self.agent_dir.join("models.json"));
-        let resolved = pa_core::models::resolve_cli_model(
-            /*cli_provider*/ None,
-            &selector,
-            registry.get_all(),
-        );
-        if let Some(error) = resolved.error {
-            anyhow::bail!(error);
-        }
-        let model = resolved
-            .model
-            .with_context(|| format!("no model matches {selector:?}"))?;
-        let (provider, model_id) = (model.provider.clone(), model.id.clone());
-        self.change_saved(path, move |manager| {
-            manager.append_model_change(&provider, &model_id)?;
-            Ok(json!({ "session": id, "provider": provider, "modelId": model_id }))
-        })
-        .await
     }
 
     async fn set_effort(&self, args: &Value) -> anyhow::Result<Value> {
@@ -424,9 +423,10 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::SessionContextTree => self.context_tree(&args).await,
             Query::SessionBreakdown => self.breakdown(&args).await,
             Query::Schedules => self.schedules(&args),
-            Query::Settings | Query::Models | Query::Sources | Query::Subscriptions => Err(
-                anyhow::anyhow!("{query:?} is not yet in the runtime daemon (phase 7c+)"),
-            ),
+            Query::Settings => self.settings(&args).await,
+            Query::Models => self.models().await,
+            Query::Sources => self.sources().await,
+            Query::Subscriptions => Ok(self.subscriptions()),
         }
     }
 
@@ -449,7 +449,8 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionCompact => self.compact(&args).await,
             Call::SessionWaitIdle => self.wait_idle(&args).await,
             Call::SessionSend => self.send(&args).await,
-            Call::ScheduleAdd => self.schedule_add(&args),
+            Call::SessionSetMcpServers => self.set_mcp_servers(&args).await,
+            Call::ScheduleAdd => self.schedule_add(&args).await,
             Call::ScheduleCancel => self.schedule_cancel(&args),
         }
     }

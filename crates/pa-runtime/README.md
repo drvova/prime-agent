@@ -306,9 +306,29 @@ SQLite implementations over `pa-log`.
   (`"reused": true`), the old daemon's create-open reuse;
   `session.rename`, `session.label` and `session.set_effort` change an open session through its
   engine (on the session's runtime, once its first build is done: `Runtime::built_engine`, which
-  the state queries wait on too) and a saved one under its lease; `session.set_model` and
-  `session.delete` change saved sessions only (a running session's model switch is not yet
-  there);
+  the state queries wait on too) and a saved one under its lease; `session.delete` changes saved
+  sessions only. `session.create` also takes `options` (`SessionOptions`: `provider`, `model`,
+  `thinking`, `systemPrompt`, `appendSystemPrompt`, `skills`, `promptTemplates`, `autonomous`,
+  `goal: {objective, tokenBudget?}`, `executionMode`; an unknown key is refused), the launch
+  choices an ACP client forwards, handed to the builder on the `SessionSpec` and kept under `kv`
+  `runtime-daemon`/`options:<id>`, so the session's revival and scheduled wake build it the same
+  way and a create without options keeps them. For the ACP client (`daemon/handlers/model.rs`,
+  `mcp.rs`, `bus.rs`): the `models` query lists the signed-in models; `session.set_model`
+  (`{session, provider, modelId}` or `{session, model}`) resolves through the model registry,
+  enforces the settings' `allowedModels` (refusing on unreadable global settings), and on an
+  open session switches the running agent, records the `model_change` row through its engine
+  and makes it the settings' default, the old daemon's `set_model`; `session.set_mcp_servers`
+  (`{session, owner, servers}`) replaces the MCP servers one client supplies an open session in
+  its engine's MCP manager, fenced by the owner id (another owner's list is refused, its clear
+  changes nothing), refused while a turn runs, a failed replacement rolled back, the old daemon's
+  `replace_acp_mcp_servers`; the `sources` query lists the kept timer and watch sources (with
+  whether each runs) and the run-defined ones running, `subscriptions` the bus's subscriptions,
+  and `settings` (`{session?}`) the effective settings for a session's or the daemon's cwd with
+  what could not be read. A scheduled job made, changed or cancelled publishes
+  `agent/<id>/schedules` (`{"active": n}`) once its timer is in place, the old daemon's
+  `heartbeats_changed`. A root session stopped and opened again waits for its new engine's
+  build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
+  build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
   `session.export` writes it as JSONL (`export_jsonl`). An open session's turns and queue
   (`daemon/handlers/queue.rs`): `session.abort` aborts the running turn (its task ends

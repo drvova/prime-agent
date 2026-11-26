@@ -117,6 +117,14 @@ impl OpenSessions {
             .map(|session| session.path.clone())
     }
 
+    /// The working directory of open session `id`.
+    pub(super) fn cwd(&self, id: &str) -> Option<PathBuf> {
+        lock(&self.open)
+            .open
+            .get(id)
+            .map(|session| session.cwd.clone())
+    }
+
     pub(super) fn contains(&self, id: &str) -> bool {
         lock(&self.open).open.contains_key(id)
     }
@@ -278,6 +286,7 @@ async fn revive_one<B: SessionBuilder>(
         env: super::session_env(agent_dir, id),
         subagent: None,
         transcript: Some(session.path.clone()),
+        options: super::session_options(log, id),
     };
     match running {
         // Only queued work: the daemon died between turns.
