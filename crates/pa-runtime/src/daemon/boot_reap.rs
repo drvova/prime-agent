@@ -25,6 +25,15 @@ use tokio::io::AsyncWriteExt as _;
 /// daemon under load answers well inside it.
 const PROBE_WAIT: Duration = Duration::from_secs(3);
 
+/// How long a stopped holder may take to let go of the lock. The stop ladder
+/// counts a zombie as gone, but a multi-threaded process's leader turns
+/// zombie while its other threads are still exiting with the lock's file
+/// open, so the lock frees a moment after the stop returns.
+const RELEASE_WAIT: Duration = Duration::from_secs(5);
+
+/// How often the lock is tried while a stopped holder lets go of it.
+const RELEASE_POLL: Duration = Duration::from_millis(10);
+
 /// Takes the agent dir's runtime-daemon lock for a daemon serving `socket`,
 /// kept by `keeper`, reaping a wedged predecessor on the same socket first.
 ///
@@ -71,7 +80,16 @@ pub async fn take_lock(
             }
         }
     }
-    RuntimeDaemonLock::try_acquire(agent_dir, socket, keeper)?.ok_or_else(refusal)
+    let released_by = tokio::time::Instant::now() + RELEASE_WAIT;
+    loop {
+        if let Some(lock) = RuntimeDaemonLock::try_acquire(agent_dir, socket, keeper)? {
+            return Ok(lock);
+        }
+        if tokio::time::Instant::now() >= released_by {
+            return Err(refusal());
+        }
+        tokio::time::sleep(RELEASE_POLL).await;
+    }
 }
 
 /// Whether a daemon on `socket` answers a wire2 hello with any frame within
