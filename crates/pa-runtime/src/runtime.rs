@@ -569,16 +569,24 @@ impl<B: SessionBuilder> Runtime<B> {
         self.queue.session_idle(session).await;
     }
 
-    /// Waits until `session` is at rest: no task queued or running, and every
-    /// subagent below it settled ([`crate::subagents::Subagents::subtree_settled`]).
-    /// A child's settle can queue work, so the wait goes back to the lane until
-    /// both hold at once. Answers at once for a session not open.
+    /// Waits until `session` is at rest: no task queued or running, no row
+    /// delivered to it waiting on its agent (the wake it queued has not
+    /// reached its lane yet, [`crate::subagents::Subagents::rows_waiting`]),
+    /// and every subagent below it settled
+    /// ([`crate::subagents::Subagents::subtree_settled`]). A child's settle
+    /// can queue work (the notice turn it wakes the session for), so the wait
+    /// goes back to the lane until all hold at once. Answers at once for a
+    /// session not open.
     pub(crate) async fn at_rest(&self, session: &str) {
+        let subagents = self.sessions.subagents();
         loop {
-            self.idle(session).await;
-            self.sessions.subagents().subtree_settled(session).await;
+            self.queue
+                .session_idle_and(session, || !subagents.rows_waiting(session))
+                .await;
+            subagents.subtree_settled(session).await;
             let lane = self.queue.lane(session);
-            if lane.running.is_none() && lane.queued.is_empty() {
+            if lane.running.is_none() && lane.queued.is_empty() && !subagents.rows_waiting(session)
+            {
                 return;
             }
         }

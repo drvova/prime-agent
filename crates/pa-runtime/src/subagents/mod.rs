@@ -228,6 +228,14 @@ impl Subagents {
         }
     }
 
+    /// Whether a row delivered to open session `id` waits on its agent: no
+    /// task has taken it yet. False for a session not open or not built.
+    pub(crate) fn rows_waiting(&self, id: &str) -> bool {
+        self.node(id)
+            .and_then(|node| node.engine())
+            .is_some_and(|engine| engine.session.agent().has_queued_messages())
+    }
+
     /// Delivers `row` to open session `id` ([`deliver_row`]) once its
     /// engine is built.
     ///
@@ -718,10 +726,22 @@ pub(crate) async fn has_unsettled_rlm_work(node: &Arc<Node>) -> bool {
     })
 }
 
-/// Drives `node`'s session to quiescence: runs the delivered rows as turns
-/// (through the turn-boundary pair), waits out unsettled children, and
-/// returns once the session is idle with an empty queue and a settled
-/// subtree; whether any turn ran.
+/// How far [`drive_to_quiescence`] drives a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rest {
+    /// Until the session and its whole subtree are at rest
+    /// ([`has_unsettled_rlm_work`]): a subagent's task, and the settle.
+    Subtree,
+    /// Until no row waits on the session's own agent: a root's wake in the
+    /// runtime daemon, which runs the rows delivered to it as the old
+    /// daemon's notice turn does and leaves its children to wake it again.
+    OwnRows,
+}
+
+/// Drives `node`'s session to `rest`: runs the delivered rows as turns
+/// (through the turn-boundary pair), waits out unsettled children (for
+/// [`Rest::Subtree`]), and returns once the session is idle with an empty
+/// queue (and a settled subtree); whether any turn ran.
 ///
 /// # Errors
 ///
@@ -734,6 +754,7 @@ pub(crate) async fn drive_to_quiescence(
     model: &Model,
     api_key: Option<String>,
     global_harness_dir: PathBuf,
+    rest: Rest,
 ) -> Result<bool, String> {
     let mut drained = false;
     loop {
@@ -765,7 +786,13 @@ pub(crate) async fn drive_to_quiescence(
             drained = true;
             continue;
         }
-        if !streaming && !has_unsettled_rlm_work(node).await {
+        let at_rest = !streaming
+            && match rest {
+                Rest::Subtree => !has_unsettled_rlm_work(node).await,
+                // No row waits: the branch above would have run it.
+                Rest::OwnRows => true,
+            };
+        if at_rest {
             // A settle that landed mid-scan fired the armed wake: poll it
             // once instead of returning a false quiescence (the zero timeout
             // is the one non-blocking poll).
@@ -822,7 +849,8 @@ async fn settle_child(child: &Arc<Child>, run_error: Option<String>, trust: Trus
         .session_name()
         .unwrap_or_else(|| child.rlm_child_id.clone());
     let parent = child.node.parent_node();
-    {
+    // Whether the parent was given a notice: it takes it as a delivered row.
+    let notified = {
         let mut state = child.state.lock().await;
         if state.settled || child.node.is_disposed() {
             return;
@@ -871,26 +899,29 @@ async fn settle_child(child: &Arc<Child>, run_error: Option<String>, trust: Trus
         // every reader of `settled` reads it under this same lock, so none
         // can observe the settled child before the parent's queue holds its
         // row.
-        if let (Some(parent), Some(notice)) = (&parent, notice.filter(|_| !child.factory)) {
-            let delivered = match serde_json::to_value(notice) {
-                Ok(value) => deliver_row(parent, value),
-                Err(error) => Err(anyhow::anyhow!(
-                    "the notice failed its wire conversion: {error}"
-                )),
-            };
-            if let Err(error) = delivered {
-                tracing::error!("an RLM child notice was not delivered: {error:#}");
-            }
-        }
+        let notified = match (&parent, notice.filter(|_| !child.factory)) {
+            (Some(parent), Some(notice)) => serde_json::to_value(notice)
+                .map_err(|error| anyhow::anyhow!("the notice failed its wire conversion: {error}"))
+                .and_then(|value| deliver_row(parent, value))
+                .inspect_err(|error| {
+                    tracing::error!("an RLM child notice was not delivered: {error:#}");
+                })
+                .is_ok(),
+            (None, _) | (_, None) => false,
+        };
         if engine
             .as_ref()
             .is_some_and(|engine| engine.session.agent().has_queued_messages())
         {
             retask(child, &mut state, trust);
         }
-    }
+        notified
+    };
     if let Some(parent) = parent {
         parent.activity.notify_waiters();
+        if notified {
+            wake_on_delivery(&parent, trust).await;
+        }
     }
 }
 
@@ -902,7 +933,7 @@ fn retask(child: &Child, state: &mut ChildState, trust: Trust) {
     state.status = "running";
     state.started_at_ms = now_ms();
     state.error = None;
-    if let Err(error) = wake(&child.node, trust) {
+    if let Err(error) = wake(&child.node, trust, /*priority*/ None) {
         tracing::error!(
             "subagent {} was not given its next task: {error:#}",
             child.rlm_child_id
@@ -910,10 +941,26 @@ fn retask(child: &Child, state: &mut ChildState, trust: Trust) {
     }
 }
 
-/// Gives `node`'s session, when it is a settled child, its next task over the
-/// rows delivered to it, with `trust`.
-async fn retask_if_settled(node: &Arc<Node>, trust: Trust) {
+/// Has `node`'s session take a row just delivered to it, with `trust`: a
+/// settled child is given its next task over it; a root in the runtime
+/// daemon is woken by a `Steer` empty input (a running turn that still
+/// reads steering takes it, otherwise it runs as its own task over the
+/// rows, the old daemon's notice turn). A root in a headless run leaves it
+/// to its settle.
+async fn wake_on_delivery(node: &Arc<Node>, trust: Trust) {
     let Some(parent) = node.parent_node() else {
+        let in_daemon = node
+            .tree
+            .upgrade()
+            .is_some_and(|tree| tree.daemon().is_some());
+        if in_daemon && !node.is_disposed() {
+            if let Err(error) = wake(node, trust, Some(Priority::Steer)) {
+                tracing::error!(
+                    "session {} was not woken for its delivered row: {error:#}",
+                    node.session_id
+                );
+            }
+        }
         return;
     };
     for child in parent.children.lock().await.iter() {
@@ -927,8 +974,9 @@ async fn retask_if_settled(node: &Arc<Node>, trust: Trust) {
 }
 
 /// Queues a task on `node`'s session that runs the rows delivered to it: an
-/// empty input on its `agent/<id>/input`, with `trust`.
-fn wake(node: &Node, trust: Trust) -> anyhow::Result<()> {
+/// empty input on its `agent/<id>/input`, with `trust` and `priority` (the
+/// route's when `None`).
+fn wake(node: &Node, trust: Trust, priority: Option<Priority>) -> anyhow::Result<()> {
     let tree = node
         .tree
         .upgrade()
@@ -936,7 +984,7 @@ fn wake(node: &Node, trust: Trust) -> anyhow::Result<()> {
     let input = AgentInput {
         text: String::new(),
         images: Vec::new(),
-        priority: None,
+        priority,
     };
     tree.outbox.send(NewEvent {
         topic: Topic::new(format!("agent/{}/input", node.session_id))?,

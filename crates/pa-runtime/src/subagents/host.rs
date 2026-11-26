@@ -195,7 +195,7 @@ impl RlmSubagentHost for SessionSubagents {
                 timestamp: now_ms(),
             });
             deliver_row(&child_node, kickoff_row)?;
-            wake(&child_node, node.trust.current())?;
+            wake(&child_node, node.trust.current(), /*priority*/ None)?;
             let selector = lock(&child_node.adopted)
                 .model_selector
                 .clone()

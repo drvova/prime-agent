@@ -304,7 +304,13 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   children. `agent_message.wait` parks on pa-core's receiving side
   (`pa_core::session_engine::agent_messaging::wait_for_arrival`, the supervisor's too) and refuses
   a cycle from the wait edges of every session it runs; `agent_observe.*` reads the family it
-  runs. Its kernel timer and watch sources are kept in the database and run again after a
+  runs. A row delivered to one of its root sessions (a settled child's notice, an agent
+  message within the sender's wake budget, a steered kernel notice) wakes the session as the
+  supervisor's notice turn does: a `Steer` empty input that a turn still reading steering takes,
+  and that otherwise runs as its own task over the session's own rows, not waiting for its
+  children; a `Record` notice only persists and a `WakeIdle` one is dropped by a busy session
+  (`pa_core::session_engine::bash_notices`). `session.wait_idle` waits for those notice turns
+  too. Its kernel timer and watch sources are kept in the database and run again after a
   restart for the subscriptions the bus keeps. The TUI and ACP still speak only to the
   supervisor.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every

@@ -8,8 +8,11 @@
 //!   parent's context tree and breakdown show it, and after the daemon is
 //!   killed and started again the reopened parent finds it (roster, observe,
 //!   delete, whose tombstone the ledger records);
+//! - a child that settles, or messages its parent, while the parent is idle
+//!   wakes the parent for a turn over the row, with no prompt of its own;
 //! - `session.wait_idle` answers only once the subagents below the session
-//!   have settled, not when its own task ends;
+//!   have settled and the notice turn their settle woke it for has run, not
+//!   when its own task ends;
 //! - `agent_message.wait` ends on the awaited sibling's message, answers a
 //!   wait that would close a cycle at once, and times out;
 //! - a kernel timer source keeps firing for its subscription after the
@@ -70,6 +73,14 @@ fn await_marker(marker: &Path) -> String {
 /// A form that writes `marker`.
 fn mark(marker: &Path) -> String {
     format!("(fs-write {:?} \"ready\")", marker.display().to_string())
+}
+
+/// Session `id`'s transcript, as one JSON string.
+async fn transcript_text(client: &mut Client, id: &str) -> String {
+    ok(client
+        .query("transcript.page", json!({ "session": id, "limit": 500 }))
+        .await)
+    .to_string()
 }
 
 /// The records of the spawn ledger under `agent_dir`, as `(op, childId)`.
@@ -232,10 +243,89 @@ async fn a_childs_family_is_recorded_shown_and_reopened_after_a_restart() {
     );
 }
 
+/// A row delivered to an idle root runs as its own turn (the old daemon's
+/// notice turn): the child is held until the parent's task has ended, and
+/// its settle's terminal notice is answered with no prompt sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_child_settling_while_its_parent_is_idle_wakes_the_parent() {
+    let bed = Bed::new();
+    let records = bed.dir.path().join("records");
+    std::fs::create_dir_all(&records).unwrap();
+    let release = records.join("release");
+    let _daemon = bed.runtime_daemon(&json!({
+        "responses": [
+            cell("spawning", r#"(rlm-spawn "wait to be released" #:name "kid")"#),
+            "spawn turn done",
+            "notice seen",
+        ],
+        "children": {
+            "kid": { "responses": [cell("waiting", &await_marker(&release)), "kid done"] },
+        },
+    }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = ok(client.call("session.create", json!({})).await);
+    let id = created["session"].as_str().unwrap().to_string();
+    client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
+    run_turn(&mut client, &id, "spawn the kid").await;
+    // The parent is idle now: its task ended with the child still held.
+    std::fs::write(&release, "go").unwrap();
+    until(WAIT, "the parent's notice turn", async || {
+        transcript_text(&mut client, &id)
+            .await
+            .contains("notice seen")
+            .then_some(())
+    })
+    .await;
+}
+
+/// An agent message to an idle root wakes it (a wake of the sender's
+/// budget): the child messages its parent once the parent's task has ended,
+/// and the parent answers it with no prompt sent. The child's reply
+/// withholds its terminal notice, so the message is the parent's one row.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_to_an_idle_parent_wakes_it() {
+    let bed = Bed::new();
+    let records = bed.dir.path().join("records");
+    std::fs::create_dir_all(&records).unwrap();
+    let release = records.join("release");
+    let reply = format!(
+        "{}\n{}",
+        await_marker(&release),
+        record(
+            r#"(agent-message-send "kid reply" #:receiver-role "parent")"#,
+            "send",
+            &records,
+        )
+    );
+    let _daemon = bed.runtime_daemon(&json!({
+        "responses": [
+            cell("spawning", r#"(rlm-spawn "reply when released" #:name "kid")"#),
+            "spawn turn done",
+            "message seen",
+        ],
+        "children": { "kid": { "responses": [cell("replying", &reply), "kid done"] } },
+    }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = ok(client.call("session.create", json!({})).await);
+    let id = created["session"].as_str().unwrap().to_string();
+    client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
+    run_turn(&mut client, &id, "spawn the kid").await;
+    std::fs::write(&release, "go").unwrap();
+    let sent = recorded(&records, "send").await;
+    assert_eq!(sent["deliveryStatus"], json!("delivered"), "{sent}");
+    until(WAIT, "the parent's message turn", async || {
+        transcript_text(&mut client, &id)
+            .await
+            .contains("message seen")
+            .then_some(())
+    })
+    .await;
+}
+
 /// `session.wait_idle` waits for the subagents too (the old daemon's
 /// `wait_for_idle` with `waitForRlmQuiescence`): the parent's task ends while
 /// its child's held turn still runs, and the wait answers only once the child
-/// has settled.
+/// has settled and the notice turn its settle woke the parent for has run.
 #[tokio::test(flavor = "multi_thread")]
 async fn waiting_for_idle_waits_for_the_subagents_to_settle() {
     let bed = Bed::new();
@@ -247,8 +337,7 @@ async fn waiting_for_idle_waits_for_the_subagents_to_settle() {
         &records,
     );
     let _daemon = bed.runtime_daemon(&json!({
-        "responses": [cell("spawning", &spawn), "spawn turn done"],
-        "repeatLastResponse": true,
+        "responses": [cell("spawning", &spawn), "spawn turn done", "notice seen"],
         "children": { "kid": { "responses": [{ "text": "kid done", "delayMs": 5_000 }] } },
     }));
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
@@ -271,7 +360,15 @@ async fn waiting_for_idle_waits_for_the_subagents_to_settle() {
             .await),
         json!({ "session": id })
     );
-    assert_eq!(status(&mut client).await, json!("completed"));
+    assert_eq!(
+        (
+            status(&mut client).await,
+            transcript_text(&mut client, &id)
+                .await
+                .contains("notice seen")
+        ),
+        (json!("completed"), true)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -14,7 +14,8 @@
 //!   to retry.
 //!
 //! A delivered message is today's `agent_message` row, steered onto the
-//! receiver; a settled child is given its next task over it. The sender
+//! receiver; a settled child is given its next task over it, and a root in
+//! the runtime daemon is woken for it. The sender
 //! reads the outcome once its publish returns: the route has run by then.
 
 use std::collections::{HashMap, VecDeque};
@@ -29,7 +30,7 @@ use pa_core::session_engine::agent_messaging::{
 use pa_types::event_log::Event;
 use serde_json::{json, Value};
 
-use super::{deliver_row, lock, retask_if_settled, Subagents};
+use super::{deliver_row, lock, wake_on_delivery, Subagents};
 
 /// What `agent/<to>/inbox` carries: `{id, from, row}`.
 #[derive(Debug, Clone, PartialEq)]
@@ -156,7 +157,7 @@ impl Subagents {
             // The receiving side of the receiver's waits hears every
             // delivery it took.
             receiver.waits.deliver(arrival);
-            retask_if_settled(&receiver, event.event.trust).await;
+            wake_on_delivery(&receiver, event.event.trust).await;
             anyhow::Ok(if queued {
                 AgentMessageDeliveryStatus::Queued
             } else {

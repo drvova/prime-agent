@@ -202,7 +202,7 @@ SQLite implementations over `pa-log`.
   receiver in 10 minutes (pa-core's constants; past them the receipt is `wake_refused` with
   `retryAfterMs`, and nothing is delivered); the sending side keeps pa-core's message limit and
   rate bucket. A delivered row is steered onto the receiver, and a settled child is given its
-  next task over it. The spawn's and the retask's empty inputs carry no cause: the depth bound
+  next task over it; in the runtime daemon a root is woken for it (below). The spawn's and the retask's empty inputs carry no cause: the depth bound
   and the wake budget bound them. The kernel's notices (a background command's end, loss or
   silence, a background cell's end, a factory milestone) are admitted by the session's notice
   sink as the daemon's worker admits them, at once: a `Steer` one steers its row onto the
@@ -211,7 +211,13 @@ SQLite implementations over `pa-log`.
   `session/<id>/bash/quiet` (a `[bash-quiet]`) or `session/<id>/bash/done` (every other) as
   `{taken: steered | recorded | dropped_busy, row}`, and the runtime's notice subscription
   (`runtime/bash`) wakes the session for a steered one: its drive looks again and a settled
-  child is given its next task. `rlm-collect` waits on the parent's activity (each settle fires
+  child is given its next task. In the runtime daemon a root is woken for every row delivered
+  to it (a settled child's notice, a delivered agent message, a steered kernel notice), as the
+  old daemon's notice turn: a `Steer` empty input on `agent/<id>/input`, which a running turn
+  that still reads steering takes with nothing to hand over (the row is already on its agent)
+  and which otherwise runs as its own task; a root's empty-input task runs the rows on its own
+  agent (`Rest::OwnRows`) and ends without waiting for its children, whose settles wake it
+  again. A headless root queues no wake: its settle drives the rows. `rlm-collect` waits on the parent's activity (each settle fires
   it) to its deadline, and ends with its cell when the kernel stops it; `rlm-list-subagents`,
   `rlm-delete-subagent` (the child and its subtree cancelled, their kernels disposed and
   sessions closed) and `rlm-rename` read and change the roster. A session is at rest when no
@@ -303,9 +309,10 @@ SQLite implementations over `pa-log`.
   `session.abort_and_send_queued` keeps the lane going, so those steers run next, together;
   `session.withdraw` cancels the queued tasks and answers them in run order;
   `session.restore` (`{messages}`) publishes them back as steers; `session.wait_idle` answers
-  once the session is at rest (`Runtime::at_rest`: nothing queued or running in its lane, and
-  every subagent below it settled, `Subagents::subtree_settled`; the old daemon's `wait_for_idle`
-  with `waitForRlmQuiescence`); `session.compact`
+  once the session is at rest (`Runtime::at_rest`: nothing queued or running in its lane, no
+  delivered row waiting on its agent for the wake it queued, and every subagent below it
+  settled, `Subagents::subtree_settled`, so the notice turn a child's settle wakes it for has
+  run; the old daemon's `wait_for_idle` with `waitForRlmQuiescence`); `session.compact`
   (`{instructions?}`) queues `/compact` in the lane, refused while it is parked, and answers its
   task's outcome with the `compaction_end` it streamed; the `tasks` query answers the lane
   (running, queued, parked). The state queries (`daemon/handlers/state.rs`) read the session

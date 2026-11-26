@@ -51,7 +51,7 @@ use crate::events::{BusEvents, SessionEvents};
 use crate::lock;
 use crate::subagents::{
     dispose, drive_to_quiescence, has_unsettled_rlm_work, kernel_notice_sink,
-    late_sent_agent_message_sink, FamilyMessages, FamilyObserve, Node, SessionSubagents,
+    late_sent_agent_message_sink, FamilyMessages, FamilyObserve, Node, Rest, SessionSubagents,
 };
 use crate::tasks::{Steered, TaskOutcome};
 use crate::trust::{RunningTask, TaskTrust, TrustGate, WorkingDir};
@@ -343,11 +343,24 @@ impl SessionHost {
     /// offered to a task that has not reached this thread yet (the queue
     /// offers the steers queued behind a steer as it starts it) is kept for
     /// that task's turn, which takes it as it starts.
+    ///
+    /// An empty steer is a wake over rows already on the agent (a root's in
+    /// the runtime daemon): a turn that still reads steering takes it with
+    /// nothing to hand over, and any other runs it as its own task.
     pub(crate) fn steer(&self, running: &Task, steer: &Task) -> Steered {
         if steer.trust.lowest(running.trust) != running.trust {
             return Steered::Declined;
         }
         let mut turn = lock(&self.control.turn);
+        if steer.prompt.is_empty() {
+            return match (&turn.agent, &turn.task) {
+                (Some(_), Some(task)) if turn.steerable && *task == running.id => {
+                    turn.steered = true;
+                    Steered::Taken
+                }
+                _ => Steered::Declined,
+            };
+        }
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| {
@@ -1131,19 +1144,40 @@ impl<B: SessionBuilder> Lifetime<B> {
             }
         }
         // A subagent's task ends at rest: the rows its turns left and its own
-        // subagents' settles run first, so its `done` follows its subtree.
+        // subagents' settles run first, so its `done` follows its subtree. A
+        // root's empty input (its wake in the runtime daemon) runs the rows
+        // delivered to it and leaves its subagents to wake it again.
         if task.prompt.is_empty() || self.node.is_subagent() {
-            if let Err(error) = drive_to_quiescence(
-                &self.node,
-                engine,
-                boundary,
-                &built.model,
-                built.api_key.clone(),
-                global_harness_dir.clone(),
-            )
-            .await
-            {
-                return turn_failed(error);
+            let rest = if self.node.is_subagent() {
+                Rest::Subtree
+            } else {
+                Rest::OwnRows
+            };
+            loop {
+                if let Err(error) = drive_to_quiescence(
+                    &self.node,
+                    engine,
+                    boundary,
+                    &built.model,
+                    built.api_key.clone(),
+                    global_harness_dir.clone(),
+                    rest,
+                )
+                .await
+                {
+                    return turn_failed(error);
+                }
+                // A root's wake takes no steer from here on (a later wake runs
+                // as its own task); a row whose wake it took as the drive
+                // returned runs now, once.
+                let steerable = match rest {
+                    Rest::OwnRows => std::mem::take(&mut lock(&self.control.turn).steerable),
+                    Rest::Subtree => false,
+                };
+                let taken_late = steerable && engine.session.agent().has_queued_messages();
+                if !taken_late {
+                    break;
+                }
             }
         }
         match latest_assistant_error(engine).await {
@@ -1275,6 +1309,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                 model,
                 built.api_key.clone(),
                 global_harness_dir.clone(),
+                Rest::Subtree,
             )
             .await?
             {

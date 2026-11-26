@@ -304,12 +304,24 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
 
     /// Waits until no task of `session` is queued or running.
     pub async fn session_idle(&self, session: &str) {
+        self.session_idle_and(session, || true).await;
+    }
+
+    /// Waits until no task of `session` is queued or running and `also`
+    /// holds, read again on every change to a lane: `also` must turn true
+    /// on its own or by work that changes a lane.
+    pub(crate) async fn session_idle_and(&self, session: &str, also: impl Fn() -> bool) {
         // Subscribed before the lanes are read: every change to a lane after
         // the read republishes the busy count and wakes the wait. The lanes
         // are not read inside the watch's lock, which their writers take
         // while holding the lanes.
         let mut busy = self.inner.busy.subscribe();
-        while lock(&self.inner.lanes).by_session.contains_key(session) {
+        loop {
+            // `also` is read with the lanes unlocked.
+            let in_lane = lock(&self.inner.lanes).by_session.contains_key(session);
+            if !in_lane && also() {
+                return;
+            }
             // The sender lives in `self`, so the wait cannot see it closed.
             let _ = busy.changed().await;
         }
