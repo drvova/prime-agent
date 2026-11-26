@@ -1,6 +1,7 @@
 //! The process panic hook's accounting, in this process.
 
 use super::*;
+use pa_core::session::crash::{daemon_crashes, install_panic_hook};
 use pa_core::session::hosted::HOSTED_PID_BASE;
 
 /// The crash each of `messages` left in `crashes`, without its time.
@@ -53,6 +54,7 @@ fn a_panic_is_the_sessions_or_the_daemons_and_a_caught_one_is_neither() {
         BTreeSet::new(),
     );
     scope.set_slot(Arc::clone(&control));
+    scope.set_slot(Arc::new(HostControl::panic_sink(&control)));
     let (message, handled) = (session.clone(), caught.clone());
     std::thread::spawn(move || {
         let _scope = session_scope::enter(Some(scope));

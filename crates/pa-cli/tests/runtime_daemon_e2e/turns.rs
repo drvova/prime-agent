@@ -28,7 +28,7 @@ use super::{ok, turn_rows, Bed, Client};
 const ABORT_SETTLE: Duration = Duration::from_secs(20);
 
 /// A scripted response that runs `code` as an `eval` cell.
-fn cell(text: &str, code: &str) -> Value {
+pub(super) fn cell(text: &str, code: &str) -> Value {
     json!({ "content": [
         { "type": "text", "text": text },
         { "type": "toolCall", "name": "eval", "id": "toolu_cell01", "arguments": { "code": code } },
@@ -36,15 +36,15 @@ fn cell(text: &str, code: &str) -> Value {
 }
 
 /// A client attached to one open session's topics, keeping every frame.
-struct Attached {
+pub(super) struct Attached {
     client: Client,
-    id: String,
+    pub(super) id: String,
     frames: Vec<ServerFrame>,
 }
 
 impl Attached {
     /// Creates a session in `cwd` and subscribes to its topics.
-    async fn open(bed: &Bed, cwd: &std::path::Path) -> Self {
+    pub(super) async fn open(bed: &Bed, cwd: &std::path::Path) -> Self {
         let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
         let created = ok(client.call("session.create", json!({ "cwd": cwd })).await);
         let id = created["session"]
@@ -59,9 +59,23 @@ impl Attached {
         }
     }
 
+    /// Attaches to open session `id`, replaying its stored events from the
+    /// start of the log.
+    pub(super) async fn attach(bed: &Bed, id: &str) -> Self {
+        let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+        let (frames, _) = client
+            .subscribe(&format!("agent/{id}/#"), Since::After { seq: 0 })
+            .await;
+        Attached {
+            client,
+            id: id.to_string(),
+            frames,
+        }
+    }
+
     /// Publishes `text` on the session's input at `priority` (`None`: a
     /// prompt); the publish's reply.
-    async fn publish(&mut self, text: &str, priority: Option<&str>) -> Value {
+    pub(super) async fn publish(&mut self, text: &str, priority: Option<&str>) -> Value {
         let mut payload = json!({ "text": text });
         if let Some(priority) = priority {
             payload["priority"] = json!(priority);
@@ -77,7 +91,7 @@ impl Attached {
         ok(self.client.reply(&request, &mut self.frames).await)
     }
 
-    async fn call(&mut self, method: &str, args: Value) -> Value {
+    pub(super) async fn call(&mut self, method: &str, args: Value) -> Value {
         let request = self.client.id();
         let mut args = args;
         args["session"] = json!(self.id);
@@ -91,7 +105,7 @@ impl Attached {
         ok(self.client.reply(&request, &mut self.frames).await)
     }
 
-    async fn query(&mut self, name: &str) -> Value {
+    pub(super) async fn query(&mut self, name: &str) -> Value {
         let request = self.client.id();
         self.client
             .send(&ClientFrame::Query {
@@ -104,7 +118,7 @@ impl Attached {
     }
 
     /// The payloads of the events on the session's `kind` topic so far.
-    fn payloads(&self, kind: &str) -> Vec<Value> {
+    pub(super) fn payloads(&self, kind: &str) -> Vec<Value> {
         let topic = format!("agent/{}/{kind}", self.id);
         self.frames
             .iter()
@@ -118,7 +132,7 @@ impl Attached {
     }
 
     /// Reads frames until `seen` holds for what has arrived.
-    async fn until(&mut self, seen: impl Fn(&Self) -> bool) {
+    pub(super) async fn until(&mut self, seen: impl Fn(&Self) -> bool) {
         while !seen(self) {
             let frame = self.client.frame().await;
             self.frames.push(frame);
@@ -126,7 +140,7 @@ impl Attached {
     }
 
     /// Reads frames until a stream event of `kind` has arrived.
-    async fn until_streamed(&mut self, kind: &str) {
+    pub(super) async fn until_streamed(&mut self, kind: &str) {
         self.until(|session| {
             session
                 .payloads("stream")
@@ -137,7 +151,7 @@ impl Attached {
     }
 
     /// Reads frames until task `task`'s `done`; its payload.
-    async fn done(&mut self, task: &Value) -> Value {
+    pub(super) async fn done(&mut self, task: &Value) -> Value {
         self.until(|session| {
             session
                 .payloads("done")
@@ -152,7 +166,7 @@ impl Attached {
     }
 
     /// The user and assistant texts of the session's transcript, in order.
-    async fn texts(&mut self) -> Vec<String> {
+    pub(super) async fn texts(&mut self) -> Vec<String> {
         let page = self.query("transcript.page").await;
         turn_rows(&page)
             .into_iter()

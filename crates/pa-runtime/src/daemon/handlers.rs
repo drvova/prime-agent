@@ -11,16 +11,16 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::Context as _;
-use pa_core::session::lease::{acquire_runtime_session_lease, SessionLease};
+use pa_core::session::lease::acquire_runtime_session_lease;
 use pa_core::session::manager::{get_session_file_path, load_entries_from_file, SessionManager};
 use pa_core::session::store::store;
 use pa_types::session::FileEntry;
 use serde_json::{json, Value};
 
-use crate::lock;
+use super::held::{OpenSession, OpenSessions};
 use crate::runtime::{AfterAbort, Runtime};
 use crate::session::{SessionBuilder, SessionSpec};
 use crate::wire::{Call, Handlers, Query};
@@ -32,16 +32,6 @@ mod state;
 /// when the client names no `limit`.
 const PAGE_MAX: usize = 500;
 const PAGE_DEFAULT: usize = 100;
-
-/// The sessions the daemon holds open, each with its transcript and the
-/// lease it holds it by; a session's lease is released when it leaves.
-#[derive(Default)]
-pub(super) struct OpenSessions(Mutex<HashMap<String, OpenSession>>);
-
-struct OpenSession {
-    path: PathBuf,
-    _lease: SessionLease,
-}
 
 /// Answers the runtime daemon's queries and calls.
 pub(super) struct RuntimeHandlers<B: SessionBuilder> {
@@ -73,10 +63,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     /// daemon holds it open.
     fn session(&self, args: &Value) -> anyhow::Result<(String, PathBuf, bool)> {
         let id = string_arg(args, "session")?;
-        let open = lock(&self.open.0)
-            .get(&id)
-            .map(|session| session.path.clone());
-        if let Some(path) = open {
+        if let Some(path) = self.open.path(&id) {
             return Ok((id, path, true));
         }
         let path = get_session_file_path(&self.session_dir, &id);
@@ -165,7 +152,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             }
         };
         anyhow::ensure!(
-            !lock(&self.open.0).contains_key(&id),
+            !self.open.contains(&id),
             "session {id} is open in the runtime daemon already"
         );
         let cwd = match given_cwd {
@@ -184,38 +171,38 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 id: Some(id.clone()),
                 name: None,
                 cwd: cwd.clone(),
-                env: std::collections::BTreeMap::new(),
+                env: super::session_env(&self.agent_dir, &id),
                 subagent: None,
                 transcript: Some(path.clone()),
             })
             .await?;
-        lock(&self.open.0).insert(
-            id.clone(),
-            OpenSession {
-                path: path.clone(),
-                _lease: lease,
-            },
-        );
+        self.open
+            .insert(
+                id.clone(),
+                OpenSession {
+                    path: path.clone(),
+                    cwd: cwd.clone(),
+                    _lease: lease,
+                },
+            )
+            .await;
         Ok(json!({ "session": id, "path": path, "cwd": cwd }))
     }
 
     async fn stop(&self, args: &Value) -> anyhow::Result<Value> {
         let id = string_arg(args, "session")?;
         anyhow::ensure!(
-            lock(&self.open.0).contains_key(&id),
+            self.open.contains(&id),
             "session {id} is not open in the runtime daemon"
         );
         self.runtime.close_session(&id).await?;
         // Closed: its lease goes.
-        lock(&self.open.0).remove(&id);
+        self.open.remove(&id).await;
         Ok(json!({ "session": id, "stopped": true }))
     }
 
     fn list(&self) -> Value {
-        let open = lock(&self.open.0)
-            .iter()
-            .map(|(id, session)| (id.clone(), session.path.clone()))
-            .collect::<HashMap<_, _>>();
+        let open: HashMap<String, PathBuf> = self.open.paths();
         let mut sessions: Vec<Value> =
             pa_core::session::discovery::scan_session_headers(&self.session_dir)
                 .into_iter()
@@ -252,6 +239,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 .and_then(|row| row.get("thinkingLevel"))
                 .cloned(),
             "entries": entries.len().saturating_sub(usize::from(header.is_some())),
+            "lastCrash": last_crash(&entries),
             "leafId": entries.last().filter(|row| row["type"] != "session").and_then(|row| row.get("id")).cloned(),
         }))
     }
@@ -475,6 +463,37 @@ fn transcript_rows(path: &Path, open: bool) -> anyhow::Result<Vec<Value>> {
         .iter()
         .map(|entry: &FileEntry| serde_json::to_value(entry).map_err(anyhow::Error::from))
         .collect()
+}
+
+/// The session's last fault, as its transcript kept it (the fault rows its
+/// rebuilds and give-up wrote): the crash's fields and what became of the
+/// session since (`recovered`, `failed`); `None` when it never crashed.
+fn last_crash(rows: &[Value]) -> Option<Value> {
+    let faults: Vec<&Value> = rows
+        .iter()
+        .filter(|row| {
+            row["type"] == "custom_message"
+                && row["customType"] == pa_types::daemon::SESSION_FAULT_CUSTOM_TYPE
+        })
+        .map(|row| &row["details"])
+        .collect();
+    let crashed = faults
+        .iter()
+        .rposition(|details| details["type"] == "session_crashed")?;
+    let mut crash = faults[crashed].clone();
+    let state = faults[crashed + 1..]
+        .iter()
+        .find_map(|details| match details["type"].as_str() {
+            Some("session_recovered") => Some("recovered"),
+            Some("session_failed") => Some("failed"),
+            _ => None,
+        })
+        .unwrap_or("rebuilding");
+    if let Some(crash) = crash.as_object_mut() {
+        crash.remove("type");
+        crash.insert("state".to_string(), json!(state));
+    }
+    Some(crash)
 }
 
 /// The string argument `key`.

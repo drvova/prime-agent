@@ -651,7 +651,7 @@ impl Worker {
             // adds nothing.
             if let (Some(Ok(crash)), Some(store)) = (
                 payload.get("sessionCrash").map(|crash| {
-                    serde_json::from_value::<crate::session_host::SessionCrash>(crash.clone())
+                    serde_json::from_value::<pa_core::session::crash::SessionCrash>(crash.clone())
                 }),
                 core.store.as_mut(),
             ) {

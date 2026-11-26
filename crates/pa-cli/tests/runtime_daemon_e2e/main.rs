@@ -11,8 +11,11 @@
 //!   session either one holds is refused by the other (the session lease).
 //! - One runtime daemon per agent dir.
 //! - Interactive turn semantics (phase 7b): [`turns`].
+//! - Reliability (phase 7c): crashes, heals, give-ups, stuck cells and the
+//!   revival after the daemon's death: [`reliability`].
 #![cfg(unix)]
 
+mod reliability;
 #[path = "../support/mod.rs"]
 mod support;
 mod turns;
@@ -120,10 +123,14 @@ impl Bed {
 
     /// The runtime daemon, listening on `daemon2.sock`.
     fn runtime_daemon(&self, script: &Value) -> Daemon {
-        let mut child = self
-            .runtime_daemon_command(script, &self.old_socket())
-            .spawn()
-            .expect("spawn the runtime daemon");
+        self.runtime_daemon_with(script, &[])
+    }
+
+    /// The runtime daemon with `env` over the bed's, listening.
+    fn runtime_daemon_with(&self, script: &Value, env: &[(&str, &str)]) -> Daemon {
+        let mut command = self.runtime_daemon_command(script, &self.old_socket());
+        command.envs(env.iter().copied());
+        let mut child = command.spawn().expect("spawn the runtime daemon");
         support::await_listening(&self.runtime_socket(), &mut child);
         Daemon(child)
     }

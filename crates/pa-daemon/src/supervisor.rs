@@ -7,7 +7,6 @@ mod accept_loop;
 mod adoption;
 mod clients;
 mod crash;
-pub(crate) use crash::SESSION_CRASH_LOG;
 mod launch_budget;
 mod notes;
 mod options;
@@ -42,7 +41,7 @@ mod tests;
     unused_imports,
     reason = "only this facade's in-file tests read them; the lib build sees the import unused"
 )]
-use supervision::{MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS};
+use pa_core::session::crash::{MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS};
 
 #[allow(
     unused_imports,
@@ -356,9 +355,9 @@ impl Supervisor {
         // Sessions run inside this process: a panic in one is attributed to
         // it and contained there, and the first session to start takes an
         // engine that is already built.
-        crate::session_host::install_panic_hook(
+        pa_core::session::crash::install_panic_hook(
             self.descriptor_dir
-                .join(crate::supervisor::crash::SESSION_CRASH_LOG),
+                .join(pa_core::session::crash::SESSION_CRASH_LOG),
         );
         // No hosted session may block on whatever this process was given as
         // standard input.

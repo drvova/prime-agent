@@ -54,6 +54,8 @@ pub(crate) async fn build_faux_engine_with(
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| "PRIME_AGENT_FAUX_SCRIPT requires a responses array".to_string())?,
     )?;
+    #[cfg(debug_assertions)]
+    let response_steps = panic_on(script, response_steps);
     // A `reasoning` model makes the harness script thinking-capable turns so
     // thinking-level resolution can be verified without the network.
     let reasoning = script
@@ -242,6 +244,63 @@ pub(crate) fn faux_response_steps(
                     pa_ai::faux::FauxAssistantMessageOptions::default(),
                 ),
             )),
+        })
+        .collect()
+}
+
+/// The faux script's `panicOn` seam (debug builds only, as on the old
+/// daemon's scripted engine): with `{"panicOn": {"message": "crash now",
+/// "panic": "boom"}}`, the model request whose last user message is
+/// `message` panics with `panic` where the provider answers it (a task on
+/// the session's runtime), so the crash tests can crash a session's turn.
+/// Every other request is answered by its step's message (a delayed step's
+/// without its delay).
+#[cfg(debug_assertions)]
+fn panic_on(
+    script: &serde_json::Value,
+    steps: Vec<pa_ai::faux::FauxResponseStep>,
+) -> Vec<pa_ai::faux::FauxResponseStep> {
+    use pa_ai::faux::FauxResponseStep;
+    let Some(fault) = script.get("panicOn") else {
+        return steps;
+    };
+    let message = fault["message"].as_str().unwrap_or_default().to_string();
+    let panic = fault["panic"]
+        .as_str()
+        .unwrap_or("scripted panic")
+        .to_string();
+    steps
+        .into_iter()
+        .map(|step| {
+            let (message, panic) = (message.clone(), panic.clone());
+            FauxResponseStep::Factory(std::sync::Arc::new(move |context, options, call, model| {
+                let last_user = context.messages.iter().rev().find_map(|turn| {
+                    let turn = serde_json::to_value(turn).ok()?;
+                    (turn["role"] == "user").then(|| match &turn["content"] {
+                        serde_json::Value::String(text) => text.clone(),
+                        blocks => blocks
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|block| block["text"].as_str())
+                            .collect::<String>(),
+                    })
+                });
+                #[expect(
+                    clippy::manual_assert,
+                    reason = "the seam panics with the script's text alone, which an assertion would wrap"
+                )]
+                if last_user.as_deref() == Some(message.as_str()) {
+                    panic!("{panic}");
+                }
+                match &step {
+                    FauxResponseStep::Message(answer)
+                    | FauxResponseStep::Delayed {
+                        message: answer, ..
+                    } => Ok(answer.clone()),
+                    FauxResponseStep::Factory(factory) => factory(context, options, call, model),
+                }
+            }))
         })
         .collect()
 }

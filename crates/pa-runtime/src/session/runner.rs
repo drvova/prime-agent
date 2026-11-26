@@ -195,14 +195,17 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                 .clone()
                 .context("the event was published in no session")?,
             AgentTarget::Spawn { name, cwd } => {
-                let id = self.sessions.open(SessionSpec {
-                    id: None,
-                    name,
-                    cwd: cwd.map_or_else(|| self.cwd.clone(), PathBuf::from),
-                    env: std::collections::BTreeMap::new(),
-                    subagent: None,
-                    transcript: None,
-                })?;
+                let id = self.sessions.open(
+                    SessionSpec {
+                        id: None,
+                        name,
+                        cwd: cwd.map_or_else(|| self.cwd.clone(), PathBuf::from),
+                        env: std::collections::BTreeMap::new(),
+                        subagent: None,
+                        transcript: None,
+                    },
+                    super::Opening::Fresh,
+                )?;
                 if let Some(parent) = &event.session {
                     self.tree.insert(id.clone(), parent.clone());
                 }

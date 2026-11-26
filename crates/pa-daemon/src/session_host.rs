@@ -15,7 +15,8 @@
 //!   record that pair where they recorded a worker's pid and start id;
 //!   "alive" means the generation is registered as running in this daemon,
 //!   never that some pid exists.
-//! - **Containment.** The daemon's panic hook ([`install_panic_hook`])
+//! - **Containment.** The process panic hook
+//!   (`pa_core::session::crash::install_panic_hook`)
 //!   attributes a panic to the session whose thread raised it, records it,
 //!   and ends that session's host thread, which drops the session's runtime
 //!   and every task on it. Other sessions and the control plane keep running.
@@ -35,9 +36,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
+use pa_core::session::crash::{PanicSink, SessionCrash};
 use pa_core::session::hosted;
 use pa_types::session_scope::{self, SessionScope};
-use serde::{Deserialize, Serialize};
 
 /// How long a session's runtime may take to drop its tasks once the session
 /// has ended; threads still blocked after that are abandoned. Tasks drop at
@@ -96,37 +97,6 @@ pub fn recorded_crash(pid: u32) -> Option<SessionCrash> {
         .cloned()
 }
 
-impl SessionCrash {
-    /// The one-line reason a caller is given for work this crash failed.
-    #[must_use]
-    pub fn reason(&self) -> String {
-        if self.location.is_empty() {
-            format!("Session crashed ({}): {}", self.kind, self.message)
-        } else {
-            format!(
-                "Session crashed ({}): {} at {}",
-                self.kind, self.message, self.location
-            )
-        }
-    }
-}
-
-/// Why and where one hosted session crashed. Everything here is a primitive
-/// about the fault itself; `message` is the panic's own text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionCrash {
-    /// `panic` (unwound and contained) or `stuck` (a host call outlived its
-    /// interrupt and was abandoned).
-    pub kind: String,
-    pub message: String,
-    /// `file:line:column` of the panic; empty for a stuck call.
-    pub location: String,
-    /// The name of the thread that raised it.
-    pub thread: String,
-    pub at: String,
-}
-
 /// How one hosted lifetime ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum HostedExit {
@@ -178,115 +148,30 @@ pub(crate) fn is_hosted() -> bool {
     session_scope::current().is_some_and(|scope| scope.slot::<HostControl>().is_some())
 }
 
-/// Where the daemon's own panics are recorded, and those recorded so far.
-fn daemon_crash_record() -> &'static Mutex<(Option<PathBuf>, Vec<SessionCrash>)> {
-    static RECORD: OnceLock<Mutex<(Option<PathBuf>, Vec<SessionCrash>)>> = OnceLock::new();
-    RECORD.get_or_init(|| Mutex::new((None, Vec::new())))
-}
-
-/// The panics raised in this process outside every session since it started
-/// (kind `daemon`), oldest first: the control plane's own faults, which no
-/// session's restart heals.
-#[must_use]
-pub fn daemon_crashes() -> Vec<SessionCrash> {
-    daemon_crash_record()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .1
-        .clone()
-}
-
-/// Account for every panic in this process. One raised on a hosted
-/// session's thread is attributed to that session, which ends alone. One
-/// raised anywhere else is the daemon's own: it is kept for
-/// [`daemon_crashes`] and appended to `crash_log` as kind `daemon`. A panic
-/// its caller catches and handles
-/// ([`session_scope::catching_panics`]) is neither. A session's panic is
-/// written to that session's log; for every other the previous hook runs,
-/// so it is printed as before. Installing again only moves the log.
-pub fn install_panic_hook(crash_log: PathBuf) {
-    static INSTALLED: std::sync::Once = std::sync::Once::new();
-    daemon_crash_record()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .0 = Some(crash_log);
-    INSTALLED.call_once(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let payload = info.payload();
-            let crash = |kind: &str| SessionCrash {
-                kind: kind.to_string(),
-                message: payload
-                    .downcast_ref::<&str>()
-                    .map(|text| (*text).to_string())
-                    .or_else(|| payload.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "panic with a non-text payload".to_string()),
-                location: info.location().map_or_else(String::new, |location| {
-                    format!(
-                        "{}:{}:{}",
-                        location.file(),
-                        location.line(),
-                        location.column()
-                    )
-                }),
-                thread: std::thread::current()
-                    .name()
-                    .unwrap_or("unnamed")
-                    .to_string(),
-                at: crate::util::now_iso(),
-            };
-            match session_scope::current().and_then(|scope| scope.slot::<HostControl>()) {
-                Some(control) => {
-                    let crash = crash("panic");
-                    // The session is ended first, as before this hook logged anything:
-                    // the unwinding that follows must find its session already going
-                    // down, so the turn's caller is answered with the crash, not with
-                    // what the unwound turn leaves behind.
-                    control.fault(crash.clone());
-                    // The panic's text belongs to the session it ended: its log gets
-                    // what the default hook would have printed, tagged, and the
-                    // daemon's own standard error stays free of it.
-                    crate::worker_stderr::line(format_args!(
-                        "thread '{}' panicked at {}:\n{}\n{}",
-                        crash.thread,
-                        crash.location,
-                        crash.message,
-                        std::backtrace::Backtrace::capture()
-                    ));
-                    return;
-                }
-                None if session_scope::panics_are_caught() => {}
-                None => {
-                    use std::io::Write as _;
-                    let crash = crash("daemon");
-                    let mut record = daemon_crash_record()
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    let appended = record.0.as_ref().map(|path| {
-                        pa_core::agent_state::append_crash_record(
-                            path,
-                            &serde_json::json!({
-                                "kind": crash.kind,
-                                "message": crash.message,
-                                "location": crash.location,
-                                "thread": crash.thread,
-                                "at": crash.at,
-                            }),
-                        )
-                    });
-                    if let Some(Err(error)) = appended {
-                        // A hook must not panic: a closed stderr is ignored.
-                        let _ = writeln!(
-                            std::io::stderr(),
-                            "the daemon's crash log could not be appended: {error:#}"
-                        );
-                    }
-                    record.1.push(crash);
-                }
-            }
-            previous(info);
-        }));
-    });
+impl HostControl {
+    /// What the process panic hook hands this lifetime's panics to: the
+    /// first ends the session. The panic's text belongs to the session it
+    /// ended: its log gets what the default hook would have printed, and the
+    /// daemon's own standard error stays free of it. A panic its caller
+    /// catches ends the session too: the session's code is not trusted to
+    /// go on after one.
+    fn panic_sink(control: &Arc<Self>) -> PanicSink {
+        let control = Arc::clone(control);
+        PanicSink(Box::new(move |crash, _caught| {
+            // The session is ended first, before anything is logged: the
+            // unwinding that follows must find its session already going
+            // down, so the turn's caller is answered with the crash, not with
+            // what the unwound turn leaves behind.
+            control.fault(crash.clone());
+            crate::worker_stderr::line(format_args!(
+                "thread '{}' panicked at {}:\n{}\n{}",
+                crash.thread,
+                crash.location,
+                crash.message,
+                std::backtrace::Backtrace::capture()
+            ));
+        }))
+    }
 }
 
 /// One hosted lifetime, held by the supervisor.
@@ -358,6 +243,7 @@ impl HostedSession {
                 let scope =
                     SessionScope::new(launch.worker_id, launch.cwd, launch.env, launch.removed_env);
                 scope.set_slot(Arc::clone(&thread_control));
+                scope.set_slot(Arc::new(HostControl::panic_sink(&thread_control)));
                 scope.set_slot(Arc::new(hosted::HostedId(pid)));
                 // What the session's code logs outside this crate (the engine's own
                 // `eprintln!` lines) goes to the session's log too.
@@ -369,16 +255,7 @@ impl HostedSession {
                 let stuck_control = Arc::clone(&thread_control);
                 scope.set_slot(Arc::new(pa_core::kernel::StuckCellSink(Box::new(
                     move |detail| {
-                        stuck_control.fault(SessionCrash {
-                            kind: "stuck".to_string(),
-                            message: detail.to_string(),
-                            location: String::new(),
-                            thread: std::thread::current()
-                                .name()
-                                .unwrap_or("unnamed")
-                                .to_string(),
-                            at: crate::util::now_iso(),
-                        });
+                        stuck_control.fault(SessionCrash::now("stuck", detail.to_string()));
                     },
                 ))));
                 let _scope = session_scope::enter(Some(Arc::clone(&scope)));

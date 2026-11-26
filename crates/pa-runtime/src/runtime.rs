@@ -25,8 +25,8 @@ use crate::events::BusEvents;
 use crate::log_stores::{LogEventStore, LogStateStore, LogTaskStore};
 use crate::routes::{ModelCall, ModelCaller};
 use crate::session::{
-    Finished, Outbox, Outgoing, RuntimeTaskSink, SessionBuilder, SessionRunner, SessionSpec,
-    Sessions, SettleAfter, Settled,
+    Finished, Opening, Outbox, Outgoing, RuntimeTaskSink, SessionBuilder, SessionFaults,
+    SessionRunner, SessionSpec, Sessions, SettleAfter, Settled,
 };
 use crate::sources::{SourceDefinition, SourceManager};
 use crate::subagents::{SessionControl, Subagents};
@@ -98,6 +98,8 @@ pub struct Runtime<B: SessionBuilder> {
     /// What the subagents open, cancel and close sessions through; they hold
     /// it weakly.
     _control: Arc<dyn SessionControl>,
+    /// The agent's database.
+    log: Arc<pa_log::Log>,
     sources: SourceManager,
     publisher: tokio::task::JoinHandle<()>,
 }
@@ -111,7 +113,7 @@ struct Control<B: SessionBuilder> {
 
 impl<B: SessionBuilder> SessionControl for Control<B> {
     fn open(&self, spec: SessionSpec) -> anyhow::Result<String> {
-        self.sessions.open(spec)
+        self.sessions.open(spec, Opening::Fresh)
     }
 
     fn cancel(&self, session: &str) -> pa_agent::BoxFut<'_, anyhow::Result<()>> {
@@ -149,6 +151,15 @@ impl<B: SessionBuilder> Runtime<B> {
     ///
     /// Called outside a Tokio runtime.
     pub async fn open(agent_dir: &Path, options: RuntimeOptions<B>) -> anyhow::Result<Self> {
+        Self::open_with(agent_dir, options, SessionFaults::Contained).await
+    }
+
+    /// [`Runtime::open`], with `faults` saying what a session's crash does.
+    pub(crate) async fn open_with(
+        agent_dir: &Path,
+        options: RuntimeOptions<B>,
+        faults: SessionFaults,
+    ) -> anyhow::Result<Self> {
         let database = pa_core::session::store::database_path(agent_dir);
         let log = tokio::task::spawn_blocking(move || {
             pa_log::Log::open(database, pa_log::DEFAULT_EVENT_RETENTION)
@@ -164,12 +175,13 @@ impl<B: SessionBuilder> Runtime<B> {
             outbox,
             Arc::clone(&events),
             Arc::clone(&subagents),
+            faults,
         ));
         let runner = SessionRunner::new(Arc::clone(&sessions));
         let restored = async {
             let mut opened = Vec::with_capacity(options.sessions.len());
             for spec in options.sessions {
-                opened.push(sessions.open(spec)?);
+                opened.push(sessions.open(spec, Opening::Fresh)?);
             }
             let log = Arc::new(log.await.context("open the runtime's database")??);
             let queue = TaskQueue::new(
@@ -224,7 +236,9 @@ impl<B: SessionBuilder> Runtime<B> {
         })?;
         let sources =
             SourceManager::spawn(Arc::clone(&log), &bus, Arc::new(pa_sources::SystemClock));
-        events.attach(log, bus.registry(), sources.clone()).await;
+        events
+            .attach(Arc::clone(&log), bus.registry(), sources.clone())
+            .await;
         let control: Arc<dyn SessionControl> = Arc::new(Control {
             sessions: Arc::clone(&sessions),
             queue: queue.clone(),
@@ -238,6 +252,7 @@ impl<B: SessionBuilder> Runtime<B> {
             runner,
             sessions,
             _control: control,
+            log,
             sources,
             publisher,
         })
@@ -319,12 +334,87 @@ impl<B: SessionBuilder> Runtime<B> {
     /// system refused the thread; or the database failed to restore its
     /// tasks, and the session stays open without them.
     pub async fn create_session(&self, spec: SessionSpec) -> anyhow::Result<String> {
-        let id = self.sessions.open(spec)?;
+        let id = self.sessions.open(spec, Opening::Fresh)?;
         self.queue
             .restore(&id)
             .await
             .with_context(|| format!("restore the tasks of session {id}"))?;
         Ok(id)
+    }
+
+    /// Opens session `spec.id` again after the daemon died under it
+    /// (`revival`): the death is recorded as its crash, its first lifetime
+    /// rebuilds it from its transcript, and its tasks are restored; then the
+    /// turn the daemon died under is run again as it was queued, continued
+    /// behind the interrupted-turn notice (the same task, so its `done` ends
+    /// the continued turn), left over as done, or settled as failed with the
+    /// crash's reason, as `revival` says.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::create_session`]; or the database failed to save the
+    /// interrupted task.
+    pub(crate) async fn revive_session(
+        &self,
+        spec: SessionSpec,
+        revival: crate::daemon::Revival,
+    ) -> anyhow::Result<String> {
+        use pa_core::session::revival::{InterruptedTurn, RevivedTurn, TURN_INTERRUPTED_NOTICE};
+        use pa_types::event_log::{Task, TaskState};
+        let reason = revival.rebuild.crash.reason();
+        let id = self.sessions.revive(spec, revival.rebuild)?;
+        self.queue
+            .restore(&id)
+            .await
+            .with_context(|| format!("restore the tasks of session {id}"))?;
+        let Some((task, evidence, turn)) = revival.running else {
+            return Ok(id);
+        };
+        let queued = Task {
+            state: TaskState::Queued,
+            error: None,
+            ..task
+        };
+        let ended = |state, error| Task {
+            state,
+            error,
+            ..queued.clone()
+        };
+        match (turn, evidence) {
+            (InterruptedTurn::Replay, Some(RevivedTurn::Unstarted) | None) => {
+                self.queue.push(queued).await?;
+            }
+            (InterruptedTurn::Replay, Some(RevivedTurn::Interrupted)) => {
+                self.queue
+                    .push(Task {
+                        prompt: TURN_INTERRUPTED_NOTICE.to_string(),
+                        ..queued
+                    })
+                    .await?;
+            }
+            (InterruptedTurn::Replay, Some(RevivedTurn::Answered)) => {
+                self.log
+                    .save_task(ended(TaskState::Done, None))
+                    .wait()
+                    .await?;
+                self.sessions
+                    .report_end(&queued, crate::tasks::TaskOutcome::Done)?;
+            }
+            (InterruptedTurn::Settle, _) => {
+                self.log
+                    .save_task(ended(TaskState::Failed, Some(reason.clone())))
+                    .wait()
+                    .await?;
+                self.sessions
+                    .report_end(&queued, crate::tasks::TaskOutcome::Failed(reason))?;
+            }
+        }
+        Ok(id)
+    }
+
+    /// The agent's database.
+    pub(crate) fn log(&self) -> &Arc<pa_log::Log> {
+        &self.log
     }
 
     /// Cancels `session`'s queued tasks and its running one, whose turn is

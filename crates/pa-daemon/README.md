@@ -71,7 +71,7 @@ present rows by agent id or session file are never overwritten - at
 subscribe, spawn-admission, and worker-stop moments, so subscribers see
 the full family, not just resident rows), cloud sandbox attach; the session
 leases are pa-core's (`pa_core::session::lease`, the `core/session-lease.ts` port), and a lease
-this daemon holds writes its info sidecar through `session_store::write_info_sidecar`. Daemon-owned RLM spawn ledger (`rlm_ledger.rs`):
+this daemon holds writes its info sidecar through `session_store::write_info_sidecar`. The crash record (`SessionCrash`), the crash log's name, the restart backoff and give-up limits and the process panic hook are pa-core's (`pa_core::session::crash`; the session host puts a `PanicSink` on each hosted session's scope), and so are the revival rules the boot adoption and the rebuilt worker apply (`pa_core::session::revival`: how far an interrupted turn got, a daemon death's verdict, the interrupted-turn notice and the outcome-unknown results); the recovery journal's use of them stays here (`revived_turn.rs`, `interrupted_calls.rs`, `supervisor/crash.rs`). Daemon-owned RLM spawn ledger (`rlm_ledger.rs`):
 one append-only JSONL per sessions dir (spawn/rename/delete admissions with
 the TS `rlm-ledger.ts` record grammar, bounds, stat-guarded replay, and
 legacy-registry seeding) plus the per-child display files; family topology

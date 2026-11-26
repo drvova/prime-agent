@@ -29,10 +29,21 @@
 //!   (`handlers/queue.rs`); its state: `session.context`, `usage`, `tree`,
 //!   `context_tree` and `breakdown` (`handlers/state.rs`). `settings`,
 //!   `models`, `sources` and `subscriptions` are refused: they arrive later.
+//! - **Reliability.** The daemon's sessions are supervised
+//!   (`crate::session` faults): a panic on a session's threads or a stuck
+//!   cell ends that session's lifetime only; the crash is appended to
+//!   `<agent dir>/runtime-daemon/session-crashes.jsonl` (the database's
+//!   `crashes` table), published as `agent/<id>/crashed`, and the session is
+//!   rebuilt from its transcript with the old daemon's backoff and give-up
+//!   (`agent/<id>/recovered` or `/failed`; a given-up session is closed and
+//!   its lease released). `session.snapshot` carries its `lastCrash`. The
+//!   sessions it holds are kept in the database, and a daemon that starts
+//!   after one that died revives those with unfinished work ([`held`]).
 //! - **Telemetry.** One `daemon event` (kind `catalog_refresh`,
 //!   `daemon_kind: runtime`) once the startup catalog refresh settles, off
 //!   the accept path; nothing the daemon serves waits on the network.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -41,13 +52,17 @@ use std::sync::Arc;
 use pa_types::platform::transport::TransportListener;
 use tokio::task::JoinSet;
 
+use crate::bus::Heard;
 use crate::runtime::{Runtime, RuntimeOptions};
-use crate::session::SessionBuilder;
+use crate::session::{SessionBuilder, SessionFaults, Supervision};
 use crate::wire::WireConfig;
 
 mod handlers;
+mod held;
 
-use handlers::{OpenSessions, RuntimeHandlers};
+use handlers::RuntimeHandlers;
+use held::OpenSessions;
+pub(crate) use held::Revival;
 
 /// The runtime daemon's socket's file name, beside the old daemon's.
 #[cfg(unix)]
@@ -78,6 +93,18 @@ pub fn socket_path(daemon_socket: &Path) -> PathBuf {
     }
 }
 
+/// The environment a daemon session `id` runs with over the daemon's own:
+/// the orphan journal its kernel records the programs its commands start
+/// in, which the daemon reaps when the session or the daemon dies.
+fn session_env(agent_dir: &Path, id: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([(
+        pa_core::kernel::orphan_journal::ORPHAN_PROCESS_JOURNAL_ENV.to_string(),
+        held::orphan_journal(agent_dir, id)
+            .to_string_lossy()
+            .into_owned(),
+    )])
+}
+
 /// What a runtime daemon is started with.
 pub struct DaemonOptions<B> {
     /// The agent dir: its database, settings and session leases.
@@ -102,6 +129,10 @@ pub struct DaemonOptions<B> {
 /// # Panics
 ///
 /// Called outside a Tokio runtime.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the daemon's start, serving and shutdown read in the order they run"
+)]
 pub async fn run<B: SessionBuilder>(
     listener: Box<dyn TransportListener>,
     options: DaemonOptions<B>,
@@ -141,8 +172,16 @@ pub async fn run<B: SessionBuilder>(
         }
         client
     };
+    let daemon_dir = options.agent_dir.join(held::DIR);
+    if let Err(error) = std::fs::create_dir_all(&daemon_dir) {
+        tracing::warn!("{} was not created: {error}", daemon_dir.display());
+    }
+    let crash_log = daemon_dir.join(pa_core::session::crash::SESSION_CRASH_LOG);
+    // Every panic is accounted for: a session's is that session's crash, any
+    // other the daemon's own, appended to the crash log.
+    pa_core::session::crash::install_panic_hook(crash_log.clone());
     let runtime = Arc::new(
-        Runtime::open(
+        Runtime::open_with(
             &options.agent_dir,
             RuntimeOptions {
                 builder: options.builder,
@@ -154,10 +193,49 @@ pub async fn run<B: SessionBuilder>(
                 cwd: options.cwd.clone(),
                 sessions: Vec::new(),
             },
+            SessionFaults::Supervised(Arc::new(Supervision {
+                crash_log,
+                counted: {
+                    let client = telemetry.clone();
+                    Box::new(move |kind: &str| {
+                        if let Some(client) = &client {
+                            pa_core::session_engine::telemetry::track_session_crashed(client, kind);
+                        }
+                    })
+                },
+            })),
         )
         .await?,
     );
-    let open = Arc::new(OpenSessions::default());
+    let open = Arc::new(OpenSessions::new(Arc::clone(runtime.log())));
+    // A session given up on is closed, and its lease released.
+    let given_up = {
+        let mut listener = runtime.listen();
+        let (runtime, open) = (Arc::clone(&runtime), Arc::clone(&open));
+        tokio::spawn(async move {
+            while let Some(heard) = listener.recv().await {
+                let event = match heard {
+                    Heard::Event(event) => event,
+                    Heard::Lagged { .. } => continue,
+                };
+                let mut levels = event.event.topic.levels();
+                let (Some("agent"), Some(id), Some("failed"), None) =
+                    (levels.next(), levels.next(), levels.next(), levels.next())
+                else {
+                    continue;
+                };
+                if open.contains(id) {
+                    if let Err(error) = runtime.close_session(id).await {
+                        tracing::warn!(
+                            "the given-up session {id} did not close cleanly: {error:#}"
+                        );
+                    }
+                    open.remove(id).await;
+                }
+            }
+        })
+    };
+    held::revive(&runtime, &open, &options.agent_dir).await;
     let server = runtime.wire_server(
         RuntimeHandlers::new(
             Arc::clone(&runtime),
@@ -191,6 +269,8 @@ pub async fn run<B: SessionBuilder>(
     drop(listener);
     connections.shutdown().await;
     drop(server);
+    given_up.abort();
+    let _ = given_up.await;
     if let Ok(runtime) = Arc::try_unwrap(runtime) {
         runtime.shutdown().await;
     } else {

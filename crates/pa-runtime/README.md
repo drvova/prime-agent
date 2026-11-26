@@ -299,10 +299,36 @@ SQLite implementations over `pa-log`.
   they are not yet in the runtime daemon. At start it
   closes standard input, raises the open-file limit, keeps the model catalog's caches warm as
   the supervisor does and, once the startup refresh settles, sends the `daemon event`
-  `catalog_refresh` with `daemon_kind: runtime`, all off the accept path. Not yet: crash
-  records, self-heal, boot revival and a keeper (7c), schedules (7d), cross-session features
-  (7e), a running session's model switch, and the lane's suspension across a restart (a
-  restored lane starts unparked).
+  `catalog_refresh` with `daemon_kind: runtime`, all off the accept path.
+  **Reliability** (`session/faults.rs`, `daemon/held.rs`): the daemon's sessions are supervised.
+  It installs `pa_core::session::crash::install_panic_hook` and each lifetime's scope carries a
+  `PanicSink` and a `StuckCellSink`: a panic nothing catches on one of the session's threads, one
+  its work loop catches, or a cell still on the engine after its interrupt's grace ends that
+  lifetime only. The work running fails with `SessionCrash::reason` and is not rerun; the crash
+  is appended to `<agent dir>/runtime-daemon/session-crashes.jsonl` (`crashes`), stored as
+  `agent/<id>/crashed` (a `SessionFaultEvent`), and the programs the session's commands left
+  running are reaped from its orphan journal (`<agent dir>/runtime-daemon/<id>.orphans.jsonl`,
+  named in each daemon session's environment). The next lifetime waits
+  `restart_backoff_ms(failures)` (250 ms doubling to 30 s; a 30 s lifetime resets the count),
+  keeps the fault in the transcript (display-only `session_fault` rows, which
+  `session.snapshot` reads back as `lastCrash` with its state), answers each call the crash cut
+  off once as of unknown outcome (`pa_core::session::revival::interrupted_call_results`), builds
+  a fresh engine (which tells the model once that its kernel definitions are gone) and stores
+  `agent/<id>/recovered`. After the sixth crash in a row it stores `agent/<id>/failed`, the work
+  sent fails with the give-up's reason, and the daemon closes the session (its lease goes). The
+  sessions the daemon holds are kept in the database (`kv` `runtime-daemon`/`sessions`: path,
+  cwd, the daemon's pid); a daemon that starts after one that died reaps each one's orphans by
+  the dead daemon's pid and revives those with unfinished tasks under their lease: the death is
+  their `daemon_restart` crash, and the task that was running is classified by
+  `pa_core::session::revival` (`transcript_evidence` from when its run started,
+  `pa_log::Log::task_saved_at`; `host_death` by its run count): run again as queued, continued
+  as the same task behind `TURN_INTERRUPTED_NOTICE`, stored done when its answer was saved, or,
+  on its second death in a row, stored failed with the crash's reason. Not yet: a keeper (the
+  runtime daemon is not a restart owner's launch target) and a boot reap of a wedged
+  predecessor still holding the lock, schedules (7d), cross-session features (7e), a running
+  session's model switch, and the lane's suspension across a restart (a restored lane starts
+  unparked). Under the print modes (`Runtime::open`) a panic still only fails its task and the
+  next one runs on a fresh engine.
 
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and

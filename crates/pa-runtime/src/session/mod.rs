@@ -31,11 +31,13 @@ use crate::events::BusEvents;
 use crate::lock;
 use crate::subagents::Subagents;
 
+mod faults;
 mod host;
 mod runner;
 
-pub(crate) use host::LiveEngine;
+pub(crate) use faults::{reap_orphans, Rebuild, SessionFaults, Supervision};
 use host::SessionHost;
+pub(crate) use host::{LiveEngine, Opening};
 pub(crate) use runner::{RuntimeTaskSink, SessionRunner};
 
 /// A session to open.
@@ -234,6 +236,11 @@ pub(crate) struct SessionTopics {
     pub(crate) stream: Topic,
     /// `agent/<id>/done`: stored.
     pub(crate) done: Topic,
+    /// `agent/<id>/crashed`, `/recovered` and `/failed`: stored, the
+    /// session's faults under supervision (each a `SessionFaultEvent`).
+    pub(crate) crashed: Topic,
+    pub(crate) recovered: Topic,
+    pub(crate) failed: Topic,
 }
 
 impl SessionTopics {
@@ -256,6 +263,9 @@ impl SessionTopics {
         Ok(SessionTopics {
             stream: topic("stream")?,
             done: topic("done")?,
+            crashed: topic("crashed")?,
+            recovered: topic("recovered")?,
+            failed: topic("failed")?,
         })
     }
 }
@@ -363,6 +373,8 @@ pub(crate) struct Sessions<B> {
     outbox: Outbox,
     events: Arc<BusEvents>,
     subagents: Arc<Subagents>,
+    /// What a crash does to a session.
+    faults: SessionFaults,
     hosts: Mutex<HashMap<String, Arc<SessionHost>>>,
     /// What a queued task's store row does not keep, by task id, until it
     /// runs: its prompt's images and its trigger as a cause. A task restored
@@ -385,12 +397,14 @@ impl<B: SessionBuilder> Sessions<B> {
         outbox: Outbox,
         events: Arc<BusEvents>,
         subagents: Arc<Subagents>,
+        faults: SessionFaults,
     ) -> Self {
         Sessions {
             builder: Arc::new(builder),
             outbox,
             events,
             subagents,
+            faults,
             hosts: Mutex::new(HashMap::new()),
             queued: Mutex::new(HashMap::new()),
         }
@@ -417,13 +431,13 @@ impl<B: SessionBuilder> Sessions<B> {
     }
 
     /// Opens a session on its own host thread, which starts building its
-    /// engine; returns its id.
+    /// engine (a revived one's first lifetime is its rebuild); returns its id.
     ///
     /// # Errors
     ///
     /// The id is not a topic level or is open already, or the operating
     /// system refused the thread.
-    pub(crate) fn open(&self, spec: SessionSpec) -> anyhow::Result<String> {
+    pub(crate) fn open(&self, spec: SessionSpec, opening: Opening) -> anyhow::Result<String> {
         let id = spec
             .id
             .clone()
@@ -440,11 +454,64 @@ impl<B: SessionBuilder> Sessions<B> {
             Arc::clone(&self.builder),
             self.outbox.clone(),
             Arc::clone(&self.events),
+            self.faults.clone(),
+            opening,
         )
         .context("start the session's host thread")?;
         hosts.insert(id.clone(), Arc::new(host));
         self.events.opened(&id);
         Ok(id)
+    }
+
+    /// Opens session `spec.id` again after its daemon died under it: the
+    /// crash is recorded (under supervision) and the session's first lifetime
+    /// is its rebuild.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sessions::open`]; or the spec names no id.
+    pub(crate) fn revive(&self, spec: SessionSpec, rebuild: Rebuild) -> anyhow::Result<String> {
+        let id = spec.id.clone().context("a revived session needs its id")?;
+        match &self.faults {
+            SessionFaults::Contained => {}
+            SessionFaults::Supervised(supervision) => faults::record_crash(
+                supervision,
+                &self.outbox,
+                &SessionTopics::of(&id)?,
+                &id,
+                &rebuild,
+            ),
+        }
+        self.open(spec, Opening::Revived(rebuild))
+    }
+
+    /// Stores `task`'s `done` as ending with `outcome` (a failure is its
+    /// turn's), for a task that will not run on the session's thread.
+    ///
+    /// # Errors
+    ///
+    /// The task's session id is not a topic level.
+    pub(crate) fn report_end(
+        &self,
+        task: &Task,
+        outcome: crate::tasks::TaskOutcome,
+    ) -> anyhow::Result<()> {
+        let failure = match &outcome {
+            crate::tasks::TaskOutcome::Failed(_) => Some(pa_types::event_log::TaskFailure::Turn),
+            crate::tasks::TaskOutcome::Done | crate::tasks::TaskOutcome::Cancelled => None,
+        };
+        let cause = Cause {
+            id: task.trigger.clone(),
+            trust: task.trust,
+            hops: 0,
+        };
+        self.outbox.send(done_event(
+            &SessionTopics::of(&task.session)?,
+            task,
+            &host::TaskEnd { outcome, failure },
+            &cause,
+        ));
+        Ok(())
     }
 
     pub(crate) fn host(&self, id: &str) -> Option<Arc<SessionHost>> {

@@ -164,7 +164,7 @@ impl Supervisor {
                 ),
                 (
                     pa_core::agent_state::StateFile::CrashLog,
-                    descriptor_dir.join(crate::supervisor::SESSION_CRASH_LOG),
+                    descriptor_dir.join(pa_core::session::crash::SESSION_CRASH_LOG),
                 ),
             ];
             let imported = tokio::task::spawn_blocking(move || {

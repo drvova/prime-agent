@@ -269,9 +269,24 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   daemon runs interactive turns on its task lanes (steers, follow-ups, `session.abort` parking the
   lane with the unread steers back at its front, `abort_and_send_queued`, withdraw and restore,
   `session.compact` in the lane, and an `agent/<id>/accepted` per input naming its task); a
-  parked lane does not survive its restart. It has none of the recovery below yet (crash
-  records, self-heal, boot revival, keeper: phase 7c), and the TUI and ACP still speak only to
-  the supervisor.
+  parked lane does not survive its restart. Its sessions have the supervisor's recovery
+  (`crates/pa-runtime/src/session/faults.rs`, with the policy and the revival rules shared from
+  `pa_core::session::crash` and `pa_core::session::revival`): the process panic hook attributes
+  a panic on a session's threads to that session, and a stuck cell ends its lifetime the same
+  way; the work running fails with the crash's reason and is not rerun; the crash is appended to
+  `<agent dir>/runtime-daemon/session-crashes.jsonl` (the database's `crashes` table), stored as
+  `agent/<id>/crashed`, and kept in the transcript as display-only rows (`session.snapshot`'s
+  `lastCrash`); the programs the session's commands left running are reaped from its orphan
+  journal; the session is rebuilt from its transcript with the same backoff, give-up
+  (`agent/<id>/recovered`, or `/failed` and the session closed) and one-time kernel-reset
+  notice, the calls the crash cut off answered once as of unknown outcome. It keeps the
+  sessions it holds in the database, and a runtime daemon that starts after one that died
+  revives those with unfinished tasks: their orphans reaped, the death recorded as a
+  `daemon_restart` crash, the interrupted task run again, continued behind the
+  interrupted-turn notice (as the same task, its prompt not repeated) or left over, or, on the
+  second death in a row under it, settled as failed. Not yet: a restart owner for the runtime
+  daemon (the keeper) and a boot reap of a wedged predecessor still holding its lock. The TUI
+  and ACP still speak only to the supervisor.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,

@@ -10,18 +10,24 @@
 //! used again: that lifetime ends (its scope is ended, so nothing of it
 //! writes again, and its runtime is shut down) and the next task runs on a
 //! fresh engine the builder makes in a new lifetime. Other sessions never
-//! see it.
+//! see it. Under the runtime daemon's supervision a panic on any of the
+//! session's threads, or a stuck cell, ends the lifetime the same way, and
+//! the crash is recorded and healed ([`super::faults`]).
 
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pa_agent::agent::Agent;
+use pa_core::session::crash::{
+    restart_backoff_ms, SessionCrash, MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS,
+};
 use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
 use pa_core::session_engine::session_events::agent_event_json;
 use pa_types::ai::ImageContent;
+use pa_types::daemon::SessionFaultEvent;
 use pa_types::event_log::{Cause, EventId, NewEvent, Task, TaskFailure};
 use pa_types::session_scope::{self, SessionScope};
 use serde_json::Value;
@@ -31,6 +37,10 @@ use pa_core::agent_state::EventRequester;
 use pa_core::session_engine::agent_messaging::register_agent_message_host_handlers;
 use pa_core::session_engine::event_bus_host::register_event_bus_host_handlers;
 
+use super::faults::{
+    keep_fault, orphan_journal, publish_fault, reap_orphans, record_crash, LifetimeFaults, Rebuild,
+    SessionFaults,
+};
 use super::{
     done_event, BuiltSession, DriverEvents, Finished, Outbox, SessionBuilder, SessionSeams,
     SessionSpec, SessionTopics, SettleAfter, Settled,
@@ -51,6 +61,15 @@ use crate::turn::goal::PrintGoalSurface;
 /// How long a lifetime's runtime may take to drop its tasks once the
 /// lifetime has ended; threads still blocked after that are abandoned.
 const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(1);
+
+/// How a session's host starts.
+pub(crate) enum Opening {
+    /// Its first lifetime builds its engine.
+    Fresh,
+    /// The session is revived after a crash (its daemon's death): its first
+    /// lifetime is the rebuild.
+    Revived(Rebuild),
+}
 
 /// What the host runs, and where each answer goes.
 enum Work {
@@ -160,10 +179,16 @@ struct Turn {
     /// The input event of the task the host finished last, and whether a
     /// settle may follow it.
     finished: Option<(EventId, bool)>,
+    /// Why the session takes no more work, once its supervision gave it up.
+    given_up: Option<String>,
 }
 
 impl SessionHost {
     /// Starts session `id`'s host thread; it builds the engine at once.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is a distinct part of the session the host thread owns"
+    )]
     pub(crate) fn start<B: SessionBuilder>(
         id: String,
         spec: SessionSpec,
@@ -172,6 +197,8 @@ impl SessionHost {
         builder: Arc<B>,
         outbox: Outbox,
         events: Arc<BusEvents>,
+        faults: SessionFaults,
+        opening: Opening,
     ) -> std::io::Result<Self> {
         let (work, queued) = mpsc::unbounded_channel();
         let control = Arc::new(TurnControl {
@@ -196,8 +223,10 @@ impl SessionHost {
                             outbox,
                             control,
                             events,
+                            faults,
                         },
                         queued,
+                        opening,
                     );
                 }
             })?;
@@ -225,10 +254,7 @@ impl SessionHost {
             cause,
             outcome,
         }) {
-            return Ran::Unreported(TaskEnd::failed(
-                TaskFailure::Turn,
-                "the session is closed".to_string(),
-            ));
+            return Ran::Unreported(TaskEnd::failed(TaskFailure::Turn, self.closed_reason()));
         }
         answer.await.unwrap_or_else(|_| {
             Ran::Unreported(TaskEnd::failed(
@@ -270,9 +296,10 @@ impl SessionHost {
                 }
             }
         };
+        let closed = self.closed_reason();
         async move {
             if !queued {
-                return Err("the session is closed".to_string());
+                return Err(closed);
             }
             answer.await.unwrap_or_else(|_| {
                 Err("the session's host ended before the settle did".to_string())
@@ -284,11 +311,19 @@ impl SessionHost {
     pub(crate) async fn finish(&self) -> Result<Finished, String> {
         let (finished, answer) = oneshot::channel();
         if !self.send(Work::Finish(finished)) {
-            return Err("the session is closed".to_string());
+            return Err(self.closed_reason());
         }
         answer
             .await
             .unwrap_or_else(|_| Err("the session's host ended before the finish did".to_string()))
+    }
+
+    /// Why work sent to the session's thread is refused.
+    fn closed_reason(&self) -> String {
+        lock(&self.control.turn)
+            .given_up
+            .clone()
+            .unwrap_or_else(|| "the session is closed".to_string())
     }
 
     /// Queues `work` for the session's thread; whether it is still open.
@@ -394,28 +429,38 @@ struct Lifetime<B> {
     control: Arc<TurnControl>,
     /// The runtime's event bus, which the kernel's `event.*` reach.
     events: Arc<BusEvents>,
+    /// What a crash does to the session.
+    faults: SessionFaults,
 }
-
-/// A panic in a lifetime's work: the lifetime ends.
-struct Panicked;
 
 /// How a lifetime ended.
 enum Ended {
     /// The session was closed.
     Closed,
-    /// A turn panicked; the session goes on in a new lifetime.
-    Crashed,
+    /// It crashed; the session goes on in a new lifetime (or, supervised and
+    /// crashing too often, is given up).
+    Crashed(SessionCrash),
 }
 
-/// The host thread: one lifetime after another until the session closes.
-fn serve<B: SessionBuilder>(lifetime: &Lifetime<B>, mut queued: mpsc::UnboundedReceiver<Work>) {
+/// The host thread: one lifetime after another until the session closes
+/// (or, supervised, is given up).
+fn serve<B: SessionBuilder>(
+    lifetime: &Lifetime<B>,
+    mut queued: mpsc::UnboundedReceiver<Work>,
+    opening: Opening,
+) {
+    let mut rebuild = match opening {
+        Opening::Fresh => None,
+        Opening::Revived(rebuild) => Some(rebuild),
+    };
+    let mut failures = rebuild.as_ref().map_or(0, |rebuild| rebuild.failures);
     loop {
-        let scope = Arc::new(SessionScope::new(
-            lifetime.id.clone(),
-            lifetime.spec.cwd.clone(),
-            lifetime.spec.env.clone(),
-            BTreeSet::new(),
-        ));
+        let scope = lifetime.scope();
+        let faults = Arc::new(LifetimeFaults::default());
+        match &lifetime.faults {
+            SessionFaults::Contained => {}
+            SessionFaults::Supervised(_) => faults.install(&scope),
+        }
         let _entered = session_scope::enter(Some(Arc::clone(&scope)));
         // Multi-threaded, as the daemon's session host is: what the session
         // spawns (a background refinement, its subagents' drivers) runs
@@ -439,7 +484,8 @@ fn serve<B: SessionBuilder>(lifetime: &Lifetime<B>, mut queued: mpsc::UnboundedR
                 return;
             }
         };
-        let ended = lifetime.run(&runtime, &mut queued);
+        let started = Instant::now();
+        let ended = lifetime.run(&runtime, &mut queued, &faults, rebuild.take());
         {
             let mut turn = lock(&lifetime.control.turn);
             turn.agent = None;
@@ -449,10 +495,67 @@ fn serve<B: SessionBuilder>(lifetime: &Lifetime<B>, mut queued: mpsc::UnboundedR
         // runtime goes, so nothing it leaves running writes again.
         scope.end();
         runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
-        match ended {
+        let crash = match ended {
             Ended::Closed => return,
-            Ended::Crashed => {}
+            Ended::Crashed(crash) => crash,
+        };
+        let supervision = match &lifetime.faults {
+            SessionFaults::Contained => continue,
+            SessionFaults::Supervised(supervision) => supervision,
+        };
+        // A lifetime that lived long enough proved healthy: this crash
+        // starts a fresh count.
+        failures = if started.elapsed() >= Duration::from_millis(STABLE_LIFETIME_MS) {
+            1
+        } else {
+            failures + 1
+        };
+        // The lifetime's runtime is gone: the programs its commands started
+        // and left running have no owner.
+        let reaped_programs = orphan_journal(&lifetime.spec)
+            .map_or(0, |journal| reap_orphans(&journal, std::process::id()));
+        let crashed = Rebuild {
+            crash,
+            failures,
+            reaped_programs,
+        };
+        record_crash(
+            supervision,
+            &lifetime.outbox,
+            &lifetime.topics,
+            &lifetime.id,
+            &crashed,
+        );
+        if failures > MAX_CONSECUTIVE_FAILURES {
+            let given_up = SessionFaultEvent::SessionFailed { failures };
+            {
+                // The transcript keeps the give-up, written in a lifetime of
+                // its own (the crashed one's scope has ended).
+                let scope = lifetime.scope();
+                let _entered = session_scope::enter(Some(Arc::clone(&scope)));
+                keep_fault(&lifetime.spec, &crashed, &given_up);
+                scope.end();
+            }
+            publish_fault(
+                &lifetime.outbox,
+                &lifetime.topics.failed,
+                &lifetime.id,
+                &given_up,
+            );
+            let reason = format!(
+                "the session was given up after {failures} crashes in a row: {}",
+                crashed.crash.reason()
+            );
+            lock(&lifetime.control.turn).given_up = Some(reason.clone());
+            while let Ok(work) = queued.try_recv() {
+                work.fail(&reason);
+            }
+            return;
         }
+        // Closing the session meanwhile waits the backoff out: at most the
+        // fifth crash's 4 s.
+        std::thread::sleep(Duration::from_millis(restart_backoff_ms(failures)));
+        rebuild = Some(crashed);
     }
 }
 
@@ -490,19 +593,58 @@ struct Hosted {
 }
 
 impl<B: SessionBuilder> Lifetime<B> {
-    /// Serves work on `runtime` until the session closes or a turn panics.
+    /// A new lifetime's scope.
+    fn scope(&self) -> Arc<SessionScope> {
+        SessionScope::new(
+            self.id.clone(),
+            self.spec.cwd.clone(),
+            self.spec.env.clone(),
+            BTreeSet::new(),
+        )
+    }
+
+    /// Serves work on `runtime` until the session closes or the lifetime
+    /// crashes. A rebuild after a crash first keeps the fault in the
+    /// transcript and answers the calls it cut off, then builds; once the
+    /// engine is built the session's clients hear it recovered.
     fn run(
         &self,
         runtime: &tokio::runtime::Runtime,
         queued: &mut mpsc::UnboundedReceiver<Work>,
+        faults: &LifetimeFaults,
+        rebuild: Option<Rebuild>,
     ) -> Ended {
+        let mut recovering = rebuild.map(|rebuild| {
+            let recovered = SessionFaultEvent::SessionRecovered {
+                failures: rebuild.failures,
+                queued_input_suspended: false,
+            };
+            keep_fault(&self.spec, &rebuild, &recovered);
+            recovered
+        });
         let mut hosted = self.build(runtime);
         loop {
-            let Some(work) = runtime.block_on(queued.recv()) else {
-                // Dropped on its runtime: what the engine spawns as it goes
-                // down still has one to run on.
-                runtime.block_on(async move { drop(hosted) });
-                return Ended::Closed;
+            if hosted.is_ok() {
+                if let Some(recovered) = recovering.take() {
+                    publish_fault(&self.outbox, &self.topics.recovered, &self.id, &recovered);
+                }
+            }
+            let next = runtime.block_on(async {
+                tokio::select! {
+                    biased;
+                    crash = faults.faulted() => Err(crash),
+                    work = queued.recv() => Ok(work),
+                }
+            });
+            let work = match next {
+                Ok(Some(work)) => work,
+                Ok(None) => {
+                    // Dropped on its runtime: what the engine spawns as it
+                    // goes down still has one to run on.
+                    runtime.block_on(async move { drop(hosted) });
+                    return Ended::Closed;
+                }
+                Err(crash) => return Self::crashed(runtime, hosted, crash),
             };
             if hosted.is_err() {
                 hosted = self.build(runtime);
@@ -514,29 +656,69 @@ impl<B: SessionBuilder> Lifetime<B> {
                     continue;
                 }
             };
-            if self.answer(runtime, session, work).is_err() {
-                // The engine the panic left is not used again; dropping it
-                // may panic too, and that is this lifetime's end as well.
-                let _ = session_scope::catching_panics(AssertUnwindSafe(|| {
-                    runtime.block_on(async move { drop(hosted) });
-                }));
-                return Ended::Crashed;
+            if let Err(crash) = self.answer(runtime, session, work, faults) {
+                return Self::crashed(runtime, hosted, crash);
             }
         }
     }
 
-    /// Runs one item of work on `session` and answers it. A panic in it is
-    /// answered as its failure and returned: the lifetime ends.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a task's start, run and end read in the order they happen, each beside its answer"
-    )]
+    /// The lifetime's end after `crash`: the engine it left is not used
+    /// again. Dropping it may panic too, and that is this lifetime's end as
+    /// well.
+    fn crashed(
+        runtime: &tokio::runtime::Runtime,
+        hosted: Result<Hosted, String>,
+        crash: SessionCrash,
+    ) -> Ended {
+        let _ = session_scope::catching_panics(AssertUnwindSafe(|| {
+            runtime.block_on(async move { drop(hosted) });
+        }));
+        Ended::Crashed(crash)
+    }
+
+    /// Runs `work` on `runtime` until it ends or a fault ends the lifetime:
+    /// its value, or the crash (a panic it raised, caught here, or a fault
+    /// on another of the session's threads, which the work's own result is
+    /// not trusted over).
+    fn contained<T>(
+        runtime: &tokio::runtime::Runtime,
+        faults: &LifetimeFaults,
+        work: impl std::future::Future<Output = T>,
+    ) -> Result<T, SessionCrash> {
+        let ran = session_scope::catching_panics(AssertUnwindSafe(|| {
+            runtime.block_on(async {
+                tokio::select! {
+                    biased;
+                    crash = faults.faulted() => Err(crash),
+                    value = work => Ok(value),
+                }
+            })
+        }));
+        match ran {
+            Ok(Ok(value)) => faults.fault().map_or(Ok(value), Err),
+            Ok(Err(crash)) => Err(crash),
+            Err(panic) => Err(faults.caught(&*panic)),
+        }
+    }
+
+    /// Why `what` failed when `crash` ended the lifetime under it: the
+    /// panic's text, or under supervision the crash's reason.
+    fn crash_reason(&self, what: &str, crash: &SessionCrash) -> String {
+        match &self.faults {
+            SessionFaults::Contained => format!("{what} panicked: {}", crash.message),
+            SessionFaults::Supervised(_) => crash.reason(),
+        }
+    }
+
+    /// Runs one item of work on `session` and answers it. A crash under it
+    /// is answered as its failure and returned: the lifetime ends.
     fn answer(
         &self,
         runtime: &tokio::runtime::Runtime,
         session: &mut Hosted,
         work: Work,
-    ) -> Result<(), Panicked> {
+        faults: &LifetimeFaults,
+    ) -> Result<(), SessionCrash> {
         match work {
             Work::Task {
                 task,
@@ -569,9 +751,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                     trust: task.trust,
                     cause: cause.clone(),
                 }));
-                let ran = session_scope::catching_panics(AssertUnwindSafe(|| {
-                    runtime.block_on(self.run_task(session, &task, images))
-                }));
+                let ran = Self::contained(runtime, faults, self.run_task(session, &task, images));
                 let cancelled = {
                     let mut turn = lock(&self.control.turn);
                     turn.ended = turn.task.take();
@@ -583,12 +763,9 @@ impl<B: SessionBuilder> Lifetime<B> {
                 let (end, panicked) = match ran {
                     Ok(_) if cancelled => (TaskEnd::CANCELLED, Ok(())),
                     Ok(end) => (end, Ok(())),
-                    Err(panic) => (
-                        TaskEnd::failed(
-                            TaskFailure::Turn,
-                            format!("the turn panicked: {}", panic_text(&*panic)),
-                        ),
-                        Err(Panicked),
+                    Err(crash) => (
+                        TaskEnd::failed(TaskFailure::Turn, self.crash_reason("the turn", &crash)),
+                        Err(crash),
                     ),
                 };
                 // A settle may follow a task that ended done or with a failed
@@ -615,7 +792,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                 let _ = outcome.send(Ran::Reported(end));
                 match armed {
                     Some(settled) if settles => {
-                        self.answer(runtime, session, Work::Settle(settled))
+                        self.answer(runtime, session, Work::Settle(settled), faults)
                     }
                     Some(settled) => {
                         let _ = settled.send(Ok(None));
@@ -625,15 +802,10 @@ impl<B: SessionBuilder> Lifetime<B> {
                 }
             }
             Work::Settle(settled) => {
-                let answer = session_scope::catching_panics(AssertUnwindSafe(|| {
-                    runtime.block_on(self.settle(session))
-                }));
+                let answer = Self::contained(runtime, faults, self.settle(session));
                 let (answer, panicked) = match answer {
                     Ok(answer) => (answer.map(Some), Ok(())),
-                    Err(panic) => (
-                        Err(format!("the settle panicked: {}", panic_text(&*panic))),
-                        Err(Panicked),
-                    ),
+                    Err(crash) => (Err(self.crash_reason("the settle", &crash)), Err(crash)),
                 };
                 // Behind the settle's events: its caller has them all first.
                 self.outbox.then(move || {
@@ -642,15 +814,10 @@ impl<B: SessionBuilder> Lifetime<B> {
                 panicked
             }
             Work::Finish(finished) => {
-                let answer = session_scope::catching_panics(AssertUnwindSafe(|| {
-                    runtime.block_on(self.finish(session))
-                }));
+                let answer = Self::contained(runtime, faults, self.finish(session));
                 let (answer, panicked) = match answer {
                     Ok(answer) => (Ok(answer), Ok(())),
-                    Err(panic) => (
-                        Err(format!("the finish panicked: {}", panic_text(&*panic))),
-                        Err(Panicked),
-                    ),
+                    Err(crash) => (Err(self.crash_reason("the finish", &crash)), Err(crash)),
                 };
                 self.outbox.then(move || {
                     let _ = finished.send(answer);
@@ -1185,13 +1352,4 @@ impl<B: SessionBuilder> Lifetime<B> {
             refine_command_failed: boundary.refine_command_failed(),
         }
     }
-}
-
-/// A panic payload's text.
-fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
-    panic
-        .downcast_ref::<&str>()
-        .map(|text| (*text).to_string())
-        .or_else(|| panic.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a panic with a non-text payload".to_string())
 }

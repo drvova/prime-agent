@@ -1,10 +1,12 @@
 //! Session entry parsing, migration, context reconstruction, and tree.
 pub mod billed_row;
+pub mod crash;
 pub mod discovery;
 pub mod hosted;
 pub mod lease;
 pub mod manager;
 pub mod manager_ext;
+pub mod revival;
 pub mod store;
 pub mod tree;
 pub mod window;

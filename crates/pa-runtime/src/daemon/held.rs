@@ -1,0 +1,270 @@
+//! The sessions the runtime daemon holds open ([`OpenSessions`]), kept in
+//! the agent's database as they change, and their revival when the daemon
+//! starts after one that died ([`revive`]).
+//!
+//! A held session is kept with its transcript, working directory and the
+//! daemon process that held it (`kv` scope [`SCOPE`], key [`KEY`]). At
+//! start, every session a dead daemon held has the programs its commands
+//! left running stopped (its orphan journal, by that daemon's pid); one with
+//! unfinished tasks is opened again under its lease, its death recorded as
+//! its crash (kind `daemon_restart`) and the turn it was running classified
+//! by how far its transcript shows it got
+//! (`pa_core::session::revival`): run again, continued behind a notice, left
+//! over, or, the second death in a row under it, settled as failed. One
+//! with nothing unfinished is let go.
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use pa_core::session::crash::SessionCrash;
+use pa_core::session::lease::{acquire_runtime_session_lease, SessionLease};
+use pa_core::session::revival::{
+    host_death, transcript_evidence, InterruptedTurn, RevivedTurn, TurnPrompt,
+};
+use pa_log::{Log, Origin};
+use pa_types::event_log::{Task, TaskState};
+use serde_json::{json, Value};
+
+use crate::lock;
+use crate::runtime::Runtime;
+use crate::session::{Rebuild, SessionBuilder, SessionSpec};
+
+/// The `kv` scope and key the held sessions are kept under.
+const SCOPE: &str = "runtime-daemon";
+const KEY: &str = "sessions";
+
+/// The directory under the agent dir the runtime daemon keeps its sessions'
+/// orphan journals and its crash log in.
+pub(super) const DIR: &str = "runtime-daemon";
+
+/// The orphan journal of session `id` under `agent_dir`: its kernel records
+/// each program its commands start there.
+pub(super) fn orphan_journal(agent_dir: &Path, id: &str) -> PathBuf {
+    agent_dir.join(DIR).join(format!("{id}.orphans.jsonl"))
+}
+
+/// One held session, as the database keeps it (`{"path", "cwd",
+/// "daemonPid"}`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Held {
+    path: PathBuf,
+    cwd: PathBuf,
+    daemon_pid: u32,
+}
+
+impl Held {
+    fn of(value: &Value) -> Option<Self> {
+        Some(Held {
+            path: PathBuf::from(value["path"].as_str()?),
+            cwd: PathBuf::from(value["cwd"].as_str()?),
+            daemon_pid: u32::try_from(value["daemonPid"].as_u64()?).ok()?,
+        })
+    }
+}
+
+/// A session the daemon died under, as the next one opens it again
+/// ([`Runtime::revive_session`]).
+pub(crate) struct Revival {
+    /// The death, as the session's crash.
+    pub(crate) rebuild: Rebuild,
+    /// The task that was running, how far its transcript shows it got (`None`
+    /// when the transcript could not be read) and what becomes of it.
+    pub(crate) running: Option<(Task, Option<RevivedTurn>, InterruptedTurn)>,
+}
+
+/// The sessions the daemon holds open, each with its transcript and the
+/// lease it holds it by; a session's lease is released when it leaves.
+pub(super) struct OpenSessions {
+    log: std::sync::Arc<Log>,
+    open: Mutex<HashMap<String, OpenSession>>,
+}
+
+pub(super) struct OpenSession {
+    pub(super) path: PathBuf,
+    pub(super) cwd: PathBuf,
+    pub(super) _lease: SessionLease,
+}
+
+impl OpenSessions {
+    pub(super) fn new(log: std::sync::Arc<Log>) -> Self {
+        OpenSessions {
+            log,
+            open: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The transcript of open session `id`.
+    pub(super) fn path(&self, id: &str) -> Option<PathBuf> {
+        lock(&self.open).get(id).map(|session| session.path.clone())
+    }
+
+    pub(super) fn contains(&self, id: &str) -> bool {
+        lock(&self.open).contains_key(id)
+    }
+
+    /// Every open session's id and transcript.
+    pub(super) fn paths(&self) -> HashMap<String, PathBuf> {
+        lock(&self.open)
+            .iter()
+            .map(|(id, session)| (id.clone(), session.path.clone()))
+            .collect()
+    }
+
+    /// Holds `session` as `id`, kept in the database.
+    pub(super) async fn insert(&self, id: String, session: OpenSession) {
+        let kept = {
+            let mut open = lock(&self.open);
+            open.insert(id, session);
+            self.keep(&open)
+        };
+        if let Err(error) = kept.wait().await {
+            tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
+        }
+    }
+
+    /// Lets session `id` go (its lease is released), kept in the database.
+    pub(super) async fn remove(&self, id: &str) {
+        let kept = {
+            let mut open = lock(&self.open);
+            open.remove(id);
+            self.keep(&open)
+        };
+        if let Err(error) = kept.wait().await {
+            tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
+        }
+    }
+
+    /// Saves `open` as the held sessions; called under the lock, so the
+    /// writes land in the order the changes were made.
+    fn keep(&self, open: &HashMap<String, OpenSession>) -> pa_log::Receipt<bool> {
+        let held: serde_json::Map<String, Value> = open
+            .iter()
+            .map(|(id, session)| {
+                (
+                    id.clone(),
+                    json!({
+                        "path": session.path,
+                        "cwd": session.cwd,
+                        "daemonPid": std::process::id(),
+                    }),
+                )
+            })
+            .collect();
+        self.log
+            .put_value(SCOPE, KEY, Value::Object(held).to_string(), Origin::Written)
+    }
+}
+
+/// Revives the sessions a daemon that died held (see the module
+/// documentation); each one revived is held in `open`.
+pub(super) async fn revive<B: SessionBuilder>(
+    runtime: &Runtime<B>,
+    open: &OpenSessions,
+    agent_dir: &Path,
+) {
+    let log = std::sync::Arc::clone(runtime.log());
+    let held: BTreeMap<String, Held> = match log.value(SCOPE, KEY) {
+        Ok(Some(held)) => serde_json::from_str::<serde_json::Map<String, Value>>(&held)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|(id, held)| Some((id.clone(), Held::of(held)?)))
+            .collect(),
+        Ok(None) => BTreeMap::new(),
+        Err(error) => {
+            tracing::warn!("the runtime daemon's held sessions could not be read: {error:#}");
+            BTreeMap::new()
+        }
+    };
+    for (id, session) in held {
+        if let Err(error) = revive_one(runtime, open, agent_dir, &log, &id, session).await {
+            tracing::warn!("session {id} was not revived: {error:#}");
+        }
+    }
+    // What is held now is what was revived.
+    let kept = open.keep(&lock(&open.open));
+    if let Err(error) = kept.wait().await {
+        tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
+    }
+}
+
+/// Revives session `id`, which `session` says a dead daemon held.
+async fn revive_one<B: SessionBuilder>(
+    runtime: &Runtime<B>,
+    open: &OpenSessions,
+    agent_dir: &Path,
+    log: &std::sync::Arc<Log>,
+    id: &str,
+    session: Held,
+) -> anyhow::Result<()> {
+    let journal = orphan_journal(agent_dir, id);
+    let owner = session.daemon_pid;
+    let reaped_programs =
+        tokio::task::spawn_blocking(move || crate::session::reap_orphans(&journal, owner))
+            .await
+            .unwrap_or(0);
+    let tasks = {
+        let (log, id) = (std::sync::Arc::clone(log), id.to_string());
+        tokio::task::spawn_blocking(move || log.unfinished_tasks(&id)).await??
+    };
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    let lease = {
+        let (path, agent_dir) = (session.path.clone(), agent_dir.to_path_buf());
+        tokio::task::spawn_blocking(move || acquire_runtime_session_lease(&path, &agent_dir))
+            .await??
+    };
+    let running = tasks
+        .into_iter()
+        .find(|task| task.state == TaskState::Running);
+    let spec = SessionSpec {
+        id: Some(id.to_string()),
+        name: None,
+        cwd: session.cwd.clone(),
+        env: super::session_env(agent_dir, id),
+        subagent: None,
+        transcript: Some(session.path.clone()),
+    };
+    match running {
+        // Only queued work: the daemon died between turns.
+        None => {
+            runtime.create_session(spec).await?;
+        }
+        Some(task) => {
+            let saved_at = log.task_saved_at(&task.id)?.unwrap_or(0);
+            let evidence = transcript_evidence(
+                &session.path,
+                &pa_core::session::manager::format_iso(i64::try_from(saved_at)?),
+                TurnPrompt::User,
+            )
+            .ok();
+            // A task counts its runs: the second death in a row under it is
+            // its second run's.
+            let (message, turn) = host_death(evidence, u64::from(task.attempts.saturating_sub(1)));
+            runtime
+                .revive_session(
+                    spec,
+                    Revival {
+                        rebuild: Rebuild {
+                            crash: SessionCrash::now("daemon_restart", message.to_string()),
+                            failures: 1,
+                            reaped_programs,
+                        },
+                        running: Some((task, evidence, turn)),
+                    },
+                )
+                .await?;
+        }
+    }
+    open.insert(
+        id.to_string(),
+        OpenSession {
+            path: session.path,
+            cwd: session.cwd,
+            _lease: lease,
+        },
+    )
+    .await;
+    Ok(())
+}
