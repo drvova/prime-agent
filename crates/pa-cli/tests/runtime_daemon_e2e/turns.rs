@@ -400,10 +400,15 @@ async fn withdrawn_input_comes_back_in_order_and_restored_input_steers_the_turn(
     let mut session = Attached::open(&bed, &cwd).await;
     let first = session.publish("run the sleep", None).await;
     session.until_streamed("tool_execution_start").await;
-    session.publish("follow X", Some("follow_up")).await;
+    let follow_x = session.publish("follow X", Some("follow_up")).await;
     session.publish("follow Y", Some("follow_up")).await;
 
     let withdrawn = session.call("session.withdraw", json!({})).await;
+    // A withdrawn task ends with its `done`, as a prompt-and-wait waits for.
+    assert_eq!(
+        session.done(&follow_x["task"]).await["outcome"],
+        "cancelled"
+    );
     let texts: Vec<Value> = withdrawn["withdrawn"]
         .as_array()
         .unwrap()

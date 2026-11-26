@@ -29,6 +29,8 @@ impl TaskRunner for Gate {
             .expect("the test listens");
         Steered::Taken
     }
+
+    fn cancelled(&self, _task: &Task) {}
 }
 
 struct Harness {
