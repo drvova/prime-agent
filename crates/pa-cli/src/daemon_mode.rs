@@ -11,19 +11,32 @@ use crate::mode::RunOptions;
 /// The environment switch that selects the runtime daemon.
 const RUNTIME_DAEMON_ENV: &str = "PRIME_AGENT_RUNTIME_DAEMON";
 
+/// Whether the process's own environment selects the runtime daemon; read
+/// once, at startup.
+pub(crate) fn env_selects_runtime_daemon() -> bool {
+    std::env::var(RUNTIME_DAEMON_ENV).is_ok_and(|value| value == "1")
+}
+
+/// Whether the agent dir's global settings select the runtime daemon, as
+/// they stand now: read at startup to pick the daemon, and by the runtime
+/// daemon before each scheduled job, so a job never fires in a runtime
+/// daemon the settings stopped selecting.
+pub(crate) fn settings_select_runtime_daemon(agent_dir: &std::path::Path) -> bool {
+    pa_core::settings::SettingsManager::create(agent_dir, agent_dir)
+        .global_settings()
+        .daemon
+        .as_deref()
+        == Some("runtime")
+}
+
 pub fn run_daemon_mode(options: &RunOptions) -> Result<i32> {
     let socket_path = config::resolve_daemon_socket_path(options.daemon_socket.as_deref());
     let agent_dir = config::get_agent_dir();
     // The daemon keeps its transcripts in this agent dir's database.
     pa_core::session::store::use_agent_dir(&agent_dir);
-    // Process startup: the selection is read once, from the process's own
-    // environment and the global settings.
-    let runtime_selected = std::env::var(RUNTIME_DAEMON_ENV).is_ok_and(|value| value == "1")
-        || pa_core::settings::SettingsManager::create(&agent_dir, &agent_dir)
-            .global_settings()
-            .daemon
-            .as_deref()
-            == Some("runtime");
+    // Process startup: which daemon this process is.
+    let runtime_selected =
+        env_selects_runtime_daemon() || settings_select_runtime_daemon(&agent_dir);
     // Asked to be the restart owner: keep the daemon this command line starts instead of being
     // it, with the records of the daemon it keeps. Nothing of the session engine is built on
     // this path.

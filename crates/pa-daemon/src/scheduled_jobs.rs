@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify};
 
-use pa_core::cron::scheduler::{AgentCronScheduler, AgentCronSchedulerHooks};
+use pa_core::cron::scheduler::{
+    AgentCronScheduler, AgentCronSchedulerHooks, FIRE_SETTLE_TIMEOUT_MS,
+};
 use pa_core::cron::store::{
     AgentCronJobStore, CancelJobsFilter, CreateAgentCronJobInput, HeartbeatManagementAction,
     SessionBinding,
@@ -22,10 +24,6 @@ use pa_core::cron::{
 
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::worker::{QueuedItem, SessionCore, Worker};
-
-/// How long a fire waits for its turn to settle before answering the scheduler with a skip (a stuck
-/// turn must not pin the dispatch lane forever).
-const FIRE_SETTLE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
 /// The session-artifact directory for one session file: `<sessions>/../session-artifacts/<id>`.
 pub(crate) fn session_artifact_dir(session_file: &Path, session_id: &str) -> Option<PathBuf> {

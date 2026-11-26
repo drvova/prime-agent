@@ -510,6 +510,9 @@ pub(crate) struct HeadlessEmbeddingFields {
     /// What the kernel asks before each call past it: a runtime session's
     /// trust gate; `None` for the RPC embedding.
     pub(crate) call_policy: Option<Arc<dyn pa_core::kernel::CallPolicy>>,
+    /// The scheduled jobs a runtime-daemon session's kernel binds to;
+    /// `None` for a print run (its `schedule.*` refuses) and RPC.
+    pub(crate) cron_store: Option<pa_core::session_engine::runtime_wiring::KernelCronWiring>,
 }
 
 /// The embedding-owned fields for one headless engine build: a print
@@ -548,6 +551,7 @@ pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> Headle
         on_late_sent_agent_message: seams
             .map(|seams| Arc::clone(&seams.on_late_sent_agent_message)),
         call_policy: seams.map(|seams| Arc::clone(&seams.call_policy)),
+        cron_store: seams.and_then(|seams| seams.scheduled_jobs.clone()),
     }
 }
 
@@ -773,6 +777,7 @@ pub(crate) async fn build_headless_engine_with(
         kernel_notice_sink,
         on_late_sent_agent_message,
         call_policy,
+        cron_store,
     } = headless_embedding_fields(embedding);
     let (semantic_edges, thinking_level) = match embedding {
         HeadlessEmbedding::Child { overrides, .. } => (
@@ -808,7 +813,7 @@ pub(crate) async fn build_headless_engine_with(
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {
             on_late_sent_agent_message,
-            cron_store: None,
+            cron_store,
             semantic_edges,
             telemetry,
             steering_mode,

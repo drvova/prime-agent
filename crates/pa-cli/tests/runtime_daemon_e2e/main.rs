@@ -14,10 +14,12 @@
 //! - Reliability (phase 7c): crashes, heals, give-ups, stuck cells and the
 //!   revival after the daemon's death: [`reliability`].
 //! - The restart owner and the boot reap (phase 7c-2): [`keeper`].
+//! - Scheduled jobs and heartbeats (phase 7d): [`schedules`].
 #![cfg(unix)]
 
 mod keeper;
 mod reliability;
+mod schedules;
 #[path = "../support/mod.rs"]
 mod support;
 mod turns;

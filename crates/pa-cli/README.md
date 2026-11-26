@@ -23,7 +23,11 @@ owner-only permissions, the exit cleanup that spares a successor) and `pa_runtim
 until SIGINT or SIGTERM. Its `SessionBuilder` opens the transcript a session's spec names
 (creating it under its id), builds the engine through the headless assembly (the faux provider
 under `PRIME_AGENT_FAUX_SCRIPT`), streams the turn driver's events, and builds subagents as the
-print run does (`print_session::build_subagent`). A kept launch still splits into the keeper
+print run does (`print_session::build_subagent`); a session's engine binds its kernel's
+`schedule.*` and `rlm_heartbeat.*` to the seams' `scheduled_jobs` (a print run has none, so its
+`schedule.*` still refuses). The daemon's `selected` re-reads the global settings before each
+scheduled job (`daemon_mode::settings_select_runtime_daemon`; the environment switch is read
+once). A kept launch still splits into the keeper
 first; the runtime daemon has no keeper of its own yet (phase 7c).
 `tests/runtime_daemon_e2e/` drives it over wire2 against the real binary; `turns.rs` there ports
 the supervisor's steer batching, queue order and abort tests (`steer_boundary_batch_e2e`,

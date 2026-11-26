@@ -11,7 +11,7 @@ use pa_types::event_log::{
 };
 
 use super::host::{Ran, TaskEnd};
-use super::{done_event, Queued, SessionBuilder, SessionSpec, SessionTopics, Sessions};
+use super::{done_event, JobsSlot, Queued, SessionBuilder, SessionSpec, SessionTopics, Sessions};
 use crate::events::BusEvents;
 use crate::log_stores::LogTaskStore;
 use crate::routes::{Announced, TaskRequest, TaskSink};
@@ -20,6 +20,10 @@ use crate::subagents::{
 };
 use crate::subscriptions::MemorySessionTree;
 use crate::tasks::{Steered, TaskOutcome, TaskQueue, TaskRunner};
+
+/// The prefix of the subscriptions that hear a scheduled job's timer
+/// (`schedule:<job>`, routed to the job's session).
+pub(crate) const SCHEDULE_PREFIX: &str = "schedule:";
 
 /// What an `Agent` route of the runtime does, by its subscription's id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +39,9 @@ enum RouteKind<'a> {
     /// `event-bus/<id>`: a kernel event subscription's task, over the
     /// message its event delivers.
     Event { subscription: &'a str },
+    /// [`SCHEDULE_PREFIX`]`<job>`: a scheduled job's timer fired; the
+    /// runtime daemon's jobs run the session's due ones. No task of its own.
+    Schedule,
     /// Any other: a task over the route's prompt or the event's input.
     Task,
 }
@@ -46,6 +53,9 @@ impl<'a> RouteKind<'a> {
         }
         if let Some(subscription) = subscription.strip_prefix(crate::events::SUBSCRIPTION_PREFIX) {
             return RouteKind::Event { subscription };
+        }
+        if subscription.starts_with(SCHEDULE_PREFIX) {
+            return RouteKind::Schedule;
         }
         match subscription {
             INBOX_SUBSCRIPTION => RouteKind::Inbox,
@@ -160,6 +170,8 @@ pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
     pub(crate) subagents: Arc<Subagents>,
     /// Where a spawned session without a `cwd` of its own runs.
     pub(crate) cwd: PathBuf,
+    /// The runtime daemon's scheduled jobs, once attached.
+    pub(crate) jobs: JobsSlot,
 }
 
 impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
@@ -184,6 +196,17 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                     .deliver_notice(&request.event)
                     .await
                     .map(|()| None);
+            }
+            RouteKind::Schedule => {
+                let AgentTarget::Session { session } = &request.target else {
+                    anyhow::bail!("a scheduled job's timer routes to its session");
+                };
+                let jobs = self
+                    .jobs
+                    .get()
+                    .context("this runtime runs no scheduled jobs")?;
+                jobs.fired(session);
+                return Ok(None);
             }
             RouteKind::Event { .. } | RouteKind::Task => {}
         }

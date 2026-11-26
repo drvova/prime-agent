@@ -42,6 +42,11 @@
 //!   its lease released). `session.snapshot` carries its `lastCrash`. The
 //!   sessions it holds are kept in the database, and a daemon that starts
 //!   after one that died revives those with unfinished work ([`held`]).
+//! - **Scheduled jobs.** The kernel's `schedule.*` and `rlm_heartbeat.*`
+//!   are served in the daemon's sessions, on the old daemon's stored jobs,
+//!   and fired by the runtime's timer sources while this daemon is the
+//!   selected one ([`DaemonOptions::selected`]); a job due in an idle
+//!   session the daemon holds down wakes it ([`schedules`]).
 //! - **Telemetry.** One `daemon event` (kind `catalog_refresh`,
 //!   `daemon_kind: runtime`) once the startup catalog refresh settles, off
 //!   the accept path; nothing the daemon serves waits on the network.
@@ -63,6 +68,7 @@ use crate::wire::WireConfig;
 mod boot_reap;
 mod handlers;
 mod held;
+mod schedules;
 
 pub use boot_reap::take_lock;
 
@@ -121,6 +127,10 @@ pub struct DaemonOptions<B> {
     pub cwd: PathBuf,
     /// Builds each session's engine.
     pub builder: B,
+    /// Whether this daemon is the selected one now: asked before each
+    /// scheduled job runs, which is skipped while it is not, so a job never
+    /// fires in both daemons.
+    pub selected: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 /// Runs the runtime daemon on `listener` until `shutdown` resolves: opens
@@ -214,10 +224,21 @@ pub async fn run<B: SessionBuilder>(
         .await?,
     );
     let open = Arc::new(OpenSessions::new(Arc::clone(runtime.log())));
+    let schedules = schedules::Schedules::new(
+        &runtime,
+        Arc::clone(&open),
+        options.agent_dir.clone(),
+        options.selected,
+    );
+    runtime.attach_jobs(Arc::clone(&schedules) as Arc<dyn crate::session::SessionJobs>);
     // A session given up on is closed, and its lease released.
     let given_up = {
         let mut listener = runtime.listen();
-        let (runtime, open) = (Arc::clone(&runtime), Arc::clone(&open));
+        let (runtime, open, schedules) = (
+            Arc::clone(&runtime),
+            Arc::clone(&open),
+            Arc::clone(&schedules),
+        );
         tokio::spawn(async move {
             while let Some(heard) = listener.recv().await {
                 let event = match heard {
@@ -237,15 +258,17 @@ pub async fn run<B: SessionBuilder>(
                         );
                     }
                     open.remove(id).await;
+                    schedules.disarm(id);
                 }
             }
         })
     };
-    held::revive(&runtime, &open, &options.agent_dir).await;
+    held::revive(&runtime, &open, &schedules, &options.agent_dir).await;
     let server = runtime.wire_server(
         RuntimeHandlers::new(
             Arc::clone(&runtime),
             Arc::clone(&open),
+            Arc::clone(&schedules),
             options.agent_dir.clone(),
             options.session_dir,
             options.cwd,
@@ -277,6 +300,8 @@ pub async fn run<B: SessionBuilder>(
     drop(server);
     given_up.abort();
     let _ = given_up.await;
+    schedules.stop();
+    drop(schedules);
     if let Ok(runtime) = Arc::try_unwrap(runtime) {
         runtime.shutdown().await;
     } else {

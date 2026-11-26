@@ -289,7 +289,13 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   revives those with unfinished tasks: their orphans reaped, the death recorded as a
   `daemon_restart` crash, the interrupted task run again, continued behind the
   interrupted-turn notice (as the same task, its prompt not repeated) or left over, or, on the
-  second death in a row under it, settled as failed. The TUI and ACP still speak only to the
+  second death in a row under it, settled as failed. Its sessions' kernels serve `schedule.*` and
+  `rlm_heartbeat.*` on the same stored jobs as the supervisor's (`pa_core::cron`), fired by the
+  runtime's kept timer sources (`crates/pa-runtime/src/daemon/schedules.rs`) under the store's
+  claim and catch-up rule, and only while it is the selected daemon (the settings are read again
+  before each job; a fire while it is not is a skip), so a job never fires in both daemons. An
+  idle session it held when it died is held dormant and woken under its lease when a job of its
+  is due; a session stopped on purpose is not. The TUI and ACP still speak only to the
   supervisor.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,

@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Context as _;
 use pa_core::autonomous::AgentAutonomousConfig;
@@ -21,6 +21,7 @@ use pa_core::session_engine::bash_notices::{BashNoticeWake, KernelNoticeSink};
 use pa_core::session_engine::engine::SessionEngine;
 use pa_core::session_engine::headless::HeadlessTerminalResult;
 use pa_core::session_engine::rlm_host::RlmSubagentHost;
+use pa_core::session_engine::runtime_wiring::KernelCronWiring;
 use pa_core::LateSentAgentMessageHandler;
 use pa_types::ai::{ImageContent, Model, ModelThinkingLevel};
 use pa_types::event_log::{AgentDone, Cause, EventId, NewEvent, Task, TaskState, Topic};
@@ -38,7 +39,7 @@ mod runner;
 pub(crate) use faults::{reap_orphans, Rebuild, SessionFaults, Supervision};
 use host::SessionHost;
 pub(crate) use host::{LiveEngine, Opening};
-pub(crate) use runner::{RuntimeTaskSink, SessionRunner};
+pub(crate) use runner::{RuntimeTaskSink, SessionRunner, SCHEDULE_PREFIX};
 
 /// A session to open.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -227,7 +228,31 @@ pub struct SessionSeams {
     /// `session/<id>/bash/done` or `/bash/quiet`, whose default subscription
     /// wakes the session (`SessionEngineConfig::kernel_notice_sink`).
     pub kernel_notices: KernelNoticeSink,
+    /// The session's scheduled jobs and heartbeats: the store the kernel's
+    /// `schedule.*` and `rlm_heartbeat.*` requests read and write, and the
+    /// identity its jobs bind to (`SessionEngineConfig::cron_store`).
+    /// `None` outside the runtime daemon: `schedule.*` then refuses and
+    /// `rlm_heartbeat.*` is not registered.
+    pub scheduled_jobs: Option<KernelCronWiring>,
 }
+
+/// The scheduled jobs of a runtime's sessions, which the runtime daemon
+/// keeps (`crate::daemon`); a runtime without one runs no scheduled job.
+///
+/// `wiring` is asked on the session's own thread each time a session's
+/// lifetime is built, and must not block: it answers the store the
+/// session's kernel binds its jobs to, or `None` for a session that keeps
+/// none (a subagent, a session without a transcript). `fired` is told,
+/// from the bus's routing, that a job timer of `session` fired; it must
+/// return at once and run the session's due jobs elsewhere.
+pub(crate) trait SessionJobs: Send + Sync {
+    fn wiring(&self, id: &str, spec: &SessionSpec) -> Option<KernelCronWiring>;
+    fn fired(&self, session: &str);
+}
+
+/// Where a runtime's sessions and its routing reach its [`SessionJobs`],
+/// once the runtime daemon attaches them.
+pub(crate) type JobsSlot = Arc<OnceLock<Arc<dyn SessionJobs>>>;
 
 /// The topics a session publishes on.
 #[derive(Debug, Clone)]
@@ -375,6 +400,8 @@ pub(crate) struct Sessions<B> {
     subagents: Arc<Subagents>,
     /// What a crash does to a session.
     faults: SessionFaults,
+    /// The sessions' scheduled jobs, in the runtime daemon.
+    jobs: JobsSlot,
     hosts: Mutex<HashMap<String, Arc<SessionHost>>>,
     /// What a queued task's store row does not keep, by task id, until it
     /// runs: its prompt's images and its trigger as a cause. A task restored
@@ -398,6 +425,7 @@ impl<B: SessionBuilder> Sessions<B> {
         events: Arc<BusEvents>,
         subagents: Arc<Subagents>,
         faults: SessionFaults,
+        jobs: JobsSlot,
     ) -> Self {
         Sessions {
             builder: Arc::new(builder),
@@ -405,9 +433,16 @@ impl<B: SessionBuilder> Sessions<B> {
             events,
             subagents,
             faults,
+            jobs,
             hosts: Mutex::new(HashMap::new()),
             queued: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Attaches the runtime daemon's scheduled jobs (once; a second attach
+    /// changes nothing).
+    pub(crate) fn attach_jobs(&self, jobs: Arc<dyn SessionJobs>) {
+        let _ = self.jobs.set(jobs);
     }
 
     /// Keeps `queued` for the task `task` until it runs.
@@ -455,6 +490,7 @@ impl<B: SessionBuilder> Sessions<B> {
             self.outbox.clone(),
             Arc::clone(&self.events),
             self.faults.clone(),
+            Arc::clone(&self.jobs),
             opening,
         )
         .context("start the session's host thread")?;
@@ -522,8 +558,7 @@ impl<B: SessionBuilder> Sessions<B> {
         &self.outbox
     }
 
-    /// The sessions' family tree, for tests to reach its nodes.
-    #[cfg(test)]
+    /// The sessions' family tree.
     pub(crate) fn subagents(&self) -> &Arc<Subagents> {
         &self.subagents
     }

@@ -198,6 +198,7 @@ impl SessionHost {
         outbox: Outbox,
         events: Arc<BusEvents>,
         faults: SessionFaults,
+        jobs: super::JobsSlot,
         opening: Opening,
     ) -> std::io::Result<Self> {
         let (work, queued) = mpsc::unbounded_channel();
@@ -224,6 +225,7 @@ impl SessionHost {
                             control,
                             events,
                             faults,
+                            jobs,
                         },
                         queued,
                         opening,
@@ -431,6 +433,8 @@ struct Lifetime<B> {
     events: Arc<BusEvents>,
     /// What a crash does to the session.
     faults: SessionFaults,
+    /// The runtime daemon's scheduled jobs, once attached.
+    jobs: super::JobsSlot,
 }
 
 /// How a lifetime ended.
@@ -866,6 +870,10 @@ impl<B: SessionBuilder> Lifetime<B> {
                     Arc::new(move || node.activity.notify_waiters())
                 },
                 kernel_notices: kernel_notice_sink(&self.node),
+                scheduled_jobs: self
+                    .jobs
+                    .get()
+                    .and_then(|jobs| jobs.wiring(&self.id, &self.spec)),
             };
             runtime.block_on(self.builder.build(&self.id, &self.spec, seams))
         }));

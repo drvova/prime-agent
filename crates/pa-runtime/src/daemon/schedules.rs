@@ -1,0 +1,538 @@
+//! The runtime daemon's scheduled jobs and heartbeats ([`Schedules`]): the
+//! kernel's `schedule.*` and `rlm_heartbeat.*` jobs of its sessions, kept in
+//! each session's scheduled-jobs partition (pa-core's `cron` store, the
+//! old daemon's rows), fired by the runtime's timer sources.
+//!
+//! - **Armed.** A session's jobs are armed when its engine is built (it
+//!   binds its kernel to the session's store) or when the boot holds it
+//!   dormant ([`super::held`]). Arming moves the stored jobs onto the
+//!   session (`rebind_session_jobs`) and gives the session one dispatch
+//!   lane: pa-core's `AgentCronScheduler` over its store, never started, so
+//!   its own timer never runs; the lane runs a pass when a timer fires.
+//! - **Timers.** Each active job has a kept timer source `schedule-<job>`
+//!   (`{"at": <its next run>}`) and a bus subscription `schedule:<job>`
+//!   that hears it and routes to the session; its fire runs a pass. After
+//!   every pass, and every kernel mutation, the timers follow the store: a
+//!   job's timer is defined again at its new next run, and a job no longer
+//!   active loses its timer. The store's claim decides what runs
+//!   (`claim_due`, its dispatch records, its interrupted-dispatch
+//!   recovery), under its catch-up rule: a job whose time passed while
+//!   nothing ran fires once, and its next run counts from that fire. A
+//!   timer's own claim (`lastFiredMs`) is cleared whenever it is defined,
+//!   so it never holds back a run the store owes.
+//! - **Routing**, as the old daemon's: a plain job is a `follow_up` task
+//!   over its prompt; a heartbeat steers its `heartbeat_prompt` row onto the
+//!   session's agent (a running turn reads it at its next step) and queues
+//!   an empty input that runs it when no turn does. Heartbeat deferral is
+//!   pa-core's (`should_defer_heartbeat_cron_job`). One fire waits for its
+//!   task's `done` before the lane's next, so a job never has two fires
+//!   queued: the old daemon's `heartbeat:<id>` queue key.
+//! - **Waking.** A job due in a dormant session opens it under its lease
+//!   first: the old daemon's scheduled wake. A session stopped on purpose is
+//!   disarmed and not held, so nothing wakes it.
+//! - **One daemon.** A job runs only while this daemon is the selected one
+//!   ([`super::DaemonOptions::selected`]); otherwise its fire is a skip, so
+//!   jobs never fire in both daemons.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
+
+use anyhow::Context as _;
+use pa_core::cron::scheduler::{
+    AgentCronScheduler, AgentCronSchedulerHooks, FIRE_SETTLE_TIMEOUT_MS,
+};
+use pa_core::cron::store::{AgentCronJobStore, CancelJobsFilter, SessionBinding};
+use pa_core::cron::{
+    is_heartbeat_cron_job, should_defer_heartbeat_cron_job, AgentCronJob, HeartbeatSessionActivity,
+    JobStatus,
+};
+use pa_core::session::lease::acquire_runtime_session_lease;
+use pa_core::session_engine::runtime_wiring::{KernelCronBinding, KernelCronWiring};
+use pa_sources::SourceKind;
+use pa_types::event_log::{
+    AgentDone, AgentInput, AgentTarget, NewEvent, Priority, Route, Scope, Subscription, TaskState,
+    Topic, TopicFilter, Trust,
+};
+use serde_json::json;
+use tokio::sync::Notify;
+
+use super::held::{OpenSession, OpenSessions};
+use crate::bus::{Heard, Listener};
+use crate::lock;
+use crate::runtime::Runtime;
+use crate::session::{SessionBuilder, SessionJobs, SessionSpec, SCHEDULE_PREFIX};
+use crate::sources::{SourceDefinition, SourceLifetime};
+
+/// What the scheduler records for a fire that did not run.
+const SKIPPED: &str = "skipped";
+
+/// The prefix of a job's timer source's name.
+const TIMER_PREFIX: &str = "schedule-";
+
+/// Whether this daemon is the selected one now.
+pub(super) type Selected = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// The runtime daemon's scheduled jobs, by session.
+pub(super) struct Schedules<B: SessionBuilder> {
+    me: Weak<Self>,
+    runtime: Weak<Runtime<B>>,
+    open: Arc<OpenSessions>,
+    agent_dir: PathBuf,
+    selected: Selected,
+    /// Where the lanes run (arming is asked on a session's own thread).
+    handle: tokio::runtime::Handle,
+    armed: Mutex<HashMap<String, Arc<Armed>>>,
+}
+
+/// One session's armed jobs.
+struct Armed {
+    store: Arc<AgentCronJobStore>,
+    binding: SessionBinding,
+    /// Runs one pass of the session's lane.
+    pass: Arc<Notify>,
+    /// The timer each job has, by job id: the next run it fires at.
+    timers: tokio::sync::Mutex<HashMap<String, String>>,
+    lane: tokio::task::JoinHandle<()>,
+}
+
+/// How the session's lane runs a claimed job.
+struct Fire<B: SessionBuilder> {
+    schedules: Weak<Schedules<B>>,
+    session: String,
+}
+
+impl<B: SessionBuilder> AgentCronSchedulerHooks for Fire<B> {
+    async fn run_job(&self, job: &AgentCronJob) -> anyhow::Result<Option<&'static str>> {
+        match self.schedules.upgrade() {
+            Some(schedules) => schedules.run_job(&self.session, job).await,
+            None => Ok(Some(SKIPPED)),
+        }
+    }
+}
+
+impl<B: SessionBuilder> Schedules<B> {
+    /// The scheduled jobs of `runtime`'s sessions; must be called on the
+    /// daemon's Tokio runtime, where the lanes run.
+    pub(super) fn new(
+        runtime: &Arc<Runtime<B>>,
+        open: Arc<OpenSessions>,
+        agent_dir: PathBuf,
+        selected: Selected,
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|me| Schedules {
+            me: me.clone(),
+            runtime: Arc::downgrade(runtime),
+            open,
+            agent_dir,
+            selected,
+            handle: tokio::runtime::Handle::current(),
+            armed: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Arms the jobs of session `id` (transcript `path`, running in `cwd`),
+    /// or answers them armed already.
+    fn arm(&self, id: &str, path: &Path, cwd: &Path) -> anyhow::Result<Arc<Armed>> {
+        let mut armed = lock(&self.armed);
+        if let Some(session) = armed.get(id) {
+            return Ok(Arc::clone(session));
+        }
+        // The old daemon's partition: `<sessions>/../session-artifacts/<id>`.
+        let partition = path
+            .parent()
+            .and_then(Path::parent)
+            .map(|root| root.join("session-artifacts").join(id))
+            .with_context(|| format!("{} is in no sessions dir", path.display()))?;
+        std::fs::create_dir_all(&partition)?;
+        let store = AgentCronJobStore::for_session_artifacts();
+        store.register_session_artifact(id, &partition);
+        let binding = SessionBinding {
+            active_session_id: id.to_string(),
+            session_id: id.to_string(),
+            session_file: path.to_string_lossy().into_owned(),
+            cwd: cwd.to_string_lossy().into_owned(),
+        };
+        store.rebind_session_jobs(&binding)?;
+        let store = Arc::new(store);
+        let scheduler = AgentCronScheduler::new(
+            Arc::clone(&store),
+            Arc::new(Fire {
+                schedules: self.me.clone(),
+                session: id.to_string(),
+            }),
+        );
+        let pass = Arc::new(Notify::new());
+        // The first pass fires what is overdue and defines the timers.
+        pass.notify_one();
+        let lane = self.handle.spawn({
+            let (pass, jobs, id) = (Arc::clone(&pass), self.me.clone(), id.to_string());
+            async move {
+                loop {
+                    pass.notified().await;
+                    if let Err(error) = scheduler.run_due().await {
+                        tracing::warn!("session {id}'s scheduled jobs did not run: {error:#}");
+                    }
+                    let Some(jobs) = jobs.upgrade() else {
+                        return;
+                    };
+                    jobs.follow_store(&id).await;
+                }
+            }
+        });
+        let session = Arc::new(Armed {
+            store,
+            binding,
+            pass,
+            timers: tokio::sync::Mutex::new(HashMap::new()),
+            lane,
+        });
+        armed.insert(id.to_string(), Arc::clone(&session));
+        Ok(session)
+    }
+
+    /// Arms the jobs of the idle session `id` the boot holds down; whether
+    /// it keeps an active one (one without is disarmed again).
+    pub(super) fn arm_dormant(&self, id: &str, path: &Path, cwd: &Path) -> bool {
+        let armed = match self.arm(id, path, cwd) {
+            Ok(armed) => armed,
+            Err(error) => {
+                tracing::warn!("session {id}'s scheduled jobs were not armed: {error:#}");
+                return false;
+            }
+        };
+        let active = armed
+            .store
+            .list()
+            .iter()
+            .any(|job| job.status == JobStatus::Active);
+        if !active {
+            self.disarm(id);
+        }
+        active
+    }
+
+    /// Disarms session `id`'s jobs: its lane stops and its timers go. Its
+    /// jobs stay stored, armed again when it is next opened.
+    pub(super) fn disarm(&self, id: &str) {
+        let Some(armed) = lock(&self.armed).remove(id) else {
+            return;
+        };
+        armed.lane.abort();
+        let runtime = self.runtime.clone();
+        self.handle.spawn(async move {
+            let Some(runtime) = runtime.upgrade() else {
+                return;
+            };
+            for job in armed.timers.lock().await.keys() {
+                remove_timer(&runtime, job).await;
+            }
+        });
+    }
+
+    /// Stops every session's lane, for the daemon's shutdown; the jobs and
+    /// their timers stay stored for the next daemon.
+    pub(super) fn stop(&self) {
+        for (_, armed) in lock(&self.armed).drain() {
+            armed.lane.abort();
+        }
+    }
+
+    /// Defines, moves and removes session `id`'s timers so each active job
+    /// has one at its next run.
+    async fn follow_store(&self, id: &str) {
+        let Some(armed) = lock(&self.armed).get(id).cloned() else {
+            return;
+        };
+        let Some(runtime) = self.runtime.upgrade() else {
+            return;
+        };
+        let wanted: HashMap<String, String> = armed
+            .store
+            .list()
+            .into_iter()
+            .filter(|job| job.status == JobStatus::Active)
+            .filter_map(|job| Some((job.id, job.next_run_at?)))
+            .collect();
+        let mut timers = armed.timers.lock().await;
+        let moved: Vec<String> = timers
+            .iter()
+            .filter(|(job, at)| wanted.get(*job) != Some(*at))
+            .map(|(job, _)| job.clone())
+            .collect();
+        for job in moved {
+            remove_timer(&runtime, &job).await;
+            timers.remove(&job);
+        }
+        for (job, at) in wanted {
+            if timers.contains_key(&job) {
+                continue;
+            }
+            match add_timer(&runtime, id, &job, &at).await {
+                Ok(()) => {
+                    timers.insert(job, at);
+                }
+                Err(error) => tracing::warn!("job {job}'s timer was not defined: {error:#}"),
+            }
+        }
+    }
+
+    /// Runs one claimed `job` of `session`: wakes the session when it is
+    /// down, queues the job's task as the old daemon routed it, and waits
+    /// for its `done`.
+    async fn run_job(
+        &self,
+        session: &str,
+        job: &AgentCronJob,
+    ) -> anyhow::Result<Option<&'static str>> {
+        if !(self.selected)() {
+            return Ok(Some(SKIPPED));
+        }
+        let Some(armed) = lock(&self.armed).get(session).cloned() else {
+            return Ok(Some(SKIPPED));
+        };
+        let Some(runtime) = self.runtime.upgrade() else {
+            return Ok(Some(SKIPPED));
+        };
+        // A job of a session that no longer exists cancels the session's
+        // jobs: a fire never brings a deleted session back.
+        let path = PathBuf::from(&armed.binding.session_file);
+        if !pa_core::session::store::store().exists(&path) {
+            armed.store.cancel_jobs_for_session(
+                &CancelJobsFilter {
+                    active_session_id: None,
+                    session_id: None,
+                    session_file: Some(armed.binding.session_file.clone()),
+                },
+                pa_core::autonomous::now_millis(),
+            )?;
+            return Ok(Some(SKIPPED));
+        }
+        self.wake(&runtime, session, &path, Path::new(&armed.binding.cwd))
+            .await?;
+        let lane = runtime.lane(session);
+        let activity = HeartbeatSessionActivity {
+            is_streaming: lane.running.is_some(),
+            has_pending_session_work: !lane.queued.is_empty(),
+            unfinished_action_count: lane.queued.len(),
+            ..HeartbeatSessionActivity::default()
+        };
+        if should_defer_heartbeat_cron_job(job, &activity) {
+            return Ok(Some(SKIPPED));
+        }
+        let mut listener = runtime.listen();
+        let input = if is_heartbeat_cron_job(job) {
+            let row = pa_core::session_engine::messages::create_heartbeat_prompt_message(
+                job,
+                pa_core::autonomous::now_millis(),
+            );
+            runtime.deliver_row(session, &row).await?;
+            AgentInput {
+                text: String::new(),
+                images: Vec::new(),
+                priority: None,
+            }
+        } else {
+            AgentInput {
+                text: job.prompt.clone(),
+                images: Vec::new(),
+                priority: Some(Priority::FollowUp),
+            }
+        };
+        let published = runtime
+            .publish(NewEvent {
+                topic: Topic::new(format!("agent/{session}/input"))?,
+                source: format!("{TIMER_PREFIX}{}", job.id),
+                session: Some(session.to_string()),
+                payload: serde_json::to_value(input)?,
+                trust: Trust::Owner,
+                cause: None,
+                reply: None,
+            })
+            .await?;
+        let task = crate::wire::accepted(&published, session)
+            .context("the job's task was not accepted")?
+            .task;
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(FIRE_SETTLE_TIMEOUT_MS),
+            done_of(&runtime, &mut listener, session, &task),
+        )
+        .await
+        {
+            // A failed turn counts as a run (the store's failure backoff
+            // stretches the next one); a cancelled one is a clean run.
+            Ok(Some(AgentDone {
+                outcome: TaskState::Failed,
+                error,
+                ..
+            })) => Err(anyhow::anyhow!(
+                error.unwrap_or_else(|| "the job's turn failed".to_string())
+            )),
+            Ok(Some(_) | None) => Ok(None),
+            // The settle window expired: the fire did not run.
+            Err(_) => Ok(Some(SKIPPED)),
+        }
+    }
+
+    /// Opens session `id` under its lease when the daemon does not hold it
+    /// open: the scheduled wake.
+    async fn wake(
+        &self,
+        runtime: &Runtime<B>,
+        id: &str,
+        path: &Path,
+        cwd: &Path,
+    ) -> anyhow::Result<()> {
+        if self.open.contains(id) {
+            return Ok(());
+        }
+        let lease = {
+            let (path, agent_dir) = (path.to_path_buf(), self.agent_dir.clone());
+            tokio::task::spawn_blocking(move || acquire_runtime_session_lease(&path, &agent_dir))
+                .await
+                .context("the lease's thread panicked")??
+        };
+        runtime
+            .create_session(SessionSpec {
+                id: Some(id.to_string()),
+                name: None,
+                cwd: cwd.to_path_buf(),
+                env: super::session_env(&self.agent_dir, id),
+                subagent: None,
+                transcript: Some(path.to_path_buf()),
+            })
+            .await?;
+        self.open
+            .insert(
+                id.to_string(),
+                OpenSession {
+                    path: path.to_path_buf(),
+                    cwd: cwd.to_path_buf(),
+                    _lease: lease,
+                },
+            )
+            .await;
+        tracing::info!("session {id} has scheduled work due: woken to run it");
+        Ok(())
+    }
+}
+
+impl<B: SessionBuilder> SessionJobs for Schedules<B> {
+    fn wiring(&self, id: &str, spec: &SessionSpec) -> Option<KernelCronWiring> {
+        if spec.subagent.is_some() {
+            return None;
+        }
+        let path = spec.transcript.as_deref()?;
+        let armed = match self.arm(id, path, &spec.cwd) {
+            Ok(armed) => armed,
+            Err(error) => {
+                tracing::warn!("session {id}'s scheduled jobs were not armed: {error:#}");
+                return None;
+            }
+        };
+        let pass = Arc::clone(&armed.pass);
+        Some(KernelCronWiring {
+            store: Arc::clone(&armed.store),
+            binding: Some(KernelCronBinding {
+                active_session_id: armed.binding.active_session_id.clone(),
+                session_id: armed.binding.session_id.clone(),
+                session_file: armed.binding.session_file.clone(),
+                cwd: armed.binding.cwd.clone(),
+            }),
+            // A job made, changed or cancelled: the lane's next pass moves
+            // its timer.
+            mutation_hook: Some(Arc::new(move |_mutation| {
+                pass.notify_one();
+                Box::pin(std::future::ready(()))
+            })),
+        })
+    }
+
+    fn fired(&self, session: &str) {
+        if let Some(armed) = lock(&self.armed).get(session) {
+            armed.pass.notify_one();
+        }
+    }
+}
+
+/// Defines job `job`'s timer at `at` for session `session`, with the
+/// subscription that hears it.
+async fn add_timer<B: SessionBuilder>(
+    runtime: &Runtime<B>,
+    session: &str,
+    job: &str,
+    at: &str,
+) -> anyhow::Result<()> {
+    let name = format!("{TIMER_PREFIX}{job}");
+    // A definition left by an earlier daemon goes first, with its claim.
+    runtime.undefine_source(&name).await?;
+    runtime
+        .define_source(SourceDefinition {
+            name: name.clone(),
+            kind: SourceKind::Timer,
+            options: json!({ "at": at }),
+            owner: Some(session.to_string()),
+            lifetime: SourceLifetime::Kept,
+        })
+        .await?;
+    let subscription = format!("{SCHEDULE_PREFIX}{job}");
+    let _ = runtime.remove_subscription(&subscription);
+    runtime.add_subscription(Subscription {
+        id: subscription,
+        scope: Scope::Global,
+        filter: TopicFilter::new(format!("timer/{name}"))?,
+        when: None,
+        throttle_ms: 0,
+        debounce_ms: 0,
+        route: Route::Agent {
+            target: AgentTarget::Session {
+                session: session.to_string(),
+            },
+            prompt: String::new(),
+            priority: Priority::Background,
+        },
+        trust: Trust::Owner,
+    })?;
+    Ok(())
+}
+
+/// Removes job `job`'s timer and its subscription.
+async fn remove_timer<B: SessionBuilder>(runtime: &Runtime<B>, job: &str) {
+    let _ = runtime.remove_subscription(&format!("{SCHEDULE_PREFIX}{job}"));
+    if let Err(error) = runtime
+        .undefine_source(&format!("{TIMER_PREFIX}{job}"))
+        .await
+    {
+        tracing::warn!("job {job}'s timer was not removed: {error:#}");
+    }
+}
+
+/// The `done` of task `task` of `session`, as `listener` hears it; `None`
+/// when the listener fell behind (the session's lane is waited out
+/// instead) or the bus closed.
+async fn done_of<B: SessionBuilder>(
+    runtime: &Runtime<B>,
+    listener: &mut Listener,
+    session: &str,
+    task: &str,
+) -> Option<AgentDone> {
+    let done = Topic::new(format!("agent/{session}/done")).ok()?;
+    loop {
+        match listener.recv().await? {
+            Heard::Event(event) if event.event.topic == done => {
+                let Ok(ended) = serde_json::from_value::<AgentDone>(event.event.payload.clone())
+                else {
+                    continue;
+                };
+                if ended.task == task {
+                    return Some(ended);
+                }
+            }
+            Heard::Event(_) => {}
+            Heard::Lagged { .. } => {
+                runtime.idle(session).await;
+                return None;
+            }
+        }
+    }
+}

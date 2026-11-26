@@ -11,7 +11,12 @@
 //! by how far its transcript shows it got
 //! (`pa_core::session::revival`): run again, continued behind a notice, left
 //! over, or, the second death in a row under it, settled as failed. One
-//! with nothing unfinished is let go.
+//! with nothing unfinished stays down: when it keeps an active scheduled job
+//! it is held dormant, its jobs armed (`super::schedules`), and opened
+//! under its lease when one is due; with none it is let go. A session
+//! stopped on purpose is not held, so its jobs wake nothing until it is
+//! opened again. A dormant session is kept in the database too (`"dormant":
+//! true`), so a daemon that dies before the wake arms it again.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -29,6 +34,8 @@ use serde_json::{json, Value};
 use crate::lock;
 use crate::runtime::Runtime;
 use crate::session::{Rebuild, SessionBuilder, SessionSpec};
+
+use super::schedules::Schedules;
 
 /// The `kv` scope and key the held sessions are kept under.
 const SCOPE: &str = "runtime-daemon";
@@ -74,10 +81,18 @@ pub(crate) struct Revival {
 }
 
 /// The sessions the daemon holds open, each with its transcript and the
-/// lease it holds it by; a session's lease is released when it leaves.
+/// lease it holds it by (a session's lease is released when it leaves), and
+/// the dormant ones it holds down until a scheduled job of theirs is due.
 pub(super) struct OpenSessions {
     log: std::sync::Arc<Log>,
-    open: Mutex<HashMap<String, OpenSession>>,
+    open: Mutex<HeldSessions>,
+}
+
+#[derive(Default)]
+struct HeldSessions {
+    open: HashMap<String, OpenSession>,
+    /// Down, without a lease: each one's transcript and working directory.
+    dormant: HashMap<String, (PathBuf, PathBuf)>,
 }
 
 pub(super) struct OpenSession {
@@ -90,32 +105,37 @@ impl OpenSessions {
     pub(super) fn new(log: std::sync::Arc<Log>) -> Self {
         OpenSessions {
             log,
-            open: Mutex::new(HashMap::new()),
+            open: Mutex::new(HeldSessions::default()),
         }
     }
 
     /// The transcript of open session `id`.
     pub(super) fn path(&self, id: &str) -> Option<PathBuf> {
-        lock(&self.open).get(id).map(|session| session.path.clone())
+        lock(&self.open)
+            .open
+            .get(id)
+            .map(|session| session.path.clone())
     }
 
     pub(super) fn contains(&self, id: &str) -> bool {
-        lock(&self.open).contains_key(id)
+        lock(&self.open).open.contains_key(id)
     }
 
     /// Every open session's id and transcript.
     pub(super) fn paths(&self) -> HashMap<String, PathBuf> {
         lock(&self.open)
+            .open
             .iter()
             .map(|(id, session)| (id.clone(), session.path.clone()))
             .collect()
     }
 
-    /// Holds `session` as `id`, kept in the database.
+    /// Holds `session` as `id` (no longer dormant), kept in the database.
     pub(super) async fn insert(&self, id: String, session: OpenSession) {
         let kept = {
             let mut open = lock(&self.open);
-            open.insert(id, session);
+            open.dormant.remove(&id);
+            open.open.insert(id, session);
             self.keep(&open)
         };
         if let Err(error) = kept.wait().await {
@@ -123,11 +143,26 @@ impl OpenSessions {
         }
     }
 
-    /// Lets session `id` go (its lease is released), kept in the database.
+    /// Holds session `id` dormant, down on `path` in `cwd`, kept in the
+    /// database.
+    pub(super) async fn insert_dormant(&self, id: String, path: PathBuf, cwd: PathBuf) {
+        let kept = {
+            let mut open = lock(&self.open);
+            open.dormant.insert(id, (path, cwd));
+            self.keep(&open)
+        };
+        if let Err(error) = kept.wait().await {
+            tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
+        }
+    }
+
+    /// Lets session `id` go, open (its lease is released) or dormant, kept
+    /// in the database.
     pub(super) async fn remove(&self, id: &str) {
         let kept = {
             let mut open = lock(&self.open);
-            open.remove(id);
+            open.open.remove(id);
+            open.dormant.remove(id);
             self.keep(&open)
         };
         if let Err(error) = kept.wait().await {
@@ -137,20 +172,29 @@ impl OpenSessions {
 
     /// Saves `open` as the held sessions; called under the lock, so the
     /// writes land in the order the changes were made.
-    fn keep(&self, open: &HashMap<String, OpenSession>) -> pa_log::Receipt<bool> {
-        let held: serde_json::Map<String, Value> = open
-            .iter()
-            .map(|(id, session)| {
-                (
-                    id.clone(),
-                    json!({
-                        "path": session.path,
-                        "cwd": session.cwd,
-                        "daemonPid": std::process::id(),
-                    }),
-                )
-            })
-            .collect();
+    fn keep(&self, held: &HeldSessions) -> pa_log::Receipt<bool> {
+        let open = held.open.iter().map(|(id, session)| {
+            (
+                id.clone(),
+                json!({
+                    "path": session.path,
+                    "cwd": session.cwd,
+                    "daemonPid": std::process::id(),
+                }),
+            )
+        });
+        let dormant = held.dormant.iter().map(|(id, (path, cwd))| {
+            (
+                id.clone(),
+                json!({
+                    "path": path,
+                    "cwd": cwd,
+                    "daemonPid": std::process::id(),
+                    "dormant": true,
+                }),
+            )
+        });
+        let held: serde_json::Map<String, Value> = open.chain(dormant).collect();
         self.log
             .put_value(SCOPE, KEY, Value::Object(held).to_string(), Origin::Written)
     }
@@ -161,6 +205,7 @@ impl OpenSessions {
 pub(super) async fn revive<B: SessionBuilder>(
     runtime: &Runtime<B>,
     open: &OpenSessions,
+    schedules: &Schedules<B>,
     agent_dir: &Path,
 ) {
     let log = std::sync::Arc::clone(runtime.log());
@@ -177,7 +222,9 @@ pub(super) async fn revive<B: SessionBuilder>(
         }
     };
     for (id, session) in held {
-        if let Err(error) = revive_one(runtime, open, agent_dir, &log, &id, session).await {
+        if let Err(error) =
+            revive_one(runtime, open, schedules, agent_dir, &log, &id, session).await
+        {
             tracing::warn!("session {id} was not revived: {error:#}");
         }
     }
@@ -192,6 +239,7 @@ pub(super) async fn revive<B: SessionBuilder>(
 async fn revive_one<B: SessionBuilder>(
     runtime: &Runtime<B>,
     open: &OpenSessions,
+    schedules: &Schedules<B>,
     agent_dir: &Path,
     log: &std::sync::Arc<Log>,
     id: &str,
@@ -208,6 +256,11 @@ async fn revive_one<B: SessionBuilder>(
         tokio::task::spawn_blocking(move || log.unfinished_tasks(&id)).await??
     };
     if tasks.is_empty() {
+        // Idle: down until a scheduled job of its is due, or let go.
+        if schedules.arm_dormant(id, &session.path, &session.cwd) {
+            open.insert_dormant(id.to_string(), session.path, session.cwd)
+                .await;
+        }
         return Ok(());
     }
     let lease = {

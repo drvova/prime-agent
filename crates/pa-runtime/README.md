@@ -328,7 +328,20 @@ SQLite implementations over `pa-log`.
   as the same task behind `TURN_INTERRUPTED_NOTICE`, stored done when its answer was saved, or,
   on its second death in a row, stored failed with the crash's reason. A kept launch is kept by
   pa-daemon's restart owner (`keeper::KeptDaemon::Runtime`), its records under `daemon2.sock`.
-  Not yet: schedules (7d), cross-session features (7e), a running
+  **Scheduled jobs** (`daemon/schedules.rs`): a daemon session's kernel serves `schedule.*` and
+  `rlm_heartbeat.*` on pa-core's job store (the session's `session-artifacts/<id>` partition,
+  the old daemon's rows), bound through `SessionSeams::scheduled_jobs`. Each active job has a
+  kept timer source `schedule-<job>` at its next run and a subscription `schedule:<job>`
+  routed to its session; a fire runs one pass of the session's lane (pa-core's
+  `AgentCronScheduler`, never started: its own timer never runs), whose claim, catch-up,
+  failure backoff and result records are the store's, then the timers follow the store. A plain
+  job is a `follow_up` task over its prompt; a heartbeat steers its `heartbeat_prompt` row onto
+  the session's agent and queues an empty input, deferred by pa-core's rule; a fire waits for its
+  task's `done`. A job due in a session the daemon holds dormant (idle when its predecessor died,
+  `"dormant": true` in the held record) opens it under its lease; a session stopped or deleted
+  on purpose is disarmed and not held. A job runs only while `DaemonOptions::selected` says the
+  daemon is the selected one; otherwise its fire is recorded as a skip. Subagents keep no jobs.
+  Not yet: cross-session features (7e), a running
   session's model switch, and the lane's suspension across a restart (a restored lane starts
   unparked). Under the print modes (`Runtime::open`) a panic still only fails its task and the
   next one runs on a fresh engine.
@@ -362,11 +375,14 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `shutdown`), `RuntimeOptions`, `SourceDefinition`, `SourceLifetime`, `SessionBuilder` (`build(id, spec, seams)`), `SessionSeams`
   (the session's trust gate, the host requests the runtime answers - its `event.*` and its
   family's `agent_message.*` - its `rlm.*` subagents, the late-receipt sink, the
-  background-settle wake and the kernel-notice sink, all of which the engine must install),
+  background-settle wake and the kernel-notice sink, all of which the engine must install, and
+  `scheduled_jobs`, the cron wiring a runtime-daemon session's kernel binds `schedule.*` and
+  `rlm_heartbeat.*` to, `None` elsewhere),
   `SessionSpec` (`transcript`: the file a daemon session opens), `SubagentSpec`,
   `BuiltSession` (`queue_modes`: `QueueModes`), `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
   `TaskQueue::session_idle`.
-- `daemon::{run, DaemonOptions, socket_path}`. On the wire (strings, not Rust surface): the
+- `daemon::{run, DaemonOptions, socket_path}` (`DaemonOptions::selected`: whether the daemon
+  is the selected one, asked before each scheduled job). On the wire (strings, not Rust surface): the
   queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,
   `session.breakdown`, and the calls `session.abort`, `session.abort_and_send_queued`,
   `session.resume_queue`, `session.withdraw`, `session.restore`, `session.compact`.

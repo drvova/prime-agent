@@ -161,6 +161,29 @@ impl Subagents {
         lock(&self.nodes).get(id).cloned()
     }
 
+    /// Delivers `row` to open session `id` ([`deliver_row`]) once its
+    /// engine is built.
+    ///
+    /// # Errors
+    ///
+    /// The session is not open, its engine could not be built, or the row
+    /// has no loop form.
+    pub(crate) async fn deliver_row_to(&self, id: &str, row: &CustomMessage) -> anyhow::Result<()> {
+        let node = self
+            .node(id)
+            .ok_or_else(|| anyhow::anyhow!("session {id} is not open"))?;
+        let mut built = node.built.subscribe();
+        match built.wait_for(Option::is_some).await {
+            Ok(outcome) => {
+                if let Some(Err(error)) = outcome.as_ref() {
+                    anyhow::bail!("session {id}'s engine was not built: {error}");
+                }
+            }
+            Err(_) => anyhow::bail!("session {id} ended before its engine was built"),
+        }
+        deliver_row(&node, serde_json::to_value(row)?)
+    }
+
     /// The node of the session `spec` opens as `id`: the one a spawn made for
     /// it, or a new root.
     pub(crate) fn node_for(self: &Arc<Self>, id: &str, spec: &SessionSpec) -> Arc<Node> {

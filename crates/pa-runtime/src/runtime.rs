@@ -25,8 +25,8 @@ use crate::events::BusEvents;
 use crate::log_stores::{LogEventStore, LogStateStore, LogTaskStore};
 use crate::routes::{ModelCall, ModelCaller};
 use crate::session::{
-    Finished, Opening, Outbox, Outgoing, RuntimeTaskSink, SessionBuilder, SessionFaults,
-    SessionRunner, SessionSpec, Sessions, SettleAfter, Settled,
+    Finished, JobsSlot, Opening, Outbox, Outgoing, RuntimeTaskSink, SessionBuilder, SessionFaults,
+    SessionJobs, SessionRunner, SessionSpec, Sessions, SettleAfter, Settled,
 };
 use crate::sources::{SourceDefinition, SourceManager};
 use crate::subagents::{SessionControl, Subagents};
@@ -170,12 +170,14 @@ impl<B: SessionBuilder> Runtime<B> {
         let events = Arc::new(BusEvents::new(agent_dir, outbox.clone()));
         let tree = MemorySessionTree::default();
         let subagents = Arc::new(Subagents::new(outbox.clone(), tree.clone()));
+        let jobs = JobsSlot::default();
         let sessions = Arc::new(Sessions::new(
             options.builder,
             outbox,
             Arc::clone(&events),
             Arc::clone(&subagents),
             faults,
+            Arc::clone(&jobs),
         ));
         let runner = SessionRunner::new(Arc::clone(&sessions));
         let restored = async {
@@ -217,6 +219,7 @@ impl<B: SessionBuilder> Runtime<B> {
                 events: Arc::clone(&events),
                 subagents: Arc::clone(&subagents),
                 cwd: options.cwd,
+                jobs: Arc::clone(&jobs),
             },
             listener_capacity: options.listener_capacity,
         });
@@ -256,6 +259,42 @@ impl<B: SessionBuilder> Runtime<B> {
             sources,
             publisher,
         })
+    }
+
+    /// Attaches the runtime daemon's scheduled jobs: every session built
+    /// from now on binds its kernel's `schedule.*` and `rlm_heartbeat.*` to
+    /// them, and their timers' fires reach them. Attached once; a second
+    /// attach changes nothing.
+    pub(crate) fn attach_jobs(&self, jobs: Arc<dyn SessionJobs>) {
+        self.sessions.attach_jobs(jobs);
+    }
+
+    /// Undefines the source `name` ([`Runtime::define_source`]), stopping
+    /// it when it runs and removing a kept one from the database; a name
+    /// not defined changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// The database failed to store the change, or the runtime is shutting
+    /// down.
+    pub(crate) async fn undefine_source(&self, name: &str) -> anyhow::Result<()> {
+        self.sources.undefine(name).await
+    }
+
+    /// Steers `row` onto open session `session`'s agent once its engine is
+    /// built: a running turn reads it at its next step, and an empty input
+    /// queued behind it runs it when none does.
+    ///
+    /// # Errors
+    ///
+    /// The session is not open, its engine could not be built, or the row
+    /// has no loop form.
+    pub(crate) async fn deliver_row(
+        &self,
+        session: &str,
+        row: &pa_types::session::CustomMessage,
+    ) -> anyhow::Result<()> {
+        self.sessions.subagents().deliver_row_to(session, row).await
     }
 
     /// Adds `subscription` to the bus (`Bus::add_subscription`); a source it

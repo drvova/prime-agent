@@ -21,6 +21,7 @@ use pa_types::session::FileEntry;
 use serde_json::{json, Value};
 
 use super::held::{OpenSession, OpenSessions};
+use super::schedules::Schedules;
 use crate::runtime::{AfterAbort, Runtime};
 use crate::session::{SessionBuilder, SessionSpec};
 use crate::wire::{Call, Handlers, Query};
@@ -37,6 +38,9 @@ const PAGE_DEFAULT: usize = 100;
 pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     runtime: Arc<Runtime<B>>,
     open: Arc<OpenSessions>,
+    /// The sessions' scheduled jobs: a session stopped or deleted on
+    /// purpose is disarmed, so nothing wakes it.
+    schedules: Arc<Schedules<B>>,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -46,6 +50,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     pub(super) fn new(
         runtime: Arc<Runtime<B>>,
         open: Arc<OpenSessions>,
+        schedules: Arc<Schedules<B>>,
         agent_dir: PathBuf,
         session_dir: PathBuf,
         cwd: PathBuf,
@@ -53,6 +58,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         RuntimeHandlers {
             runtime,
             open,
+            schedules,
             agent_dir,
             session_dir,
             cwd,
@@ -195,6 +201,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             self.open.contains(&id),
             "session {id} is not open in the runtime daemon"
         );
+        // Stopped on purpose: its jobs wake nothing until it is opened again.
+        self.schedules.disarm(&id);
         self.runtime.close_session(&id).await?;
         // Closed: its lease goes.
         self.open.remove(&id).await;
@@ -274,6 +282,9 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 
     async fn delete(&self, args: &Value) -> anyhow::Result<Value> {
         let (id, path) = self.saved_session(args, "deleting it")?;
+        // A dormant session deleted is not woken.
+        self.schedules.disarm(&id);
+        self.open.remove(&id).await;
         let agent_dir = self.agent_dir.clone();
         let removal = tokio::task::spawn_blocking(move || {
             let _lease = acquire_runtime_session_lease(&path, &agent_dir)?;
