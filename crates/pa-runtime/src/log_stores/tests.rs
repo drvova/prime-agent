@@ -144,6 +144,8 @@ impl TaskRunner for Gate {
     fn steer(&self, _running: &Task, _steer: &Task) -> Steered {
         Steered::Declined
     }
+
+    fn cancelled(&self, _task: &Task) {}
 }
 
 /// The database's task store, recording every save the queue makes.

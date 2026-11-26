@@ -113,7 +113,7 @@ impl TaskEnd {
         outcome: TaskOutcome::Done,
         failure: None,
     };
-    const CANCELLED: TaskEnd = TaskEnd {
+    pub(crate) const CANCELLED: TaskEnd = TaskEnd {
         outcome: TaskOutcome::Cancelled,
         failure: None,
     };
@@ -166,6 +166,9 @@ struct Turn {
     steerable: bool,
     /// Whether the running task was cancelled.
     cancelled: bool,
+    /// A task the lane runs that was cancelled before it reached this
+    /// thread: it starts cancelled and runs nothing.
+    cancelled_ahead: Option<String>,
     /// Whether the running task's turn took a steer.
     steered: bool,
     /// The steers the running task's turn took, each with the message it
@@ -381,7 +384,10 @@ impl SessionHost {
                 turn.taken.push((steer.clone(), message));
                 Steered::Taken
             }
-            (_, None) if turn.ended.as_deref() != Some(running.id.as_str()) => {
+            (_, None)
+                if turn.ended.as_deref() != Some(running.id.as_str())
+                    && turn.cancelled_ahead.as_deref() != Some(running.id.as_str()) =>
+            {
                 turn.pending
                     .push((running.id.clone(), steer.clone(), message));
                 Steered::Taken
@@ -390,26 +396,33 @@ impl SessionHost {
         }
     }
 
-    /// Cancels the running task: its turn is aborted and it ends
-    /// `Cancelled`. The steers its turn took and had not read yet are
-    /// withdrawn from it and returned, queued again, for the caller to put
-    /// back in the lane.
-    pub(crate) fn cancel_running(&self) -> Vec<Task> {
-        self.cancel_running_if(|_| true).unwrap_or_default()
-    }
-
-    /// [`Self::cancel_running`] when the running task is `task`: the steers
-    /// to put back, or `None` when `task` is not the one running.
+    /// Cancels task `task`, the one the session's lane runs: its turn is
+    /// aborted and it ends `Cancelled`. The queue saves a task as running
+    /// before it hands it to this thread, so one that has not reached it yet
+    /// is marked to start cancelled and run nothing. The steers handed to the
+    /// task and not read yet are withdrawn from it and returned, queued
+    /// again, for the caller to put back in the lane; `None` when `task`
+    /// already ended here.
     pub(crate) fn cancel_running_task(&self, task: &str) -> Option<Vec<Task>> {
-        self.cancel_running_if(|running| running == task)
-    }
-
-    /// Aborts the running task's turn when `is` holds for its id, checked
-    /// under the turn's lock.
-    fn cancel_running_if(&self, is: impl FnOnce(&str) -> bool) -> Option<Vec<Task>> {
         let mut turn = lock(&self.control.turn);
-        if !turn.task.as_deref().is_some_and(is) {
+        if turn.ended.as_deref() == Some(task) {
             return None;
+        }
+        if turn.task.as_deref() != Some(task) {
+            let (pending, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut turn.pending)
+                .into_iter()
+                .partition(|(id, ..)| id == task);
+            turn.pending = kept;
+            turn.cancelled_ahead = Some(task.to_string());
+            return Some(
+                pending
+                    .into_iter()
+                    .map(|(_, steer, _)| Task {
+                        state: pa_types::event_log::TaskState::Queued,
+                        ..steer
+                    })
+                    .collect(),
+            );
         }
         turn.cancelled = true;
         turn.steerable = false;
@@ -764,8 +777,8 @@ impl<B: SessionBuilder> Lifetime<B> {
                 {
                     let mut turn = lock(&self.control.turn);
                     turn.task = Some(task.id.clone());
-                    turn.steerable = true;
-                    turn.cancelled = false;
+                    turn.cancelled = turn.cancelled_ahead.take().as_ref() == Some(&task.id);
+                    turn.steerable = !turn.cancelled;
                     turn.steered = false;
                     // The steers kept for this task: its run reads them as
                     // it starts. Any kept for another never reached here.
@@ -948,6 +961,23 @@ impl<B: SessionBuilder> Lifetime<B> {
                     }
                 })
                 .await;
+            // A cancel that lands after its task's last check and before the
+            // agent's run registers finds no run to abort (`Agent::abort`
+            // aborts only a live one): that run aborts as it starts.
+            agent
+                .subscribe({
+                    let control = Arc::clone(&self.control);
+                    move |event, _signal| {
+                        if matches!(event, pa_agent::types::AgentEvent::AgentStart) {
+                            let turn = lock(&control.turn);
+                            if let Some(agent) = turn.agent.as_ref().filter(|_| turn.cancelled) {
+                                agent.abort();
+                            }
+                        }
+                        Box::pin(std::future::ready(Ok(())))
+                    }
+                })
+                .await;
             let engine = &built.engine;
             self.node
                 .adopt(engine, &built.model, &built.agent_dir)
@@ -1044,6 +1074,10 @@ impl<B: SessionBuilder> Lifetime<B> {
         task: &Task,
         images: Vec<pa_agent::types::ImageContent>,
     ) -> TaskEnd {
+        // Cancelled before it started: nothing of it runs.
+        if lock(&self.control.turn).cancelled {
+            return TaskEnd::CANCELLED;
+        }
         let command = session
             .built
             .engine

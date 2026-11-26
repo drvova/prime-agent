@@ -5,7 +5,8 @@
 //!   connection (input is admitted `parked`), the same key answering the same
 //!   pause; `session.release_input` lets it run, and so does the holding
 //!   connection's end;
-//! - `session.cancel_task` takes one queued prompt out of the lane;
+//! - `session.cancel_task` takes one queued prompt out of the lane, which
+//!   ends with its cancelled `done`;
 //! - `session.wait_idle` with `"subagents": false` answers the autonomous
 //!   accounting and the live background jobs;
 //! - `session.model` answers the model, level and supported levels, and
@@ -127,6 +128,7 @@ async fn cancel_task_wait_idle_model_effort_and_the_roster_answer_the_acp_client
     let cancel = json!({ "session": id, "task": dropped["task"] });
     let cancelled = ok(client.call("session.cancel_task", cancel.clone()).await);
     let again = ok(client.call("session.cancel_task", cancel).await);
+    let dropped_done = done_of(&mut client, &id, &dropped["task"]).await;
     ok(client
         .call(
             "session.release_input",
@@ -145,6 +147,7 @@ async fn cancel_task_wait_idle_model_effort_and_the_roster_answer_the_acp_client
         (
             cancelled["cancelled"].clone(),
             again["cancelled"].clone(),
+            dropped_done["outcome"].clone(),
             user_prompts(&mut client, &id).await,
             idle["autonomous"]["enabled"].clone(),
             idle["outstandingBackgroundJobs"].clone(),
@@ -152,6 +155,7 @@ async fn cancel_task_wait_idle_model_effort_and_the_roster_answer_the_acp_client
         (
             json!(true),
             json!(false),
+            json!("cancelled"),
             vec![json!("kept")],
             json!(false),
             json!(0)
