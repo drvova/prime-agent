@@ -120,7 +120,9 @@ impl<B: SessionBuilder> SessionControl for Control<B> {
         let session = session.to_string();
         Box::pin(async move {
             self.queue.cancel_queued(&session).await?;
-            self.runner.cancel_running(&session);
+            if let Some(running) = self.queue.lane(&session).running {
+                self.runner.cancel_running_task(&session, &running.id);
+            }
             Ok(())
         })
     }
@@ -478,7 +480,9 @@ impl<B: SessionBuilder> Runtime<B> {
     /// The database failed to save a cancelled task.
     pub async fn cancel(&self, session: &str) -> anyhow::Result<()> {
         self.queue.cancel_queued(session).await?;
-        self.runner.cancel_running(session);
+        if let Some(running) = self.queue.lane(session).running {
+            self.runner.cancel_running_task(session, &running.id);
+        }
         Ok(())
     }
 
@@ -497,7 +501,12 @@ impl<B: SessionBuilder> Runtime<B> {
                 self.queue.resume(session);
             }
         }
-        let unread = self.runner.cancel_running(session);
+        let unread = self
+            .queue
+            .lane(session)
+            .running
+            .and_then(|running| self.runner.cancel_running_task(session, &running.id))
+            .unwrap_or_default();
         let count = unread.len();
         for steer in unread {
             self.queue.push(steer).await?;
@@ -548,7 +557,15 @@ impl<B: SessionBuilder> Runtime<B> {
         if self.queue.cancel_task(session, task).await?.is_some() {
             return Ok(true);
         }
-        let Some(unread) = self.runner.cancel_running_task(session, task) else {
+        let runs = self
+            .queue
+            .lane(session)
+            .running
+            .is_some_and(|running| running.id == task);
+        let Some(unread) = runs
+            .then(|| self.runner.cancel_running_task(session, task))
+            .flatten()
+        else {
             return Ok(false);
         };
         for steer in unread {
