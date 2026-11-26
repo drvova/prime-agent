@@ -1,0 +1,1 @@
+- `prime-agent --mode rpc` keeps its steer and follow-up queue on the agent, so queued messages are still read in the next prompt's run, as one run.

@@ -2,6 +2,14 @@
 //! responses and events on stdout; one connection drives one live session,
 //! stdin close settles the running turn, SIGTERM/SIGHUP exit 143/129; the
 //! in-process transport answers daemon-only surfaces with daemon-mode errors.
+//!
+//! The commands drive the engine directly, not the runtime's task lanes.
+//! RPC's queue is the agent's own: steers and follow-ups wait on the agent,
+//! and the next prompt's run reads them after its own row. A lane runs a
+//! follow-up as its own turn, and runs parked steers before a later prompt,
+//! so an RPC lane would have to hand everything to the agent at once. It
+//! would never hold a task, and it would add RPC-only behavior to the
+//! queue and the host (the README's RPC entry has the details).
 
 mod commands;
 mod model_commands;
