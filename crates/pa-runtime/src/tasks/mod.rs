@@ -127,6 +127,10 @@ impl Lanes {
 struct Lane {
     queued: BTreeMap<(Priority, u64), Task>,
     running: Option<Task>,
+    /// The task whose `done` is being published: its end is visible, so the
+    /// lane no longer reports it running, though the queue still saves its
+    /// end before it starts the next one.
+    reported: Option<String>,
     /// Whether a worker task serves this lane.
     served: bool,
 }
@@ -238,12 +242,26 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
         was
     }
 
+    /// Marks `session`'s running task `task` as ended, ahead of its `done`
+    /// being published: whoever hears the `done` and then reads the lane no
+    /// longer finds it running.
+    pub(crate) fn reported(&self, session: &str, task: &str) {
+        let mut lanes = lock(&self.inner.lanes);
+        if let Some(lane) = lanes.by_session.get_mut(session) {
+            lane.reported = Some(task.to_string());
+        }
+    }
+
     /// What `session`'s lane holds now.
     pub(crate) fn lane(&self, session: &str) -> LaneState {
         let lanes = lock(&self.inner.lanes);
         let lane = lanes.by_session.get(session);
         LaneState {
-            running: lane.and_then(|lane| lane.running.clone()),
+            running: lane
+                .and_then(|lane| lane.running.clone())
+                .filter(|running| {
+                    lane.and_then(|lane| lane.reported.as_deref()) != Some(&running.id)
+                }),
             queued: lane.map_or_default(|lane| lane.queued.values().cloned().collect()),
             suspended: lanes.suspended.contains(session),
         }
