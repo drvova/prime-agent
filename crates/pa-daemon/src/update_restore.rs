@@ -792,9 +792,11 @@ async fn report_dormant_scheduled_jobs(supervisor: &std::sync::Arc<Supervisor>) 
                 && pa_core::cron::is_due_job(job, now)
                 && !job.session_file.is_empty()
                 && !live.contains(
-                    &crate::lease::canonical_session_path(std::path::Path::new(&job.session_file))
-                        .to_string_lossy()
-                        .to_string(),
+                    &pa_core::session::lease::canonical_session_path(std::path::Path::new(
+                        &job.session_file,
+                    ))
+                    .to_string_lossy()
+                    .to_string(),
                 )
         })
         .collect();

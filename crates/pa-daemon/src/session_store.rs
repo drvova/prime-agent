@@ -79,6 +79,16 @@ use info::{
 use info::SESSION_SCAN_MAX_CACHED_STATES;
 pub(crate) use info_sidecar::persist_info_sidecar;
 
+/// What a session lease this daemon holds writes beside its window snapshot
+/// (`SessionLease::with_info_sidecar`): the info scan state of the file at
+/// `path`, folded current (rows appended since the last read, the close's own
+/// final rows, fold here instead of at the next open) and persisted.
+/// Best-effort: a failed write costs the next open its warm resume.
+pub fn write_info_sidecar(path: &Path) {
+    let _ = read_session_info(path);
+    persist_info_sidecar(path);
+}
+
 // The inline unit battery lives in session_store::tests.
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -228,7 +238,7 @@ pub struct SessionFile {
     branch_roles: Option<HashMap<String, usize>>,
     pub(crate) window: Option<SessionWindow>,
     pub(crate) trace_upload: Option<std::sync::Arc<pa_core::agent_traces::ContinuousTraceUpload>>,
-    pub(crate) lease: Option<std::sync::Arc<crate::lease::SessionLease>>,
+    pub(crate) lease: Option<std::sync::Arc<pa_core::session::lease::SessionLease>>,
     child_usage_recovery: child_usage::ChildUsageRecovery,
     /// Rows the full reader skipped as unparsable (the TS loader's
     /// lenient skip): zero on a healthy file. A reopen that found damage

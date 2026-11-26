@@ -50,7 +50,7 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, poison_lease_owner: Option<&str
         // An ancestor's lease owner id (a CLI running inside a worker's
         // environment): without the per-worker stamp every lease the
         // daemon's workers write would name this stale id instead.
-        command.env(pa_daemon::lease::SESSION_LEASE_OWNER_ID_ENV, owner);
+        command.env(pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV, owner);
     }
     let mut child = command.spawn().expect("spawn pa-daemon supervisor");
     common::await_listening(socket, &mut child);

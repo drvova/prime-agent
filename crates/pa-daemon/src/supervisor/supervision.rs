@@ -8,8 +8,8 @@ use super::{
     RouteAdmission, Supervisor, TempSync, TypedCreateRejection, Value, WorkerReply, WorkerRequest,
     WorkerTransition, DEFAULT_PRIVATE_FRAME_LIMITS, ROUTE_TIMEOUT_MS, WORKER_AUTH_FLOOR_MS,
 };
-use crate::lease::is_process_alive;
 use crate::registry::WorkerRelay;
+use pa_core::session::lease::is_process_alive;
 
 /// The immutable cleanup identity of one worker process lifetime.
 #[derive(Clone, Debug)]
@@ -79,7 +79,7 @@ fn session_env(
 }
 
 impl SpawnedWorker {
-    /// The hosted lifetime's id (see [`crate::session_host::is_hosted_pid`]).
+    /// The hosted lifetime's id (see [`pa_core::session::hosted::is_hosted_pid`]).
     pub(crate) fn id(&self) -> Option<u32> {
         Some(self.session.pid())
     }
@@ -196,7 +196,7 @@ impl Supervisor {
                 let reaped_programs = child.orphan_generation.reap().await;
                 let agent_dir = self.options.agent_dir.clone();
                 let _ = tokio::task::spawn_blocking(move || {
-                    crate::lease::reclaim_dead_owner_leases(&agent_dir)
+                    pa_core::session::lease::reclaim_dead_owner_leases(&agent_dir)
                 })
                 .await;
                 if resident.route_state().stop_requested()
@@ -300,7 +300,7 @@ impl Supervisor {
                 if super::worker_lifecycle::recovery_journal_owner_is_gone(
                     is_process_alive(owner_pid).ok(),
                     owner_start_id.as_deref(),
-                    crate::lease::get_process_start_id(owner_pid).as_deref(),
+                    pa_core::session::lease::get_process_start_id(owner_pid).as_deref(),
                 ) {
                     if let Err(error) = crate::journal::WorkerRecoveryJournal::settle_busy_records(
                         std::path::Path::new(&journal_path),

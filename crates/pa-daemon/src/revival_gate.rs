@@ -72,7 +72,7 @@ pub(crate) fn revival_veto(
         if session_is_archived(file) {
             return Some(RevivalVeto::SessionArchived);
         }
-        if let Some(owner) = crate::lease::live_lease_owner(agent_dir, file) {
+        if let Some(owner) = pa_core::session::lease::live_lease_owner(agent_dir, file) {
             return Some(RevivalVeto::LiveLeaseHeld { pid: owner.pid });
         }
     }
@@ -297,9 +297,9 @@ mod tests {
         let (_tmp, agent_dir) = agent_dir();
         // A live lease written the way another daemon's worker writes it
         // (this test process holds it): the file is owned elsewhere.
-        std::env::set_var(crate::lease::SESSION_LEASES_ENABLED_ENV, "1");
-        let lease = crate::lease::acquire_runtime_session_lease(&file, &agent_dir);
-        std::env::remove_var(crate::lease::SESSION_LEASES_ENABLED_ENV);
+        std::env::set_var(pa_core::session::lease::SESSION_LEASES_ENABLED_ENV, "1");
+        let lease = pa_core::session::lease::acquire_runtime_session_lease(&file, &agent_dir);
+        std::env::remove_var(pa_core::session::lease::SESSION_LEASES_ENABLED_ENV);
         let _lease = lease.expect("the test process acquires the lease");
         let veto = revival_veto(
             &agent_dir,
@@ -319,9 +319,9 @@ mod tests {
         // A lease whose owner is long dead is stale ownership, not a live
         // one: the gate must not park genuinely interrupted work behind a
         // dead holder's record.
-        std::env::set_var(crate::lease::SESSION_LEASES_ENABLED_ENV, "1");
-        let lease = crate::lease::acquire_runtime_session_lease(&file, &agent_dir);
-        std::env::remove_var(crate::lease::SESSION_LEASES_ENABLED_ENV);
+        std::env::set_var(pa_core::session::lease::SESSION_LEASES_ENABLED_ENV, "1");
+        let lease = pa_core::session::lease::acquire_runtime_session_lease(&file, &agent_dir);
+        std::env::remove_var(pa_core::session::lease::SESSION_LEASES_ENABLED_ENV);
         drop(lease.expect("the test process acquires the lease"));
         assert!(revival_veto(
             &agent_dir,

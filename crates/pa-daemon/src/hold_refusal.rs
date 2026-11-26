@@ -4,8 +4,8 @@
 //! The holder is usually the other product (named best-effort from its
 //! pid); the refusal stays actionable and every refused create is logged.
 
-use crate::lease::SessionAlreadyActiveError;
 use crate::protocol::{response_failure, DaemonResponse};
+use pa_core::session::lease::SessionAlreadyActiveError;
 use std::path::Path;
 
 /// The live holder of a refused session file, as the lease record names it:

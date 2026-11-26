@@ -318,7 +318,9 @@ impl Supervisor {
             let descriptor = resident.descriptor.lock().await;
             if let Some(session_file) = &descriptor.session_file {
                 roots.push(crate::rlm_roster::RosterWalkRoot {
-                    session_file: crate::lease::canonical_session_path(Path::new(session_file)),
+                    session_file: pa_core::session::lease::canonical_session_path(Path::new(
+                        session_file,
+                    )),
                     active_session_id: Some(descriptor.root_active_session_id.clone()),
                 });
             }
@@ -382,7 +384,7 @@ impl Supervisor {
         match ledger.deleted_descendant_usage_by_parent() {
             Ok(bucket) => {
                 for info in &mut infos {
-                    let path = crate::lease::canonical_session_path(&info.path)
+                    let path = pa_core::session::lease::canonical_session_path(&info.path)
                         .to_string_lossy()
                         .to_string();
                     info.deleted_descendant_usage = bucket.get(&path).cloned();
@@ -490,7 +492,7 @@ impl Supervisor {
                     resident_roots.into_iter().zip(summaries_by_resident)
                 {
                     resident_by_file.push(ResidentRoot {
-                        session_file: crate::lease::canonical_session_path(Path::new(
+                        session_file: pa_core::session::lease::canonical_session_path(Path::new(
                             &session_file,
                         )),
                         summary,
@@ -504,7 +506,7 @@ impl Supervisor {
                         session_file: info.path.clone(),
                         active_session_id: None,
                     });
-                    let canonical = crate::lease::canonical_session_path(&info.path);
+                    let canonical = pa_core::session::lease::canonical_session_path(&info.path);
                     let resident = resident_by_file
                         .iter()
                         .position(|root| root.session_file == canonical)

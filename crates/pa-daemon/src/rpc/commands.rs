@@ -429,7 +429,10 @@ async fn compact(state: &Arc<RpcState>, payload: &Value) -> Result<ResponseData,
     };
     let outcome_value = match &outcome {
         pa_core::session_engine::compact_session::CompactOutcome::Ran(run) => {
-            let result = crate::compaction::compaction_result_value(&run.result, &run.entry);
+            let result = pa_core::session_engine::compaction_exec::compaction_result_value(
+                &run.result,
+                &run.entry,
+            );
             state
                 .session
                 .write_connection_output(compaction_frame(

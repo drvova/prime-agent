@@ -302,13 +302,14 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
                         }
                     };
                     // The fresh session's file is leased BEFORE the replacement can write it.
-                    let lease = pa_daemon::lease::acquire_runtime_session_lease(
+                    let lease = pa_core::session::lease::acquire_runtime_session_lease(
                         manager
                             .get_session_file()
                             .expect("a fresh session knows its file"),
                         &options.config.agent_dir,
                     )
-                    .map_err(|error| format!("{error:#}"))?;
+                    .map_err(|error| format!("{error:#}"))?
+                    .with_info_sidecar(pa_daemon::session_store::write_info_sidecar);
                     (manager, Some(lease))
                 }
                 pa_daemon::rpc::session::RpcEngineRequest::Open {
@@ -387,7 +388,7 @@ fn with_print_runtime<Context>(
     context: &Context,
     run: impl for<'a> FnOnce(
         &'a Context,
-        &'a mut Option<pa_daemon::lease::SessionLease>,
+        &'a mut Option<pa_core::session::lease::SessionLease>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<i32, String>> + 'a>,
     >,
@@ -569,7 +570,7 @@ pub(crate) struct HeadlessEngine {
 async fn build_headless_engine_parts(
     options: &RunOptions,
     execution_mode: &str,
-    lease: &mut Option<pa_daemon::lease::SessionLease>,
+    lease: &mut Option<pa_core::session::lease::SessionLease>,
 ) -> Result<HeadlessEngine, String> {
     // Every headless mode discloses immediately (TS main: only the
     // interactive `deferTelemetryNoticeForOnboarding` holds the notice
@@ -595,7 +596,7 @@ fn select_session_manager_with_lease(
 ) -> Result<
     (
         Option<pa_core::session::manager::SessionManager>,
-        Option<pa_daemon::lease::SessionLease>,
+        Option<pa_core::session::lease::SessionLease>,
     ),
     String,
 > {
@@ -1272,7 +1273,7 @@ fn build_session_manager_with_lease(
 ) -> Result<
     (
         pa_core::session::manager::SessionManager,
-        Option<pa_daemon::lease::SessionLease>,
+        Option<pa_core::session::lease::SessionLease>,
     ),
     String,
 > {
@@ -1307,7 +1308,7 @@ fn fresh_session_with_lease(
     session_dir: &std::path::Path,
 ) -> (
     pa_core::session::manager::SessionManager,
-    Option<pa_daemon::lease::SessionLease>,
+    Option<pa_core::session::lease::SessionLease>,
 ) {
     let manager = pa_core::session::manager::SessionManager::persisted(cwd, session_dir);
     lease_fresh_manager(manager)
@@ -1319,15 +1320,17 @@ fn lease_fresh_manager(
     manager: pa_core::session::manager::SessionManager,
 ) -> (
     pa_core::session::manager::SessionManager,
-    Option<pa_daemon::lease::SessionLease>,
+    Option<pa_core::session::lease::SessionLease>,
 ) {
     let lease = match manager.get_session_file() {
         Some(path) => {
-            match pa_daemon::lease::acquire_runtime_session_lease(
+            match pa_core::session::lease::acquire_runtime_session_lease(
                 path,
                 &crate::config::get_agent_dir(),
             ) {
-                Ok(lease) => Some(lease),
+                Ok(lease) => {
+                    Some(lease.with_info_sidecar(pa_daemon::session_store::write_info_sidecar))
+                }
                 Err(error) => {
                     eprintln!("prime-agent: could not lease the fresh session file: {error:#}");
                     None
@@ -1344,7 +1347,7 @@ fn lease_fresh_manager(
 fn session_open_guard(
     socket_path: Option<&str>,
     session_path: &std::path::Path,
-) -> Result<pa_daemon::lease::SessionLease, String> {
+) -> Result<pa_core::session::lease::SessionLease, String> {
     let socket = crate::interactive_mode::resolve_socket_path(socket_path);
     if let Ok(mut client) = crate::daemon_client::DaemonClient::connect(&socket) {
         let list = client
@@ -1358,7 +1361,7 @@ fn session_open_guard(
             })
             .map_err(|error| format!("Could not check active sessions: {error:#}"))?;
         if list.success {
-            let target = pa_daemon::lease::canonical_session_path(session_path);
+            let target = pa_core::session::lease::canonical_session_path(session_path);
             for row in list
                 .data
                 .and_then(|data| data.get("sessions").cloned())
@@ -1368,7 +1371,9 @@ fn session_open_guard(
                 let Some(file) = row.get("sessionFile").and_then(serde_json::Value::as_str) else {
                     continue;
                 };
-                if pa_daemon::lease::canonical_session_path(std::path::Path::new(file)) != target {
+                if pa_core::session::lease::canonical_session_path(std::path::Path::new(file))
+                    != target
+                {
                     continue;
                 }
                 let active_session_id = row
@@ -1399,10 +1404,11 @@ fn session_open_guard(
     let agent_dir = crate::config::get_agent_dir();
     // Acquire, not observe: a probe leaves a window where another process acquires
     // between the check and this open — two writers on one file.
-    match pa_daemon::lease::acquire_runtime_session_lease(session_path, &agent_dir) {
-        Ok(lease) => Ok(lease),
+    match pa_core::session::lease::acquire_runtime_session_lease(session_path, &agent_dir) {
+        Ok(lease) => Ok(lease.with_info_sidecar(pa_daemon::session_store::write_info_sidecar)),
         Err(error) => {
-            let Some(active) = error.downcast_ref::<pa_daemon::lease::SessionAlreadyActiveError>()
+            let Some(active) =
+                error.downcast_ref::<pa_core::session::lease::SessionAlreadyActiveError>()
             else {
                 // The lease table itself failed (io, permissions): never silently proceed over an
                 // undeterminable ownership record.
@@ -1516,7 +1522,7 @@ mod tests {
                 super::with_print_runtime(&fixture, |fixture, lease| {
                     Box::pin(async move {
                         *lease = Some(
-                            pa_daemon::lease::acquire_runtime_session_lease(
+                            pa_core::session::lease::acquire_runtime_session_lease(
                                 &fixture.session_path,
                                 &fixture.agent_dir,
                             )
@@ -1537,8 +1543,11 @@ mod tests {
                             let _ = writer_ready_tx.send(());
                             cancel_rx.recv().unwrap();
                             writer_observation.store(
-                                pa_daemon::lease::live_lease_owner(&agent_dir, &session_path)
-                                    .is_some(),
+                                pa_core::session::lease::live_lease_owner(
+                                    &agent_dir,
+                                    &session_path,
+                                )
+                                .is_some(),
                                 std::sync::atomic::Ordering::SeqCst,
                             );
                             std::fs::write(&session_path, "writer settled\n").unwrap();
@@ -1565,10 +1574,11 @@ mod tests {
                 std::fs::read_to_string(&fixture.session_path).unwrap(),
                 "writer settled\n"
             );
-            assert!(
-                pa_daemon::lease::live_lease_owner(&fixture.agent_dir, &fixture.session_path)
-                    .is_none()
-            );
+            assert!(pa_core::session::lease::live_lease_owner(
+                &fixture.agent_dir,
+                &fixture.session_path
+            )
+            .is_none());
         }
     }
 

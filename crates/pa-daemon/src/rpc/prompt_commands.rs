@@ -193,7 +193,10 @@ async fn run_session_command(
         }
         state.compacting.fetch_sub(1, Ordering::SeqCst);
         let result = execution.compaction.as_ref().map(|compaction| {
-            crate::compaction::compaction_result_value(&compaction.result, &compaction.entry)
+            pa_core::session_engine::compaction_exec::compaction_result_value(
+                &compaction.result,
+                &compaction.entry,
+            )
         });
         state
             .session

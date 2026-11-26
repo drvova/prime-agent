@@ -17,9 +17,9 @@ use pa_types::daemon::{
 };
 use serde_json::{json, Map, Value};
 
-use crate::lease::canonical_session_path;
 use crate::rlm_ledger::{read_rlm_subagent_display, RlmSpawnLedger};
 use crate::util::iso_from_unix_ms;
+use pa_core::session::lease::canonical_session_path;
 
 /// One resident worker's collected data for the roster: its durable
 /// descriptor plus the live `update_snapshot` reply.

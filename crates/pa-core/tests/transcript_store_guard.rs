@@ -8,7 +8,8 @@
 //! store module:
 //!
 //! - any raw I/O in a module whose subject is transcripts (the session
-//!   modules and the daemon's session store), except the lines allowed below;
+//!   modules and the daemon's session store), except the lines allowed below
+//!   and the session leases' own ownership records;
 //! - raw I/O anywhere whose argument names a transcript (a `session_file`,
 //!   `session_path`, `transcript`, `.jsonl` path, ...).
 //!
@@ -84,6 +85,11 @@ const TRANSCRIPT_MODULES: &[&str] = &[
 
 /// The store itself.
 const STORE_MODULE: &str = "pa-core/src/session/store/";
+
+/// Session modules whose own files are not transcripts: the session leases'
+/// ownership records under `<agent dir>/session-leases`. A line of theirs
+/// that names a transcript is still checked.
+const OWNERSHIP_RECORD_MODULES: &[&str] = &["pa-core/src/session/lease.rs"];
 
 /// Allowed raw I/O outside the store: (file, a substring of the line, reason).
 const ALLOWED: &[(&str, &str, &str)] = &[
@@ -208,7 +214,8 @@ fn transcripts_are_read_and_written_only_through_the_store() {
             let source = std::fs::read_to_string(&file).expect("read source");
             let transcript_module = TRANSCRIPT_MODULES
                 .iter()
-                .any(|module| relative.starts_with(module));
+                .any(|module| relative.starts_with(module))
+                && !OWNERSHIP_RECORD_MODULES.contains(&relative.as_str());
             for (number, line) in production_lines(&source) {
                 let Some(at) = raw_io_in(line) else {
                     continue;

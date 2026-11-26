@@ -276,7 +276,10 @@ impl Worker {
                     let path = path.clone();
                     let agent_dir = self.config.agent_dir.clone();
                     tokio::task::spawn_blocking(move || {
-                        let lease = crate::lease::acquire_runtime_session_lease(&path, &agent_dir)?;
+                        let lease = pa_core::session::lease::acquire_runtime_session_lease(
+                            &path, &agent_dir,
+                        )?
+                        .with_info_sidecar(crate::session_store::write_info_sidecar);
                         pa_core::session::store::store().repair_tail(&path);
                         let mut store = SessionFile::open_windowed(&path)?;
                         store.lease = Some(Arc::new(lease));
@@ -378,7 +381,10 @@ impl Worker {
                     let path = path.clone();
                     let agent_dir = self.config.agent_dir.clone();
                     tokio::task::spawn_blocking(move || {
-                        crate::lease::acquire_runtime_session_lease(&path, &agent_dir)
+                        pa_core::session::lease::acquire_runtime_session_lease(&path, &agent_dir)
+                            .map(|lease| {
+                                lease.with_info_sidecar(crate::session_store::write_info_sidecar)
+                            })
                     })
                     .await
                     .map_err(anyhow::Error::from)
@@ -417,7 +423,10 @@ impl Worker {
                     let path = path.clone();
                     let agent_dir = self.config.agent_dir.clone();
                     tokio::task::spawn_blocking(move || {
-                        crate::lease::acquire_runtime_session_lease(&path, &agent_dir)
+                        pa_core::session::lease::acquire_runtime_session_lease(&path, &agent_dir)
+                            .map(|lease| {
+                                lease.with_info_sidecar(crate::session_store::write_info_sidecar)
+                            })
                     })
                     .await
                     .map_err(anyhow::Error::from)

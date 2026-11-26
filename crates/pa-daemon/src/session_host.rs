@@ -10,10 +10,10 @@
 //! What replaces the process boundary:
 //!
 //! - **Identity and liveness.** Each hosted lifetime gets a pid-shaped id
-//!   from a range no operating system hands out ([`is_hosted_pid`]) and a
-//!   generation string. Descriptors, leases and registrations record that
-//!   pair where they recorded a worker's pid and start id; "alive" means the
-//!   generation is registered as running in this daemon ([`hosted_alive`]),
+//!   from a range no operating system hands out and a generation string
+//!   (`pa_core::session::hosted`). Descriptors, leases and registrations
+//!   record that pair where they recorded a worker's pid and start id;
+//!   "alive" means the generation is registered as running in this daemon,
 //!   never that some pid exists.
 //! - **Containment.** The daemon's panic hook ([`install_panic_hook`])
 //!   attributes a panic to the session whose thread raised it, records it,
@@ -32,21 +32,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
+use pa_core::session::hosted;
 use pa_types::session_scope::{self, SessionScope};
 use serde::{Deserialize, Serialize};
-
-/// Hosted ids start here: above every real pid (Linux caps pids at 2^22,
-/// macOS at 99,998), and positive as an `i32` so a signal sent to one by
-/// mistake names no process and no process group. Windows documents no cap,
-/// but its process and thread ids are indexes into one kernel handle table
-/// of at most 2^24 entries, times four: below `0x0400_0000`, a sixteenth of
-/// this base. So no platform gate: an id at or above the base is never a
-/// process on any of the three.
-const HOSTED_PID_BASE: u32 = 0x4000_0000;
 
 /// How long a session's runtime may take to drop its tasks once the session
 /// has ended; threads still blocked after that are abandoned. Tasks drop at
@@ -54,15 +45,15 @@ const HOSTED_PID_BASE: u32 = 0x4000_0000;
 /// every stop of such a session pays it.
 const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(1);
 
-/// The hosted lifetimes running in this process: id -> generation and the
-/// handle that ends it.
+/// The hosted lifetimes running in this process: id -> the handle that ends
+/// it. Their generations are registered with `pa_core::session::hosted`.
 fn live() -> &'static Mutex<LiveSessions> {
     static LIVE: OnceLock<Mutex<LiveSessions>> = OnceLock::new();
     LIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Hosted id -> the lifetime's generation and the handle that ends it.
-type LiveSessions = HashMap<u32, (String, Arc<HostControl>)>;
+/// Hosted id -> the handle that ends the lifetime.
+type LiveSessions = HashMap<u32, Arc<HostControl>>;
 
 /// End the hosted lifetime `pid` whatever it is doing, and wait until its
 /// host thread has let go of it. Returns whether it was running. This is
@@ -74,14 +65,14 @@ pub(crate) async fn stop_hosted(pid: u32) -> bool {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(&pid)
-        .map(|(_, control)| Arc::clone(control));
+        .map(Arc::clone);
     let Some(control) = control else {
         return false;
     };
     control.end.notify_one();
     // The host thread removes the lifetime when its runtime is down (bounded
     // by the runtime's shutdown budget).
-    while hosted_alive(pid) {
+    while hosted::hosted_alive(pid) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     true
@@ -118,40 +109,6 @@ impl SessionCrash {
             )
         }
     }
-}
-
-/// Whether `pid` is a hosted session's id rather than a process id.
-#[must_use]
-pub fn is_hosted_pid(pid: u32) -> bool {
-    pid >= HOSTED_PID_BASE
-}
-
-/// Whether the hosted lifetime `pid` is running in this process.
-#[must_use]
-pub fn hosted_alive(pid: u32) -> bool {
-    live()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .contains_key(&pid)
-}
-
-/// The generation of the hosted lifetime `pid`, while it runs in this process.
-#[must_use]
-pub fn hosted_generation(pid: u32) -> Option<String> {
-    live()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&pid)
-        .map(|(generation, _)| generation.clone())
-}
-
-/// The id the calling session records as its owner pid: its hosted id inside
-/// a hosted session, the process id anywhere else.
-#[must_use]
-pub fn session_pid() -> u32 {
-    session_scope::current()
-        .and_then(|scope| scope.slot::<HostControl>())
-        .map_or_else(std::process::id, |control| control.pid)
 }
 
 /// Why and where one hosted session crashed. Everything here is a primitive
@@ -378,12 +335,7 @@ impl HostedSession {
     ///
     /// Returns an error when the operating system refuses the thread.
     pub(crate) fn start(launch: HostedLaunch) -> std::io::Result<Self> {
-        static NEXT: OnceLock<AtomicU32> = OnceLock::new();
-        // A random start keeps a restarted daemon from reissuing the ids its
-        // predecessor's descriptors still name.
-        let next = NEXT.get_or_init(|| AtomicU32::new(uuid::Uuid::new_v4().as_fields().0));
-        let pid = HOSTED_PID_BASE | (next.fetch_add(1, Ordering::Relaxed) & (HOSTED_PID_BASE - 1));
-        let generation = format!("hosted:{}:{}", std::process::id(), uuid::Uuid::new_v4());
+        let (pid, generation) = hosted::new_lifetime();
         let control = Arc::new(HostControl {
             pid,
             end: tokio::sync::Notify::new(),
@@ -393,7 +345,8 @@ impl HostedSession {
         live()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(pid, (generation.clone(), Arc::clone(&control)));
+            .insert(pid, Arc::clone(&control));
+        hosted::register(pid, generation.clone());
         let thread_control = Arc::clone(&control);
         let thread_name = format!(
             "session-{}",
@@ -405,6 +358,7 @@ impl HostedSession {
                 let scope =
                     SessionScope::new(launch.worker_id, launch.cwd, launch.env, launch.removed_env);
                 scope.set_slot(Arc::clone(&thread_control));
+                scope.set_slot(Arc::new(hosted::HostedId(pid)));
                 // What the session's code logs outside this crate (the engine's own
                 // `eprintln!` lines) goes to the session's log too.
                 scope.set_slot(Arc::new(session_scope::LogSink(Box::new(
@@ -466,6 +420,7 @@ impl HostedSession {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .remove(&pid);
+                hosted::unregister(pid);
                 let crash = thread_control
                     .crash
                     .lock()
@@ -481,6 +436,7 @@ impl HostedSession {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&pid);
+            hosted::unregister(pid);
             return Err(error);
         }
         Ok(Self {

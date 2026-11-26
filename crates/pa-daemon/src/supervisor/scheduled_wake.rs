@@ -70,7 +70,7 @@ impl Supervisor {
         else {
             return;
         };
-        let session_file = crate::lease::canonical_session_path(Path::new(session_file))
+        let session_file = pa_core::session::lease::canonical_session_path(Path::new(session_file))
             .to_string_lossy()
             .to_string();
         if !self

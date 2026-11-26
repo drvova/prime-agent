@@ -104,9 +104,9 @@ pub async fn wait_for_exit(identity: &UpdateProcessIdentity, budget_ms: u64) -> 
             return false;
         };
         if process_exit_observed(
-            pa_daemon::lease::is_process_alive(pid).ok(),
+            pa_core::session::lease::is_process_alive(pid).ok(),
             identity.process_start_id.as_deref(),
-            pa_daemon::lease::get_process_start_id(pid).as_deref(),
+            pa_core::session::lease::get_process_start_id(pid).as_deref(),
         ) {
             return true;
         }

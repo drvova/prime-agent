@@ -10,11 +10,11 @@ use serde_json::{json, Map, Value};
 
 use pa_types::daemon::DaemonCommand;
 
-use crate::lease::canonical_session_path;
 use crate::protocol::{response_failure, response_line, response_success, DaemonResponse};
 use crate::session_store::{read_session_info, SessionFile};
 use crate::supervisor::Supervisor;
 use crate::worker::Worker;
+use pa_core::session::lease::canonical_session_path;
 
 pub(crate) fn name_unavailable_error(name: &str, depth: u32) -> String {
     format!(
@@ -1041,7 +1041,7 @@ mod tombstone_usage_tests {
         // survives the removal - the snapshot is the source, not the file.
         pa_core::session::store::store().remove(&child).unwrap();
         let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();
-        let parent_key = crate::lease::canonical_session_path(&parent)
+        let parent_key = pa_core::session::lease::canonical_session_path(&parent)
             .to_string_lossy()
             .to_string();
         assert!(

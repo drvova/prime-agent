@@ -15,8 +15,8 @@ use super::{
     Duration, EngineModelSelection, Map, Ordering, Path, ResidentWorker, Result, RouteAdmission,
     Supervisor, TempSync, TypedCreateRejection, Value, WorkerTransition, ROUTE_TIMEOUT_MS,
 };
-use crate::lease::is_process_alive;
 use crate::protocol::{response_failure, response_success, DaemonResponse};
+use pa_core::session::lease::is_process_alive;
 
 /// Which admission path publishes a fresh worker's passive family.
 pub(crate) enum RosterFamilySeedOwner {
@@ -830,8 +830,8 @@ impl Supervisor {
         // behind such a pid keeps its tombstoned descriptor like a SIGKILL survivor (the
         // next boot retries the stop).
         let alive_unverified = (start_id.is_none()
-            || crate::lease::get_process_start_id(pid).is_none())
-            && crate::lease::is_process_alive(pid).unwrap_or(false);
+            || pa_core::session::lease::get_process_start_id(pid).is_none())
+            && pa_core::session::lease::is_process_alive(pid).unwrap_or(false);
         match crate::boot_reap::stop_process(pid, start_id.clone()).await {
             crate::boot_reap::ReapOutcome::Survived => {
                 self.log_line(&format!(
@@ -871,9 +871,9 @@ impl Supervisor {
                 // as gone. Journal deletion needs positive owner-death evidence:
                 // an unobservable process may still be writing durable work.
                 if recovery_journal_owner_is_gone(
-                    crate::lease::is_process_alive(pid).ok(),
+                    pa_core::session::lease::is_process_alive(pid).ok(),
                     start_id.as_deref(),
-                    crate::lease::get_process_start_id(pid).as_deref(),
+                    pa_core::session::lease::get_process_start_id(pid).as_deref(),
                 ) {
                     let _ = std::fs::remove_file(&recovery_journal_path);
                 }
@@ -926,7 +926,7 @@ impl Supervisor {
         // that hosted it, and their journal records name that process as
         // the owner: the generation (`hosted:<daemon pid>:<uuid>`) carries
         // it. A worker process's records name the worker itself.
-        let journal_owner = if crate::session_host::is_hosted_pid(worker_pid as u32) {
+        let journal_owner = if pa_core::session::hosted::is_hosted_pid(worker_pid as u32) {
             start_id
                 .as_deref()
                 .and_then(|generation| generation.strip_prefix("hosted:"))
@@ -945,9 +945,9 @@ impl Supervisor {
             // Stop escalation and adopted-process watch failures do not
             // prove death. The proof and reap must use the same owner pid.
             if !recovery_journal_owner_is_gone(
-                crate::lease::is_process_alive(worker_pid as u32).ok(),
+                pa_core::session::lease::is_process_alive(worker_pid as u32).ok(),
                 start_id.as_deref(),
-                crate::lease::get_process_start_id(worker_pid as u32).as_deref(),
+                pa_core::session::lease::get_process_start_id(worker_pid as u32).as_deref(),
             ) {
                 return 0;
             }
@@ -990,9 +990,9 @@ pub(super) async fn worker_process_gone(pid: u64, start_id: Option<String>) -> b
     // On macOS the start-id probe shells out to `ps`: keep it off the executor.
     tokio::task::spawn_blocking(move || {
         recovery_journal_owner_is_gone(
-            crate::lease::is_process_alive(pid).ok(),
+            pa_core::session::lease::is_process_alive(pid).ok(),
             start_id.as_deref(),
-            crate::lease::get_process_start_id(pid).as_deref(),
+            pa_core::session::lease::get_process_start_id(pid).as_deref(),
         )
     })
     .await

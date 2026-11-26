@@ -225,8 +225,8 @@ impl Supervisor {
             return false;
         };
         tokio::task::spawn_blocking(move || {
-            let alive = crate::lease::is_process_alive(pid).ok();
-            let observed = crate::lease::get_process_start_id(pid);
+            let alive = pa_core::session::lease::is_process_alive(pid).ok();
+            let observed = pa_core::session::lease::get_process_start_id(pid);
             !recorded_process_alive(alive, expected.as_deref(), observed.as_deref())
         })
         .await
@@ -275,9 +275,9 @@ impl Supervisor {
             let expected = descriptor.process_start_id.clone();
             tokio::task::spawn_blocking(move || {
                 recorded_process_alive(
-                    crate::lease::is_process_alive(pid).ok(),
+                    pa_core::session::lease::is_process_alive(pid).ok(),
                     expected.as_deref(),
-                    crate::lease::get_process_start_id(pid).as_deref(),
+                    pa_core::session::lease::get_process_start_id(pid).as_deref(),
                 )
             })
             .await
@@ -782,7 +782,8 @@ impl Supervisor {
                     );
                     descriptor.pid = registration.pid;
                 }
-                if let Some(start_id) = crate::lease::get_process_start_id(registration.pid as u32)
+                if let Some(start_id) =
+                    pa_core::session::lease::get_process_start_id(registration.pid as u32)
                 {
                     descriptor.process_start_id = Some(start_id);
                 }

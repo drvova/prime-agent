@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 pub const SESSION_LEASES_ENABLED_ENV: &str = "PRIME_AGENT_INTERNAL_SESSION_LEASES";
 pub const SESSION_LEASE_OWNER_ID_ENV: &str = "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID";
@@ -43,8 +43,8 @@ struct LeaseHost {
 }
 
 /// Error matching the TS wire shape (`session_already_active`): `Display`
-/// keeps the TS message byte-identical; the rendering lives in
-/// [`crate::hold_refusal`].
+/// keeps the TS message byte-identical; the daemon's `hold_refusal`
+/// renders it.
 #[derive(Debug, thiserror::Error)]
 #[error("Session is already active in {owner}: {session_path}")]
 pub struct SessionAlreadyActiveError {
@@ -126,8 +126,8 @@ pub fn canonical_session_path(path: &Path) -> PathBuf {
 /// pa-core through `pa_types::platform`.
 #[must_use]
 pub fn get_process_start_id(pid: u32) -> Option<String> {
-    if crate::session_host::is_hosted_pid(pid) {
-        return crate::session_host::hosted_generation(pid);
+    if crate::session::hosted::is_hosted_pid(pid) {
+        return crate::session::hosted::hosted_generation(pid);
     }
     pa_types::platform::process::process_start_id(pid)
 }
@@ -140,8 +140,8 @@ pub fn get_process_start_id(pid: u32) -> Option<String> {
 pub fn is_process_alive(pid: u32) -> anyhow::Result<bool> {
     // A hosted session's id names a lifetime inside a daemon, not a process:
     // it is alive exactly while that lifetime runs in this process.
-    if crate::session_host::is_hosted_pid(pid) {
-        return Ok(crate::session_host::hosted_alive(pid));
+    if crate::session::hosted::is_hosted_pid(pid) {
+        return Ok(crate::session::hosted::hosted_alive(pid));
     }
     pa_types::platform::process::is_process_alive(pid)
 }
@@ -350,7 +350,11 @@ fn with_lease_guard<T>(
                 // bare guard carries no holder identity, so the lease's
                 // owner is the stand-in: steal only when the owner is
                 // provably dead (a live owner may hold the guard mid-release).
-                if crate::paths::mtime_age(&guard).is_some_and(|age| age > STALE_GUARD_AFTER)
+                if fs::metadata(&guard)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+                    .is_some_and(|age| age > STALE_GUARD_AFTER)
                     && match read_owner(directory) {
                         Ok(Some(owner)) => !owner_alive(&owner),
                         Ok(None) => true,
@@ -392,7 +396,16 @@ pub struct SessionLease {
     /// drains this before removing the lease directory, so no row lands
     /// behind a successor's acquire.
     append_in_flight: std::sync::atomic::AtomicUsize,
+    /// Writes the holder's info sidecar for the opened path at release
+    /// ([`SessionLease::with_info_sidecar`]); none, only the window snapshot
+    /// is written.
+    info_sidecar: Option<InfoSidecarWriter>,
 }
+
+/// Folds the session-info scan state of the file at a path current and
+/// persists it beside the file: the daemon's session catalog owns that scan
+/// (`pa_daemon::session_store`), so its holders hand it to their leases.
+pub type InfoSidecarWriter = fn(&Path);
 
 impl SessionLease {
     /// Write both sidecars while the lease is still held: the window
@@ -403,10 +416,20 @@ impl SessionLease {
     /// and a failed write costs the next open its warm resume, nothing
     /// more. `release` runs this before the reclaim; the orphan exit,
     /// which keeps its lease through process death, runs it alone.
-    pub(crate) fn write_sidecars(&self) {
-        let _ = pa_core::session::window::flush_cache(&self.opened_path);
-        let _ = crate::session_store::read_session_info(&self.opened_path);
-        crate::session_store::persist_info_sidecar(&self.opened_path);
+    pub fn write_sidecars(&self) {
+        let _ = crate::session::window::flush_cache(&self.opened_path);
+        if let Some(info_sidecar) = self.info_sidecar {
+            info_sidecar(&self.opened_path);
+        }
+    }
+
+    /// The lease, writing its holder's info sidecar with `writer` too
+    /// whenever it writes its sidecars (at release, and the orphan exit's
+    /// [`SessionLease::write_sidecars`]).
+    #[must_use]
+    pub fn with_info_sidecar(mut self, writer: InfoSidecarWriter) -> Self {
+        self.info_sidecar = Some(writer);
+        self
     }
 
     pub fn release(&self) {
@@ -460,19 +483,36 @@ impl Drop for OwnedMutationFlight<'_> {
 }
 
 impl SessionLease {
-    pub(crate) fn acquire_target(&self, path: &Path) -> Result<std::sync::Arc<Self>> {
+    /// Acquires the lease of another session file under the same agent
+    /// dir, writing the same info sidecar as this one.
+    ///
+    /// # Errors
+    ///
+    /// The acquire failed (see [`acquire_runtime_session_lease`]).
+    ///
+    /// # Panics
+    ///
+    /// The lease directory is not under an agent dir (it always is).
+    pub fn acquire_target(&self, path: &Path) -> Result<std::sync::Arc<Self>> {
         let agent_dir = self
             .directory
             .parent()
             .and_then(Path::parent)
             .expect("lease directory has agent root");
-        acquire_runtime_session_lease(path, agent_dir).map(std::sync::Arc::new)
+        acquire_runtime_session_lease(path, agent_dir).map(|mut lease| {
+            lease.info_sidecar = self.info_sidecar;
+            std::sync::Arc::new(lease)
+        })
     }
 
     /// Hold the existing append admission fence across proof, mutation and sync.
     /// Release retains its existing ten-second drain policy: a wedged IO call
     /// or suspended process beyond that bound is not absolute handoff safety.
-    pub(crate) fn with_owned_mutation<T>(
+    ///
+    /// # Errors
+    ///
+    /// The lease is released or does not own `path`, or `action` failed.
+    pub fn with_owned_mutation<T>(
         &self,
         path: &Path,
         action: impl FnOnce() -> Result<T>,
@@ -488,12 +528,17 @@ impl SessionLease {
         action()
     }
 
-    pub(crate) fn append(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+    /// Appends `bytes` to the transcript at `path` this lease owns.
+    ///
+    /// # Errors
+    ///
+    /// The lease is released or does not own `path`, or the append failed.
+    pub fn append(&self, path: &Path, bytes: &[u8]) -> Result<()> {
         self.with_owned_mutation(path, || {
-            pa_core::session::window::append_cached(
+            crate::session::window::append_cached(
                 path,
                 bytes,
-                pa_core::session::window::AppendOwnership::SessionLeaseHeld,
+                crate::session::window::AppendOwnership::SessionLeaseHeld,
             )?;
             Ok(())
         })
@@ -575,7 +620,7 @@ pub fn acquire_runtime_session_lease(
                 uuid::Uuid::new_v4().simple()
             ));
             fs::create_dir_all(&candidate)?;
-            let owner_pid = crate::session_host::session_pid();
+            let owner_pid = crate::session::hosted::session_pid();
             let owner = LeaseOwner {
                 version: 1,
                 token: token.clone(),
@@ -583,8 +628,8 @@ pub fn acquire_runtime_session_lease(
                 process_start_id: get_process_start_id(owner_pid),
                 active_session_id: pa_types::session_scope::var(SESSION_LEASE_OWNER_ID_ENV).ok(),
                 session_path: canonical.to_string_lossy().to_string(),
-                created_at: crate::util::now_iso(),
-                host: crate::session_host::is_hosted_pid(owner_pid).then(|| LeaseHost {
+                created_at: crate::session::manager::format_iso_now(),
+                host: crate::session::hosted::is_hosted_pid(owner_pid).then(|| LeaseHost {
                     pid: std::process::id(),
                     process_start_id: pa_types::platform::process::process_start_id(
                         std::process::id(),
@@ -602,6 +647,7 @@ pub fn acquire_runtime_session_lease(
                         token,
                         released: std::sync::atomic::AtomicBool::new(false),
                         append_in_flight: std::sync::atomic::AtomicUsize::new(0),
+                        info_sidecar: None,
                     });
                 }
                 Err(error) => {
@@ -640,7 +686,10 @@ pub fn acquire_runtime_session_lease(
     })
 }
 
-pub(crate) fn reclaim_dead_owner_leases(agent_dir: &Path) -> usize {
+/// Reclaims every lease under `agent_dir` whose owner is dead, and the
+/// stale directories reclaims left; returns how many it removed.
+#[must_use]
+pub fn reclaim_dead_owner_leases(agent_dir: &Path) -> usize {
     let root = agent_dir.join("session-leases");
     let Ok(entries) = fs::read_dir(&root) else {
         return 0;
@@ -752,7 +801,7 @@ mod tests {
                 session_path: canonical_session_path(&dead_path)
                     .to_string_lossy()
                     .to_string(),
-                created_at: crate::util::now_iso(),
+                created_at: crate::session::manager::format_iso_now(),
                 host: None,
             };
             fs::write(
@@ -805,7 +854,7 @@ mod tests {
             process_start_id: get_process_start_id(0),
             active_session_id: None,
             session_path: canonical_session_path(&path).to_string_lossy().to_string(),
-            created_at: crate::util::now_iso(),
+            created_at: crate::session::manager::format_iso_now(),
             host: None,
         };
         let directory = lease_directory(dir.path(), &canonical_session_path(&path));
@@ -892,7 +941,7 @@ mod tests {
             process_start_id: get_process_start_id(0),
             active_session_id: None,
             session_path: canonical_session_path(&path).to_string_lossy().to_string(),
-            created_at: crate::util::now_iso(),
+            created_at: crate::session::manager::format_iso_now(),
             host: None,
         };
         let directory = lease_directory(dir.path(), &canonical_session_path(&path));
@@ -1017,7 +1066,7 @@ mod tests {
         fs::write(&path, "{}\n").unwrap();
         lease.append(&path, b"{}\n").unwrap();
         assert_eq!(
-            pa_core::session::store::read_to_string(&path).unwrap(),
+            crate::session::store::read_to_string(&path).unwrap(),
             "{}\n{}\n"
         );
     }

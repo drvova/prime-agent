@@ -222,7 +222,7 @@ impl RegistrationTask {
             socket_path: self.identity.socket_path.clone(),
             worker_instance_id: self.identity.worker_instance_id.clone(),
             token: self.identity.token.clone(),
-            pid: u64::from(crate::session_host::session_pid()),
+            pid: u64::from(pa_core::session::hosted::session_pid()),
             rest: Map::default(),
         };
         let envelope = json!({

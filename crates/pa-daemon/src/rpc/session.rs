@@ -29,7 +29,7 @@ pub struct RpcEngineHandle {
     pub bash_wake: Arc<tokio::sync::Notify>,
     /// The cross-process ownership lease on the opened session file
     /// (`None` for fresh/in-memory sessions the factory created itself).
-    pub session_lease: Option<crate::lease::SessionLease>,
+    pub session_lease: Option<pa_core::session::lease::SessionLease>,
 }
 
 /// A whole-session replacement request: a fresh session (optionally under
@@ -284,7 +284,7 @@ impl RpcSession {
             reuse_lease,
         } = &mut request
         {
-            let canonical = crate::lease::canonical_session_path(session_path);
+            let canonical = pa_core::session::lease::canonical_session_path(session_path);
             let same_path = handle
                 .session_lease
                 .as_ref()

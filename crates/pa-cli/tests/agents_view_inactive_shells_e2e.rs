@@ -107,7 +107,7 @@ impl Shell {
         let record = json!({
             "id": id,
             "pid": pid,
-            "startId": pa_daemon::lease::get_process_start_id(pid).expect("start id"),
+            "startId": pa_core::session::lease::get_process_start_id(pid).expect("start id"),
             "command": "sleep 300",
             "startedAt": "2026-01-01T00:00:00+00:00",
             "sessionId": session_id,

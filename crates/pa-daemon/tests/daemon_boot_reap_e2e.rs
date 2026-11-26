@@ -241,7 +241,7 @@ fn boot_reap_clears_a_leftover_worker_process_and_its_session_reopens() {
     common::into_original_file(&session_file);
     let leftover = spawn_leftover_worker(dir.path(), &socket, "leftover");
     std::mem::forget(
-        pa_daemon::lease::acquire_runtime_session_lease(&session_file, &agent_dir)
+        pa_core::session::lease::acquire_runtime_session_lease(&session_file, &agent_dir)
             .expect("the lease to hand to the leftover"),
     );
     let owner_path = std::fs::read_dir(agent_dir.join("session-leases"))
@@ -254,10 +254,12 @@ fn boot_reap_clears_a_leftover_worker_process_and_its_session_reopens() {
         serde_json::from_str(&std::fs::read_to_string(&owner_path).expect("owner record"))
             .expect("owner json");
     owner["pid"] = json!(leftover.child.id());
-    owner["processStartId"] = json!(pa_daemon::lease::get_process_start_id(leftover.child.id()));
+    owner["processStartId"] = json!(pa_core::session::lease::get_process_start_id(
+        leftover.child.id()
+    ));
     std::fs::write(&owner_path, owner.to_string()).expect("hand the lease over");
     assert!(
-        pa_daemon::lease::acquire_runtime_session_lease(&session_file, &agent_dir).is_err(),
+        pa_core::session::lease::acquire_runtime_session_lease(&session_file, &agent_dir).is_err(),
         "the live leftover holds the session (the refusal the operator saw)"
     );
 

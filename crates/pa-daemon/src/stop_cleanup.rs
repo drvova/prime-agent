@@ -11,12 +11,12 @@ use anyhow::Result;
 
 use pa_core::cron::store::{AgentCronJobStore, CancelJobsFilter};
 
-use crate::lease::canonical_session_path;
 use crate::registry::ResidentWorker;
 use crate::rlm_ledger::RlmSpawnLedger;
 use crate::scheduled_jobs::session_artifact_dir;
 use crate::session_store::{read_session_info, SessionFile};
 use crate::supervisor::Supervisor;
+use pa_core::session::lease::canonical_session_path;
 
 /// One tree member of a stopped root: its durable session id and file.
 struct TreeMember {
@@ -389,13 +389,14 @@ impl Supervisor {
     /// there - a plain kill, an untouched subagent, a top-level session.
     async fn tombstoned_child_at(self: &Arc<Self>, session_file: &str) -> Option<String> {
         let ledger = self.rlm_spawn_ledger_for(None).await.ok()?;
-        let path = crate::lease::canonical_session_path(Path::new(session_file));
+        let path = pa_core::session::lease::canonical_session_path(Path::new(session_file));
         let edges = ledger.edges(true).ok()?;
         edges
             .iter()
             .find(|edge| {
                 edge.deleted.is_some()
-                    && crate::lease::canonical_session_path(Path::new(&edge.child)) == path
+                    && pa_core::session::lease::canonical_session_path(Path::new(&edge.child))
+                        == path
             })
             .map(|edge| edge.child_id.clone())
     }

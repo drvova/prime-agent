@@ -398,8 +398,8 @@ pub fn parse_supervisor_command_line(
 /// `None` when the platform has no procfs identity.
 #[must_use]
 pub fn process_start_id(pid: u32) -> Option<String> {
-    if crate::session_host::is_hosted_pid(pid) {
-        return crate::session_host::hosted_generation(pid);
+    if pa_core::session::hosted::is_hosted_pid(pid) {
+        return pa_core::session::hosted::hosted_generation(pid);
     }
     pa_types::platform::process::process_start_id(pid)
 }

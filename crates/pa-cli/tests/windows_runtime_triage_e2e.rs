@@ -194,7 +194,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
 fn drain_session_lease(agent_dir: &Path, session_path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(45);
     while Instant::now() < deadline {
-        if pa_daemon::lease::live_lease_owner(agent_dir, session_path).is_none() {
+        if pa_core::session::lease::live_lease_owner(agent_dir, session_path).is_none() {
             return;
         }
         std::thread::sleep(Duration::from_millis(250));

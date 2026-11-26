@@ -76,7 +76,7 @@ pub fn worker_launch_env(
             descriptor.root_active_session_id.clone(),
         ),
         (
-            crate::lease::SESSION_LEASE_OWNER_ID_ENV.to_string(),
+            pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV.to_string(),
             descriptor.root_active_session_id.clone(),
         ),
         (

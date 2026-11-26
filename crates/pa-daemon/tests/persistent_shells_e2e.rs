@@ -188,7 +188,8 @@ fn saved_row_lists_its_live_shells_and_the_machine_wide_list_every_shell() {
     let _guard = GroupGuard(sleeper.id() as i32);
     let mut gone = Command::new("true").spawn().expect("spawn true");
     gone.wait().expect("reap true");
-    let sleeper_start_id = pa_daemon::lease::get_process_start_id(sleeper.id()).expect("start id");
+    let sleeper_start_id =
+        pa_core::session::lease::get_process_start_id(sleeper.id()).expect("start id");
     let home = agent_dir.join("persistent-shells");
     std::fs::create_dir_all(&home).expect("persistent-shell home");
     for (id, pid, start_id, session) in [

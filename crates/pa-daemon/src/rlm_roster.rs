@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::lease::canonical_session_path;
 use crate::rlm_ledger::{
     read_legacy_registry, read_rlm_subagent_display, LegacyRlmSubagentEntry, RlmLedgerEdge,
     RlmSpawnLedger,
 };
 use crate::session_store::{read_session_info, SessionInfo};
+use pa_core::session::lease::canonical_session_path;
 
 /// Hydration metadata fields beyond the edge (prompt, model, node ids):
 /// display-grade, never topology.

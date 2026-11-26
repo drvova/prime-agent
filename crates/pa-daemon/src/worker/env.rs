@@ -86,7 +86,7 @@ const INHERITED_WORKER_ENV: &[&str] = &[
     WORKER_RECOVERY_JOURNAL_ENV,
     WORKER_SCRIPT_ENV,
     WORKER_TELEMETRY_DISABLED_ENV,
-    crate::lease::SESSION_LEASE_OWNER_ID_ENV,
+    pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
     pa_core::kernel::orphan_journal::ORPHAN_PROCESS_JOURNAL_ENV,
 ];
 

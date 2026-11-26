@@ -168,7 +168,7 @@ impl Worker {
             Err(_) => response_failure(
                 None,
                 "prompt_and_wait",
-                &crate::session_host::recorded_crash(crate::session_host::session_pid())
+                &crate::session_host::recorded_crash(pa_core::session::hosted::session_pid())
                     .map_or_else(
                         || "Prompt did not complete".to_string(),
                         |crash| crash.reason(),

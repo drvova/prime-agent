@@ -583,7 +583,7 @@ impl Supervisor {
             tokio::spawn(async move {
                 supervisor.wait_for_boot_reap().await;
                 drop(tokio::task::spawn_blocking(move || {
-                let leases = crate::lease::reclaim_dead_owner_leases(&supervisor.options.agent_dir);
+                let leases = pa_core::session::lease::reclaim_dead_owner_leases(&supervisor.options.agent_dir);
                 let logs = crate::worker_stderr::prune_socket_logs(
                     &supervisor.options.agent_dir,
                     &supervisor.options.socket_path,

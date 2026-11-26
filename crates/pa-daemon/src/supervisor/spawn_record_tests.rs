@@ -282,7 +282,7 @@ async fn a_spawn_record_persist_failure_kills_the_child_and_fails_the_launch() {
     let pid = resident.descriptor.lock().await.pid;
     assert!(pid > 0, "the child's pid was recorded before the persist");
     assert!(
-        !crate::lease::is_process_alive(pid as u32).unwrap_or(true),
+        !pa_core::session::lease::is_process_alive(pid as u32).unwrap_or(true),
         "the failed-launch child is killed"
     );
 }

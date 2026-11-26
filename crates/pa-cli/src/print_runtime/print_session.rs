@@ -332,7 +332,7 @@ async fn follow<T>(
 /// (the selected session file's) for the run.
 pub(super) async fn print_mode_main(
     options: &RunOptions,
-    lease: &mut Option<pa_daemon::lease::SessionLease>,
+    lease: &mut Option<pa_core::session::lease::SessionLease>,
 ) -> Result<i32, String> {
     // `print` or `json`: the telemetry execution mode is the app mode (TS
     // main.ts `executionMode: appMode`).

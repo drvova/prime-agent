@@ -10,11 +10,11 @@ use std::sync::Arc;
 use pa_types::daemon::agent_roster::{roster_agent_id_for_summary, AgentRosterEntry};
 use serde_json::{json, Value};
 
-use crate::lease::canonical_session_path;
 use crate::rlm_ledger::RlmLedgerEdge;
 use crate::session_store::read_session_info;
 use crate::session_usage::SessionUsageSummary;
 use crate::supervisor::Supervisor;
+use pa_core::session::lease::canonical_session_path;
 
 impl Supervisor {
     /// Seed passivated ledger-descended children into the live roster, once per boot after adoption

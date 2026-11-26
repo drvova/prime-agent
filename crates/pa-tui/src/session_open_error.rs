@@ -213,7 +213,7 @@ pub fn decorate_interactive_refusal(
     format!("{first} \u{b7} {guidance}")
 }
 
-/// The canonical form of a session path matching `pa_daemon::lease::canonical_session_path`
+/// The canonical form of a session path matching `pa_core::session::lease::canonical_session_path`
 /// without pa-tui depending on pa-daemon.
 fn canonical_form(path: &Path) -> std::path::PathBuf {
     match pa_types::platform::canonicalize(path) {

@@ -612,7 +612,7 @@ pub(crate) fn session_summary(core: &SessionCore, inputs: SummaryInputs) -> Sess
         rlm_child_id: core.rlm_child_id.clone(),
         usage,
         worker_state: Some("ready".to_string()),
-        worker_pid: Some(crate::session_host::session_pid()),
+        worker_pid: Some(pa_core::session::hosted::session_pid()),
         // Set by the caller when the snapshot backs a roster push; authoritative
         // pulls embed the live counter in `summary_locked` instead.
         roster_delta_sequence: None,

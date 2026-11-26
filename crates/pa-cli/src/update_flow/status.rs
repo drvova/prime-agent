@@ -212,7 +212,7 @@ pub fn coordinator_identity() -> UpdateProcessIdentity {
     let pid = std::process::id();
     UpdateProcessIdentity {
         pid: u64::from(pid),
-        process_start_id: pa_daemon::lease::get_process_start_id(pid),
+        process_start_id: pa_core::session::lease::get_process_start_id(pid),
         supervisor_generation: None,
         supervisor_owner_token: None,
         rest: serde_json::Map::default(),

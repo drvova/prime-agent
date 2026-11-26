@@ -122,8 +122,8 @@ pub(crate) async fn reap_predecessors(supervisor: &Arc<Supervisor>) {
 pub(crate) async fn stop_process(pid: u32, start_id: Option<String>) -> ReapOutcome {
     // A hosted session is not a process: no signal reaches it. Its forced
     // stop ends its host thread, and only the lifetime the caller named.
-    if crate::session_host::is_hosted_pid(pid) {
-        let current = crate::session_host::hosted_generation(pid);
+    if pa_core::session::hosted::is_hosted_pid(pid) {
+        let current = pa_core::session::hosted::hosted_generation(pid);
         return if current.is_some()
             && current == start_id
             && crate::session_host::stop_hosted(pid).await
@@ -200,7 +200,8 @@ pub(crate) async fn reap_abandoned_workers(supervisor: &Arc<Supervisor>, worker_
 fn identity_current(target: &ReapTarget) -> bool {
     match &target.start_id {
         Some(expected) => {
-            crate::lease::get_process_start_id(target.pid).as_deref() == Some(expected.as_str())
+            pa_core::session::lease::get_process_start_id(target.pid).as_deref()
+                == Some(expected.as_str())
         }
         None => false,
     }
@@ -262,7 +263,7 @@ async fn stop_target_within(
         // retries), never deletes it behind a false AlreadyGone.
         Err(_) => {
             if identity_current(target)
-                && crate::lease::is_process_alive(target.pid).unwrap_or(false)
+                && pa_core::session::lease::is_process_alive(target.pid).unwrap_or(false)
             {
                 ReapOutcome::Survived
             } else {
@@ -280,7 +281,9 @@ async fn escalate(
     term_grace: Duration,
     kill_verify: Duration,
 ) -> ReapOutcome {
-    if !identity_current(target) || !crate::lease::is_process_alive(target.pid).unwrap_or(false) {
+    if !identity_current(target)
+        || !pa_core::session::lease::is_process_alive(target.pid).unwrap_or(false)
+    {
         return ReapOutcome::AlreadyGone;
     }
     if signal(pa_core::platform::process::Signal::Term) {
@@ -299,7 +302,8 @@ async fn escalate(
 async fn await_gone(target: &ReapTarget, budget: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + budget;
     loop {
-        if !identity_current(target) || !crate::lease::is_process_alive(target.pid).unwrap_or(false)
+        if !identity_current(target)
+            || !pa_core::session::lease::is_process_alive(target.pid).unwrap_or(false)
         {
             return true;
         }
@@ -327,7 +331,7 @@ fn same_socket_worker_targets(
         }
         // The identity captures BEFORE every /proc read and re-verifies AFTER the
         // qualification: a recycled pid must never leave a target under the REPLACEMENT'S identity.
-        let start_id = crate::lease::get_process_start_id(pid);
+        let start_id = pa_core::session::lease::get_process_start_id(pid);
         // The abandoned-id filter: workers whose env names the given-up id; `None` = whole census.
         if let Some(active_session) = active_session {
             if !proc_environ_names_active_session(pid, active_session) {
@@ -356,7 +360,7 @@ fn same_socket_worker_targets(
             continue;
         }
         // The post-qualification identity re-check: the pid must still name the qualified process.
-        if crate::lease::get_process_start_id(pid).as_deref() != start_id.as_deref() {
+        if pa_core::session::lease::get_process_start_id(pid).as_deref() != start_id.as_deref() {
             continue;
         }
         // The KILL decision rests on the worker role and the same-socket identity alone - a
@@ -483,7 +487,7 @@ fn same_socket_supervisor_targets(socket_path: &Path) -> Vec<ReapTarget> {
             continue;
         }
         // Identity-first capture, as the worker census.
-        let start_id = crate::lease::get_process_start_id(pid);
+        let start_id = pa_core::session::lease::get_process_start_id(pid);
         let Some(mut argv) = read_proc_argv(pid) else {
             continue;
         };
@@ -496,7 +500,7 @@ fn same_socket_supervisor_targets(socket_path: &Path) -> Vec<ReapTarget> {
             continue;
         }
         // The post-qualification identity re-check.
-        if crate::lease::get_process_start_id(pid).as_deref() != start_id.as_deref() {
+        if pa_core::session::lease::get_process_start_id(pid).as_deref() != start_id.as_deref() {
             continue;
         }
         targets.push(ReapTarget {
@@ -637,8 +641,10 @@ fn protected_worker_pids(agent_dir: &Path, socket_path: &Path) -> HashSet<u32> {
                 continue;
             }
             let identity_holds = match &descriptor.process_start_id {
-                Some(expected) => crate::lease::get_process_start_id(descriptor.pid as u32)
-                    .is_none_or(|observed| observed == expected.as_str()),
+                Some(expected) => {
+                    pa_core::session::lease::get_process_start_id(descriptor.pid as u32)
+                        .is_none_or(|observed| observed == expected.as_str())
+                }
                 None => true,
             };
             if identity_holds {
@@ -749,7 +755,7 @@ mod tests {
     fn target(pid: u32) -> ReapTarget {
         ReapTarget {
             pid,
-            start_id: crate::lease::get_process_start_id(pid),
+            start_id: pa_core::session::lease::get_process_start_id(pid),
             worker_socket: None,
             kind: ReapKind::Worker,
         }
@@ -873,7 +879,7 @@ mod tests {
         }
         assert!(trap_armed.exists(), "the trap never armed");
         let pid = guard.0.as_ref().expect("guard holds the child").id();
-        let outcome = stop_process(pid, crate::lease::get_process_start_id(pid)).await;
+        let outcome = stop_process(pid, pa_core::session::lease::get_process_start_id(pid)).await;
         assert_eq!(
             outcome,
             ReapOutcome::Kill,

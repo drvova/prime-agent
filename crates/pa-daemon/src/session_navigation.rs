@@ -90,7 +90,7 @@ impl SessionNavigation {
     fn target_lease(
         &self,
         path: &std::path::Path,
-    ) -> anyhow::Result<Option<Arc<crate::lease::SessionLease>>> {
+    ) -> anyhow::Result<Option<Arc<pa_core::session::lease::SessionLease>>> {
         let source = self
             .core
             .lock()
@@ -99,7 +99,9 @@ impl SessionNavigation {
             .as_ref()
             .and_then(|store| store.lease.clone());
         match source {
-            Some(source) if source.session_path == crate::lease::canonical_session_path(path) => {
+            Some(source)
+                if source.session_path == pa_core::session::lease::canonical_session_path(path) =>
+            {
                 Ok(Some(source))
             }
             Some(source) => source.acquire_target(path).map(Some),
@@ -271,7 +273,7 @@ impl SessionNavigation {
         path: &str,
         cwd_override: Option<String>,
         command: &'static str,
-        lease: Option<Arc<crate::lease::SessionLease>>,
+        lease: Option<Arc<pa_core::session::lease::SessionLease>>,
     ) -> Result<PreparedReplacement, DaemonResponse> {
         let lease = match lease {
             Some(lease) => Some(lease),

@@ -69,8 +69,9 @@ of resident workers seed into the live roster - roots are the resident
 session files, descent is membership at any parent-walk step, and
 present rows by agent id or session file are never overwritten - at
 subscribe, spawn-admission, and worker-stop moments, so subscribers see
-the full family, not just resident rows), cloud sandbox attach, session
-leases (`core/session-lease.ts` port). Daemon-owned RLM spawn ledger (`rlm_ledger.rs`):
+the full family, not just resident rows), cloud sandbox attach; the session
+leases are pa-core's (`pa_core::session::lease`, the `core/session-lease.ts` port), and a lease
+this daemon holds writes its info sidecar through `session_store::write_info_sidecar`. Daemon-owned RLM spawn ledger (`rlm_ledger.rs`):
 one append-only JSONL per sessions dir (spawn/rename/delete admissions with
 the TS `rlm-ledger.ts` record grammar, bounds, stat-guarded replay, and
 legacy-registry seeding) plus the per-child display files; family topology

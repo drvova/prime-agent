@@ -84,12 +84,12 @@ async fn resident_process_alive(resident: &Arc<ResidentWorker>) -> bool {
     if pid == 0 {
         return false;
     }
-    if !crate::lease::is_process_alive(pid as u32).unwrap_or(true) {
+    if !pa_core::session::lease::is_process_alive(pid as u32).unwrap_or(true) {
         return false;
     }
     match start_id.as_deref() {
         None => true,
-        Some(expected) => match crate::lease::get_process_start_id(pid as u32) {
+        Some(expected) => match pa_core::session::lease::get_process_start_id(pid as u32) {
             Some(current) => current == expected,
             None => true,
         },
@@ -478,7 +478,7 @@ mod tests {
     #[tokio::test]
     async fn the_spawned_identity_keeps_a_live_holder_alive() {
         let pid = std::process::id();
-        let start_id = crate::lease::get_process_start_id(pid);
+        let start_id = pa_core::session::lease::get_process_start_id(pid);
         let resident = resident_with_identity(u64::from(pid), start_id.as_deref());
         assert!(resident_process_alive(&resident).await);
     }

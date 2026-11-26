@@ -713,7 +713,10 @@ impl SessionEngine for AgentSessionEngine {
                     run: Box::new(CompactionRun {
                         // The wire result is the TS `CompactionResult` shape;
                         // usage and the digest snapshot live on the entry.
-                        result: crate::compaction::compaction_result_value(&run.result, &run.entry),
+                        result: pa_core::session_engine::compaction_exec::compaction_result_value(
+                            &run.result,
+                            &run.entry,
+                        ),
                         usage: run
                             .result
                             .usage

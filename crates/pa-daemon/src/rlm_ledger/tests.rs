@@ -339,7 +339,7 @@ fn moved_edge_paths_resolve_through_the_session_id() {
     // The resolved paths are canonicalized (the sessions dir the
     // resolver anchors to is canonical).
     let canonical = |path: &Path| -> String {
-        crate::lease::canonical_session_path(path)
+        pa_core::session::lease::canonical_session_path(path)
             .to_string_lossy()
             .to_string()
     };
@@ -1060,10 +1060,10 @@ fn bucket_folds_own_snapshots_post_order_without_double_counting() {
     fs::remove_file(&child_1).unwrap();
     fs::remove_file(&grandchild_1).unwrap();
     let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();
-    let parent_key = crate::lease::canonical_session_path(&parent)
+    let parent_key = pa_core::session::lease::canonical_session_path(&parent)
         .to_string_lossy()
         .to_string();
-    let child_key = crate::lease::canonical_session_path(&child_1)
+    let child_key = pa_core::session::lease::canonical_session_path(&child_1)
         .to_string_lossy()
         .to_string();
     let deleted = bucket
@@ -1131,7 +1131,7 @@ fn bucket_legacy_tombstones_fall_back_then_gap_to_zero() {
             RlmLedgerDeleteReason::User,
         )
         .unwrap();
-    let parent_key = crate::lease::canonical_session_path(&parent)
+    let parent_key = pa_core::session::lease::canonical_session_path(&parent)
         .to_string_lossy()
         .to_string();
     // A tombstoned transcript directly in the sessions dir keeps its
@@ -1247,7 +1247,7 @@ fn bucket_bills_tombstoned_children_without_catalog_rows() {
         )
         .unwrap();
     let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();
-    let parent_key = crate::lease::canonical_session_path(&parent)
+    let parent_key = pa_core::session::lease::canonical_session_path(&parent)
         .to_string_lossy()
         .to_string();
     assert_eq!(
@@ -1319,10 +1319,10 @@ fn bucket_claims_each_tombstoned_path_once() {
     // that died — a live file rides its own row).
     fs::remove_file(&child).unwrap();
     let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();
-    let key_a = crate::lease::canonical_session_path(&parent_a)
+    let key_a = pa_core::session::lease::canonical_session_path(&parent_a)
         .to_string_lossy()
         .to_string();
-    let key_b = crate::lease::canonical_session_path(&parent_b)
+    let key_b = pa_core::session::lease::canonical_session_path(&parent_b)
         .to_string_lossy()
         .to_string();
     assert!(
@@ -1396,7 +1396,7 @@ fn the_bucket_updates_after_an_append_on_the_same_ledger() {
     fs::write(&parent, "{}").unwrap();
     fs::write(&child_1, "{}").unwrap();
     fs::write(&child_2, "{}").unwrap();
-    let parent_key = crate::lease::canonical_session_path(&parent)
+    let parent_key = pa_core::session::lease::canonical_session_path(&parent)
         .to_string_lossy()
         .to_string();
     let spawn_delete = |child_id: &str, child: &Path, cost: f64| {

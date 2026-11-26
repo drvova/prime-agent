@@ -168,10 +168,10 @@ fn record_is_active(record: &Value) -> bool {
     else {
         return true;
     };
-    if matches!(pa_daemon::lease::is_process_alive(pid), Ok(false)) {
+    if matches!(pa_core::session::lease::is_process_alive(pid), Ok(false)) {
         return false;
     }
-    !matches!((record["processStartId"].as_str(), pa_daemon::lease::get_process_start_id(pid)),
+    !matches!((record["processStartId"].as_str(), pa_core::session::lease::get_process_start_id(pid)),
         (Some(expected), Some(observed)) if expected != observed)
 }
 

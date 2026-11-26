@@ -126,10 +126,11 @@ mod resume_settings_tests {
             }
             let response = worker.dispatch("create", &payload).await;
             assert!(response.success, "{response:?}");
-            assert!(
-                crate::lease::acquire_runtime_session_lease(&path, &dir.path().join("agent"))
-                    .is_err()
-            );
+            assert!(pa_core::session::lease::acquire_runtime_session_lease(
+                &path,
+                &dir.path().join("agent")
+            )
+            .is_err());
             {
                 let selected = capture.selected.lock().unwrap();
                 // The live-selection adoption carries the create flags and the
@@ -182,9 +183,11 @@ mod resume_settings_tests {
             let killed = worker.dispatch("kill", &json!({})).await;
             assert!(killed.success, "{killed:?}");
             drop(worker);
-            let released =
-                crate::lease::acquire_runtime_session_lease(&path, &dir.path().join("agent"))
-                    .unwrap();
+            let released = pa_core::session::lease::acquire_runtime_session_lease(
+                &path,
+                &dir.path().join("agent"),
+            )
+            .unwrap();
             drop(released);
         }
     }

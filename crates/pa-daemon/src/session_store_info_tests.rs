@@ -551,7 +551,9 @@ fn a_symlinked_lease_release_persists_a_sidecar_the_next_read_serves() {
                 "message":{"role":"user","content":"hi","timestamp":1_790_110_000_000_u64}}),
         ],
     );
-    let lease = crate::lease::acquire_runtime_session_lease(&path, &dir).unwrap();
+    let lease = pa_core::session::lease::acquire_runtime_session_lease(&path, &dir)
+        .unwrap()
+        .with_info_sidecar(super::write_info_sidecar);
     let cold = read_session_info(&path).unwrap();
     drop(lease);
     let sidecar = real_dir.join("s.info-cache.json");

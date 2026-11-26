@@ -137,7 +137,7 @@ async fn a_same_path_reopen_ends_the_replaced_kernel_and_starts_a_clean_one() {
     let old_model = Arc::new(pa_agent::scripted::ScriptedProvider::new(model()));
     let mut old = engine_handle(&cwd, &agent_dir, manager, &old_model).await;
     old.session_lease = Some(
-        crate::lease::acquire_runtime_session_lease(&session_path, &agent_dir)
+        pa_core::session::lease::acquire_runtime_session_lease(&session_path, &agent_dir)
             .expect("the session lease"),
     );
     let pid: u32 = run_cell(

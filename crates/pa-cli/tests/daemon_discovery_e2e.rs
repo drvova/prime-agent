@@ -1046,7 +1046,7 @@ fn a_daemon_launched_with_an_inherited_worker_env_comes_up_as_a_supervisor() {
         )
         .env(pa_daemon::worker::WORKER_TELEMETRY_DISABLED_ENV, "1")
         .env(
-            pa_daemon::lease::SESSION_LEASE_OWNER_ID_ENV,
+            pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
             "inherited-session",
         )
         .env(

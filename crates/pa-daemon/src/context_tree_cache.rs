@@ -766,7 +766,7 @@ mod tests {
                 .and_then(|info| info.usage)
                 .map_or(0.0, |usage| usage.cost)
         };
-        let root_key = crate::lease::canonical_session_path(&root_file)
+        let root_key = pa_core::session::lease::canonical_session_path(&root_file)
             .to_string_lossy()
             .to_string();
         let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();

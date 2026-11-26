@@ -1131,13 +1131,15 @@ impl Supervisor {
             else {
                 anyhow::bail!("stopped RLM subagent \"{selector}\" is not in the spawn ledger");
             };
-            let canonical =
-                crate::lease::canonical_session_path(std::path::Path::new(&session_file));
+            let canonical = pa_core::session::lease::canonical_session_path(std::path::Path::new(
+                &session_file,
+            ));
             for (_, descriptor) in
                 crate::descriptor::load_descriptors(&self.descriptor_dir, &self.options.socket_path)
             {
                 let same_session = descriptor.session_file.as_deref().is_some_and(|file| {
-                    crate::lease::canonical_session_path(std::path::Path::new(file)) == canonical
+                    pa_core::session::lease::canonical_session_path(std::path::Path::new(file))
+                        == canonical
                 });
                 if same_session
                     && !super::worker_lifecycle::worker_process_gone(
@@ -1188,9 +1190,10 @@ impl Supervisor {
         // captured spend on the parent - the same settle the resident
         // delete's pass performs, in one push.
         let changed = self.refresh_deleted_descendant_usage().await;
-        let canonical = crate::lease::canonical_session_path(std::path::Path::new(&session_file))
-            .to_string_lossy()
-            .to_string();
+        let canonical =
+            pa_core::session::lease::canonical_session_path(std::path::Path::new(&session_file))
+                .to_string_lossy()
+                .to_string();
         let removed: Vec<String> = {
             let mut roster = self.roster.lock().unwrap();
             let agent_id = roster

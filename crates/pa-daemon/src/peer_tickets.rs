@@ -159,7 +159,10 @@ impl Supervisor {
         // The TS supervisor additionally pins the worker's process-start
         // id; this supervisor never populated it, so the live-pid check is
         // the process-identity guarantee here.
-        if !matches!(crate::lease::is_process_alive(pid as u32), Ok(true)) {
+        if !matches!(
+            pa_core::session::lease::is_process_alive(pid as u32),
+            Ok(true)
+        ) {
             return Err(anyhow!(
                 "Direct transport worker process identity is not current"
             ));

@@ -64,8 +64,11 @@ fn find_shell(agent_dir: &Path, id: &str) -> Option<Shell> {
 
 /// Whether the shell's pid still runs under the recorded start identity.
 fn runs_as_registered(shell: &Shell) -> bool {
-    matches!(crate::lease::is_process_alive(shell.pid), Ok(true))
-        && crate::lease::get_process_start_id(shell.pid).as_deref() == Some(shell.start_id.as_str())
+    matches!(
+        pa_core::session::lease::is_process_alive(shell.pid),
+        Ok(true)
+    ) && pa_core::session::lease::get_process_start_id(shell.pid).as_deref()
+        == Some(shell.start_id.as_str())
 }
 
 /// An extant group with no verified leader is not safely attributable to this record.
@@ -199,7 +202,10 @@ pub(crate) fn kill_shell(agent_dir: &Path, id: &str) -> Result<bool, String> {
 /// verified before the TERM: a PGID is not reused while its group has members. A leader pid
 /// that runs again under another start identity was recycled, so its group is refused.
 fn kill_group(shell: &Shell) -> Result<(), String> {
-    let leader_exited = matches!(crate::lease::is_process_alive(shell.pid), Ok(false));
+    let leader_exited = matches!(
+        pa_core::session::lease::is_process_alive(shell.pid),
+        Ok(false)
+    );
     if !runs_as_registered(shell) && !leader_exited {
         return if group_unverified(shell) {
             Err(
@@ -257,7 +263,7 @@ mod test_support {
         pa_core::platform::process::set_new_session(&mut command);
         let child = command.spawn().expect("spawn sleeper");
         let start_id = start_id.map_or_else(
-            || crate::lease::get_process_start_id(child.id()).expect("start id"),
+            || pa_core::session::lease::get_process_start_id(child.id()).expect("start id"),
             str::to_string,
         );
         register(agent_dir, child.id(), &start_id, session_id);
@@ -308,7 +314,7 @@ mod tests {
         leader_command.arg("60");
         pa_core::platform::process::set_new_process_group(&mut leader_command);
         let leader = leader_command.spawn().unwrap();
-        let start_id = crate::lease::get_process_start_id(leader.id()).unwrap();
+        let start_id = pa_core::session::lease::get_process_start_id(leader.id()).unwrap();
         let id = register(agent_dir, leader.id(), &start_id, "s1");
         let member = pa_types::session_scope::std_command("sleep")
             .arg("60")
