@@ -462,6 +462,10 @@ impl Subagents {
     ///
     /// The session is not open, its engine was not built, or the ledger
     /// could not be read.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the reopen reads linearly, child by child, as the spawn's admission does"
+    )]
     pub(crate) async fn reopen_children(self: &Arc<Self>, id: &str) -> anyhow::Result<usize> {
         let Some(family) = self.daemon() else {
             return Ok(0);

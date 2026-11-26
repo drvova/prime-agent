@@ -435,17 +435,17 @@ impl AgentObserveController for FamilyObserve {
         })
     }
 
-    async fn session_messages(
+    fn session_messages(
         &self,
         target: &str,
         _start: i64,
         _limit: u64,
         _roles: Vec<String>,
-    ) -> anyhow::Result<Value> {
-        anyhow::bail!(
+    ) -> impl std::future::Future<Output = anyhow::Result<Value>> + Send {
+        std::future::ready(Err(anyhow::anyhow!(
             "agent_observe.session_messages({target}) is not yet in the runtime daemon; \
              use agent_observe.recent"
-        )
+        )))
     }
 }
 

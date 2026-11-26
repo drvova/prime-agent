@@ -175,15 +175,12 @@ impl AgentMessageWaits {
         });
         state.next_id += 1;
         let id = state.next_id;
-        if let Some(position) = state
+        let claimed = state
             .backlog
             .iter()
             .position(|arrival| accepts(&senders, arrival))
-        {
-            let arrival = state
-                .backlog
-                .remove(position)
-                .expect("position is in range");
+            .and_then(|position| state.backlog.remove(position));
+        if let Some(arrival) = claimed {
             return AgentMessageWait {
                 waits: Arc::clone(self),
                 id,

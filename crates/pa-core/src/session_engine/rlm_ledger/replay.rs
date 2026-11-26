@@ -383,8 +383,8 @@ pub(super) fn sole_edge_by_child_id(state: &ReplayState, child_id: &str) -> Opti
     sole
 }
 
-pub(super) fn file_identity(path: &Path) -> Result<Option<FileIdentity>> {
-    Ok(path_identity(path))
+pub(super) fn file_identity(path: &Path) -> Option<FileIdentity> {
+    path_identity(path)
 }
 
 fn path_identity(path: &Path) -> Option<FileIdentity> {

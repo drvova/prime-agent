@@ -614,7 +614,7 @@ impl RlmSpawnLedger {
     pub fn deleted_descendant_usage_by_parent(
         &self,
     ) -> Result<HashMap<String, SessionUsageSummary>> {
-        self.seed_once()?;
+        self.seed_once();
         let state = self.replay_cached()?;
         Ok(self
             .deleted_children_of(&state)?
@@ -640,7 +640,7 @@ impl RlmSpawnLedger {
     pub fn edges_with_deleted_children(
         &self,
     ) -> Result<(Vec<RlmLedgerEdge>, DeletedChildrenByParent)> {
-        self.seed_once()?;
+        self.seed_once();
         let state = self.replay_cached()?;
         Ok((state.edges.clone(), self.deleted_children_of(&state)?))
     }
@@ -697,9 +697,8 @@ impl RlmSpawnLedger {
     /// Seed and replay the ledger ahead of its first reader; a failed
     /// replay is left to that reader, which reports it.
     pub fn warm(&self) {
-        if self.seed_once().is_ok() {
-            drop(self.replay_cached());
-        }
+        self.seed_once();
+        drop(self.replay_cached());
     }
 
     /// The live family below `roots`, walked through the replay's parent
@@ -719,7 +718,7 @@ impl RlmSpawnLedger {
         &self,
         roots: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Vec<RlmLedgerEdge>> {
-        self.seed_once()?;
+        self.seed_once();
         let state = self.replay_cached()?;
         let mut resolver = LivePathResolver::new(
             self.agent_dir.clone(),
@@ -930,7 +929,7 @@ impl RlmSpawnLedger {
     /// Returns an error when the ledger replay fails (an oversized
     /// ledger); a missing ledger replays empty.
     pub fn edges(&self, include_deleted: bool) -> Result<Vec<RlmLedgerEdge>> {
-        self.seed_once()?;
+        self.seed_once();
         let state = self.replay_cached()?;
         Ok(state
             .edges
@@ -949,7 +948,7 @@ impl RlmSpawnLedger {
     /// ledger); a missing ledger replays empty, and only the liveness
     /// resolution drops edges.
     pub fn live_edges(&self) -> Result<Vec<RlmLedgerEdge>> {
-        self.seed_once()?;
+        self.seed_once();
         let state = self.replay_cached()?;
         let mut resolver = LivePathResolver::new(
             self.agent_dir.clone(),
@@ -971,7 +970,7 @@ impl RlmSpawnLedger {
     /// ledger); a missing ledger replays empty, and only the liveness
     /// resolution drops edges.
     pub fn live_edges_of_parent(&self, parent_file: &Path) -> Result<Vec<RlmLedgerEdge>> {
-        self.seed_once()?;
+        self.seed_once();
         let parent_file = canonical_session_path(parent_file);
         let state = self.replay_of_parent(&parent_file)?;
         let mut resolver = LivePathResolver::new(
@@ -995,47 +994,43 @@ impl RlmSpawnLedger {
     /// as not-live.
     pub fn edge_is_live(&self, child_id: &str, child: &str) -> bool {
         let canonical_child = canonical_session_path(Path::new(child));
-        self.seed_once().is_ok()
-            && self.replay_cached().is_ok_and(|state| {
-                let is_live = |edge: &RlmLedgerEdge| {
-                    edge.child_id == child_id
-                        && edge.deleted.is_none()
-                        && canonical_session_path(Path::new(&edge.child)) == canonical_child
-                        && is_file(Path::new(&edge.child))
-                        && is_file(Path::new(&edge.parent))
-                };
-                // Most reads prove liveness through the index. Its keys
-                // were canonicalized at replay, though: a file replaced
-                // by a symlink does not change the ledger's stat identity.
-                // A stale key or tombstoned alias cannot prove absence;
-                // preserve the original read-time path comparison then.
-                state
-                    .index
-                    .get(&edge_key(child_id, child))
-                    .is_some_and(|&at| is_live(&state.edges[at]))
-                    || state.edges.iter().any(is_live)
-            })
+        self.seed_once();
+        self.replay_cached().is_ok_and(|state| {
+            let is_live = |edge: &RlmLedgerEdge| {
+                edge.child_id == child_id
+                    && edge.deleted.is_none()
+                    && canonical_session_path(Path::new(&edge.child)) == canonical_child
+                    && is_file(Path::new(&edge.child))
+                    && is_file(Path::new(&edge.parent))
+            };
+            // Most reads prove liveness through the index. Its keys
+            // were canonicalized at replay, though: a file replaced
+            // by a symlink does not change the ledger's stat identity.
+            // A stale key or tombstoned alias cannot prove absence;
+            // preserve the original read-time path comparison then.
+            state
+                .index
+                .get(&edge_key(child_id, child))
+                .is_some_and(|&at| is_live(&state.edges[at]))
+                || state.edges.iter().any(is_live)
+        })
     }
 
-    fn seed_once(&self) -> Result<()> {
+    fn seed_once(&self) {
         if self.seed_attempted.swap(true, Ordering::SeqCst) {
-            return Ok(());
+            return;
         }
-        match self.seed() {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                // A broken seed degrades to an empty ledger; it never
-                // fail-closes the read path.
-                self.log(&format!("RLM ledger seeding failed: {error:#}"));
-                Ok(())
-            }
+        if let Err(error) = self.seed() {
+            // A broken seed degrades to an empty ledger; it never
+            // fail-closes the read path.
+            self.log(&format!("RLM ledger seeding failed: {error:#}"));
         }
     }
 
     /// Replay behind the stat guard: a file whose identity snapshot is
     /// unchanged reuses the cached edges. A missing file replays empty.
     fn replay_cached(&self) -> Result<Arc<ReplayState>> {
-        let identity = file_identity(&self.path)?;
+        let identity = file_identity(&self.path);
         let mut cache = self.cache.lock().expect("ledger cache lock");
         if let (Some(identity), Some(cached)) = (&identity, cache.as_ref()) {
             if *identity == cached.identity {
@@ -1130,7 +1125,7 @@ impl RlmSpawnLedger {
     /// One durable append; the first record in a fresh file is the meta
     /// header (the same line `seed` publishes).
     fn append_record(&self, record: &Value) -> Result<()> {
-        self.seed_once()?;
+        self.seed_once();
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
             let _ = crate::platform::perms::restrict_dir(parent);

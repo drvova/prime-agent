@@ -213,11 +213,11 @@ fn edge_is_live_revalidates_paths_without_a_ledger_append() {
     assert!(ledger.edge_is_live("sub-1", &child_path));
     assert!(!ledger.edge_is_live("sub-1", &target_path));
     let cached = ledger.replay_cached().unwrap();
-    let identity = file_identity(&ledger.path).unwrap();
+    let identity = file_identity(&ledger.path);
 
     fs::remove_file(&child).unwrap();
     symlink(&target, &child).unwrap();
-    assert_eq!(file_identity(&ledger.path).unwrap(), identity);
+    assert_eq!(file_identity(&ledger.path), identity);
     assert!(Arc::ptr_eq(&cached, &ledger.replay_cached().unwrap()));
     // The query now hits the target's tombstoned index entry, but the
     // original live edge resolves to the same path and must still count.
@@ -228,7 +228,7 @@ fn edge_is_live_revalidates_paths_without_a_ledger_append() {
     fs::write(&unindexed, "{}").unwrap();
     fs::remove_file(&child).unwrap();
     symlink(&unindexed, &child).unwrap();
-    assert_eq!(file_identity(&ledger.path).unwrap(), identity);
+    assert_eq!(file_identity(&ledger.path), identity);
     assert!(Arc::ptr_eq(&cached, &ledger.replay_cached().unwrap()));
     // This query misses the index entirely after the second retarget.
     assert!(ledger.edge_is_live("sub-1", &child_path));

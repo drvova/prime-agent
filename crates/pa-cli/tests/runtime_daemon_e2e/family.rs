@@ -105,6 +105,10 @@ fn display_status(agent_dir: &Path, parent: &str, child_id: &str) -> Option<Stri
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the family's life reads in order: spawn, the records, the restart, the reopen, the delete"
+)]
 async fn a_childs_family_is_recorded_shown_and_reopened_after_a_restart() {
     let bed = Bed::new();
     let records = bed.dir.path().join("records");
