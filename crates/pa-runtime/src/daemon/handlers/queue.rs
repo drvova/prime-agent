@@ -10,6 +10,9 @@
 //!   meanwhile is admitted `parked`). `session.abort_and_send_queued` keeps
 //!   the lane going, resuming it if it was parked: the steers queued run
 //!   next, delivered together as one turn, then the rest in order.
+//! - **Wait.** `session.wait_idle` answers once the session is at rest (or,
+//!   with `"subagents": false`, once its own lane is idle), with its
+//!   autonomous accounting and its live background jobs.
 //! - **Withdraw and restore.** `session.withdraw` takes every queued task out
 //!   of the lane (each ends `Cancelled`) and answers them in the order they
 //!   would have run, for a client to put back in its editor; the running one
@@ -57,11 +60,32 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     }
 
     /// Answers once the open session is at rest, its subagents' settles
-    /// included (the old daemon's `wait_for_idle` with `waitForRlmQuiescence`).
+    /// included (the old daemon's `wait_for_idle` with `waitForRlmQuiescence`),
+    /// or, with `"subagents": false`, once its own lane is idle (its run
+    /// settled, the goal's and the autonomous run's continuations included:
+    /// the old daemon's `wait_for_headless_completion`). The answer carries
+    /// the autonomous run's accounting (`autonomous`, the old daemon's
+    /// `DaemonAutonomousStatus`) and the kernel's live background jobs
+    /// (`outstandingBackgroundJobs`), read once the wait is over.
     pub(super) async fn wait_idle(&self, args: &Value) -> anyhow::Result<Value> {
         let id = self.open_session(args)?;
-        self.runtime.at_rest(&id).await;
-        Ok(json!({ "session": id }))
+        match args.get("subagents") {
+            None | Some(Value::Null | Value::Bool(true)) => self.runtime.at_rest(&id).await,
+            Some(Value::Bool(false)) => self.runtime.idle(&id).await,
+            Some(_) => anyhow::bail!("the `subagents` argument must be a boolean"),
+        }
+        let (autonomous, outstanding_background_jobs) = match self.runtime.session_engine(&id) {
+            Some(live) => {
+                let status = pa_core::autonomous::autonomous_status(&*live.autonomous.lock().await);
+                (status, live.engine.background_bash_count())
+            }
+            None => (pa_core::autonomous::disabled_autonomous_status(), 0),
+        };
+        Ok(json!({
+            "session": id,
+            "autonomous": autonomous,
+            "outstandingBackgroundJobs": outstanding_background_jobs,
+        }))
     }
 
     pub(super) fn resume_queue(&self, args: &Value) -> anyhow::Result<Value> {

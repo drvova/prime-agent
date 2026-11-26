@@ -82,8 +82,8 @@ pub use tasks::{
     MemoryTaskStore, Steered, TaskOutcome, TaskQueue, TaskRunner, TaskStore, INTERRUPTED_BY_RESTART,
 };
 pub use wire::{
-    Call, Handlers, Query, UnknownOperation, WireConfig, WireServer, CLIENT_TOPICS, IN_FLIGHT,
-    MAX_TAIL,
+    Call, ConnectionId, Handlers, Query, UnknownOperation, WireConfig, WireServer, CLIENT_TOPICS,
+    IN_FLIGHT, MAX_TAIL,
 };
 
 /// Locks `mutex`, taking the value even when a panicking holder poisoned it:

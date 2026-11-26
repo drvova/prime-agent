@@ -354,11 +354,12 @@ async fn waiting_for_idle_waits_for_the_subagents_to_settle() {
     };
     // The parent's task is done; its child's held turn runs on.
     assert_eq!(status(&mut client).await, json!("running"));
+    // The answer also carries the run's accounting; the wait is what counts.
     assert_eq!(
         ok(client
             .call("session.wait_idle", json!({ "session": id }))
-            .await),
-        json!({ "session": id })
+            .await)["session"],
+        json!(id)
     );
     assert_eq!(
         (

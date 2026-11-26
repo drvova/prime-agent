@@ -13,6 +13,7 @@ mod mcp;
 mod meta;
 mod producer;
 mod sessions;
+mod transport;
 mod types;
 mod wire_config;
 mod wire_events;

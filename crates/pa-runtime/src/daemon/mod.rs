@@ -34,8 +34,10 @@
 //!   daemon commands: the list's rows in the old daemon's summary shape
 //!   (`handlers/summary.rs`), `session.send` (`handlers/messaging.rs`), and
 //!   the `schedules` query with `schedule.add` and `schedule.cancel`
-//!   (`handlers/jobs.rs`). `settings`, `models`, `sources` and
-//!   `subscriptions` are refused: they arrive later.
+//!   (`handlers/jobs.rs`). For the ACP client: an input hold for its
+//!   connection, one prompt's cancel (`handlers/input.rs`), the subagent
+//!   roster and a child's cancel (`handlers/children.rs`), and the
+//!   `session.model` query (`handlers/model.rs`).
 //! - **Reliability.** The daemon's sessions are supervised
 //!   (`crate::session` faults): a panic on a session's threads or a stuck
 //!   cell ends that session's lifetime only; the crash is appended to

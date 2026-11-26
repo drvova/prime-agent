@@ -334,9 +334,22 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `bash_start`/`bash_output`/`bash_end` on `agent/<id>/stream`, its row saved and joined to the
   model's context, or steered into a running turn) and `session.abort_bash`; stopping a session
   or the daemon kills its running command first and admits none while it stops (phase 7g-3).
-  The TUI and ACP still speak only to the supervisor. The ACP mode lives in pa-runtime
-  (`crates/pa-runtime/src/acp/`, phase 7g-4) as a client of the supervisor's socket on the old
-  wire; it links no pa-daemon code.
+  The rest of what the ACP client asks of the supervisor it answers too (phase 7g-5):
+  `session.pause_input`/`session.release_input` hold a session's input for the calling
+  connection (nothing queued starts; resuming a parked lane leaves it held), released by the
+  connection's end and by the session's stop, so no departed client keeps a session from
+  running; `session.cancel_task` cancels one prompt (queued: taken out; running: its turn
+  aborted); `session.wait_idle` with `"subagents": false` waits for the session's own run
+  (`wait_for_headless_completion`) and answers the autonomous accounting and the live
+  background jobs; `session.model` answers the model, level and supported levels
+  (`get_connection_state`), and `session.set_effort` clamps the level to the model, records
+  the row only on a change and lets the settings' default follow, the old daemon's
+  `set_thinking_level`; `session.children`/`session.cancel_child` answer the subagent roster
+  (`get_rlm_children`/`cancel_rlm_child`). The TUI and ACP still speak only to the supervisor.
+  The ACP mode lives in pa-runtime (`crates/pa-runtime/src/acp/`, phase 7g-4) as a client of
+  the supervisor's socket on the old wire; it links no pa-daemon code, and it sends its
+  commands through a command-level transport (`acp/transport.rs`, `DaemonTransport`) so a
+  wire2 transport can carry them to the runtime daemon (phase 7g-6).
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,

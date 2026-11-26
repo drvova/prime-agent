@@ -52,6 +52,12 @@ pub enum Query {
     /// `schedules`: the scheduled jobs of one session or of every session
     /// the runtime holds.
     Schedules,
+    /// `session.children`: the roster of an open session's direct
+    /// subagents.
+    SessionChildren,
+    /// `session.model`: an open session's model, thinking level and the
+    /// levels its model supports.
+    SessionModel,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -74,6 +80,8 @@ impl FromStr for Query {
             "settings" => Query::Settings,
             "models" => Query::Models,
             "sources" => Query::Sources,
+            "session.children" => Query::SessionChildren,
+            "session.model" => Query::SessionModel,
             "subscriptions" => Query::Subscriptions,
             "tasks" => Query::Tasks,
             "session.context" => Query::SessionContext,
@@ -149,6 +157,18 @@ pub enum Call {
     ScheduleAdd,
     /// `schedule.cancel`: cancels a scheduled job.
     ScheduleCancel,
+    /// `session.pause_input`: holds an open session's input (nothing queued
+    /// starts) for the calling connection, until released or the connection
+    /// ends.
+    SessionPauseInput,
+    /// `session.release_input`: releases one input hold.
+    SessionReleaseInput,
+    /// `session.cancel_task`: cancels one task of a session: taken out of
+    /// its queue, or its running turn aborted.
+    SessionCancelTask,
+    /// `session.cancel_child`: cancels the run of one of a session's
+    /// subagents.
+    SessionCancelChild,
 }
 
 impl FromStr for Call {
@@ -178,6 +198,10 @@ impl FromStr for Call {
             "session.abort_bash" => Call::SessionAbortBash,
             "schedule.add" => Call::ScheduleAdd,
             "schedule.cancel" => Call::ScheduleCancel,
+            "session.pause_input" => Call::SessionPauseInput,
+            "session.release_input" => Call::SessionReleaseInput,
+            "session.cancel_task" => Call::SessionCancelTask,
+            "session.cancel_child" => Call::SessionCancelChild,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",
@@ -187,6 +211,12 @@ impl FromStr for Call {
         })
     }
 }
+
+/// One client connection of the wire server, as its calls and its end name
+/// it: what a call makes a connection hold (an input hold) is let go when
+/// the connection ends ([`Handlers::disconnected`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ConnectionId(pub(crate) u64);
 
 /// Answers the queries and calls of the wire's clients.
 ///
@@ -205,6 +235,17 @@ pub trait Handlers: Send + Sync + 'static {
         args: Value,
     ) -> impl Future<Output = anyhow::Result<Value>> + Send;
 
-    /// Makes the change `call` with `args` asks for and says what it did.
-    fn call(&self, call: Call, args: Value) -> impl Future<Output = anyhow::Result<Value>> + Send;
+    /// Makes the change `call` with `args`, sent on `connection`, asks for and
+    /// says what it did.
+    fn call(
+        &self,
+        call: Call,
+        args: Value,
+        connection: ConnectionId,
+    ) -> impl Future<Output = anyhow::Result<Value>> + Send;
+
+    /// `connection` ended (its calls still running were dropped): lets go of
+    /// what its calls made it hold. Called once per connection, after its
+    /// last call.
+    fn disconnected(&self, connection: ConnectionId) -> impl Future<Output = ()> + Send;
 }

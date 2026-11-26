@@ -275,3 +275,75 @@ async fn restore_requeues_queued_tasks_and_fails_the_interrupted_one() {
         ]
     );
 }
+
+/// A held lane starts nothing until its last hold is released, and resuming
+/// it from a suspension leaves it held.
+#[tokio::test]
+async fn a_held_lane_starts_nothing_until_every_hold_is_released() {
+    let mut harness = harness(1);
+    harness.queue.hold("a", "first");
+    harness.queue.hold("a", "second");
+    harness.queue.suspend("a");
+    let admission = harness
+        .queue
+        .push(task("waiting", "a", Priority::Prompt))
+        .await
+        .expect("queued");
+    let resumed = harness.queue.resume("a");
+    let first = harness.queue.release("a", "first");
+    let lane = harness.queue.lane("a");
+    let released = harness.queue.release("a", "second");
+    assert_eq!(
+        (
+            admission,
+            resumed,
+            first,
+            lane.holds,
+            lane.queued.len(),
+            released,
+            harness.run_out().await
+        ),
+        (
+            Admission::Parked,
+            true,
+            true,
+            1,
+            1,
+            true,
+            vec!["waiting".to_string()]
+        )
+    );
+}
+
+/// `cancel_task` takes one queued task out of its lane and leaves the rest,
+/// and answers nothing for the running one.
+#[tokio::test]
+async fn cancel_task_cancels_one_queued_task() {
+    let mut harness = harness(1);
+    harness.push("running", "a", Priority::Prompt).await;
+    let (_, finish) = harness.next_start().await;
+    harness.push("kept", "a", Priority::Prompt).await;
+    harness.push("cancelled", "a", Priority::Prompt).await;
+    let running = harness
+        .queue
+        .cancel_task("a", "running")
+        .await
+        .expect("read");
+    let cancelled = harness
+        .queue
+        .cancel_task("a", "cancelled")
+        .await
+        .expect("saved");
+    finish.send(TaskOutcome::Done).expect("the run waits");
+    assert_eq!(
+        (running, cancelled, harness.run_out().await),
+        (
+            None,
+            Some(Task {
+                state: TaskState::Cancelled,
+                ..task("cancelled", "a", Priority::Prompt)
+            }),
+            vec!["kept".to_string()]
+        )
+    );
+}

@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 use tokio::sync::oneshot;
 
-use super::{Call, Handlers, Query, WireConfig, WireServer};
+use super::{Call, ConnectionId, Handlers, Query, WireConfig, WireServer};
 use crate::bus::{Bus, BusParts};
 use crate::lock;
 use crate::routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
@@ -50,8 +50,17 @@ impl Handlers for Echo {
         std::future::ready(Ok(json!({ "query": format!("{query:?}"), "args": args })))
     }
 
-    fn call(&self, call: Call, args: Value) -> impl Future<Output = anyhow::Result<Value>> + Send {
+    fn call(
+        &self,
+        call: Call,
+        args: Value,
+        _connection: ConnectionId,
+    ) -> impl Future<Output = anyhow::Result<Value>> + Send {
         std::future::ready(Ok(json!({ "call": format!("{call:?}"), "args": args })))
+    }
+
+    fn disconnected(&self, _connection: ConnectionId) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
     }
 }
 

@@ -1857,6 +1857,14 @@ impl SessionEngine {
         self.provisioner.has_background_work()
     }
 
+    /// How many background jobs the session's kernel has live (what
+    /// [`Self::has_background_bash`] reads): the bash lane's outstanding jobs
+    /// a client's quiescence observation reports.
+    #[must_use]
+    pub fn background_bash_count(&self) -> usize {
+        self.provisioner.background_job_count()
+    }
+
     /// Expand a `/skill:<name>` submission into its `<skill>` block for
     /// the accepted-turn row (TS `_expandSkillCommand`; the row the daemon
     /// emits before admission must match the text the model turn

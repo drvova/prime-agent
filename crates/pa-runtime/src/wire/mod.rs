@@ -64,7 +64,7 @@ mod handlers;
 pub(crate) use attached::Attached;
 pub use feed::MAX_TAIL;
 use feed::{last_seq, Control, Feed};
-pub use handlers::{Call, Handlers, Query, UnknownOperation};
+pub use handlers::{Call, ConnectionId, Handlers, Query, UnknownOperation};
 
 /// The topics a client may publish on: `agent/<id>/input`, a session's
 /// input (a prompt, a steer, a follow-up).
@@ -222,14 +222,19 @@ where
         // Boxed: the reader's buffers would make `serve`'s own future large.
         let mut session = Box::pin(session);
         let mut write = Box::pin(write_queued(writer, outbound, limits));
-        tokio::select! {
+        let served = tokio::select! {
             ended = &mut session => {
                 let written = (&mut write).await;
                 ended.and(written)
             }
             // The client takes no more frames: stop reading it too.
             written = &mut write => written,
-        }
+        };
+        // Its calls still running are dropped with the reader: what they
+        // made it hold goes now.
+        drop(session);
+        self.handlers.disconnected(connection.id()).await;
+        served
     }
 
     /// Reads the client's frames after `hello` and handles each.
@@ -346,7 +351,9 @@ where
                 ClientFrame::Call { id, method, args } => {
                     let permit = Arc::clone(&in_flight).acquire_owned().await?;
                     let handlers = Arc::clone(&self.handlers);
-                    let answer = async move { handlers.call(method.parse()?, args).await };
+                    let connection = connection.id();
+                    let answer =
+                        async move { handlers.call(method.parse()?, args, connection).await };
                     running.spawn(answering(id, answer, out.clone(), permit));
                 }
             }

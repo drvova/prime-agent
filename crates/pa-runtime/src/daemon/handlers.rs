@@ -25,11 +25,13 @@ use super::held::{OpenSession, OpenSessions};
 use super::schedules::Schedules;
 use crate::runtime::{AfterAbort, Runtime};
 use crate::session::{SessionBuilder, SessionSpec};
-use crate::wire::{Attached, Call, Handlers, Query};
+use crate::wire::{Attached, Call, ConnectionId, Handlers, Query};
 pub(super) use bash::UserBashes;
 
 mod bash;
 mod bus;
+mod children;
+mod input;
 mod jobs;
 mod mcp;
 mod messaging;
@@ -53,6 +55,8 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     /// Which connections follow which sessions: a session's attached
     /// clients.
     attached: Arc<Attached>,
+    /// The input holds clients' connections keep on open sessions.
+    holds: input::InputHolds,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -73,6 +77,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             open,
             schedules,
             attached,
+            holds: input::InputHolds::default(),
             agent_dir,
             session_dir,
             cwd,
@@ -244,6 +249,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         // Its `!` command is killed first, and none starts while it stops.
         let _closing = self.open.bashes.close(&id).await;
         self.runtime.close_session(&id).await?;
+        // Its input holds end with it: opened again, it starts unheld.
+        self.release_session_holds(&id);
         // Closed: its lease goes.
         self.open.remove(&id).await;
         Ok(json!({ "session": id, "stopped": true }))
@@ -321,31 +328,6 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             "deleted": true,
             "trash": removal == pa_core::session::store::TranscriptRemoval::Trash,
         }))
-    }
-
-    async fn set_effort(&self, args: &Value) -> anyhow::Result<Value> {
-        let (id, path, open) = self.session(args)?;
-        let name = string_arg(args, "level")?;
-        let level: pa_agent::types::ThinkingLevel =
-            serde_json::from_value(json!(name)).map_err(|_| {
-                anyhow::anyhow!(
-                    "unknown thinking level {name:?} (off, minimal, low, medium, high, xhigh, max)"
-                )
-            })?;
-        if open {
-            let live = self.runtime.built_engine(&id).await?;
-            live.runtime
-                .spawn(async move { live.engine.session.set_thinking_level(level).await })
-                .await
-                .context("the session's runtime ended during the change")??;
-        } else {
-            self.change_saved(path, move |manager| {
-                manager.append_thinking_level_change(&name)?;
-                Ok(())
-            })
-            .await?;
-        }
-        Ok(json!({ "session": id, "level": level }))
     }
 
     async fn fork(&self, args: &Value) -> anyhow::Result<Value> {
@@ -431,10 +413,17 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::Models => self.models().await,
             Query::Sources => self.sources().await,
             Query::Subscriptions => Ok(self.subscriptions()),
+            Query::SessionChildren => self.children(&args).await,
+            Query::SessionModel => self.model(&args).await,
         }
     }
 
-    async fn call(&self, call: Call, args: Value) -> anyhow::Result<Value> {
+    async fn call(
+        &self,
+        call: Call,
+        args: Value,
+        connection: ConnectionId,
+    ) -> anyhow::Result<Value> {
         match call {
             Call::SessionCreate => self.create(args).await,
             Call::SessionStop => self.stop(&args).await,
@@ -458,7 +447,15 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionAbortBash => self.abort_bash(&args),
             Call::ScheduleAdd => self.schedule_add(&args).await,
             Call::ScheduleCancel => self.schedule_cancel(&args),
+            Call::SessionPauseInput => self.pause_input(&args, connection),
+            Call::SessionReleaseInput => self.release_input(&args),
+            Call::SessionCancelTask => self.cancel_task(&args).await,
+            Call::SessionCancelChild => self.cancel_child(&args).await,
         }
+    }
+
+    async fn disconnected(&self, connection: ConnectionId) {
+        self.release_connection_holds(connection);
     }
 }
 

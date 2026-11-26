@@ -19,8 +19,12 @@
 //! - What an ACP client needs (phase 7g-2): create options, model switches,
 //!   MCP servers, schedule changes and the bus queries: [`client_surface`].
 //! - The user's `!` commands (phase 7g-3): [`bash`].
+//! - The rest of what an ACP client needs (phase 7g-5): input holds, a
+//!   prompt's cancel, the settled wait, the model and level, and the
+//!   subagent roster: [`acp_calls`].
 #![cfg(unix)]
 
+mod acp_calls;
 mod bash;
 mod client_surface;
 mod family;

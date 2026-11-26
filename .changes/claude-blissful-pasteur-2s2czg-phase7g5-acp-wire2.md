@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now answers the rest of what an ACP client asks of the daemon: a connection's hold on a session's input, cancelling one queued or running prompt, the settled wait with the autonomous accounting, the session's model and supported thinking levels (with the effort clamped to them), and the subagent roster and a child's cancel.

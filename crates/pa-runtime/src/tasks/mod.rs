@@ -16,9 +16,12 @@
 //! or one per step).
 //!
 //! A lane can be suspended ([`TaskQueue::suspend`]): its queued tasks stay
-//! queued and none starts until it is resumed; the running one runs on.
+//! queued and none starts until it is resumed; the running one runs on. It
+//! can also be held ([`TaskQueue::hold`]) by any number of named holds, apart
+//! from its suspension: it starts nothing while it is suspended or any hold
+//! remains, so resuming a held lane leaves it held.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -60,6 +63,8 @@ pub(crate) struct LaneState {
     /// In the order they would run.
     pub(crate) queued: Vec<Task>,
     pub(crate) suspended: bool,
+    /// How many holds stop it ([`TaskQueue::hold`]).
+    pub(crate) holds: usize,
 }
 
 /// Runs a session's tasks; the later turn runner implements it.
@@ -112,9 +117,20 @@ struct Lanes {
     next_order: u64,
     /// The sessions whose lanes start no task until they are resumed.
     suspended: HashSet<String>,
+    /// The holds on each session's lane: it starts no task while one remains.
+    holds: HashMap<String, BTreeSet<String>>,
 }
 
 impl Lanes {
+    /// Whether `session`'s lane starts nothing now: suspended or held.
+    fn stopped(&self, session: &str) -> bool {
+        self.suspended.contains(session)
+            || self
+                .holds
+                .get(session)
+                .is_some_and(|holds| !holds.is_empty())
+    }
+
     fn busy(&self) -> usize {
         self.by_session
             .values()
@@ -226,20 +242,98 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
     /// Resumes `session`'s lane, which starts its queued tasks again; whether
     /// it was suspended.
     pub(crate) fn resume(&self, session: &str) -> bool {
-        let (was, start) = {
+        let was = lock(&self.inner.lanes).suspended.remove(session);
+        self.restart(session);
+        was
+    }
+
+    /// Holds `session`'s lane under `hold`: its queued tasks, and those
+    /// queued after, wait until every hold on it is released (and it is not
+    /// suspended); a running one runs on. Whether the hold is new.
+    pub(crate) fn hold(&self, session: &str, hold: &str) -> bool {
+        lock(&self.inner.lanes)
+            .holds
+            .entry(session.to_string())
+            .or_default()
+            .insert(hold.to_string())
+    }
+
+    /// Releases `hold` on `session`'s lane, which starts its queued tasks
+    /// again once it is neither held nor suspended; whether it held it.
+    pub(crate) fn release(&self, session: &str, hold: &str) -> bool {
+        let released = {
             let mut lanes = lock(&self.inner.lanes);
-            let was = lanes.suspended.remove(session);
-            let start = lanes.by_session.get_mut(session).is_some_and(|lane| {
-                let start = !lane.served && !lane.queued.is_empty();
+            let released = lanes
+                .holds
+                .get_mut(session)
+                .is_some_and(|holds| holds.remove(hold));
+            if lanes.holds.get(session).is_some_and(BTreeSet::is_empty) {
+                lanes.holds.remove(session);
+            }
+            released
+        };
+        self.restart(session);
+        released
+    }
+
+    /// Starts `session`'s lane worker when the lane has queued tasks, no
+    /// worker and nothing stopping it.
+    fn restart(&self, session: &str) {
+        let start = {
+            let mut lanes = lock(&self.inner.lanes);
+            let stopped = lanes.stopped(session);
+            lanes.by_session.get_mut(session).is_some_and(|lane| {
+                let start = !stopped && !lane.served && !lane.queued.is_empty();
                 lane.served |= start;
                 start
-            });
-            (was, start)
+            })
         };
         if start {
             tokio::spawn(serve(Arc::clone(&self.inner), session.to_string()));
         }
-        was
+    }
+
+    /// Cancels task `id` of `session`'s lane: taken out of the lane when it
+    /// is queued (it ends `Cancelled`, and is returned), or `None` when the
+    /// lane does not queue it (it runs, ended, or was never queued here).
+    ///
+    /// # Errors
+    ///
+    /// The store failed to save the cancelled task.
+    pub(crate) async fn cancel_task(
+        &self,
+        session: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<Task>> {
+        let queued = {
+            let mut lanes = lock(&self.inner.lanes);
+            let taken = lanes.by_session.get_mut(session).and_then(|lane| {
+                let key = lane
+                    .queued
+                    .iter()
+                    .find(|(_, task)| task.id == id)
+                    .map(|(key, _)| *key)?;
+                lane.queued.remove(&key)
+            });
+            // A lane no worker serves (a stopped one) is left empty: gone,
+            // so the session reads idle.
+            if lanes.by_session.get(session).is_some_and(|lane| {
+                !lane.served && lane.running.is_none() && lane.queued.is_empty()
+            }) {
+                lanes.by_session.remove(session);
+            }
+            self.inner.busy.send_replace(lanes.busy());
+            taken
+        };
+        let Some(task) = queued else {
+            return Ok(None);
+        };
+        let task = Task {
+            state: TaskState::Cancelled,
+            ..task
+        };
+        self.inner.store.save(task.clone()).await?;
+        Ok(Some(task))
     }
 
     /// Marks `session`'s running task `task` as ended, ahead of its `done`
@@ -264,6 +358,7 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                 }),
             queued: lane.map_or_default(|lane| lane.queued.values().cloned().collect()),
             suspended: lanes.suspended.contains(session),
+            holds: lanes.holds.get(session).map_or(0, BTreeSet::len),
         }
     }
 
@@ -335,7 +430,7 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
             let mut lanes = lock(&self.inner.lanes);
             let order = lanes.next_order;
             lanes.next_order += 1;
-            let suspended = lanes.suspended.contains(&session);
+            let suspended = lanes.stopped(&session);
             let lane = lanes.by_session.entry(session.clone()).or_default();
             lane.queued.insert((task.priority, order), task);
             let start = !lane.served && !suspended;
@@ -364,7 +459,7 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
         };
         let (task, behind) = {
             let mut lanes = lock(&inner.lanes);
-            let suspended = lanes.suspended.contains(&session);
+            let suspended = lanes.stopped(&session);
             let Some(lane) = lanes.by_session.get_mut(&session) else {
                 return;
             };

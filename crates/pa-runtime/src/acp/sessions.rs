@@ -12,10 +12,11 @@ use tokio::sync::Mutex;
 use super::daemon::{
     admit_session, attach_daemon_session, create_daemon_session, detach_daemon_session,
     reserve_session_slot, resolve_session_mcp_servers, summary_str, DaemonAcpOptions,
-    DaemonAcpState, DaemonBinding, DaemonLink,
+    DaemonAcpState, DaemonBinding,
 };
 use super::jsonrpc;
 use super::producer::FrameSink;
+use super::transport::DaemonTransport;
 use super::types::{self, AcpSessionUpdate, TextBlock};
 use super::wire_events::{wire_updates, WireMappingState};
 
@@ -24,10 +25,10 @@ const LIST_PAGE_FILES: u64 = 100;
 
 /// `session/list`: one page of the saved catalog as ACP `SessionInfo`
 /// rows. The cursor is the catalog's own `nextCursor`.
-pub(super) async fn handle_session_list(
+pub(super) async fn handle_session_list<L: DaemonTransport>(
     id: Value,
     params: Value,
-    link: &Arc<DaemonLink>,
+    link: &Arc<L>,
     state: &Arc<Mutex<DaemonAcpState>>,
     tx: FrameSink,
 ) {
@@ -83,8 +84,8 @@ fn session_info(row: &Value) -> Option<Value> {
 
 /// The `list_saved_sessions` response data, addressed by the bound
 /// session (its session dir).
-async fn saved_sessions(
-    link: &Arc<DaemonLink>,
+async fn saved_sessions<L: DaemonTransport>(
+    link: &Arc<L>,
     active_session_id: &str,
     limit: Option<u64>,
     cursor: Option<&str>,
@@ -112,10 +113,10 @@ async fn saved_sessions(
 /// `session/load`: open the saved session the id names, bind the
 /// connection to it, and host it like `session/new`, replaying its
 /// conversation before the response.
-pub(super) async fn handle_session_load(
+pub(super) async fn handle_session_load<L: DaemonTransport>(
     id: Value,
     params: Value,
-    link: &Arc<DaemonLink>,
+    link: &Arc<L>,
     state: &Arc<Mutex<DaemonAcpState>>,
     options: &DaemonAcpOptions,
     tx: FrameSink,
@@ -144,11 +145,11 @@ pub(super) async fn handle_session_load(
 /// already serving the file), attach it, and read its stored conversation.
 /// Returns the session's binding; `admit_session` rebinds the connection
 /// once the admission succeeded. `Err` is the request's error response.
-async fn open_saved_session(
+async fn open_saved_session<L: DaemonTransport>(
     id: &Value,
     session_id: &str,
     params: &types::NewSessionParams,
-    link: &Arc<DaemonLink>,
+    link: &Arc<L>,
     state: &Arc<Mutex<DaemonAcpState>>,
     options: &DaemonAcpOptions,
 ) -> Result<(DaemonBinding, Vec<Value>), Value> {
@@ -219,8 +220,8 @@ async fn open_saved_session(
 }
 
 /// The session's stored conversation (`get_messages`).
-async fn fetch_history(
-    link: &Arc<DaemonLink>,
+async fn fetch_history<L: DaemonTransport>(
+    link: &Arc<L>,
     active_session_id: &str,
 ) -> anyhow::Result<Vec<Value>> {
     let response = link

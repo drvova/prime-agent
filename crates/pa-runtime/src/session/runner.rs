@@ -95,6 +95,12 @@ impl<B: SessionBuilder> SessionRunner<B> {
             .host(session)
             .map_or_default(|host| host.cancel_running())
     }
+
+    /// [`Self::cancel_running`] when `session` runs task `task`: the steers
+    /// to put back, or `None` when it does not run it.
+    pub(crate) fn cancel_running_task(&self, session: &str, task: &str) -> Option<Vec<Task>> {
+        self.sessions.host(session)?.cancel_running_task(task)
+    }
 }
 
 impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {

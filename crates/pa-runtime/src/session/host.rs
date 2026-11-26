@@ -132,6 +132,8 @@ impl TaskEnd {
 pub(crate) struct LiveEngine {
     pub(crate) engine: Arc<pa_core::session_engine::engine::SessionEngine>,
     pub(crate) runtime: tokio::runtime::Handle,
+    /// The lifetime's autonomous run state, as its turns account it.
+    pub(crate) autonomous: Arc<tokio::sync::Mutex<pa_core::autonomous::AutonomousRuntimeState>>,
 }
 
 /// One session's host thread, as the runtime holds it.
@@ -393,27 +395,41 @@ impl SessionHost {
     /// withdrawn from it and returned, queued again, for the caller to put
     /// back in the lane.
     pub(crate) fn cancel_running(&self) -> Vec<Task> {
+        self.cancel_running_if(|_| true).unwrap_or_default()
+    }
+
+    /// [`Self::cancel_running`] when the running task is `task`: the steers
+    /// to put back, or `None` when `task` is not the one running.
+    pub(crate) fn cancel_running_task(&self, task: &str) -> Option<Vec<Task>> {
+        self.cancel_running_if(|running| running == task)
+    }
+
+    /// Aborts the running task's turn when `is` holds for its id, checked
+    /// under the turn's lock.
+    fn cancel_running_if(&self, is: impl FnOnce(&str) -> bool) -> Option<Vec<Task>> {
         let mut turn = lock(&self.control.turn);
-        if turn.task.is_none() {
-            return Vec::new();
+        if !turn.task.as_deref().is_some_and(is) {
+            return None;
         }
         turn.cancelled = true;
         turn.steerable = false;
         let taken = std::mem::take(&mut turn.taken);
         let Some(agent) = &turn.agent else {
-            return Vec::new();
+            return Some(Vec::new());
         };
         agent.abort();
         let unread = agent
             .remove_queued_messages(|message| taken.iter().any(|(_, handed)| handed == message));
-        taken
-            .into_iter()
-            .filter(|(_, handed)| unread.contains(handed))
-            .map(|(task, _)| Task {
-                state: pa_types::event_log::TaskState::Queued,
-                ..task
-            })
-            .collect()
+        Some(
+            taken
+                .into_iter()
+                .filter(|(_, handed)| unread.contains(handed))
+                .map(|(task, _)| Task {
+                    state: pa_types::event_log::TaskState::Queued,
+                    ..task
+                })
+                .collect(),
+        )
     }
 
     /// The engine of the session's current lifetime, once it is built.
@@ -983,6 +999,7 @@ impl<B: SessionBuilder> Lifetime<B> {
             turn.engine = Some(LiveEngine {
                 engine: Arc::clone(&hosted.built.engine),
                 runtime: runtime.handle().clone(),
+                autonomous: hosted.autonomous.state_handle(),
             });
         }
         self.node.built(Ok(()));

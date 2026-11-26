@@ -337,7 +337,27 @@ SQLite implementations over `pa-log`.
   agent's messages (with no turn running, under the agent's idle reservation; a running turn
   takes it as a steer). `session.abort_bash` (`{session}`) kills it (it ends `cancelled`), and
   `session.stop` and the daemon's shutdown kill it and wait (bounded) for it to settle before
-  the session closes. A root session stopped and opened again waits for its new engine's
+  the session closes. The rest of what the ACP client asks (`daemon/handlers/input.rs`,
+  `children.rs`, `model.rs`, `queue.rs`): `session.pause_input` (`{session, key}`) holds the open
+  session's lane for the calling connection (`TaskQueue::hold`: nothing queued starts and input is
+  admitted `parked`, apart from the lane's park, so a resume leaves a held lane held) and answers
+  its `pauseId` (the same connection and key answer the same one); `session.release_input`
+  (`{session, pauseId}`) releases it, and the connection's end (`Handlers::disconnected`) and the
+  session's stop release all of theirs, the old daemon's `acquire_session_input_pause` and
+  `release_session_input_pause`; `session.cancel_task` (`{session, task}`) takes a queued task out
+  of the lane or aborts the running one's turn (the steers it took and had not read go back),
+  answering `cancelled`, the old daemon's `cancel_prompt_admission`; `session.wait_idle` takes
+  `"subagents": false` to wait for the session's own lane only and answers the autonomous run's
+  accounting (`autonomous`) and the kernel's live background jobs
+  (`outstandingBackgroundJobs`), the old daemon's `wait_for_headless_completion`;
+  `session.model` (`{session}`) answers the model in its wire shape, the thinking level and the
+  levels the model supports, and `session.set_effort` on an open session clamps the level to the
+  model, records the `thinking_level_change` row only when the level changes and lets the
+  settings' default follow (when the model thinks or the level is not `off`), the old daemon's
+  `get_connection_state` and `set_thinking_level`; `session.children` (`{session}`) answers the
+  direct subagents in the old daemon's `get_rlm_children` row shape and `session.cancel_child`
+  (`{session, child}`) cancels one's run (`cancelled: false` for an unknown or settled child),
+  its `cancel_rlm_child`. A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
@@ -436,8 +456,10 @@ SQLite implementations over `pa-log`.
   session/close, session/set_config_option, and the outgoing session/update notifications with
   the namespaced `_meta` correlation), served over a session of the supervisor (`pa-daemon`),
   which it reaches as a socket client on the old wire (`pa_types::daemon`): it links no daemon
-  code. The TS capture corpus it is checked against is `testdata/acp/`. It does not yet drive
-  the runtime daemon.
+  code. Every daemon request goes through a command-level transport (`acp/transport.rs`:
+  `DaemonTransport`, the old wire's `DaemonLink`), whose one frame stream delivers each response
+  after the events sent before it. The TS capture corpus it is checked against is
+  `testdata/acp/`. It does not yet drive the runtime daemon.
 
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
@@ -454,7 +476,8 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 ## Public API
 - `Bus`, `BusParts`, `Published`, `Listener`, `Heard`, `Intake`, `BusClosed`,
   `DuplicateSubscription`.
-- `WireServer`, `WireConfig`, `Handlers`, `Query`, `Call`, `UnknownOperation`,
+- `WireServer`, `WireConfig`, `Handlers` (`call` names the `ConnectionId` it came on;
+  `disconnected` when a connection ends), `ConnectionId`, `Query`, `Call`, `UnknownOperation`,
   `CLIENT_TOPICS`, `IN_FLIGHT`, `MAX_TAIL`.
 - `EventStore` (`append`, `since`, `before`), `StateStore`, `StateKey`, `StateWrite`,
   `SessionTree`, `ModelCaller`, `ModelCall`, `TaskSink`, `TaskRequest`, `Announced`.
@@ -479,8 +502,10 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 - `daemon::{run, DaemonOptions, socket_path}` (`DaemonOptions::selected`: whether the daemon
   is the selected one, asked before each scheduled job). On the wire (strings, not Rust surface): the
   queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,
-  `session.breakdown`, and the calls `session.abort`, `session.abort_and_send_queued`,
-  `session.resume_queue`, `session.withdraw`, `session.restore`, `session.compact`.
+  `session.breakdown`, `session.model`, `session.children`, and the calls `session.abort`,
+  `session.abort_and_send_queued`, `session.resume_queue`, `session.withdraw`,
+  `session.restore`, `session.compact`, `session.pause_input`, `session.release_input`,
+  `session.cancel_task`, `session.cancel_child`.
 
 Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-sources` (the timer and watch
 sources it starts and stops), `pa-core` (the session engine, the

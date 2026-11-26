@@ -12,9 +12,10 @@ use super::config_options::{
     config_options_value, model_value, publish_config_options, session_config_options, PickerModel,
     SessionConfigOption,
 };
-use super::daemon::{DaemonAcpState, DaemonLink};
+use super::daemon::DaemonAcpState;
 use super::jsonrpc;
 use super::producer::{self, UpdateProducer};
+use super::transport::DaemonTransport;
 use super::types;
 use pa_types::daemon::DaemonCommand;
 
@@ -28,10 +29,10 @@ pub(crate) struct HostedConfig {
 
 /// `session/set_config_option`: apply one picker selection through the
 /// worker's wire commands and answer the refreshed options (TS #2455).
-pub(super) async fn handle_set_config_option(
+pub(super) async fn handle_set_config_option<L: DaemonTransport>(
     id: Value,
     params: Value,
-    link: &Arc<DaemonLink>,
+    link: &Arc<L>,
     state: &Arc<Mutex<DaemonAcpState>>,
     tx: producer::FrameSink,
 ) {
@@ -140,8 +141,8 @@ impl WireConfigError {
 
 /// Apply one selection: validate against the worker's live state, apply
 /// through the worker's `set_model` / `set_thinking_level` commands.
-async fn apply_wire_config(
-    link: &Arc<DaemonLink>,
+async fn apply_wire_config<L: DaemonTransport>(
+    link: &Arc<L>,
     daemon_session_id: &str,
     config: &Arc<HostedConfig>,
     config_id: &str,
@@ -257,8 +258,8 @@ async fn apply_wire_config(
 
 /// Fetch the worker's live connection state: the model metadata, the
 /// effective thinking level, and the supported levels.
-pub(super) async fn fetch_connection_state(
-    link: &Arc<DaemonLink>,
+pub(super) async fn fetch_connection_state<L: DaemonTransport>(
+    link: &Arc<L>,
     active_session_id: &str,
 ) -> Option<Value> {
     let response = link
@@ -276,8 +277,8 @@ pub(super) async fn fetch_connection_state(
 }
 
 /// Fetch the worker's available models.
-pub(super) async fn fetch_available_models(
-    link: &Arc<DaemonLink>,
+pub(super) async fn fetch_available_models<L: DaemonTransport>(
+    link: &Arc<L>,
     active_session_id: &str,
 ) -> anyhow::Result<Vec<pa_types::ai::Model>> {
     let response = link
@@ -325,8 +326,8 @@ pub(super) fn picker_options_from_state(
 /// Recompute the options from the worker's live state and publish the
 /// change. A failed state fetch rejects: the published set stays
 /// untouched, never clobbered with an empty list.
-pub(super) async fn refresh_wire_config(
-    link: &Arc<DaemonLink>,
+pub(super) async fn refresh_wire_config<L: DaemonTransport>(
+    link: &Arc<L>,
     daemon_session_id: &str,
     config: &Arc<HostedConfig>,
     producer: &Arc<UpdateProducer>,

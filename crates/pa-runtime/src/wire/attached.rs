@@ -47,6 +47,11 @@ pub(super) struct Connection {
 }
 
 impl Connection {
+    /// The connection's id, as its calls and its end name it.
+    pub(super) fn id(&self) -> super::ConnectionId {
+        super::ConnectionId(self.id)
+    }
+
     pub(super) fn subscribed(&self, sub_id: &str, filter: &TopicFilter) {
         lock(&self.attached.connections)
             .entry(self.id)

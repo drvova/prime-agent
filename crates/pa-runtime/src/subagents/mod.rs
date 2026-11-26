@@ -448,6 +448,72 @@ impl Subagents {
         }
         members.remove(id).unwrap_or_default()
     }
+
+    /// The roster of open session `id`'s direct subagents, in spawn order,
+    /// each row in the old daemon's `get_rlm_children` shape (`id`,
+    /// `activeSessionId`, `sessionName`, `label`, `status`, `durationMs`,
+    /// `sessionDir`, and `model`, `answerPreview` and `error` when known);
+    /// `status` is `running` while the child has live work, else its verdict
+    /// (`done`, `error`, `cancelled`). None for a session the runtime does
+    /// not run.
+    pub(crate) async fn roster(&self, id: &str) -> Vec<Value> {
+        let Some(node) = self.node(id) else {
+            return Vec::new();
+        };
+        let children = node.children.lock().await.clone();
+        let mut rows = Vec::with_capacity(children.len());
+        for child in &children {
+            let unsettled = child_is_unsettled(child).await;
+            let state = child.state.lock().await;
+            let mut row = json!({
+                "id": child.rlm_child_id,
+                "activeSessionId": child.node.session_id,
+                "sessionName": child
+                    .node
+                    .session_name()
+                    .unwrap_or_else(|| child.rlm_child_id.clone()),
+                "label": Value::Null,
+                "status": if unsettled { "running" } else { state.status },
+                "durationMs": now_ms().saturating_sub(state.started_at_ms),
+                "sessionDir": child.node.session_dir(),
+            });
+            if let Some(model) = lock(&child.node.adopted).model_selector.clone() {
+                row["model"] = json!(model);
+            }
+            if let Some(answer) = &state.answer_text {
+                row["answerPreview"] = json!(
+                    pa_core::session_engine::rlm_notices::compact_rlm_text(answer)
+                );
+            }
+            if let Some(error) = &state.error {
+                row["error"] = json!(error);
+            }
+            rows.push(row);
+        }
+        rows
+    }
+
+    /// Cancels the run of open session `id`'s direct subagent `child` (its
+    /// handle, session id or name): its queued tasks end and its running turn
+    /// is aborted, and its `done` settles it as cancelled. Whether it had live
+    /// work to cancel; an unknown or settled child answers `false`.
+    ///
+    /// # Errors
+    ///
+    /// The runtime is not running, or a cancelled task was not saved.
+    pub(crate) async fn cancel_child(&self, id: &str, child: &str) -> anyhow::Result<bool> {
+        let Some(node) = self.node(id) else {
+            return Ok(false);
+        };
+        let Ok(child) = node.find_child(child).await else {
+            return Ok(false);
+        };
+        if !child_is_unsettled(&child).await {
+            return Ok(false);
+        }
+        self.control()?.cancel(&child.node.session_id).await?;
+        Ok(true)
+    }
 }
 
 /// One session's place in the family tree.

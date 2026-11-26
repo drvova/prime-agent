@@ -524,6 +524,39 @@ impl<B: SessionBuilder> Runtime<B> {
         self.queue.cancel_queued(session).await
     }
 
+    /// Holds `session`'s input under `hold`: nothing queued in its lane
+    /// starts until every hold is released ([`crate::tasks::TaskQueue::hold`]);
+    /// whether the hold is new.
+    pub(crate) fn hold_input(&self, session: &str, hold: &str) -> bool {
+        self.queue.hold(session, hold)
+    }
+
+    /// Releases `hold` on `session`'s input; whether it held it.
+    pub(crate) fn release_input(&self, session: &str, hold: &str) -> bool {
+        self.queue.release(session, hold)
+    }
+
+    /// Cancels `session`'s task `task`: taken out of the lane when it is
+    /// queued, or its turn aborted when it runs (the steers it took and had
+    /// not read go back to the front of the lane, which is neither parked nor
+    /// resumed). Whether it was queued or running.
+    ///
+    /// # Errors
+    ///
+    /// The database failed to save the cancelled task or a steer put back.
+    pub(crate) async fn cancel_task(&self, session: &str, task: &str) -> anyhow::Result<bool> {
+        if self.queue.cancel_task(session, task).await?.is_some() {
+            return Ok(true);
+        }
+        let Some(unread) = self.runner.cancel_running_task(session, task) else {
+            return Ok(false);
+        };
+        for steer in unread {
+            self.queue.push(steer).await?;
+        }
+        Ok(true)
+    }
+
     /// What `session`'s lane holds now.
     pub(crate) fn lane(&self, session: &str) -> crate::tasks::LaneState {
         self.queue.lane(session)
