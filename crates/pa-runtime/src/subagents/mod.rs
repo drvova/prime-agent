@@ -45,7 +45,7 @@ use serde_json::{json, Value};
 use tokio::sync::{watch, Notify};
 
 use crate::lock;
-use crate::session::{Outbox, SessionSpec};
+use crate::session::{Outbox, SessionSpec, SessionStream};
 use crate::subscriptions::{MemorySessionTree, Registry};
 use crate::trust::TaskTrust;
 use crate::turn::boundary::TurnBoundary;
@@ -198,6 +198,11 @@ impl Subagents {
     /// The node of the open session `id`.
     fn node(&self, id: &str) -> Option<Arc<Node>> {
         lock(&self.nodes).get(id).cloned()
+    }
+
+    /// The stream of the open session `id`.
+    pub(crate) fn stream(&self, id: &str) -> Option<Arc<SessionStream>> {
+        self.node(id).map(|node| Arc::clone(&node.stream))
     }
 
     /// Waits until every subagent below open session `id` has settled and
@@ -537,6 +542,8 @@ pub(crate) struct Node {
     /// children carry) and its trigger (what the messages it sends are
     /// caused by).
     pub(crate) trust: TaskTrust,
+    /// The session's stream: what it tells its clients, in one order.
+    pub(crate) stream: Arc<SessionStream>,
     /// The wakes each sender has spent on this session.
     wakes: inbox::WakeBudget,
     /// The outcome of the session's first engine build; `None` until then.
@@ -566,7 +573,13 @@ impl Node {
         bound: DepthBound,
         parent: Option<Weak<Node>>,
     ) -> Self {
+        let trust = TaskTrust::default();
         Node {
+            stream: Arc::new(SessionStream::new(
+                tree.outbox.clone(),
+                &session_id,
+                trust.clone(),
+            )),
             tree: Arc::downgrade(tree),
             session_id,
             rlm_child_id: spec
@@ -593,7 +606,7 @@ impl Node {
             late_receipt_error: Mutex::new(None),
             activity: Notify::new(),
             disposed: AtomicBool::new(false),
-            trust: TaskTrust::default(),
+            trust,
             wakes: inbox::WakeBudget::default(),
             built: watch::Sender::new(None),
             waits: Arc::new(AgentMessageWaits::default()),
@@ -808,24 +821,15 @@ impl Child {
         if lock(&self.published).replace(status) == Some(status) {
             return;
         }
-        let (Some(parent), Some(tree)) = (self.node.parent_node(), self.node.tree.upgrade()) else {
+        let Some(parent) = self.node.parent_node() else {
             return;
         };
         if let Some(parent_id) = &parent.rlm_child_id {
             row["parentId"] = json!(parent_id);
         }
-        let Ok(topic) = Topic::new(format!("agent/{}/stream", parent.session_id)) else {
-            return;
-        };
-        tree.outbox.send(NewEvent {
-            topic,
-            source: parent.session_id.clone(),
-            session: Some(parent.session_id.clone()),
-            payload: json!({ "type": "rlm_child_update", "child": row }),
-            trust: parent.trust.current(),
-            cause: None,
-            reply: None,
-        });
+        parent
+            .stream
+            .publish(&json!({ "type": "rlm_child_update", "child": row }));
     }
 }
 

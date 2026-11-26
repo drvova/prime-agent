@@ -22,6 +22,8 @@
 //! - The rest of what an ACP client needs (phase 7g-5): input holds, a
 //!   prompt's cancel, the settled wait, the model and level, and the
 //!   subagent roster: [`acp_calls`].
+//! - The old daemon's session-event payloads on the stream, numbered
+//!   (phase 8b-2): [`stream`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -31,6 +33,7 @@ mod family;
 mod keeper;
 mod reliability;
 mod schedules;
+mod stream;
 #[path = "../support/mod.rs"]
 mod support;
 mod turns;

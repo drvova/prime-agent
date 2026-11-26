@@ -3,8 +3,10 @@
 //! `supervisor_restart_e2e` revival onto wire2, with their expectations:
 //!
 //! - a panic in one session's turn fails that turn with the crash's reason,
-//!   is logged and announced (`agent/<id>/crashed`, then `/recovered`), and
-//!   the session heals from its transcript while another session runs on;
+//!   is logged and announced (`agent/<id>/crashed`, then `/recovered`, each
+//!   mirrored onto the stream with the cut-off run's `turn_end` and
+//!   `agent_end` between them), and the session heals from its transcript
+//!   while another session runs on;
 //! - a session that keeps crashing is given up after the sixth crash in a
 //!   row (`agent/<id>/failed`) and closed;
 //! - a cell that ignores its interrupt is reported as stuck and its session
@@ -133,8 +135,14 @@ async fn a_panic_in_one_session_fails_its_turn_is_reported_and_heals_while_anoth
 
     let crashed = crashing.publish("crash now", None).await;
     let failed = crashing.done(&crashed["task"]).await;
+    // The stream mirrors the faults after the stored topics have them.
     crashing
-        .until(|session| !session.payloads("recovered").is_empty())
+        .until(|session| {
+            session
+                .payloads("stream")
+                .iter()
+                .any(|event| event["type"] == "session_recovered")
+        })
         .await;
     let beside = other.publish("still here", None).await;
     let beside = other.done(&beside["task"]).await;
@@ -162,6 +170,7 @@ async fn a_panic_in_one_session_fails_its_turn_is_reported_and_heals_while_anoth
             fault_rows(&mut crashing).await,
             healed["outcome"].clone(),
             (beside["outcome"].clone(), other.payloads("crashed").len()),
+            mirrored_faults(&crashing),
         ),
         (
             json!("failed"),
@@ -177,9 +186,27 @@ async fn a_panic_in_one_session_fails_its_turn_is_reported_and_heals_while_anoth
             2,
             json!("done"),
             (json!("done"), 0),
+            vec![
+                json!(["session_crashed", "panic"]),
+                json!(["turn_end", reason]),
+                json!(["agent_end", null]),
+                json!(["session_recovered", null]),
+            ],
         ),
         "the failed turn's reason: {reason}"
     );
+}
+
+/// The frames the stream carries without a sequence: the faults the
+/// supervisor mirrors onto it (as the old supervisor sends them), each as
+/// its type and its kind or error.
+fn mirrored_faults(session: &Attached) -> Vec<Value> {
+    session
+        .payloads("stream")
+        .iter()
+        .filter(|event| event.get("meta").is_none())
+        .map(|event| json!([event["type"], event.get("kind").or(event.get("error"))]))
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread")]

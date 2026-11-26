@@ -132,7 +132,8 @@ impl SessionBuilder for DaemonSessions {
             model: headless.model,
             api_key: headless.api_key,
             agent_dir: options.config.agent_dir.clone(),
-            events: DriverEvents::Stream,
+            // Its clients read the old daemon's session-event payloads.
+            events: DriverEvents::SessionEvents,
             autonomous: chosen.autonomous.clone(),
             // A daemon session's modes follow the settings as they change.
             queue_modes: pa_runtime::QueueModes::Settings,

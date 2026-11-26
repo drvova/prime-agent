@@ -25,10 +25,9 @@ use pa_core::session::crash::{
     restart_backoff_ms, SessionCrash, MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS,
 };
 use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
-use pa_core::session_engine::session_events::agent_event_json;
 use pa_types::ai::ImageContent;
 use pa_types::daemon::SessionFaultEvent;
-use pa_types::event_log::{Cause, EventId, NewEvent, Task, TaskFailure};
+use pa_types::event_log::{Cause, EventId, Task, TaskFailure};
 use pa_types::session_scope::{self, SessionScope};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -561,6 +560,7 @@ fn serve<B: SessionBuilder>(
             &lifetime.id,
             &crashed,
         );
+        lifetime.node.stream.crashed(&crashed.crash);
         if failures > MAX_CONSECUTIVE_FAILURES {
             let given_up = SessionFaultEvent::SessionFailed { failures };
             {
@@ -577,6 +577,7 @@ fn serve<B: SessionBuilder>(
                 &lifetime.id,
                 &given_up,
             );
+            lifetime.node.stream.fault(&given_up);
             let reason = format!(
                 "the session was given up after {failures} crashes in a row: {}",
                 crashed.crash.reason()
@@ -662,6 +663,7 @@ impl<B: SessionBuilder> Lifetime<B> {
             if hosted.is_ok() {
                 if let Some(recovered) = recovering.take() {
                     publish_fault(&self.outbox, &self.topics.recovered, &self.id, &recovered);
+                    self.node.stream.fault(&recovered);
                 }
             }
             let next = runtime.block_on(async {
@@ -933,22 +935,40 @@ impl<B: SessionBuilder> Lifetime<B> {
             }
         };
         let agent = Arc::clone(built.engine.session.agent());
-        let json = built.events == DriverEvents::Stream;
+        let json = built.events != DriverEvents::Quiet;
         let hosted = runtime.block_on(async {
+            let stream = &self.node.stream;
+            stream.adopt(built.events, &built.engine).await;
             // The stream's listener first: on every agent event the stream
             // has it before the goal's accounting reports what it changed.
             agent
                 .subscribe({
-                    let publisher = self.publisher();
+                    let stream = Arc::clone(stream);
+                    let agent = Arc::downgrade(&agent);
                     move |event, _signal| {
-                        if let Some(payload) = agent_event_json(&event) {
-                            publisher(&payload);
-                        }
-                        Box::pin(std::future::ready(Ok(())))
+                        let stream = Arc::clone(&stream);
+                        let agent = agent.clone();
+                        Box::pin(async move {
+                            stream.agent_event(&event, &agent).await;
+                            Ok(())
+                        })
                     }
                 })
                 .await;
             let engine = &built.engine;
+            // The summary's deltas while a compaction writes it, in the
+            // session-event shapes only (the json stream never had them).
+            if built.events == DriverEvents::SessionEvents {
+                let stream = Arc::clone(stream);
+                engine
+                    .session
+                    .set_compaction_summary_sink(Arc::new(move |delta: &str| {
+                        stream.publish(&serde_json::json!({
+                            "type": "compaction_summary_delta",
+                            "delta": delta,
+                        }));
+                    }));
+            }
             self.node
                 .adopt(engine, &built.model, &built.agent_dir)
                 .await;
@@ -1009,22 +1029,8 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// Publishes one json payload on the session's stream, with the running
     /// task's trust.
     fn publisher(&self) -> Arc<dyn Fn(&Value) + Send + Sync> {
-        let outbox = self.outbox.clone();
-        let control = Arc::clone(&self.control);
-        let topic = self.topics.stream.clone();
-        let id = self.id.clone();
-        Arc::new(move |payload: &Value| {
-            let trust = control.trust.current();
-            outbox.send(NewEvent {
-                topic: topic.clone(),
-                source: id.clone(),
-                session: Some(id.clone()),
-                payload: payload.clone(),
-                trust,
-                cause: None,
-                reply: None,
-            });
-        })
+        let stream = Arc::clone(&self.node.stream);
+        Arc::new(move |payload: &Value| stream.publish(payload))
     }
 
     /// One task. A session command runs at the boundary instead of a turn

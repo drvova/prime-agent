@@ -101,8 +101,10 @@ SQLite implementations over `pa-log`.
 - **Sessions**: each on its own OS thread and multi-threaded Tokio runtime (as the daemon's
   session host), entered with its `pa_types::session_scope` (id, cwd, environment). The
   embedder's `SessionBuilder` builds the engine there, so the composition root picks provider,
-  settings and session manager, what the turn driver reports (`DriverEvents`: its json events
-  on the stream, or quiet as the text print mode) and the autonomous run it starts with, and it
+  settings and session manager, what the turn driver reports and in which shapes the stream
+  carries it (`DriverEvents`: the json stream's shapes, quiet as the text print mode, or the old
+  daemon's session-event shapes for the runtime daemon's sessions) and the autonomous run it
+  starts with, and it
   installs the `SessionSeams` the runtime hands it; each build is a fresh engine whose kernel comes from the
   spare pool, never a copy. At build the stream's listener, the goal usage accounting, the
   autonomous accounting and the natural-turn-end continuation hook are wired on, in that
@@ -110,9 +112,18 @@ SQLite implementations over `pa-log`.
   `/better`) at the boundary with the continuation it schedules, or a turn: the pre-turn
   boundary, `prompt_with_auto_retry`, a steer the run took but did not read, the settled-turn
   boundary, then the goal's queued turns and, when the goal does not own the wake-up, the
-  autonomous run's held ones. Every agent event is published live on `agent/<id>/stream` as
-  `session_events::agent_event_json` gives it, with the driver's events and the auto-retry
-  events in the same json-stream shapes; then `agent/<id>/done` (stored, an `AgentDone`: task,
+  autonomous run's held ones. Every agent event is published live on `agent/<id>/stream` by the
+  session's `SessionStream` (`session/stream.rs`, every publish of the session's goes through
+  it): in the json stream's shapes as `session_events::agent_event_json` gives it, with the
+  driver's events and the auto-retry events verbatim; or, for `DriverEvents::SessionEvents`, as
+  the old worker's `session_event.event` payloads built with `pa_core::session_engine::wire_events`
+  (a reply's `message_start` with its `start`, the deltas coalesced per run with their live
+  `contextUsage`, a tool result as a `message_start`/`message_end` pair, the billing stamp on
+  settled assistant rows, `settled_context_usage` on every settled conversation row's
+  `message_end`, `compaction_summary_delta` while a summary is written; a tool's update and end
+  name no tool, as the old frames do not), each frame, driver events, `!` commands and child
+  updates included, numbered with the session's `meta.sequence`, a parked update consuming its
+  number as it parks; then `agent/<id>/done` (stored, an `AgentDone`: task,
   outcome, error, and the `TaskFailure`: a failed reply, command or turn), queued behind the
   stream, with the task's trust. A turn whose last reply is a failed model request fails its
   task as a failed reply.
@@ -296,7 +307,8 @@ SQLite implementations over `pa-log`.
   name, model, times and message count from its transcript, and for an open one its lane's
   activity, waiting prompts and `attachedClients`, the connections whose subscriptions match its
   `agent/<id>/done`, `wire::Attached`), `session.snapshot` (header, name, model, thinking level,
-  entry count, leaf, open) and
+  entry count, leaf, open, and while it is open the stream's last `meta.sequence` as
+  `lastEventSequence`) and
   `transcript.page` (`{session, before?, limit?}`: the stored rows before `before`, at most 500)
   read the transcript store; `session.create` (`{session?}` to open or create by id, or `{path}` to
   open a transcript by its file, and `cwd`) takes the session's `SessionLease` and holds it until
@@ -433,7 +445,10 @@ SQLite implementations over `pa-log`.
   `session.snapshot` reads back as `lastCrash` with its state), answers each call the crash cut
   off once as of unknown outcome (`pa_core::session::revival::interrupted_call_results`), builds
   a fresh engine (which tells the model once that its kernel definitions are gone) and stores
-  `agent/<id>/recovered`. After the sixth crash in a row it stores `agent/<id>/failed`, the work
+  `agent/<id>/recovered`. Each fault is also mirrored onto the session's stream, unnumbered, as
+  the supervisor sends it: `session_crashed`, then for a run the crash cut off (its
+  `agent_start` went out, its `agent_end` never will) a `turn_end` with the crash's reason and an
+  `agent_end`, then `session_recovered` or `session_failed`. After the sixth crash in a row it stores `agent/<id>/failed`, the work
   sent fails with the give-up's reason, and the daemon closes the session (its lease goes). The
   sessions the daemon holds are kept in the database (`kv` `runtime-daemon`/`sessions`: path,
   cwd, the daemon's pid); a daemon that starts after one that died reaps each one's orphans by
@@ -481,7 +496,7 @@ SQLite implementations over `pa-log`.
   map one to one (`sessions.list`, `session.context`, `session.model`, `models`,
   `session.set_model`, `session.set_effort`, `session.children`, `session.cancel_child`,
   `session.pause_input`/`release_input`, `session.set_mcp_servers`, `session.stop`). Stream
-  events become `session_event` frames and `agent/<id>/schedules` `heartbeats_changed`; a
+  events become `session_event` frames (their payloads the old worker's, `meta` taken off) and `agent/<id>/schedules` `heartbeats_changed`; a
   subagent's status change reaches its parent's stream as the old worker's `rlm_child_update`
   (its `session.children` row, once per status, with `parentId` under a subagent parent).
 

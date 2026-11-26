@@ -265,7 +265,11 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   (wire forms, update routing, the `message_update` coalescer, the live `contextUsage`
   estimate, flush pacing) are built in `pa_core::session_engine::wire_events`, never copied into
   a daemon; the print modes' json stream (`session_events::agent_event_json`) is a separate
-  surface.
+  surface. The runtime daemon's sessions (`DriverEvents::SessionEvents`) publish those payloads
+  on `agent/<id>/stream` (`pa-runtime` `session/stream.rs`), each numbered with the session's
+  own `meta.sequence` (the counter `session.snapshot` reports as `lastEventSequence`), and a
+  crash is mirrored onto the stream as the supervisor sends it: `session_crashed`, a cut-off
+  run's `turn_end {error}` and `agent_end`, then `session_recovered` or `session_failed`.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

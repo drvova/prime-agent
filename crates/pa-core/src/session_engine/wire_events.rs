@@ -197,6 +197,79 @@ pub fn streaming_context_usage(
     })
 }
 
+/// The session's context reading after a settled row, over the engine's `messages` (the agent's
+/// context, oldest first) and the model's `context_window`: the reading a settled row's
+/// `message_end` carries and the next streamed reply's estimate grows from. It reads what the old
+/// worker's store reading reads: the conversation rows (user, assistant, tool-result and bash
+/// rows, not custom ones). The last valid assistant usage anchors it and the rows after that
+/// anchor are estimated by the chars/4 heuristic; right after a compaction without a usable
+/// reply behind it the tokens are unknown. `None` when the window is unknown (zero).
+#[must_use]
+pub fn settled_context_usage(
+    messages: &[pa_agent::types::AgentMessage],
+    context_window: u64,
+) -> Option<ContextUsage> {
+    use pa_types::usage::{calculate_context_tokens, valid_assistant_usage};
+    if context_window == 0 {
+        return None;
+    }
+    let rows: Vec<Value> = messages
+        .iter()
+        .filter_map(session_wire_value)
+        .filter(|row| {
+            matches!(
+                row.get("role").and_then(Value::as_str),
+                Some("user" | "assistant" | "toolResult" | "bashExecution" | "compactionSummary")
+            )
+        })
+        .collect();
+    // Only a reply after the latest compaction measured the context it left.
+    if let Some(compaction) = rows
+        .iter()
+        .rposition(|row| row["role"] == "compactionSummary")
+    {
+        let usable = rows[compaction + 1..]
+            .iter()
+            .rev()
+            .find_map(valid_assistant_usage)
+            .is_some_and(|usage| calculate_context_tokens(&usage) > 0);
+        if !usable {
+            return Some(ContextUsage {
+                tokens: None,
+                context_window,
+                percent: None,
+                estimated: false,
+                last_request: None,
+            });
+        }
+    }
+    let rows: Vec<&Value> = rows
+        .iter()
+        .filter(|row| row["role"] != "compactionSummary")
+        .collect();
+    let (tokens, last_request) = match rows
+        .iter()
+        .rposition(|row| valid_assistant_usage(row).is_some())
+    {
+        Some(anchor) => {
+            let usage = valid_assistant_usage(rows[anchor]).unwrap_or_default();
+            let after: u64 = rows[anchor + 1..]
+                .iter()
+                .map(|row| estimate_tokens(row))
+                .sum();
+            (
+                calculate_context_tokens(&usage) + after,
+                serde_json::from_value::<RequestCache>(usage).ok(),
+            )
+        }
+        None => (rows.iter().map(|row| estimate_tokens(row)).sum(), None),
+    };
+    Some(ContextUsage {
+        last_request,
+        ..ContextUsage::of(tokens, context_window)
+    })
+}
+
 /// The starting gap between two sent updates: the leading edge goes out at once, the trailing
 /// edge one interval after the previous send, so the interval bounds both the send rate and the
 /// staleness of a parked update. [`FlushPacer`] moves it between 16 and 100 ms.

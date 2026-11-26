@@ -419,7 +419,7 @@ that runs them (`SourceKinds::Accepted`, a headless runtime's) and refuses them 
 
 Session-event wire builder (`session_engine::wire_events`): the `session_event` payloads a
 daemon sends its clients for a session's turns, kept here once for the hosts that send them
-(today the supervisor's worker; the runtime daemon's `agent/<id>/stream` next): the session wire
+(the supervisor's worker and the runtime daemon's `agent/<id>/stream`): the session wire
 forms of the loop's messages, stream deltas (the reply's `start` included) and tool results, how
 a streamed update travels (`update_route`: a delta parks, the `start` and a block end go out
 direct as `direct_update_event`), the single-slot `message_update` coalescer throttled on both
@@ -427,10 +427,13 @@ edges with its merged additive deltas and its once-per-flush live `contextUsage`
 the adaptive flush interval. A host frames what the coalescer flushes and owns the sequence each
 update consumed and the flusher's timer. Non-goals: the print modes' json stream
 (`session_events::agent_event_json`, one line per loop event, uncoalesced), the framing, the
-transport, and the session store's context reading. Public surface: `AssistantSnapshot`,
+transport, and the session store's context reading. A host without the store (the runtime
+daemon) reads the settled rows' `contextUsage` over the engine's messages with
+`settled_context_usage`, by the store reading's rules (the conversation rows only, anchored on
+the last reply's usage, unknown right after a compaction). Public surface: `AssistantSnapshot`,
 `session_wire_value`, `stream_event_value`, `tool_result_wire_value`, `UpdateRoute`,
-`update_route`, `direct_update_event`, `streaming_context_usage`, `UpdateCoalescer`,
-`FlushPacer`, `UPDATE_FLUSH_INTERVAL`, `LAGGING_BACKLOG`.
+`update_route`, `direct_update_event`, `streaming_context_usage`, `settled_context_usage`,
+`UpdateCoalescer`, `FlushPacer`, `UPDATE_FLUSH_INTERVAL`, `LAGGING_BACKLOG`.
 
 Session resource reload and settings view (`session_engine::resource_reload`,
 `session_engine::settings_view`): `rlm.reload` (and the daemon's `/reload`) re-runs

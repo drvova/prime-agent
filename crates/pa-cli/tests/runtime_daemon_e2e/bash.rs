@@ -8,14 +8,17 @@ use serde_json::{json, Value};
 
 use super::{ok, Bed, Client};
 
-/// The `bash_*` payloads among `frames` on session `id`'s stream.
+/// The `bash_*` payloads among `frames` on session `id`'s stream, without
+/// their frame numbers (`meta`).
 fn bash_events(frames: &[ServerFrame], id: &str) -> Vec<Value> {
     let stream = format!("agent/{id}/stream");
     frames
         .iter()
         .filter_map(|frame| match frame {
             ServerFrame::Event { event, .. } if event.event.topic.to_string() == stream => {
-                Some(event.event.payload.clone())
+                let mut payload = event.event.payload.clone();
+                payload.as_object_mut()?.remove("meta");
+                Some(payload)
             }
             _ => None,
         })

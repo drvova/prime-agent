@@ -315,6 +315,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             "entries": entries.len().saturating_sub(usize::from(header.is_some())),
             "lastCrash": last_crash(&entries),
             "leafId": entries.last().filter(|row| row["type"] != "session").and_then(|row| row.get("id")).cloned(),
+            "lastEventSequence": self.runtime.last_event_sequence(&id),
         }))
     }
 

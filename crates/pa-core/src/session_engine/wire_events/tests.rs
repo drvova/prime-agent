@@ -188,3 +188,57 @@ async fn the_flush_interval_shortens_while_subscribers_keep_up_and_backs_off_on_
         [50, 45, 41, 83, 71, 100, 83].map(Duration::from_millis)
     );
 }
+
+fn loop_message(value: Value) -> pa_agent::types::AgentMessage {
+    serde_json::from_value(value).expect("a loop message")
+}
+
+/// The settled reading anchors on the last reply's usage and estimates the conversation rows
+/// after it, skipping custom rows (the harness digest is no conversation row); right after a
+/// compaction no reply has measured, its tokens are unknown.
+#[test]
+fn the_settled_reading_anchors_on_the_last_reply_and_skips_custom_rows() {
+    let user =
+        |text: &str| loop_message(json!({ "role": "user", "content": text, "timestamp": 1 }));
+    let digest = loop_message(json!({
+        "role": "custom", "customType": "harness_digest",
+        "content": "x".repeat(4_000), "display": false, "timestamp": 1,
+    }));
+    let reply = loop_message(json!({
+        "role": "assistant", "content": [{ "type": "text", "text": "ok" }],
+        "api": "faux", "provider": "faux", "model": "faux-1",
+        "usage": { "input": 100, "output": 10, "cacheRead": 0, "cacheWrite": 0,
+                   "totalTokens": 110, "cost": {} },
+        "stopReason": "stop", "timestamp": 2,
+    }));
+    let question = user("and what about the next part of it?");
+    let after = estimate_tokens(&session_wire_value(&question).expect("a wire row"));
+    let compacted = loop_message(json!({
+        "role": "compactionSummary", "summary": "earlier", "tokensBefore": 5_000, "timestamp": 3,
+    }));
+    assert_eq!(
+        (
+            settled_context_usage(&[digest, user("hi"), reply, question.clone()], 1_000),
+            settled_context_usage(&[compacted, question.clone()], 1_000),
+            settled_context_usage(&[question], 0),
+        ),
+        (
+            Some(ContextUsage {
+                last_request: Some(RequestCache {
+                    input: 100,
+                    cache_read: 0,
+                    cache_write: 0,
+                }),
+                ..ContextUsage::of(110 + after, 1_000)
+            }),
+            Some(ContextUsage {
+                tokens: None,
+                context_window: 1_000,
+                percent: None,
+                estimated: false,
+                last_request: None,
+            }),
+            None,
+        )
+    );
+}

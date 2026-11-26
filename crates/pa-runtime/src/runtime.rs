@@ -577,30 +577,33 @@ impl<B: SessionBuilder> Runtime<B> {
     }
 
     /// Queues each payload it is given on `session`'s stream
-    /// (`agent/<id>/stream`, live only) as the owner's, through the
-    /// sessions' outbox: in order with what the session's turns stream.
+    /// (`agent/<id>/stream`, live only) as the owner's, in the stream's
+    /// shape: in order with what the session's turns stream.
     ///
     /// # Errors
     ///
-    /// `session` cannot be a topic level.
+    /// `session` is not open.
     pub(crate) fn stream_sender(
         &self,
         session: &str,
     ) -> anyhow::Result<Arc<dyn Fn(serde_json::Value) + Send + Sync>> {
-        let topic = crate::session::SessionTopics::of(session)?.stream;
-        let outbox = self.sessions.outbox().clone();
-        let id = session.to_string();
+        let stream = self
+            .sessions
+            .subagents()
+            .stream(session)
+            .with_context(|| format!("session {session} is not open"))?;
         Ok(Arc::new(move |payload| {
-            outbox.send(NewEvent {
-                topic: topic.clone(),
-                source: id.clone(),
-                session: Some(id.clone()),
-                payload,
-                trust: Trust::Owner,
-                cause: None,
-                reply: None,
-            });
+            stream.publish_as(&payload, Trust::Owner);
         }))
+    }
+
+    /// The last `meta.sequence` open session `session`'s stream consumed:
+    /// `session.snapshot`'s `lastEventSequence`.
+    pub(crate) fn last_event_sequence(&self, session: &str) -> Option<u64> {
+        self.sessions
+            .subagents()
+            .stream(session)
+            .map(|stream| stream.last_sequence())
     }
 
     /// The engine of `session`'s current lifetime, once it is built.

@@ -45,7 +45,9 @@
 //!   `crashes` table), published as `agent/<id>/crashed`, and the session is
 //!   rebuilt from its transcript with the old daemon's backoff and give-up
 //!   (`agent/<id>/recovered` or `/failed`; a given-up session is closed and
-//!   its lease released). `session.snapshot` carries its `lastCrash`. The
+//!   its lease released), each fault also mirrored onto the session's
+//!   stream as the old supervisor sends it. `session.snapshot` carries its
+//!   `lastCrash`, and its stream's `lastEventSequence`. The
 //!   sessions it holds are kept in the database, and a daemon that starts
 //!   after one that died revives those with unfinished work ([`held`]).
 //! - **Scheduled jobs.** The kernel's `schedule.*` and `rlm_heartbeat.*`

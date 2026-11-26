@@ -167,6 +167,10 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             let topic = event.event.topic.as_str();
             if topic == stream && event.event.payload["type"] == "compaction_end" {
                 compaction = event.event.payload.clone();
+                // The stream's frame number is no part of the outcome.
+                if let Some(outcome) = compaction.as_object_mut() {
+                    outcome.remove("meta");
+                }
             } else if topic == done {
                 let ended: AgentDone = serde_json::from_value(event.event.payload.clone())?;
                 if ended.task == accepted.task {

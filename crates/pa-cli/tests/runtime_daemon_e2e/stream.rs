@@ -1,0 +1,114 @@
+//! The session-event stream on the runtime daemon (phase 8b-2): a session's
+//! `agent/<id>/stream` carries the old daemon's `session_event` payloads,
+//! each numbered with the session's own `meta.sequence`, which
+//! `session.snapshot` reports as `lastEventSequence`.
+
+use serde_json::{json, Value};
+
+use super::turns::{cell, Attached};
+use super::Bed;
+
+/// One turn with a cell and a reply after it streams the old worker's frames
+/// in its order: the reply opens with a `start`, its deltas coalesce (a
+/// parked one consumes its number, so the numbers only rise), a tool result
+/// is a start and end pair, the settled assistant row carries its billing
+/// stamp, and every settled conversation row its context reading. A tool's
+/// update and end name no tool, as the old frames do not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_streams_the_old_session_events_numbered_in_order() {
+    let bed = Bed::new();
+    let cwd = bed.dir.path().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let _daemon = bed.runtime_daemon(&json!({ "responses": [
+        cell("computing", "(display 42)"),
+        "The cell printed 42.",
+    ]}));
+    let mut session = Attached::open(&bed, &cwd).await;
+    let prompt = session.publish("compute it", None).await;
+    session.done(&prompt["task"]).await;
+    let snapshot = session.query("session.snapshot").await;
+
+    let stream = session.payloads("stream");
+    let sequences: Vec<u64> = stream
+        .iter()
+        .map(|event| {
+            event["meta"]["sequence"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("a numbered frame: {event}"))
+        })
+        .collect();
+    // The frames' kinds, a run of coalesced updates read as one.
+    let mut kinds: Vec<String> = Vec::new();
+    for event in &stream {
+        let mut kind = event["type"].as_str().unwrap_or_default().to_string();
+        if let Some(role) = event["message"]["role"].as_str() {
+            kind = format!("{kind} {role}");
+        }
+        if kinds.last() != Some(&kind) || kind != "message_update assistant" {
+            kinds.push(kind);
+        }
+    }
+    let first = |kind: &str, role: &str| -> &Value {
+        stream
+            .iter()
+            .find(|event| event["type"] == kind && event["message"]["role"] == role)
+            .unwrap_or_else(|| panic!("a {kind} of a {role} row: {stream:?}"))
+    };
+    let tool = |kind: &str| -> &Value {
+        stream
+            .iter()
+            .find(|event| event["type"] == kind)
+            .unwrap_or_else(|| panic!("a {kind}: {stream:?}"))
+    };
+    assert_eq!(
+        (
+            sequences.windows(2).all(|pair| pair[0] < pair[1]),
+            snapshot["lastEventSequence"].as_u64(),
+            kinds,
+            first("message_start", "assistant")["assistantMessageEvent"].clone(),
+            first("message_end", "assistant")["message"]["usage"]
+                .get("billing")
+                .is_some(),
+            first("message_end", "user")["contextUsage"]["tokens"].is_u64(),
+            first("message_end", "toolResult")["contextUsage"]["tokens"].is_u64(),
+            (
+                tool("tool_execution_start")["toolName"].clone(),
+                tool("tool_execution_end").get("toolName").cloned(),
+                tool("tool_execution_end")["isError"].clone(),
+            ),
+        ),
+        (
+            true,
+            sequences.last().copied(),
+            [
+                "agent_start",
+                "turn_start",
+                "message_start user",
+                "message_end user",
+                "message_start assistant",
+                "message_update assistant",
+                "message_end assistant",
+                "tool_execution_start",
+                "tool_execution_update",
+                "tool_execution_end",
+                "message_start toolResult",
+                "message_end toolResult",
+                "turn_end assistant",
+                "turn_start",
+                "message_start assistant",
+                "message_update assistant",
+                "message_end assistant",
+                "turn_end assistant",
+                "agent_end",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            json!({ "type": "start" }),
+            true,
+            true,
+            true,
+            (json!("eval"), None, json!(false)),
+        ),
+        "the stream: {stream:?}"
+    );
+}

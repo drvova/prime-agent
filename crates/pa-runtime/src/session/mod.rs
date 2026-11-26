@@ -35,11 +35,13 @@ use crate::subagents::Subagents;
 mod faults;
 mod host;
 mod runner;
+mod stream;
 
 pub(crate) use faults::{reap_orphans, Rebuild, SessionFaults, Supervision};
 use host::SessionHost;
 pub(crate) use host::{LiveEngine, Opening};
 pub(crate) use runner::{RuntimeTaskSink, SessionRunner, SCHEDULE_PREFIX};
+pub(crate) use stream::SessionStream;
 
 /// A session to open.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -323,11 +325,16 @@ pub enum QueueModes {
 
 /// What a session's turn driver (its compaction, refinement, goal and
 /// autonomous arms) reports beside the agent's own events, which always go
-/// on the session's stream.
+/// on the session's stream, and in which shapes the stream carries both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverEvents {
     /// Its events, in the json stream's shapes, on the session's stream.
     Stream,
+    /// Its events and the agent's in the session-event shapes the old
+    /// daemon's clients read (`pa_core::session_engine::wire_events`), each
+    /// with the session's `meta.sequence`, and the compaction summary's
+    /// deltas: the runtime daemon's sessions.
+    SessionEvents,
     /// None on the stream; a background refinement that fails says so on
     /// stderr: the text print mode's surface.
     Quiet,
@@ -450,11 +457,10 @@ pub(crate) trait SessionJobs: Send + Sync {
 /// once the runtime daemon attaches them.
 pub(crate) type JobsSlot = Arc<OnceLock<Arc<dyn SessionJobs>>>;
 
-/// The topics a session publishes on.
+/// The stored topics a session publishes on (its live `agent/<id>/stream`
+/// is its [`SessionStream`]'s).
 #[derive(Debug, Clone)]
 pub(crate) struct SessionTopics {
-    /// `agent/<id>/stream`: live only.
-    pub(crate) stream: Topic,
     /// `agent/<id>/done`: stored.
     pub(crate) done: Topic,
     /// `agent/<id>/crashed`, `/recovered` and `/failed`: stored, the
@@ -482,7 +488,6 @@ impl SessionTopics {
             Ok(topic)
         };
         Ok(SessionTopics {
-            stream: topic("stream")?,
             done: topic("done")?,
             crashed: topic("crashed")?,
             recovered: topic("recovered")?,

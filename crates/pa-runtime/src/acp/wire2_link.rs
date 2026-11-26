@@ -770,11 +770,20 @@ fn transport_frame(frame: ServerFrame, dones: &std::sync::Mutex<Dones>) -> Optio
                 return None;
             };
             match kind {
-                "stream" => Some(TransportFrame::Event(json!({
-                    "type": "session_event",
-                    "activeSessionId": session,
-                    "event": event.event.payload,
-                }))),
+                // The payload is the old `session_event.event`; its
+                // `meta.sequence` is the runtime's frame number, which the
+                // ACP surface does not read.
+                "stream" => {
+                    let mut payload = event.event.payload;
+                    if let Some(payload) = payload.as_object_mut() {
+                        payload.remove("meta");
+                    }
+                    Some(TransportFrame::Event(json!({
+                        "type": "session_event",
+                        "activeSessionId": session,
+                        "event": payload,
+                    })))
+                }
                 "schedules" => Some(TransportFrame::HeartbeatsChanged),
                 "done" => {
                     let payload = event.event.payload;
