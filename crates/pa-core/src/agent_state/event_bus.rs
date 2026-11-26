@@ -11,6 +11,13 @@
 //! payload is checked against the source's schema
 //! ([`pa_agent::validation::validate_tool_arguments`]); who it reaches is the
 //! bus's to decide.
+//!
+//! Where the bus runs them ([`SourceKinds::Accepted`]: a headless run's), a
+//! source may instead be a timer or a folder watch, which publishes its own
+//! events under its kind's payload schema. Names, limits and ownership are
+//! one namespace across kinds. Timer and watch sources live only for the
+//! run: they, and the subscriptions naming them, are left out of the rows
+//! the bus stores.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,7 +25,9 @@ use std::path::Path;
 use anyhow::{anyhow, bail, ensure};
 use pa_log::{Log, Origin, Receipt, SourceKind, SourceRow, SourceSet, SubscriptionRow};
 use pa_types::event_log::TopicFilter;
-use pa_types::events::{EventBusRequest, EventSourceRecord, EventSubscriptionRecord};
+use pa_types::events::{
+    EventBusRequest, EventSourceKind, EventSourceRecord, EventSubscriptionRecord,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -57,6 +66,15 @@ pub enum TopicSubscriptions {
     Accepted,
 }
 
+/// Whether a bus defines timer and watch sources besides its bus sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKinds {
+    /// Only bus sources (the daemon's bus): a timer or a watch is refused.
+    BusOnly,
+    /// Timers and watches too, which its runtime runs.
+    Accepted,
+}
+
 /// What an accepted request asks of the bus that keeps the state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventBusChange {
@@ -65,7 +83,8 @@ pub enum EventBusChange {
     /// A publication the bus still delivers: its source (whose count is
     /// already raised) and the payload as its schema checked it.
     Publish {
-        source: EventSourceRecord,
+        /// Boxed: a record is many times an answer's size.
+        source: Box<EventSourceRecord>,
         payload: Value,
     },
 }
@@ -92,12 +111,15 @@ impl EventBusState {
         request: EventBusRequest,
         now: u64,
         topics: TopicSubscriptions,
+        kinds: SourceKinds,
     ) -> anyhow::Result<EventBusChange> {
         let answer = match request {
             EventBusRequest::DefineSource {
                 name,
                 description,
                 schema,
+                timer,
+                watch,
             } => {
                 ensure!(
                     name.chars().count() <= MAX_SOURCE_NAME_CHARS
@@ -118,19 +140,77 @@ impl EventBusState {
                     "event source description is longer than {MAX_PROMPT_CHARS} characters"
                 );
                 ensure!(
-                    schema.get("type").and_then(Value::as_str) == Some("object"),
-                    "an event source schema is a JSON object schema with \"type\": \"object\""
+                    timer.is_none() || watch.is_none(),
+                    "an event source is a timer or a watch, not both: give one of #:timer and \
+                     #:watch"
                 );
-                let size = serde_json::to_string(&schema)?.len();
-                ensure!(
-                    size <= MAX_SCHEMA_BYTES,
-                    "an event source schema is at most {MAX_SCHEMA_BYTES} bytes, not {size}"
-                );
+                let kind = match (&timer, &watch) {
+                    (Some(_), _) => EventSourceKind::Timer,
+                    (None, Some(_)) => EventSourceKind::Watch,
+                    (None, None) => EventSourceKind::Bus,
+                };
+                let schema = match kind {
+                    EventSourceKind::Bus => {
+                        ensure!(
+                            schema.get("type").and_then(Value::as_str) == Some("object"),
+                            "an event source schema is a JSON object schema with \"type\": \"object\""
+                        );
+                        let size = serde_json::to_string(&schema)?.len();
+                        ensure!(
+                            size <= MAX_SCHEMA_BYTES,
+                            "an event source schema is at most {MAX_SCHEMA_BYTES} bytes, not {size}"
+                        );
+                        schema
+                    }
+                    EventSourceKind::Timer | EventSourceKind::Watch => {
+                        let kind = kind.as_str();
+                        ensure!(
+                            kinds == SourceKinds::Accepted,
+                            "this event bus (the daemon's) defines bus sources only: {kind} \
+                             sources run in headless runs (`prime-agent -p`) for now"
+                        );
+                        ensure!(
+                            matches!(schema, Value::Null | Value::Bool(false)),
+                            "a {kind} source's payload schema is its kind's: give #f for the schema"
+                        );
+                        match timer {
+                            Some(_) => json!({
+                                "type": "object",
+                                "properties": {
+                                    "scheduledFor": { "type": "integer" },
+                                    "firedAt": { "type": "integer" },
+                                },
+                                "required": ["scheduledFor", "firedAt"],
+                            }),
+                            None => json!({
+                                "type": "object",
+                                "properties": {
+                                    "paths": { "type": "array", "items": { "type": "string" } },
+                                    "kinds": { "type": "array", "items": { "type": "string" } },
+                                    "error": { "type": "string" },
+                                },
+                            }),
+                        }
+                    }
+                };
                 let published_count = match self.sources.get(&name) {
                     Some(existing) if existing.owner_session_id != requester.session_id => bail!(
                         "event source {name:?} is defined by session {}; only it can redefine it",
                         existing.owner_name
                     ),
+                    // A bus source's schema may change; what a timer or a
+                    // watch runs is only replaced by removing it first.
+                    Some(existing)
+                        if (existing.kind() != EventSourceKind::Bus
+                            || kind != EventSourceKind::Bus)
+                            && (existing.timer != timer || existing.watch != watch) =>
+                    {
+                        bail!(
+                            "event source {name:?} is defined already as a {} source; remove it \
+                             (event-source-remove) before defining it again another way",
+                            existing.kind().as_str()
+                        )
+                    }
                     Some(existing) => existing.published_count,
                     None => {
                         let owned = self
@@ -153,6 +233,8 @@ impl EventBusState {
                     owner_name: requester.name.clone(),
                     defined_at: now,
                     published_count,
+                    timer,
+                    watch,
                 };
                 self.sources.insert(name, record.clone());
                 serde_json::to_value(record)?
@@ -168,6 +250,11 @@ impl EventBusState {
             }
             EventBusRequest::Publish { source, payload } => {
                 let record = self.owned_source(&source, requester)?;
+                ensure!(
+                    record.kind() == EventSourceKind::Bus,
+                    "event source {source:?} is a {} source: it publishes its own events",
+                    record.kind().as_str()
+                );
                 let size = serde_json::to_string(&payload)?.len();
                 ensure!(
                     size <= MAX_PAYLOAD_BYTES,
@@ -185,7 +272,7 @@ impl EventBusState {
                     .ok_or_else(|| anyhow!("no event source is named {source:?}"))?;
                 record.published_count += 1;
                 return Ok(EventBusChange::Publish {
-                    source: record.clone(),
+                    source: Box::new(record.clone()),
                     payload,
                 });
             }
@@ -297,12 +384,19 @@ impl EventBusState {
         Ok(record)
     }
 
-    /// Its rows.
+    /// Its rows: its bus sources and the subscriptions not naming a timer
+    /// or a watch, which live only for the run.
     pub(super) fn rows(&self) -> anyhow::Result<SourceSet> {
+        let kept = |name: &str| {
+            self.sources
+                .get(name)
+                .is_none_or(|record| record.kind() == EventSourceKind::Bus)
+        };
         Ok(SourceSet {
             sources: self
                 .sources
                 .iter()
+                .filter(|(name, _)| kept(name))
                 .map(|(name, record)| {
                     Ok(SourceRow {
                         id: name.clone(),
@@ -315,6 +409,7 @@ impl EventBusState {
             subscriptions: self
                 .subscriptions
                 .iter()
+                .filter(|subscription| kept(&subscription.source))
                 .map(|subscription| {
                     Ok(SubscriptionRow {
                         id: subscription.id.clone(),

@@ -2,7 +2,10 @@
 //! the agent's database, and the sources running for the subscriptions that
 //! hear them.
 //!
-//! - **Definitions** are rows of the `sources` table in the partition
+//! - **Definitions** a run keeps only while it runs
+//!   ([`SourceLifetime::Run`]: the kernel's timer and watch sources) are held
+//!   in memory and never written. Kept ones ([`SourceLifetime::Kept`]) are
+//!   rows of the `sources` table in the partition
 //!   [`SOURCES_PARTITION`], one per source, its name the row's id, its kind
 //!   the row's, and `{"options", "owner"}` its spec. pa-core's scheduled
 //!   jobs are timer rows too, under `cron:<path>` scopes, and the kernel's
@@ -53,6 +56,16 @@ pub(crate) const SOURCES_PARTITION: &str = "runtime-sources";
 /// Why a webhook is neither defined nor started.
 const WEBHOOKS_REFUSED: &str = "webhook sources arrive with the daemon";
 
+/// How long a source's definition lasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceLifetime {
+    /// Until the runtime shuts down (or it is undefined): never stored.
+    Run,
+    /// Stored in the agent's database, defined again when the runtime next
+    /// opens on it.
+    Kept,
+}
+
 /// A source the runtime can run: a timer or a folder watch, by name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceDefinition {
@@ -65,6 +78,7 @@ pub struct SourceDefinition {
     pub options: Value,
     /// The session that defined it, when one did.
     pub owner: Option<String>,
+    pub lifetime: SourceLifetime,
 }
 
 /// A definition as the manager holds it.
@@ -136,6 +150,7 @@ fn load(log: &Log) -> anyhow::Result<Vec<Defined>> {
                     .get("owner")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                lifetime: SourceLifetime::Kept,
             };
             let claim: Option<Value> =
                 row.claim.as_deref().map(serde_json::from_str).transpose()?;
@@ -154,6 +169,7 @@ fn load(log: &Log) -> anyhow::Result<Vec<Defined>> {
 }
 
 /// The runtime's sources: a handle on the task that runs them.
+#[derive(Clone)]
 pub(crate) struct SourceManager {
     commands: mpsc::UnboundedSender<Command>,
     running: watch::Receiver<BTreeSet<String>>,
@@ -164,6 +180,10 @@ enum Command {
         definition: SourceDefinition,
         topics: Vec<Topic>,
         answer: oneshot::Sender<anyhow::Result<Option<Receipt<bool>>>>,
+    },
+    Undefine {
+        name: String,
+        answer: oneshot::Sender<Option<Receipt<bool>>>,
     },
     Shutdown {
         done: oneshot::Sender<()>,
@@ -239,7 +259,7 @@ impl SourceManager {
         SourceManager { commands, running }
     }
 
-    /// Defines `definition`'s source and stores it; it runs once a
+    /// Defines `definition`'s source, storing a kept one; it runs once a
     /// subscription hears it. Defining a name again with the same
     /// definition changes nothing.
     ///
@@ -263,6 +283,32 @@ impl SourceManager {
         let stored = answered.await.map_err(|_| stopped())??;
         if let Some(stored) = stored {
             stored.wait().await.context("store the source definition")?;
+        }
+        Ok(())
+    }
+
+    /// Undefines the source `name`, stopping it when it runs (and removing a
+    /// kept one from the database); a name not defined changes nothing.
+    /// Answers once it is stopped.
+    ///
+    /// # Errors
+    ///
+    /// The database failed to store the change, or the runtime is shutting
+    /// down.
+    pub(crate) async fn undefine(&self, name: &str) -> anyhow::Result<()> {
+        let (answer, answered) = oneshot::channel();
+        let stopped = || anyhow::anyhow!("the runtime's sources have stopped");
+        self.commands
+            .send(Command::Undefine {
+                name: name.to_string(),
+                answer,
+            })
+            .map_err(|_| stopped())?;
+        if let Some(stored) = answered.await.map_err(|_| stopped())? {
+            stored
+                .wait()
+                .await
+                .context("remove the source definition")?;
         }
         Ok(())
     }
@@ -329,6 +375,17 @@ impl<C: Clock> Sources<C> {
                         let _ = answer.send(self.define(definition, topics));
                         self.reconcile().await;
                     }
+                    Some(Command::Undefine { name, answer }) => {
+                        let stored = self.defined.remove(&name).and_then(|gone| {
+                            match gone.definition.lifetime {
+                                SourceLifetime::Run => None,
+                                SourceLifetime::Kept => Some(self.store()),
+                            }
+                        });
+                        self.reconcile().await;
+                        // An undefining caller that went away does not undo it.
+                        let _ = answer.send(stored);
+                    }
                     Some(Command::Shutdown { done }) => {
                         for (name, handle) in std::mem::take(&mut self.handles) {
                             if let Err(error) = handle.stop().await {
@@ -360,13 +417,14 @@ impl<C: Clock> Sources<C> {
                     self.reconcile().await;
                 }
                 Some(fire) = timer_fires.recv() => {
-                    self.record(&fire);
-                    let stored = self.store();
-                    tokio::spawn(async move {
-                        if let Err(error) = stored.wait().await {
-                            tracing::warn!("a timer's fire was not stored: {error:#}");
-                        }
-                    });
+                    if self.record(&fire) == SourceLifetime::Kept {
+                        let stored = self.store();
+                        tokio::spawn(async move {
+                            if let Err(error) = stored.wait().await {
+                                tracing::warn!("a timer's fire was not stored: {error:#}");
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -386,6 +444,7 @@ impl<C: Clock> Sources<C> {
                 definition.name
             );
         }
+        let lifetime = definition.lifetime;
         self.defined.insert(
             definition.name.clone(),
             Defined {
@@ -394,21 +453,31 @@ impl<C: Clock> Sources<C> {
                 last_fired_ms: None,
             },
         );
-        Ok(Some(self.store()))
+        Ok(match lifetime {
+            SourceLifetime::Run => None,
+            SourceLifetime::Kept => Some(self.store()),
+        })
     }
 
-    fn record(&mut self, fired: &Fired) {
-        if let Some(defined) = self.defined.get_mut(&fired.name) {
-            defined.last_fired_ms = Some(fired.fired_at);
+    /// Keeps `fired` as its timer's last fire; the timer's lifetime (`Run`
+    /// for one no longer defined, which nothing stores).
+    fn record(&mut self, fired: &Fired) -> SourceLifetime {
+        match self.defined.get_mut(&fired.name) {
+            Some(defined) => {
+                defined.last_fired_ms = Some(fired.fired_at);
+                defined.definition.lifetime
+            }
+            None => SourceLifetime::Run,
         }
     }
 
-    /// Stores every definition, with its claim, through the database's
+    /// Stores every kept definition, with its claim, through the database's
     /// writer.
     fn store(&self) -> Receipt<bool> {
         let sources = self
             .defined
             .values()
+            .filter(|defined| defined.definition.lifetime == SourceLifetime::Kept)
             .map(|defined| SourceRow {
                 id: defined.definition.name.clone(),
                 kind: match defined.definition.kind {

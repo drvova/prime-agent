@@ -224,7 +224,20 @@ SQLite implementations over `pa-log`.
   timer started again, in the run or after a restart, catches up under pa-sources' rule (missed
   fires collapse into one; the next counts from it). `running_sources` names those running.
   `shutdown` stops every source and stores the last claims first; nothing else waits on a source,
-  so a run's settle does not. No kernel function defines one yet.
+  so a run's settle does not. A definition's `SourceLifetime` says whether it is stored: `Kept`
+  is the row above, `Run` (the kernel's) is held in memory for the run and never written.
+  `undefine` (the kernel's `event-source-remove`) stops a running source before it answers.
+- **Kernel timer and watch sources** (`events.rs`): `event-source-define` with `#:timer` or
+  `#:watch` is a bus source record under pa-core's rules (`SourceKinds::Accepted`: one namespace
+  and the 32-source limit across kinds, owner-only removal, its kind's fixed payload schema, no
+  `event-publish`), and also a `Run` definition of the sources above, owned by the defining
+  session; one the sources refuse (a bad schedule, a name they hold another way) is taken off
+  the bus again and the refusal answered. A watch's `path` resolves against the session's
+  working directory and must exist under it, links followed (`trust::WorkingDir`, the trust
+  gate's read rule). A subscription naming a timer hears `timer/<name>`; one naming a watch,
+  `source/<name>/#`; its turn reads `[agent-message from event <name>]`. pa-core leaves these
+  sources, and the subscriptions naming them, out of the bus's stored rows, so nothing of them
+  outlives the run.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
 
@@ -253,7 +266,7 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `LogStateStore::get`).
 - `Runtime` (`open`, `publish`, `listen`, `add_subscription`, `remove_subscription`,
   `define_source`, `running_sources`, `create_session`, `cancel`, `idle`, `settle`, `finish`,
-  `shutdown`), `RuntimeOptions`, `SourceDefinition`, `SessionBuilder` (`build(id, spec, seams)`), `SessionSeams`
+  `shutdown`), `RuntimeOptions`, `SourceDefinition`, `SourceLifetime`, `SessionBuilder` (`build(id, spec, seams)`), `SessionSeams`
   (the session's trust gate, the host requests the runtime answers - its `event.*` and its
   family's `agent_message.*` - its `rlm.*` subagents, the late-receipt sink, the
   background-settle wake and the kernel-notice sink, all of which the engine must install),

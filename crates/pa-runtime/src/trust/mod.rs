@@ -67,21 +67,48 @@ impl TaskTrust {
 /// A session's call policy by the trust of the task it runs.
 pub(crate) struct TrustGate {
     trust: TaskTrust,
-    /// The session's working directory, as given and lexically normalized.
-    cwd: PathBuf,
-    /// The same directory with its links resolved.
-    real_cwd: PathBuf,
+    dir: WorkingDir,
 }
 
 impl TrustGate {
     /// The gate of a session working in `cwd` that runs its tasks with
     /// `trust`.
     pub(crate) fn new(trust: TaskTrust, cwd: &Path) -> Self {
-        let cwd = normalized(cwd);
         TrustGate {
             trust,
+            dir: WorkingDir::new(cwd),
+        }
+    }
+}
+
+/// A session's working directory: what its untrusted reads, and the folders
+/// its kernel watches, stay under.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkingDir {
+    /// As given and lexically normalized.
+    cwd: PathBuf,
+    /// The same directory with its links resolved.
+    real_cwd: PathBuf,
+}
+
+impl WorkingDir {
+    pub(crate) fn new(cwd: &Path) -> Self {
+        let cwd = normalized(cwd);
+        WorkingDir {
             real_cwd: pa_types::platform::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone()),
             cwd,
+        }
+    }
+
+    /// `path`, resolved against the directory, when it is under it: one
+    /// that exists followed through its links (and answered so), one that
+    /// does not with its `.` and `..` folded away. A path that climbs out,
+    /// or links out, is `None`.
+    pub(crate) fn under(&self, path: &str) -> Option<PathBuf> {
+        let path = normalized(&self.cwd.join(path));
+        match pa_types::platform::canonicalize(&path) {
+            Ok(real) => real.starts_with(&self.real_cwd).then_some(real),
+            Err(_) => path.starts_with(&self.cwd).then_some(path),
         }
     }
 }
@@ -121,13 +148,7 @@ impl CallPolicy for TrustGate {
                         // never the payload's own `cwd`, which must be
                         // under it too; one that exists is followed through
                         // its links.
-                        let under_cwd = |path: &str| {
-                            let path = normalized(&self.cwd.join(path));
-                            match pa_types::platform::canonicalize(&path) {
-                                Ok(real) => real.starts_with(&self.real_cwd),
-                                Err(_) => path.starts_with(&self.cwd),
-                            }
-                        };
+                        let under_cwd = |path: &str| self.dir.under(path).is_some();
                         let named = |key: &str| payload.get(key).and_then(Value::as_str);
                         let target = if kind == "fs.read" { "path" } else { "root" };
                         // A glob's pattern is joined to its root: it may not

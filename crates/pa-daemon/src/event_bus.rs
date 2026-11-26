@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use pa_core::agent_state::{EventBusChange, TopicSubscriptions};
+use pa_core::agent_state::{EventBusChange, SourceKinds, TopicSubscriptions};
 use pa_types::events::{EventBusRequest, EventSubscriptionRecord};
 use serde_json::Value;
 
@@ -132,7 +132,13 @@ impl EventBus {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let saves = !matches!(request, EventBusRequest::List);
-        let handled = match state.apply(requester, request, now, TopicSubscriptions::Refused)? {
+        let handled = match state.apply(
+            requester,
+            request,
+            now,
+            TopicSubscriptions::Refused,
+            SourceKinds::BusOnly,
+        )? {
             EventBusChange::Answer(answer) => Handled::Answer(answer),
             EventBusChange::Publish { source, payload } => {
                 let event_id = format!("evt-{}", uuid::Uuid::now_v7());

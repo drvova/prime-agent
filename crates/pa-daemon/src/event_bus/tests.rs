@@ -1,7 +1,7 @@
 //! The bus's own rules, without a supervisor: ownership, schema validation,
 //! filters, who a publication reaches, and that the state survives a reload.
 
-use pa_types::events::{EventBusRequest, EventDeliveryMode, EventSubscriptionRecord};
+use pa_types::events::{EventBusRequest, EventDeliveryMode, EventSubscriptionRecord, TimerSpec};
 use serde_json::{json, Map, Value};
 
 use super::{Delivery, EventBus, Handled, Publication, Requester, Settled, EVENT_BUS_FILE_NAME};
@@ -36,6 +36,8 @@ fn define(bus: &EventBus, owner: &Requester) {
                     },
                     "required": ["env", "ok"],
                 }),
+                timer: None,
+                watch: None,
             },
             1,
         )
@@ -154,6 +156,8 @@ fn the_bus_refuses_what_its_rules_do_not_allow() {
                 name: "deploy.finished".to_string(),
                 description: String::new(),
                 schema: json!({ "type": "object" }),
+                timer: None,
+                watch: None,
             },
             3,
         )),
@@ -182,6 +186,22 @@ fn the_bus_refuses_what_its_rules_do_not_allow() {
                 name: "Deploy Finished".to_string(),
                 description: String::new(),
                 schema: json!({ "type": "object" }),
+                timer: None,
+                watch: None,
+            },
+            3,
+        )),
+        refusal(bus.handle(
+            &owner,
+            EventBusRequest::DefineSource {
+                name: "tick".to_string(),
+                description: String::new(),
+                schema: Value::Bool(false),
+                timer: Some(TimerSpec {
+                    every: Some("5m".to_string()),
+                    ..TimerSpec::default()
+                }),
+                watch: None,
             },
             3,
         )),
@@ -197,6 +217,8 @@ fn the_bus_refuses_what_its_rules_do_not_allow() {
             "the filter names properties the source's schema does not declare: region",
             "an event source name is 1 to 64 lowercase letters, digits, `.`, `-` and `_`, \
              starting with a letter: not \"Deploy Finished\"",
+            "this event bus (the daemon's) defines bus sources only: timer sources run in \
+             headless runs (`prime-agent -p`) for now",
         ]
     );
 }

@@ -1,0 +1,1 @@
+- In headless runs (`prime-agent -p`, `--mode json`), the kernel's `event-source-define` defines timer (`#:timer`) and folder-watch (`#:watch`) event sources for the run, which start a turn in each subscribed session as they fire.

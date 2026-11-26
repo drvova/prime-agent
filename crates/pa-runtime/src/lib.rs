@@ -64,7 +64,7 @@ pub use session::{
     BuiltSession, DriverEvents, Finished, SessionBuilder, SessionSeams, SessionSpec, SettleAfter,
     Settled, SubagentSpec,
 };
-pub use sources::SourceDefinition;
+pub use sources::{SourceDefinition, SourceLifetime};
 pub use store::{EventStore, MemoryEventStore, MemoryStateStore, StateKey, StateStore, StateWrite};
 pub use subscriptions::{DuplicateSubscription, MemorySessionTree, SessionTree};
 pub use tasks::{

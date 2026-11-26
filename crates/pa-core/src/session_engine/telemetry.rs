@@ -900,8 +900,20 @@ impl SessionCounters {
     /// One `event.*` call (counts only: never a source name, a payload, or a prompt).
     pub(crate) fn note_event_bus_request(&self, fact: super::event_bus_host::EventRequestFact) {
         use super::event_bus_host::EventRequestFact;
+        use pa_types::events::EventSourceKind;
         match fact {
-            EventRequestFact::SourceDefined => self.note_capability("event_source_define_count", 1),
+            EventRequestFact::SourceDefined { kind } => {
+                self.note_capability("event_source_define_count", 1);
+                match kind {
+                    EventSourceKind::Bus => {}
+                    EventSourceKind::Timer => {
+                        self.note_capability("event_source_define_timer_count", 1);
+                    }
+                    EventSourceKind::Watch => {
+                        self.note_capability("event_source_define_watch_count", 1);
+                    }
+                }
+            }
             EventRequestFact::Published { matched } => {
                 self.note_capability("event_publish_count", 1);
                 self.note_capability("event_publish_matched_count", matched);

@@ -81,6 +81,8 @@ async fn each_event_function_sends_its_typed_request() {
                     name: "deploy.finished".to_string(),
                     description: "a deploy ended".to_string(),
                     schema: json!({ "type": "object" }),
+                    timer: None,
+                    watch: None,
                 },
                 EventBusRequest::Publish {
                     source: "deploy.finished".to_string(),
