@@ -316,7 +316,11 @@ SQLite implementations over `pa-log`.
   (`daemon/handlers/owned.rs`, `--no-session`) opens a new session kept in memory only (the
   builder gets `SessionSpec::ephemeral`): no transcript file, options row, lease or held-session
   record, owned by the creating connection's `hello` name and stopped on `session.stop` or 30 s
-  after that client's last connection ended (the old daemon's owned-worker grace). The list's
+  after that client's last connection ended (the old daemon's owned-worker grace). The runtime's
+  stores keep nothing of it or of the subagents it spawns (`log_stores.rs`, `Unstored`): its
+  events run their routes and reach live listeners but are not appended (`seq` 0, an
+  `unstored-` id, delivered by the wire feed as a live-only event is), its tasks are not saved
+  and no state is written for it. The list's
   rows also carry the old summary's `name` and `firstMessage`. For the ACP client (`daemon/handlers/model.rs`,
   `mcp.rs`, `bus.rs`): the `models` query lists the signed-in models; `session.set_model`
   (`{session, provider, modelId}` or `{session, model}`) resolves through the model registry,
@@ -362,7 +366,9 @@ SQLite implementations over `pa-log`.
   `get_connection_state` and `set_thinking_level`; `session.children` (`{session}`) answers the
   direct subagents in the old daemon's `get_rlm_children` row shape and `session.cancel_child`
   (`{session, child}`) cancels one's run (`cancelled: false` for an unknown or settled child),
-  its `cancel_rlm_child`. A root session stopped and opened again waits for its new engine's
+  its `cancel_rlm_child` (a cancelled child's row reads `cancelled`, as the old daemon's does);
+  `session.system_prompt` (`{session}`) answers an open session's system prompt, the old
+  `get_system_prompt`. A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
@@ -475,7 +481,9 @@ SQLite implementations over `pa-log`.
   map one to one (`sessions.list`, `session.context`, `session.model`, `models`,
   `session.set_model`, `session.set_effort`, `session.children`, `session.cancel_child`,
   `session.pause_input`/`release_input`, `session.set_mcp_servers`, `session.stop`). Stream
-  events become `session_event` frames and `agent/<id>/schedules` `heartbeats_changed`.
+  events become `session_event` frames and `agent/<id>/schedules` `heartbeats_changed`; a
+  subagent's status change reaches its parent's stream as the old worker's `rlm_child_update`
+  (its `session.children` row, once per status, with `parentId` under a subagent parent).
 
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
@@ -519,7 +527,7 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 - `daemon::{run, DaemonOptions, socket_path}` (`DaemonOptions::selected`: whether the daemon
   is the selected one, asked before each scheduled job). On the wire (strings, not Rust surface): the
   queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,
-  `session.breakdown`, `session.model`, `session.children`, and the calls `session.abort`,
+  `session.breakdown`, `session.model`, `session.system_prompt`, `session.children`, and the calls `session.abort`,
   `session.abort_and_send_queued`, `session.resume_queue`, `session.withdraw`,
   `session.restore`, `session.compact`, `session.pause_input`, `session.release_input`,
   `session.cancel_task`, `session.cancel_child`.

@@ -357,6 +357,15 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   options row, no lease and no held-session record (nothing to revive), and ends on
   `session.stop` (ACP's teardown) or 30 s after its owner's last connection ends, as the old
   daemon's owned worker does; the owner is the creating connection's `hello` name (`acp:<pid>`).
+  Nothing of an ephemeral session reaches `agent.db` either (phase 7g-6b): the runtime's stores
+  keep no event, task or state of it or of the subagents it spawns (`log_stores.rs`
+  `Unstored`); its events still run their routes and reach live listeners, with `seq` 0 as a
+  live-only event has. A subagent's status changes reach its parent's `agent/<id>/stream` as
+  the old worker's `rlm_child_update` (its roster row, once per status), a cancelled child's
+  roster status is `cancelled`, each runtime-daemon session answers a faux script from a queue
+  of its own (`faux-<session id>`), its subagents run `PRIME_AGENT_FAUX_CHILD_SCRIPT` when the
+  script names none for them, and `session.system_prompt` answers an open session's system
+  prompt (the old `get_system_prompt`).
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,
