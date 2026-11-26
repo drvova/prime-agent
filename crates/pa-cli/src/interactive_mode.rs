@@ -20,7 +20,9 @@ use pa_tui::interactive::{
 
 mod daemon;
 
-pub use daemon::{ensure_daemon_running, ensure_daemon_running_with};
+pub use daemon::{
+    ensure_daemon_running, ensure_daemon_running_with, ensure_runtime_daemon_running,
+};
 
 mod onboarding;
 

@@ -8,7 +8,8 @@
 //! - **Identity.** `id`, `activeSessionId` and `sessionId` are all the
 //!   session's id: the runtime daemon addresses a session by its durable id,
 //!   where the old daemon had a worker id too. `sessionFile`, `sessionName`
-//!   (its last rename), `created` (its header's time), `modified` (its
+//!   (its last rename, also as `name`), `firstMessage` (its first user
+//!   message's text), `created` (its header's time), `modified` (its
 //!   transcript's), `model` (its last model change, `{provider, id}`) and
 //!   `thinkingLevel` (its last thinking-level change).
 //! - **Activity.** For an open session, from its lane: `activity` is
@@ -104,6 +105,23 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     }
 }
 
+/// The text of the session's first user message (the old summary's
+/// `firstMessage`); empty before one.
+fn first_message(rows: &[Value]) -> String {
+    rows.iter()
+        .filter(|row| row["type"] == "message" && row["message"]["role"] == "user")
+        .find_map(|row| match &row["message"]["content"] {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(blocks) => blocks
+                .iter()
+                .find(|block| block["type"] == "text")
+                .and_then(|block| block["text"].as_str())
+                .map(str::to_string),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 /// The row of session `id` (transcript `path`, its `rows` as stored), open
 /// when it has an `activity`.
 fn row(id: &str, path: &Path, rows: &[Value], activity: Option<&Activity>) -> Value {
@@ -131,6 +149,8 @@ fn row(id: &str, path: &Path, rows: &[Value], activity: Option<&Activity>) -> Va
         "sessionId": id,
         "sessionFile": path,
         "sessionName": last("session_info").and_then(|row| row.get("name")).cloned(),
+        "name": last("session_info").and_then(|row| row.get("name")).cloned(),
+        "firstMessage": first_message(rows),
         "created": header.and_then(|header| header.get("timestamp")).cloned(),
         "modified": modified,
         "model": last("model_change").map(|row| json!({

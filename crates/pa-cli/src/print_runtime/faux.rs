@@ -16,11 +16,17 @@ use crate::print_runtime::{
 /// seam; never set by the product): `None` on a live run, an error when
 /// the script does not parse.
 pub(crate) fn faux_script_env() -> Result<Option<serde_json::Value>, String> {
-    match std::env::var("PRIME_AGENT_FAUX_SCRIPT") {
-        Ok(script) => serde_json::from_str(&script)
+    let Some(script) = std::env::var_os("PRIME_AGENT_FAUX_SCRIPT") else {
+        return Ok(None);
+    };
+    // The JSON itself, or (as the interactive and ACP harnesses give it to
+    // the supervisor) the path of a file holding it, read as the
+    // supervisor's worker reads it.
+    match serde_json::from_str(&script.to_string_lossy()) {
+        Ok(script) => Ok(Some(script)),
+        Err(error) => pa_daemon::worker::read_script_file(std::path::Path::new(&script))
             .map(Some)
-            .map_err(|error| format!("invalid PRIME_AGENT_FAUX_SCRIPT: {error}")),
-        Err(_) => Ok(None),
+            .ok_or_else(|| format!("invalid PRIME_AGENT_FAUX_SCRIPT: {error}")),
     }
 }
 
@@ -93,6 +99,11 @@ pub(crate) async fn build_faux_engine_with(
                 context_window: Some(context_window),
                 max_tokens: Some(4_096),
             }]),
+            // A paced script (`tokensPerSecond`) keeps a turn running long
+            // enough for a harness to act on it mid-stream.
+            tokens_per_second: script
+                .get("tokensPerSecond")
+                .and_then(serde_json::Value::as_f64),
             ..Default::default()
         });
     if let Some(queue) = child_queue {

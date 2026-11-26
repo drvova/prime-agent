@@ -67,6 +67,11 @@ pub struct SessionSpec {
     /// (`session.create`'s `options`: the flags an ACP launch gives its
     /// session). The default chooses nothing.
     pub options: SessionOptions,
+    /// The session keeps nothing: its transcript is in memory only (the
+    /// builder writes no file for it), and it ends with the client that
+    /// created it (`--no-session`, the old daemon's client-owned in-memory
+    /// session). `transcript` names no file for it.
+    pub ephemeral: bool,
 }
 
 /// A client's choices for one session's build, over the embedder's own

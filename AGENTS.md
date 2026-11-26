@@ -345,11 +345,18 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   (`get_connection_state`), and `session.set_effort` clamps the level to the model, records
   the row only on a change and lets the settings' default follow, the old daemon's
   `set_thinking_level`; `session.children`/`session.cancel_child` answer the subagent roster
-  (`get_rlm_children`/`cancel_rlm_child`). The TUI and ACP still speak only to the supervisor.
-  The ACP mode lives in pa-runtime (`crates/pa-runtime/src/acp/`, phase 7g-4) as a client of
-  the supervisor's socket on the old wire; it links no pa-daemon code, and it sends its
-  commands through a command-level transport (`acp/transport.rs`, `DaemonTransport`) so a
-  wire2 transport can carry them to the runtime daemon (phase 7g-6).
+  (`get_rlm_children`/`cancel_rlm_child`). The TUI still speaks only to the supervisor.
+  The ACP mode lives in pa-runtime (`crates/pa-runtime/src/acp/`, phase 7g-4); it links no
+  pa-daemon code and sends its commands through a command-level transport
+  (`acp/transport.rs`, `DaemonTransport`). By default that is the supervisor's socket on the old
+  wire (`DaemonLink`); with the runtime daemon selected, pa-cli spawns or awaits `daemon2.sock`
+  and ACP drives it on wire2 (`acp/wire2_link.rs`, `Wire2Link`, phase 7g-6), each old command
+  as the wire2 frames that do the same (a prompt is a publish answered by its task's
+  `agent/<id>/done`). `--no-session` there is the old daemon's client-owned in-memory session:
+  `session.create {"ephemeral": true}` (`daemon/handlers/owned.rs`) keeps no transcript file, no
+  options row, no lease and no held-session record (nothing to revive), and ends on
+  `session.stop` (ACP's teardown) or 30 s after its owner's last connection ends, as the old
+  daemon's owned worker does; the owner is the creating connection's `hello` name (`acp:<pid>`).
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,

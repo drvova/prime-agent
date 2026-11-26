@@ -13,12 +13,17 @@ use serde_json::{json, Value};
 use super::{optional_string_arg, string_arg, RuntimeHandlers};
 use crate::session::SessionBuilder;
 use crate::subagents::{Delivery, MessageSender};
+use crate::wire::ConnectionId;
 
 /// The sender a message without `from` or `client` is from.
 const DEFAULT_CLIENT: &str = "client";
 
 impl<B: SessionBuilder> RuntimeHandlers<B> {
-    pub(super) async fn send(&self, args: &Value) -> anyhow::Result<Value> {
+    pub(super) async fn send(
+        &self,
+        args: &Value,
+        connection: ConnectionId,
+    ) -> anyhow::Result<Value> {
         let (target, path, open) = self.session(args)?;
         let message = string_arg(args, "message")?;
         let delivery = match optional_string_arg(args, "delivery")?.as_deref() {
@@ -39,7 +44,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         };
         if !open {
             anyhow::ensure!(store().exists(&path), "Unknown active session: {target}");
-            self.create(json!({ "session": target })).await?;
+            self.create(json!({ "session": target }), connection)
+                .await?;
         }
         let mut receipt = self
             .runtime

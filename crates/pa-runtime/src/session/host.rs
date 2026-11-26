@@ -1064,8 +1064,9 @@ impl<B: SessionBuilder> Lifetime<B> {
         let turn_failed = |reason: String| TaskEnd::failed(TaskFailure::Turn, reason);
         // An empty input wakes the session over the rows delivered to it
         // (a subagent's task, a message to it): they run as its quiescence
-        // drive runs them, below.
-        if !task.prompt.is_empty() {
+        // drive runs them, below. An input of images alone is a prompt.
+        let wake = task.prompt.is_empty() && images.is_empty();
+        if !wake {
             if let Err(error) = boundary
                 .run_pre_turn(engine, &built.model, built.api_key.clone())
                 .await
@@ -1164,7 +1165,7 @@ impl<B: SessionBuilder> Lifetime<B> {
         // subagents' settles run first, so its `done` follows its subtree. A
         // root's empty input (its wake in the runtime daemon) runs the rows
         // delivered to it and leaves its subagents to wake it again.
-        if task.prompt.is_empty() || self.node.is_subagent() {
+        if wake || self.node.is_subagent() {
             let rest = if self.node.is_subagent() {
                 Rest::Subtree
             } else {

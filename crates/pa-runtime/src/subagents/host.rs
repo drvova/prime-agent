@@ -95,6 +95,7 @@ impl RlmSubagentHost for SessionSubagents {
                     }),
                     transcript: None,
                     options: crate::SessionOptions::default(),
+                    ephemeral: false,
                 }
             };
             let child_node = Arc::new(Node::new(
@@ -532,6 +533,7 @@ impl Subagents {
                 }),
                 transcript: Some(child_file),
                 options: crate::SessionOptions::default(),
+                ephemeral: false,
             };
             let child_node = Arc::new(Node::new(
                 self,

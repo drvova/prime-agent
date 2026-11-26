@@ -82,7 +82,16 @@ impl SessionBuilder for DaemonSessions {
         let session_dir = transcript
             .parent()
             .map_or_else(|| super::replacement_session_dir(&options), PathBuf::from);
-        let manager = if pa_core::session::store::store().exists(&transcript) {
+        // An ephemeral session (`--no-session`) keeps its transcript in
+        // memory only.
+        let manager = if spec.ephemeral {
+            let mut manager = pa_core::session::manager::SessionManager::in_memory(&spec.cwd);
+            manager.new_session(&pa_core::session::manager::NewSessionOptions {
+                id: Some(id.to_string()),
+                ..Default::default()
+            });
+            manager
+        } else if pa_core::session::store::store().exists(&transcript) {
             pa_core::session::manager::SessionManager::open(&spec.cwd, &session_dir, &transcript)
         } else {
             let mut manager =

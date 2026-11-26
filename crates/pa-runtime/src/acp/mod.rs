@@ -15,6 +15,7 @@ mod producer;
 mod sessions;
 mod transport;
 mod types;
+mod wire2_link;
 mod wire_config;
 mod wire_events;
 

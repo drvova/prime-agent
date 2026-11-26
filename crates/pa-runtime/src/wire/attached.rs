@@ -2,7 +2,8 @@
 //! attached to a session while one of its subscriptions' filters matches
 //! the session's `agent/<id>/done`, from its `subscribe` until its
 //! `unsubscribe` or its end. The session list counts them as the session's
-//! attached clients.
+//! attached clients. Each connection is known by its client's `hello` name
+//! too, which an ephemeral session's owner is.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,15 +18,37 @@ use crate::lock;
 pub(crate) struct Attached {
     next: AtomicU64,
     connections: Mutex<HashMap<u64, HashMap<String, TopicFilter>>>,
+    /// Every live connection's client name.
+    clients: Mutex<HashMap<u64, String>>,
 }
 
 impl Attached {
-    /// A new connection's handle; dropping it forgets its subscriptions.
-    pub(super) fn connect(self: &Arc<Self>) -> Connection {
+    /// A new connection's handle, for the client that said `hello` as
+    /// `client`; dropping it forgets the connection.
+    pub(super) fn connect(self: &Arc<Self>, client: &str) -> Connection {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        lock(&self.clients).insert(id, client.to_string());
         Connection {
             attached: Arc::clone(self),
-            id: self.next.fetch_add(1, Ordering::Relaxed),
+            id,
         }
+    }
+
+    /// The client name `connection` said `hello` with; empty once it is
+    /// gone.
+    pub(crate) fn client_of(&self, connection: super::ConnectionId) -> String {
+        lock(&self.clients)
+            .get(&connection.0)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// How many live connections other than `except` client `client` has.
+    pub(crate) fn others_of(&self, client: &str, except: super::ConnectionId) -> usize {
+        lock(&self.clients)
+            .iter()
+            .filter(|(id, name)| **id != except.0 && name.as_str() == client)
+            .count()
     }
 
     /// How many connections follow session `id`.
@@ -73,6 +96,7 @@ impl Connection {
 impl Drop for Connection {
     fn drop(&mut self) {
         lock(&self.attached.connections).remove(&self.id);
+        lock(&self.attached.clients).remove(&self.id);
     }
 }
 
@@ -85,8 +109,8 @@ mod tests {
     #[test]
     fn a_connection_is_attached_while_a_filter_of_it_matches() {
         let attached = Arc::new(Attached::default());
-        let first = attached.connect();
-        let second = attached.connect();
+        let first = attached.connect("a");
+        let second = attached.connect("b");
         first.subscribed("a", &TopicFilter::new("agent/s1/#").unwrap());
         first.subscribed("b", &TopicFilter::new("agent/+/done").unwrap());
         second.subscribed("c", &TopicFilter::new("agent/s2/#").unwrap());

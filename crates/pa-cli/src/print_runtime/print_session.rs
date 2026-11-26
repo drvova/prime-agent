@@ -423,6 +423,7 @@ pub(super) async fn print_mode_main(
                     subagent: None,
                     transcript: None,
                     options: pa_runtime::SessionOptions::default(),
+                    ephemeral: false,
                 }],
             },
         )

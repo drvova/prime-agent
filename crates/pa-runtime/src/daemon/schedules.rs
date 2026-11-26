@@ -536,6 +536,7 @@ impl<B: SessionBuilder> Schedules<B> {
                 subagent: None,
                 transcript: Some(path.to_path_buf()),
                 options: super::session_options(runtime.log(), id),
+                ephemeral: false,
             })
             .await?;
         self.open
@@ -544,7 +545,8 @@ impl<B: SessionBuilder> Schedules<B> {
                 OpenSession {
                     path: path.to_path_buf(),
                     cwd: cwd.to_path_buf(),
-                    _lease: lease,
+                    _lease: Some(lease),
+                    owner: None,
                 },
             )
             .await;

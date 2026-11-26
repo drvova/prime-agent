@@ -233,6 +233,7 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                         subagent: None,
                         transcript: None,
                         options: crate::SessionOptions::default(),
+                        ephemeral: false,
                     },
                     super::Opening::Fresh,
                 )?;

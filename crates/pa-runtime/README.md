@@ -312,7 +312,12 @@ SQLite implementations over `pa-log`.
   `goal: {objective, tokenBudget?}`, `executionMode`; an unknown key is refused), the launch
   choices an ACP client forwards, handed to the builder on the `SessionSpec` and kept under `kv`
   `runtime-daemon`/`options:<id>`, so the session's revival and scheduled wake build it the same
-  way and a create without options keeps them. For the ACP client (`daemon/handlers/model.rs`,
+  way and a create without options keeps them. `session.create {"ephemeral": true}`
+  (`daemon/handlers/owned.rs`, `--no-session`) opens a new session kept in memory only (the
+  builder gets `SessionSpec::ephemeral`): no transcript file, options row, lease or held-session
+  record, owned by the creating connection's `hello` name and stopped on `session.stop` or 30 s
+  after that client's last connection ended (the old daemon's owned-worker grace). The list's
+  rows also carry the old summary's `name` and `firstMessage`. For the ACP client (`daemon/handlers/model.rs`,
   `mcp.rs`, `bus.rs`): the `models` query lists the signed-in models; `session.set_model`
   (`{session, provider, modelId}` or `{session, model}`) resolves through the model registry,
   enforces the settings' `allowedModels` through pa-core's gate, the old daemon's too
@@ -459,7 +464,18 @@ SQLite implementations over `pa-log`.
   code. Every daemon request goes through a command-level transport (`acp/transport.rs`:
   `DaemonTransport`, the old wire's `DaemonLink`), whose one frame stream delivers each response
   after the events sent before it. The TS capture corpus it is checked against is
-  `testdata/acp/`. It does not yet drive the runtime daemon.
+  `testdata/acp/`. With the runtime daemon selected it drives that daemon on wire2 instead
+  (`acp/wire2_link.rs`, `Wire2Link`): `create` is `session.create {path, cwd, options}`
+  (`--no-session` an `ephemeral` one), `attach`/`detach` subscribe to and unsubscribe from
+  `agent/<id>/#` (an attach answers at its `backfilled`), `prompt_and_wait` publishes on
+  `agent/<id>/input` as a follow-up and answers at that task's `agent/<id>/done` (the task kept
+  under the prompt's admission id for `cancel_prompt_admission`, `session.cancel_task`, also
+  when the cancel came before the publish's reply), `abort_and_clear_queue` is `session.abort` +
+  `session.withdraw` + `session.resume_queue`, the waits are `session.wait_idle`, and the rest
+  map one to one (`sessions.list`, `session.context`, `session.model`, `models`,
+  `session.set_model`, `session.set_effort`, `session.children`, `session.cancel_child`,
+  `session.pause_input`/`release_input`, `session.set_mcp_servers`, `session.stop`). Stream
+  events become `session_event` frames and `agent/<id>/schedules` `heartbeats_changed`.
 
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
@@ -494,11 +510,12 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   background-settle wake and the kernel-notice sink, all of which the engine must install, and
   `scheduled_jobs`, the cron wiring a runtime-daemon session's kernel binds `schedule.*` and
   `rlm_heartbeat.*` to, `None` elsewhere),
-  `SessionSpec` (`transcript`: the file a daemon session opens), `SubagentSpec`,
+  `SessionSpec` (`transcript`: the file a daemon session opens; `ephemeral`: a session kept in
+  memory only), `SubagentSpec`,
   `BuiltSession` (`queue_modes`: `QueueModes`), `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
   `TaskQueue::session_idle`.
-- `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions}` (pa-cli dispatches `--mode
-  acp` through it).
+- `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions, AcpDaemon}` (pa-cli
+  dispatches `--mode acp` through it; `AcpDaemon` picks the supervisor or the runtime daemon).
 - `daemon::{run, DaemonOptions, socket_path}` (`DaemonOptions::selected`: whether the daemon
   is the selected one, asked before each scheduled job). On the wire (strings, not Rust surface): the
   queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,

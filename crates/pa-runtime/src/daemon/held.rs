@@ -101,7 +101,12 @@ struct HeldSessions {
 pub(super) struct OpenSession {
     pub(super) path: PathBuf,
     pub(super) cwd: PathBuf,
-    pub(super) _lease: SessionLease,
+    /// `None` for an ephemeral session, which has no transcript to lease.
+    pub(super) _lease: Option<SessionLease>,
+    /// The client (its `hello` name) an ephemeral session ends with; `None`
+    /// for a session that keeps its transcript. An ephemeral session is not
+    /// kept in the database: no daemon revives it.
+    pub(super) owner: Option<String>,
 }
 
 impl OpenSessions {
@@ -121,6 +126,15 @@ impl OpenSessions {
             .map(|session| session.path.clone())
     }
 
+    /// The open session whose transcript is `path`.
+    pub(super) fn id_of(&self, path: &Path) -> Option<String> {
+        lock(&self.open)
+            .open
+            .iter()
+            .find(|(_, session)| session.path == path)
+            .map(|(id, _)| id.clone())
+    }
+
     /// The working directory of open session `id`.
     pub(super) fn cwd(&self, id: &str) -> Option<PathBuf> {
         lock(&self.open)
@@ -131,6 +145,16 @@ impl OpenSessions {
 
     pub(super) fn contains(&self, id: &str) -> bool {
         lock(&self.open).open.contains_key(id)
+    }
+
+    /// The ephemeral sessions client `owner` created.
+    pub(super) fn owned_by(&self, owner: &str) -> Vec<String> {
+        lock(&self.open)
+            .open
+            .iter()
+            .filter(|(_, session)| session.owner.as_deref() == Some(owner))
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// Every open session's id and transcript.
@@ -185,16 +209,20 @@ impl OpenSessions {
     /// Saves `open` as the held sessions; called under the lock, so the
     /// writes land in the order the changes were made.
     fn keep(&self, held: &HeldSessions) -> pa_log::Receipt<bool> {
-        let open = held.open.iter().map(|(id, session)| {
-            (
-                id.clone(),
-                json!({
-                    "path": session.path,
-                    "cwd": session.cwd,
-                    "daemonPid": std::process::id(),
-                }),
-            )
-        });
+        let open = held
+            .open
+            .iter()
+            .filter(|(_, session)| session.owner.is_none())
+            .map(|(id, session)| {
+                (
+                    id.clone(),
+                    json!({
+                        "path": session.path,
+                        "cwd": session.cwd,
+                        "daemonPid": std::process::id(),
+                    }),
+                )
+            });
         let dormant = held.dormant.iter().map(|(id, (path, cwd))| {
             (
                 id.clone(),
@@ -291,6 +319,7 @@ async fn revive_one<B: SessionBuilder>(
         subagent: None,
         transcript: Some(session.path.clone()),
         options: super::session_options(log, id),
+        ephemeral: false,
     };
     match running {
         // Only queued work: the daemon died between turns.
@@ -328,7 +357,8 @@ async fn revive_one<B: SessionBuilder>(
         OpenSession {
             path: session.path,
             cwd: session.cwd,
-            _lease: lease,
+            _lease: Some(lease),
+            owner: None,
         },
     )
     .await;

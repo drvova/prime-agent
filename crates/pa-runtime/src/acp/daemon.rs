@@ -33,15 +33,28 @@ use super::meta::{self, PrimeAgentEventPhase, PrimeAgentOutcome, PrimeAgentSessi
 use super::producer::{self, UpdateProducer};
 use super::transport::{DaemonLink, DaemonTransport, TransportFrame};
 use super::types;
+use super::wire2_link::Wire2Link;
 use super::wire_config::{
     fetch_available_models, fetch_connection_state, handle_set_config_option,
     picker_options_from_state, refresh_wire_config, HostedConfig,
 };
 use super::wire_events::{self, WireMappingState};
 
+/// Which daemon the ACP surface drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpDaemon {
+    /// The supervisor, on the old wire (`DaemonLink`).
+    Supervisor,
+    /// The runtime daemon, on wire2 (`Wire2Link`): `socket_path` is its
+    /// `daemon2.sock`.
+    Runtime,
+}
+
 #[derive(Clone)]
 pub struct DaemonAcpOptions {
+    /// The socket of the daemon `daemon` names.
     pub socket_path: PathBuf,
+    pub daemon: AcpDaemon,
     pub actual_cwd: PathBuf,
     pub product_version: String,
     /// The startup `create` built from the CLI session flags.
@@ -125,8 +138,16 @@ pub(crate) struct DaemonAcpState {
 /// The frame-consumer task panics when the link's pending-response map
 /// lock is poisoned (a holder panicked while holding it).
 pub async fn run_daemon_attached_acp_mode(options: DaemonAcpOptions) -> anyhow::Result<i32> {
-    let link = Arc::new(DaemonLink::connect(&options.socket_path).await?);
-    serve_acp(link, options).await
+    match options.daemon {
+        AcpDaemon::Supervisor => {
+            let link = Arc::new(DaemonLink::connect(&options.socket_path).await?);
+            serve_acp(link, options).await
+        }
+        AcpDaemon::Runtime => {
+            let link = Arc::new(Wire2Link::connect(&options.socket_path).await?);
+            serve_acp(link, options).await
+        }
+    }
 }
 
 /// Serve the ACP surface over `link` until stdin closes (see

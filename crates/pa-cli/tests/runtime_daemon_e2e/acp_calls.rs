@@ -11,13 +11,15 @@
 //! - `session.model` answers the model, level and supported levels, and
 //!   `session.set_effort` clamps to them;
 //! - `session.children` and `session.cancel_child` answer a session's
-//!   subagent roster.
+//!   subagent roster;
+//! - `session.create {"ephemeral": true}` (ACP's `--no-session`, phase 7g-6)
+//!   runs turns without a transcript file and is gone once stopped.
 
 use pa_types::event_log::Topic;
 use pa_types::wire2::{ClientFrame, ServerFrame, Since};
 use serde_json::{json, Value};
 
-use super::{ok, Bed, Client};
+use super::{ok, refused, run_turn, Bed, Client};
 
 /// Publishes `text` as session `id`'s input; the publish's reply.
 async fn publish(client: &mut Client, id: &str, text: &str) -> Value {
@@ -187,5 +189,50 @@ async fn cancel_task_wait_idle_model_effort_and_the_roster_answer_the_acp_client
     assert_eq!(
         (children["children"].clone(), child["cancelled"].clone()),
         (json!([]), json!(false))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ephemeral_session_keeps_no_transcript_and_is_gone_once_stopped() {
+    let bed = Bed::new();
+    let _daemon = bed.runtime_daemon(&json!({ "responses": ["ok"], "repeatLastResponse": true }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = ok(client
+        .call("session.create", json!({ "ephemeral": true }))
+        .await);
+    let id = created["session"].as_str().unwrap().to_string();
+    client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
+    run_turn(&mut client, &id, "hello").await;
+    let model = ok(client
+        .query("session.model", json!({ "session": id }))
+        .await);
+    let open = ok(client.query("sessions.list", json!({ "open": true })).await);
+    ok(client.call("session.stop", json!({ "session": id })).await);
+    let listed = ok(client.query("sessions.list", json!({})).await);
+    let with_path = refused(
+        client
+            .call(
+                "session.create",
+                json!({ "ephemeral": true, "path": created["path"] }),
+            )
+            .await,
+    );
+    let listed_ids = |list: &Value| -> Vec<Value> {
+        list["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].clone())
+            .collect()
+    };
+    assert_eq!(
+        (
+            super::support::saved_transcripts(&bed.agent_dir()).is_empty(),
+            model["model"]["provider"].clone(),
+            listed_ids(&open),
+            listed_ids(&listed).contains(&json!(id)),
+            with_path.contains("no `path`"),
+        ),
+        (true, json!("faux"), vec![json!(id)], false, true)
     );
 }

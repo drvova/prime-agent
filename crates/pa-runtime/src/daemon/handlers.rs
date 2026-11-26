@@ -9,7 +9,9 @@
 //! own runtime, once its engine's first build is done; a change to a saved
 //! one takes the session's lease for the change, so a session another
 //! process holds is refused, never written. `session.create` of a session
-//! the daemon holds open already answers it (`"reused": true`).
+//! the daemon holds open already answers it (`"reused": true`);
+//! `session.create {"ephemeral": true}` opens one that keeps nothing and
+//! ends with its client (`handlers/owned.rs`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,6 +38,7 @@ mod jobs;
 mod mcp;
 mod messaging;
 mod model;
+mod owned;
 mod queue;
 mod state;
 mod summary;
@@ -150,8 +153,18 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             .context("the session's runtime ended during the change")?
     }
 
-    async fn create(&self, args: Value) -> anyhow::Result<Value> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a create's steps read in the order they run: the session named, its lease or \
+                  owner, its options, its build"
+    )]
+    async fn create(&self, args: Value, connection: ConnectionId) -> anyhow::Result<Value> {
         let named = optional_string_arg(&args, "session")?;
+        let ephemeral = match args.get("ephemeral") {
+            None | Some(Value::Null | Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
+            Some(_) => anyhow::bail!("the `ephemeral` argument must be a boolean"),
+        };
         let given_path = optional_string_arg(&args, "path")?.map(PathBuf::from);
         let given_cwd = optional_string_arg(&args, "cwd")?.map(PathBuf::from);
         let options = match args.get("options") {
@@ -162,10 +175,18 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             (Some(_), Some(_)) => {
                 anyhow::bail!("give session.create a `session` or a `path`, not both")
             }
+            (_, Some(_)) if ephemeral => {
+                anyhow::bail!("an ephemeral session has no transcript: give it no `path`")
+            }
+            // Open already: its transcript may not have its header yet.
             (None, Some(path)) => {
-                let header = pa_core::session::manager::read_session_header(&path)
-                    .with_context(|| format!("no session header in {}", path.display()))?;
-                (header.id, path)
+                if let Some(id) = self.open.id_of(&path) {
+                    (id, path)
+                } else {
+                    let header = pa_core::session::manager::read_session_header(&path)
+                        .with_context(|| format!("no session header in {}", path.display()))?;
+                    (header.id, path)
+                }
             }
             (Some(id), None) => {
                 let path = get_session_file_path(&self.session_dir, &id);
@@ -180,8 +201,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         // Open already (the boot revived it, or another client opened it):
         // answered as it runs, the old daemon's create-open reuse.
         if let Some(path) = self.open.path(&id) {
-            let cwd =
-                pa_core::session::manager::read_session_header(&path).map(|header| header.cwd);
+            let cwd = self.open.cwd(&id);
             return Ok(json!({ "session": id, "path": path, "cwd": cwd, "reused": true }));
         }
         let cwd = match given_cwd {
@@ -189,16 +209,31 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             None => pa_core::session::manager::read_session_header(&path)
                 .map_or_else(|| self.cwd.clone(), |header| PathBuf::from(header.cwd)),
         };
-        let lease = {
+        if ephemeral {
+            anyhow::ensure!(
+                !store().exists(&path),
+                "session {id} has a transcript: an ephemeral session is a new one"
+            );
+        }
+        // An ephemeral session has no transcript to lease, and is owned by
+        // the client that created it.
+        let (lease, owner) = if ephemeral {
+            (None, Some(self.attached.client_of(connection)))
+        } else {
             let (path, agent_dir) = (path.clone(), self.agent_dir.clone());
-            tokio::task::spawn_blocking(move || acquire_runtime_session_lease(&path, &agent_dir))
-                .await
-                .context("the lease's thread panicked")??
+            let lease = tokio::task::spawn_blocking(move || {
+                acquire_runtime_session_lease(&path, &agent_dir)
+            })
+            .await
+            .context("the lease's thread panicked")??;
+            (Some(lease), None)
         };
         // Given options are kept for the session's later builds (its
         // revival, a scheduled wake); a session created again without any
-        // keeps the ones it was created with.
+        // keeps the ones it was created with. An ephemeral session is never
+        // built again: its options are not kept.
         let options = match options {
+            Some(options) if ephemeral => options,
             Some(options) => {
                 self.runtime
                     .log()
@@ -221,8 +256,9 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 cwd: cwd.clone(),
                 env: super::session_env(&self.agent_dir, &id),
                 subagent: None,
-                transcript: Some(path.clone()),
+                transcript: (!ephemeral).then(|| path.clone()),
                 options,
+                ephemeral,
             })
             .await?;
         self.open
@@ -232,6 +268,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                     path: path.clone(),
                     cwd: cwd.clone(),
                     _lease: lease,
+                    owner,
                 },
             )
             .await;
@@ -425,7 +462,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
         connection: ConnectionId,
     ) -> anyhow::Result<Value> {
         match call {
-            Call::SessionCreate => self.create(args).await,
+            Call::SessionCreate => self.create(args, connection).await,
             Call::SessionStop => self.stop(&args).await,
             Call::SessionRename => self.rename(&args).await,
             Call::SessionDelete => self.delete(&args).await,
@@ -441,7 +478,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionRestore => self.restore(&args).await,
             Call::SessionCompact => self.compact(&args).await,
             Call::SessionWaitIdle => self.wait_idle(&args).await,
-            Call::SessionSend => self.send(&args).await,
+            Call::SessionSend => self.send(&args, connection).await,
             Call::SessionSetMcpServers => self.set_mcp_servers(&args).await,
             Call::SessionBash => self.bash(&args).await,
             Call::SessionAbortBash => self.abort_bash(&args),
@@ -456,6 +493,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
 
     async fn disconnected(&self, connection: ConnectionId) {
         self.release_connection_holds(connection);
+        self.end_owned_sessions(connection).await;
     }
 }
 

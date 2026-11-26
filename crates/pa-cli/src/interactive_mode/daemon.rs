@@ -107,6 +107,42 @@ pub async fn ensure_daemon_running_with(
     }
 }
 
+/// Ensure the runtime daemon is listening beside `daemon_socket` (its
+/// `daemon2.sock`), spawning this executable in `--mode daemon` on
+/// `daemon_socket` when it is not: the spawned process inherits this one's
+/// environment, so it is the runtime daemon the environment or the
+/// settings selected. Answers the runtime daemon's socket.
+///
+/// # Errors
+/// Returns an error when the executable path cannot be resolved, the daemon
+/// cannot be spawned, or its socket does not answer before the startup
+/// timeout.
+pub async fn ensure_runtime_daemon_running(
+    daemon_socket: &Path,
+    spawn_cwd: &Path,
+) -> Result<std::path::PathBuf> {
+    let socket = pa_runtime::daemon::socket_path(daemon_socket);
+    let probe = Duration::from_millis(250);
+    if pa_daemon::socket::can_connect(&socket, probe).await {
+        return Ok(socket);
+    }
+    let exe = std::env::current_exe().context("resolve the prime-agent executable")?;
+    spawn_supervisor_detached(daemon_socket, spawn_cwd, &exe)?;
+    let deadline = Instant::now() + Duration::from_millis(DAEMON_STARTUP_TIMEOUT_MS);
+    loop {
+        if pa_daemon::socket::can_connect(&socket, probe).await {
+            return Ok(socket);
+        }
+        if Instant::now() > deadline {
+            return Err(anyhow!(
+                "Timed out waiting for the Prime Agent daemon to start on {} (the runtime daemon). Run: prime-agent shutdown --force, then retry the original command.",
+                socket.display()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(DAEMON_PROBE_INTERVAL_MS)).await;
+    }
+}
+
 /// Shut a stale daemon down when no session is busy; a busy one refuses
 /// replacement.
 async fn shutdown_stale_daemon(
@@ -164,8 +200,9 @@ async fn wait_for_socket_gone(socket_path: &Path) -> bool {
     false
 }
 
-/// Spawn a detached supervisor on `socket_path` (the child outlives this
-/// CLI).
+/// Spawn a detached daemon on `socket_path` (the child outlives this CLI):
+/// the supervisor, or the runtime daemon when the environment or settings
+/// select it.
 fn spawn_supervisor_detached(socket_path: &Path, spawn_cwd: &Path, exe: &Path) -> Result<()> {
     let mut command = Command::new(exe);
     command

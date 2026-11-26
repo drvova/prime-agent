@@ -98,13 +98,29 @@ async fn acp_mode_main(options: &RunOptions) -> Result<i32, String> {
     // would target the TypeScript default socket and treat the schema
     // mismatch as a stale daemon).
     let socket_path = crate::config::resolve_daemon_socket_path(options.daemon_socket.as_deref());
-    crate::interactive_mode::ensure_daemon_running(&socket_path, &options.config.cwd)
+    // With the runtime daemon selected (`PRIME_AGENT_RUNTIME_DAEMON=1`, or
+    // `"daemon": "runtime"`), ACP drives it on wire2 instead.
+    let runtime_selected = crate::daemon_mode::env_selects_runtime_daemon()
+        || crate::daemon_mode::settings_select_runtime_daemon(&options.config.agent_dir);
+    let (socket_path, daemon) = if runtime_selected {
+        let socket = crate::interactive_mode::ensure_runtime_daemon_running(
+            &socket_path,
+            &options.config.cwd,
+        )
         .await
         .map_err(|error| format!("{error:#}"))?;
+        (socket, pa_runtime::acp::daemon::AcpDaemon::Runtime)
+    } else {
+        crate::interactive_mode::ensure_daemon_running(&socket_path, &options.config.cwd)
+            .await
+            .map_err(|error| format!("{error:#}"))?;
+        (socket_path, pa_runtime::acp::daemon::AcpDaemon::Supervisor)
+    };
     let (actual_cwd, create) = daemon_acp_create(options)?;
     pa_runtime::acp::daemon::run_daemon_attached_acp_mode(
         pa_runtime::acp::daemon::DaemonAcpOptions {
             socket_path,
+            daemon,
             actual_cwd,
             product_version: crate::config::version().to_string(),
             create,

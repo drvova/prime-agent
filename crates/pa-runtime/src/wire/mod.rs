@@ -210,7 +210,7 @@ where
         let (out, outbound) = mpsc::channel(self.config.outbound_capacity.get());
         let (control, controls) = mpsc::channel(1);
         let feed = Feed::new(self.bus.events(), out.clone(), welcome_seq);
-        let connection = self.attached.connect();
+        let connection = self.attached.connect(&client);
         let session = async {
             // Whichever ends first ends the other; ending drops their
             // senders, so the writer sends what is queued and ends.
