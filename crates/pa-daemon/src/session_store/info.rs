@@ -30,11 +30,11 @@ pub struct SessionInfo {
     pub first_message: String,
     /// The own-usage summary — assistant aggregates plus summarization calls,
     /// minus every attributed child block; `None` when the session recorded no billable work.
-    pub usage: Option<crate::session_usage::SessionUsageSummary>,
+    pub usage: Option<pa_core::session::usage_summary::SessionUsageSummary>,
     /// The recursive spend of ledger-tombstoned descendants, attached by the
     /// catalog's listing arm from the spawn ledger. Never set by the file
     /// scan: ledger-derived, not transcript-derived.
-    pub deleted_descendant_usage: Option<crate::session_usage::SessionUsageSummary>,
+    pub deleted_descendant_usage: Option<pa_core::session::usage_summary::SessionUsageSummary>,
 }
 
 /// The scan's read-buffer size: one 64 KiB fill reads the typical session in
@@ -317,6 +317,16 @@ pub(super) struct SessionInfoEntry<'a> {
     child_usage: Option<crate::session_usage::ScanUsage>,
     #[serde(default)]
     aggregate_usage: Option<crate::session_usage::ScanUsage>,
+}
+
+/// A transcript's own usage through [`read_session_info`]'s resumable scan:
+/// the RLM ledger's deleted-spend fallback for a tombstone that predates its
+/// usage snapshot (`RlmSpawnLedger::with_legacy_usage`).
+#[must_use]
+pub fn legacy_ledger_usage(
+    path: &Path,
+) -> Option<pa_core::session::usage_summary::SessionUsageSummary> {
+    read_session_info(path).and_then(|info| info.usage)
 }
 
 /// Read a session file's list metadata: unchanged files answer from the cache,

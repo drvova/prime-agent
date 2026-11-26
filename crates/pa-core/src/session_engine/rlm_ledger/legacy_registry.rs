@@ -125,8 +125,9 @@ pub(super) const LEGACY_REGISTRY_HEADER_READ_MAX_BYTES: usize = 64 * 1024;
 /// — the passive walk probes every parent once, so a whole-file read
 /// would be linear in transcript bytes.
 pub(super) fn legacy_registry_path(session_file: &Path) -> Option<PathBuf> {
-    let line = crate::session_store::read_first_line_bounded(
-        session_file,
+    let mut transcript = crate::session::store::store().open(session_file).ok()?;
+    let line = crate::session::store::read_first_line_bounded(
+        &mut *transcript,
         LEGACY_REGISTRY_HEADER_READ_MAX_BYTES,
     )?;
     let text = std::str::from_utf8(&line).ok()?;
@@ -140,7 +141,8 @@ pub(super) fn legacy_registry_path(session_file: &Path) -> Option<PathBuf> {
 
 /// Tolerant reader for a per-parent legacy registry (TS `readLegacyRlmSubagentRegistry`): latest
 /// entry per childId, malformed lines ignored, a missing file an empty registry.
-pub(crate) fn read_legacy_registry(session_file: &Path) -> Vec<LegacyRlmSubagentEntry> {
+#[must_use]
+pub fn read_legacy_registry(session_file: &Path) -> Vec<LegacyRlmSubagentEntry> {
     let Some(registry) = legacy_registry_path(session_file) else {
         return Vec::new();
     };

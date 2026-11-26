@@ -1,7 +1,7 @@
 //! The RLM ledger test battery: grammar, replay, tombstone, seed, display,
 //! and usage-bucket families.
 use super::*;
-use crate::session_usage::SessionUsageSummary;
+use crate::session::usage_summary::SessionUsageSummary;
 
 fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::Builder::new()
@@ -339,7 +339,7 @@ fn moved_edge_paths_resolve_through_the_session_id() {
     // The resolved paths are canonicalized (the sessions dir the
     // resolver anchors to is canonical).
     let canonical = |path: &Path| -> String {
-        pa_core::session::lease::canonical_session_path(path)
+        crate::session::lease::canonical_session_path(path)
             .to_string_lossy()
             .to_string()
     };
@@ -537,9 +537,7 @@ fn a_parent_left_in_the_archive_dir_is_a_dead_endpoint_walked_once() {
     let ledger = ledger_over(&agent_dir, &sessions_dir);
     let child = sessions_dir.join("sess-c.jsonl");
     fs::write(&child, "{}").unwrap();
-    let archived = agent_dir
-        .join("sessions-archive")
-        .join(crate::session_store::session_file_name("sess-p"));
+    let archived = agent_dir.join("sessions-archive").join("sess-p.jsonl");
     fs::create_dir_all(archived.parent().unwrap()).unwrap();
     fs::write(&archived, "{}").unwrap();
     ledger
@@ -799,8 +797,8 @@ fn display_entry_file_is_owner_only() {
     }
 }
 
-fn usage_summary(cost: f64) -> crate::session_usage::SessionUsageSummary {
-    crate::session_usage::SessionUsageSummary {
+fn usage_summary(cost: f64) -> crate::session::usage_summary::SessionUsageSummary {
+    crate::session::usage_summary::SessionUsageSummary {
         input_tokens: 1_000,
         output_tokens: 100,
         cost,
@@ -1060,10 +1058,10 @@ fn bucket_folds_own_snapshots_post_order_without_double_counting() {
     fs::remove_file(&child_1).unwrap();
     fs::remove_file(&grandchild_1).unwrap();
     let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();
-    let parent_key = pa_core::session::lease::canonical_session_path(&parent)
+    let parent_key = crate::session::lease::canonical_session_path(&parent)
         .to_string_lossy()
         .to_string();
-    let child_key = pa_core::session::lease::canonical_session_path(&child_1)
+    let child_key = crate::session::lease::canonical_session_path(&child_1)
         .to_string_lossy()
         .to_string();
     let deleted = bucket
@@ -1131,7 +1129,7 @@ fn bucket_legacy_tombstones_fall_back_then_gap_to_zero() {
             RlmLedgerDeleteReason::User,
         )
         .unwrap();
-    let parent_key = pa_core::session::lease::canonical_session_path(&parent)
+    let parent_key = crate::session::lease::canonical_session_path(&parent)
         .to_string_lossy()
         .to_string();
     // A tombstoned transcript directly in the sessions dir keeps its
@@ -1163,7 +1161,11 @@ fn bucket_legacy_tombstones_fall_back_then_gap_to_zero() {
 #[test]
 fn bucket_bills_tombstoned_children_without_catalog_rows() {
     let (_tmp, dir) = temp_dir("bucket-no-row");
-    let ledger = ledger_for(&dir);
+    // The legacy fallback the embedder gives (the daemon's resumable
+    // own-usage scan): here it reads the legacy child's fold as 0.25.
+    let ledger = ledger_for(&dir).with_legacy_usage(Box::new(|path: &Path| {
+        (path.file_name() == Some(std::ffi::OsStr::new("sub-2.jsonl"))).then(|| usage_summary(0.25))
+    }));
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
     let parent = sessions.join("p.jsonl");
@@ -1247,7 +1249,7 @@ fn bucket_bills_tombstoned_children_without_catalog_rows() {
         )
         .unwrap();
     let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();
-    let parent_key = pa_core::session::lease::canonical_session_path(&parent)
+    let parent_key = crate::session::lease::canonical_session_path(&parent)
         .to_string_lossy()
         .to_string();
     assert_eq!(
@@ -1319,10 +1321,10 @@ fn bucket_claims_each_tombstoned_path_once() {
     // that died — a live file rides its own row).
     fs::remove_file(&child).unwrap();
     let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();
-    let key_a = pa_core::session::lease::canonical_session_path(&parent_a)
+    let key_a = crate::session::lease::canonical_session_path(&parent_a)
         .to_string_lossy()
         .to_string();
-    let key_b = pa_core::session::lease::canonical_session_path(&parent_b)
+    let key_b = crate::session::lease::canonical_session_path(&parent_b)
         .to_string_lossy()
         .to_string();
     assert!(
@@ -1396,7 +1398,7 @@ fn the_bucket_updates_after_an_append_on_the_same_ledger() {
     fs::write(&parent, "{}").unwrap();
     fs::write(&child_1, "{}").unwrap();
     fs::write(&child_2, "{}").unwrap();
-    let parent_key = pa_core::session::lease::canonical_session_path(&parent)
+    let parent_key = crate::session::lease::canonical_session_path(&parent)
         .to_string_lossy()
         .to_string();
     let spawn_delete = |child_id: &str, child: &Path, cost: f64| {
@@ -1476,7 +1478,7 @@ fn a_restored_tombstoned_child_stops_billing_the_parent_without_an_append() {
         .unwrap();
     let archive = dir.join("sessions-archive");
     fs::create_dir_all(&archive).unwrap();
-    let archived = archive.join(crate::session_store::session_file_name("child"));
+    let archived = archive.join("child.jsonl");
     fs::rename(&child, &archived).unwrap();
     let key = canonical_session_path(&parent)
         .to_string_lossy()

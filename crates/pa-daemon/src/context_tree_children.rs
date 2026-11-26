@@ -28,14 +28,14 @@ const ELLIPSIS: &str = "...";
 pub struct ContextLedger {
     tombstoned: HashMap<PathBuf, HashSet<String>>,
     tombstoned_files: HashSet<PathBuf>,
-    deleted: HashMap<PathBuf, Vec<crate::rlm_ledger::DeletedChildUsage>>,
-    factory: HashMap<PathBuf, crate::rlm_ledger::RlmFactoryTag>,
+    deleted: HashMap<PathBuf, Vec<pa_core::session_engine::rlm_ledger::DeletedChildUsage>>,
+    factory: HashMap<PathBuf, pa_core::session_engine::rlm_host::RlmFactoryTag>,
 }
 
 impl ContextLedger {
     /// Read the facts from one ledger. An unreadable ledger degrades to no
     /// filtering and no deleted rows.
-    pub fn read(ledger: &crate::rlm_ledger::RlmSpawnLedger) -> Self {
+    pub fn read(ledger: &pa_core::session_engine::rlm_ledger::RlmSpawnLedger) -> Self {
         let mut facts = Self::default();
         let (edges, deleted) = ledger.edges_with_deleted_children().unwrap_or_default();
         // A reused path with a live edge bills as live, like the ledger's

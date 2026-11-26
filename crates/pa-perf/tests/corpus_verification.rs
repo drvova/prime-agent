@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use pa_core::session::parse_session_entries;
-use pa_daemon::rlm_ledger::RlmSpawnLedger;
+use pa_core::session_engine::rlm_ledger::RlmSpawnLedger;
 use pa_daemon::session_store::SessionFile;
 use pa_perf::corpus::{generate, CacheMode, CorpusOptions, Profile};
 

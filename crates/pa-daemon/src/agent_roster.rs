@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::session_usage::SessionUsageSummary;
+use pa_core::session::usage_summary::SessionUsageSummary;
 use pa_types::daemon::agent_roster::{
     classify_summary_value, roster_agent_id_for_summary, slim_roster_summary, AgentRosterEntry,
 };

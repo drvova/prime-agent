@@ -269,9 +269,10 @@ async fn scope_exit_keeps_the_subagents_item(exit_key: &'static str) {
         1,
         &[("do the work", "work complete alpha")],
     );
-    let ledger = pa_daemon::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &session_dir, |_m| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &session_dir, |_m| {});
     ledger
-        .append_spawn(&pa_daemon::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "scope-exit-child".to_string(),
             parent: parent_path.to_string_lossy().to_string(),
             child: child_path.to_string_lossy().to_string(),

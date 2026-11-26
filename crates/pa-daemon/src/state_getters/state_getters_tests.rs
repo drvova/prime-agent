@@ -508,9 +508,11 @@ async fn get_context_tree_lists_persisted_children() {
     let deleted_dir = artifacts.join(session_id).join("sub-deadbeef");
     let deleted_session = "01a0dead-1111-2222-3333-4444444444";
     write_session(&deleted_dir, deleted_session, "stop");
-    let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions, |_| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-deadbeef".to_string(),
             parent: session_file.display().to_string(),
             child: deleted_dir.display().to_string(),
@@ -523,7 +525,7 @@ async fn get_context_tree_lists_persisted_children() {
         .append_delete(
             "sub-deadbeef",
             &deleted_dir.display().to_string(),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .unwrap();
 

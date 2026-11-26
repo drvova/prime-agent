@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::rlm_ledger::{
+use crate::session_store::{read_session_info, SessionInfo};
+use pa_core::session::lease::canonical_session_path;
+use pa_core::session_engine::rlm_ledger::{
     read_legacy_registry, read_rlm_subagent_display, LegacyRlmSubagentEntry, RlmLedgerEdge,
     RlmSpawnLedger,
 };
-use crate::session_store::{read_session_info, SessionInfo};
-use pa_core::session::lease::canonical_session_path;
 
 /// Hydration metadata fields beyond the edge (prompt, model, node ids):
 /// display-grade, never topology.
@@ -231,7 +231,7 @@ pub fn passive_child_info(child: &PassiveRlmChild) -> SessionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rlm_ledger::{RlmLedgerDeleteReason, RlmSpawnInput};
+    use pa_core::session_engine::rlm_ledger::{RlmLedgerDeleteReason, RlmSpawnInput};
     use serde_json::json;
     use std::fs;
 
@@ -366,7 +366,8 @@ mod tests {
         write_session(&grandchild, "c2", 1);
         let dead = dir.join("dead.jsonl");
 
-        let ledger = RlmSpawnLedger::new(&dir, &sessions, |_| {});
+        let ledger = RlmSpawnLedger::new(&dir, &sessions, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         ledger
             .append_spawn(&RlmSpawnInput {
                 child_id: "sub-1".into(),
@@ -460,7 +461,8 @@ mod tests {
         write_session(&parent, "p", 1);
         let child = dir.join("c.jsonl");
         write_session(&child, "c", 2);
-        let ledger = RlmSpawnLedger::new(&dir, &sessions, |_| {});
+        let ledger = RlmSpawnLedger::new(&dir, &sessions, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         ledger
             .append_spawn(&RlmSpawnInput {
                 child_id: "sub-7".into(),

@@ -464,20 +464,22 @@ impl Worker {
         // A parked `agent_message.wait` hears the accepted delivery (identity and preview only:
         // the body still arrives once, as the queued turn above).
         if let Some(waits) = self.engine.agent_message_waits() {
-            waits.deliver(crate::agent_message_wait::AgentMessageArrival {
-                message_id: id.clone(),
-                sender_ids: ["activeSessionId", "sessionId"]
-                    .iter()
-                    .filter_map(|key| sender.get(*key).and_then(Value::as_str))
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_string)
-                    .collect(),
-                sender_name: sender_label,
-                preview: pa_core::session_engine::agent_messaging::create_agent_message_preview(
-                    message,
-                ),
-                kind,
-            });
+            waits.deliver(
+                pa_core::session_engine::agent_messaging::AgentMessageArrival {
+                    message_id: id.clone(),
+                    sender_ids: ["activeSessionId", "sessionId"]
+                        .iter()
+                        .filter_map(|key| sender.get(*key).and_then(Value::as_str))
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                    sender_name: sender_label,
+                    preview: pa_core::session_engine::agent_messaging::create_agent_message_preview(
+                        message,
+                    ),
+                    kind,
+                },
+            );
         }
         self.report_agent_traffic(&pa_types::agent_traffic::AgentTrafficEntry {
             root_active_session_id: String::new(),

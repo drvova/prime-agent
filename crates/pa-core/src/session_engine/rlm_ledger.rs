@@ -26,9 +26,10 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::util::now_iso;
-use pa_core::session::lease::canonical_session_path;
-pub use pa_core::session_engine::rlm_host::RlmFactoryTag;
+use crate::session::lease::canonical_session_path;
+use crate::session::manager::format_iso_now as now_iso;
+use crate::session::usage_summary::{ModelUsageSummary, SessionUsageSummary};
+use crate::session_engine::rlm_host::RlmFactoryTag;
 
 mod replay;
 
@@ -39,7 +40,7 @@ use replay::{
 
 mod legacy_registry;
 
-pub(crate) use legacy_registry::read_legacy_registry;
+pub use legacy_registry::read_legacy_registry;
 #[cfg(test)]
 use legacy_registry::{legacy_registry_path, LEGACY_REGISTRY_HEADER_READ_MAX_BYTES};
 pub use legacy_registry::{
@@ -97,11 +98,11 @@ pub struct RlmLedgerEdge {
     pub deleted: Option<RlmLedgerDeleteReason>,
     /// The child's captured own usage at deletion, so a tombstoned child's
     /// spend stays billable; `None` on legacy tombstones and live edges.
-    pub deleted_usage: Option<crate::session_usage::SessionUsageSummary>,
+    pub deleted_usage: Option<SessionUsageSummary>,
     /// The captured usage's per-model split (`None` on snapshots written
     /// before the split was captured, or when the transcript's models did
     /// not reconcile with the snapshot).
-    pub deleted_usage_by_model: Option<Vec<crate::session_usage::ModelUsageSummary>>,
+    pub deleted_usage_by_model: Option<Vec<ModelUsageSummary>>,
     /// The factory run that spawned the child (spawn records written
     /// before the tag existed read `None`); it survives the tombstone.
     pub factory: Option<RlmFactoryTag>,
@@ -127,17 +128,17 @@ pub struct DeletedChildUsage {
     pub child_file: String,
     pub name: String,
     pub factory: Option<RlmFactoryTag>,
-    pub usage: crate::session_usage::SessionUsageSummary,
+    pub usage: SessionUsageSummary,
     /// `usage` split by model; `None` when any folded path has no split
     /// (a snapshot captured before the split existed).
-    pub by_model: Option<Vec<crate::session_usage::ModelUsageSummary>>,
+    pub by_model: Option<Vec<ModelUsageSummary>>,
 }
 
 /// The billable deleted children keyed by the parent's canonical session path.
 pub type DeletedChildrenByParent = HashMap<String, Vec<DeletedChildUsage>>;
 
-fn zero_usage() -> crate::session_usage::SessionUsageSummary {
-    crate::session_usage::SessionUsageSummary {
+fn zero_usage() -> SessionUsageSummary {
+    SessionUsageSummary {
         input_tokens: 0,
         output_tokens: 0,
         cost: 0.0,
@@ -147,10 +148,7 @@ fn zero_usage() -> crate::session_usage::SessionUsageSummary {
 
 /// Saturating: the fold feeds billable rollups - a huge snapshot must not
 /// panic or wrap to an underbill in release.
-fn add_usage(
-    mut left: crate::session_usage::SessionUsageSummary,
-    right: &crate::session_usage::SessionUsageSummary,
-) -> crate::session_usage::SessionUsageSummary {
+fn add_usage(mut left: SessionUsageSummary, right: &SessionUsageSummary) -> SessionUsageSummary {
     left.input_tokens = left.input_tokens.saturating_add(right.input_tokens);
     left.output_tokens = left.output_tokens.saturating_add(right.output_tokens);
     // The billing splits sum; a side without one (unclassified calls only) adds its cost
@@ -179,9 +177,9 @@ fn unclassified_split(cost: f64) -> pa_types::billing::BillingSplit {
 
 /// Merge two per-model splits; an unsplit side leaves the sum unsplit.
 fn add_usage_by_model(
-    left: Option<Vec<crate::session_usage::ModelUsageSummary>>,
-    right: Option<&Vec<crate::session_usage::ModelUsageSummary>>,
-) -> Option<Vec<crate::session_usage::ModelUsageSummary>> {
+    left: Option<Vec<ModelUsageSummary>>,
+    right: Option<&Vec<ModelUsageSummary>>,
+) -> Option<Vec<ModelUsageSummary>> {
     let (mut left, right) = (left?, right?);
     for model in right {
         match left
@@ -210,14 +208,30 @@ pub struct RlmSpawnLedger {
     seed_attempted: AtomicBool,
     cache: Mutex<Option<ReplaySnapshot>>,
     log: Box<dyn Fn(&str) + Send + Sync>,
+    /// Reads a tombstoned child's own usage from its transcript when its
+    /// tombstone predates the captured snapshot; without one such a child
+    /// bills the historical gap (zero).
+    legacy_usage: Option<LegacyUsageReader>,
 }
+
+/// Reads one transcript's own usage summary: the deleted-spend fold's
+/// fallback for tombstones written before the snapshot was captured.
+pub type LegacyUsageReader = Box<dyn Fn(&Path) -> Option<SessionUsageSummary> + Send + Sync>;
 
 /// Ledger path for one sessions dir: a 16-hex sha256 of the canonical
 /// sessions dir under `<agent-dir>/rlm-ledger/`.
 #[must_use]
 pub fn rlm_ledger_path(agent_dir: &Path, sessions_dir: &Path) -> PathBuf {
     let canonical = canonicalize_dir(sessions_dir);
-    let hash = crate::paths::hash_key(&canonical.to_string_lossy(), 16);
+    let hash = {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(canonical.to_string_lossy().as_bytes());
+        digest.iter().take(8).fold(String::new(), |mut key, byte| {
+            use std::fmt::Write as _;
+            write!(key, "{byte:02x}").expect("write to a String");
+            key
+        })
+    };
     agent_dir.join(RLM_LEDGER_DIR).join(format!("{hash}.jsonl"))
 }
 
@@ -351,7 +365,16 @@ impl RlmSpawnLedger {
             seed_attempted: AtomicBool::new(false),
             cache: Mutex::new(None),
             log: Box::new(log),
+            legacy_usage: None,
         }
+    }
+
+    /// The ledger whose deleted-spend fold reads a legacy tombstone's usage
+    /// with `read` (the session list's resumable own-usage scan).
+    #[must_use]
+    pub fn with_legacy_usage(mut self, read: LegacyUsageReader) -> Self {
+        self.legacy_usage = Some(read);
+        self
     }
 
     pub fn ledger_path(&self) -> &Path {
@@ -493,8 +516,8 @@ impl RlmSpawnLedger {
         child_id: &str,
         child: &str,
         reason: RlmLedgerDeleteReason,
-        usage: &crate::session_usage::SessionUsageSummary,
-        by_model: Option<&[crate::session_usage::ModelUsageSummary]>,
+        usage: &SessionUsageSummary,
+        by_model: Option<&[ModelUsageSummary]>,
     ) -> Result<()> {
         let child_path = canonical_session_path(Path::new(child));
         // The writer never records what the reader refuses: replay
@@ -550,8 +573,8 @@ impl RlmSpawnLedger {
         &self,
         child: &str,
         reason: RlmLedgerDeleteReason,
-        usage: Option<&crate::session_usage::SessionUsageSummary>,
-        by_model: Option<&[crate::session_usage::ModelUsageSummary]>,
+        usage: Option<&SessionUsageSummary>,
+        by_model: Option<&[ModelUsageSummary]>,
     ) -> Result<Vec<RlmLedgerEdge>> {
         let target = canonical_session_path(Path::new(child));
         let state = self.replay_cached()?;
@@ -590,7 +613,7 @@ impl RlmSpawnLedger {
     /// ledger) or a prior panic poisoned the deleted-usage cache.
     pub fn deleted_descendant_usage_by_parent(
         &self,
-    ) -> Result<HashMap<String, crate::session_usage::SessionUsageSummary>> {
+    ) -> Result<HashMap<String, SessionUsageSummary>> {
         self.seed_once()?;
         let state = self.replay_cached()?;
         Ok(self
@@ -650,7 +673,7 @@ impl RlmSpawnLedger {
             .iter()
             .filter(|edge| edge.deleted.is_some())
             .map(|edge| {
-                pa_core::session::store::store()
+                crate::session::store::store()
                     .stat(Path::new(&edge.child))
                     .ok()
                     .map(|stat| stat.generation)
@@ -673,7 +696,7 @@ impl RlmSpawnLedger {
 
     /// Seed and replay the ledger ahead of its first reader; a failed
     /// replay is left to that reader, which reports it.
-    pub(crate) fn warm(&self) {
+    pub fn warm(&self) {
         if self.seed_once().is_ok() {
             drop(self.replay_cached());
         }
@@ -692,7 +715,7 @@ impl RlmSpawnLedger {
     ///
     /// Returns an error when the ledger replay fails (an oversized ledger)
     /// or a prior panic poisoned the artifact index lock.
-    pub(crate) fn family_edges(
+    pub fn family_edges(
         &self,
         roots: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Vec<RlmLedgerEdge>> {
@@ -752,7 +775,6 @@ impl RlmSpawnLedger {
     }
 
     fn fold_deleted_children(&self, edges: &[RlmLedgerEdge]) -> DeletedChildrenByParent {
-        use crate::session_usage::{ModelUsageSummary, SessionUsageSummary};
         let canonical = |path: &str| {
             canonical_session_path(Path::new(path))
                 .to_string_lossy()
@@ -786,7 +808,7 @@ impl RlmSpawnLedger {
             // keeps that transcript and no row anywhere bills it, so the
             // bucket is the only surface that keeps its spend.
             let child_file = Path::new(&child);
-            if pa_core::session::store::store()
+            if crate::session::store::store()
                 .stat(child_file)
                 .is_ok_and(|stat| stat.is_transcript)
                 && child_file.parent() == Some(self.canonical_sessions_dir.as_path())
@@ -811,8 +833,10 @@ impl RlmSpawnLedger {
                     // surviving legacy transcript is one stat per child. It has
                     // no split (a per-model read would reparse the transcript on
                     // every fold); the historical gap bills zero, which needs none.
-                    None => match crate::session_store::read_session_info(Path::new(path))
-                        .and_then(|info| info.usage)
+                    None => match self
+                        .legacy_usage
+                        .as_ref()
+                        .and_then(|read| read(Path::new(path)))
                     {
                         Some(usage) => (usage, None),
                         None => (zero_usage(), Some(Vec::new())),
@@ -1108,7 +1132,8 @@ impl RlmSpawnLedger {
     fn append_record(&self, record: &Value) -> Result<()> {
         self.seed_once()?;
         if let Some(parent) = self.path.parent() {
-            crate::paths::ensure_dir(parent)?;
+            fs::create_dir_all(parent)?;
+            let _ = crate::platform::perms::restrict_dir(parent);
         }
         let mut line = serde_json::to_string(&record)?;
         line.push('\n');
@@ -1152,7 +1177,7 @@ impl RlmSpawnLedger {
         if self.path.exists() {
             return Ok(());
         }
-        let Ok(root_entries) = pa_core::session::store::store().list(&self.canonical_sessions_dir)
+        let Ok(root_entries) = crate::session::store::store().list(&self.canonical_sessions_dir)
         else {
             return Ok(());
         };
@@ -1229,7 +1254,9 @@ impl RlmSpawnLedger {
         let temp_path = self.path.with_extension(format!(
             "seed-{}-{}",
             std::process::id(),
-            crate::util::now_ms()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_millis())
         ));
         {
             let mut file = File::create(&temp_path)?;

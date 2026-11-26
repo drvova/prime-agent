@@ -1158,8 +1158,10 @@ async fn a_cancelled_child_keeps_its_display_running_through_the_watcher_settle(
             .expect("both settle hooks fire")
             .expect("hook channel open");
     }
-    let display = crate::rlm_ledger::read_rlm_subagent_display(Path::new(&handle.session_dir))
-        .expect("display entry stays readable");
+    let display = pa_core::session_engine::rlm_ledger::read_rlm_subagent_display(Path::new(
+        &handle.session_dir,
+    ))
+    .expect("display entry stays readable");
     assert_eq!(display.status, "running");
 }
 

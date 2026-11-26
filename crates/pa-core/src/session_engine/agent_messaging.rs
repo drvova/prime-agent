@@ -705,6 +705,12 @@ pub use wait::{
     AGENT_MESSAGE_WAIT_MAX_TIMEOUT_MS,
 };
 
+mod waits;
+pub use waits::{
+    wait_cycle, wait_for_arrival, AgentMessageArrival, AgentMessageWait, AgentMessageWaitSenders,
+    AgentMessageWaitStart, AgentMessageWaits, StillQueued, WaitingOnChanged,
+};
+
 mod rate_limit;
 pub(crate) use rate_limit::{observe_agent_message_refusals, AgentMessageRefusals};
 use rate_limit::{AgentMessageClock, AgentMessageRateLimiter, RETRY_AFTER_MS_FIELD};

@@ -344,7 +344,8 @@ fn write_synthetic_family(agent_dir: &Path, children: usize) -> (PathBuf, usize)
         records.push('\n');
         live += 1;
     }
-    let ledger_path = pa_daemon::rlm_ledger::rlm_ledger_path(agent_dir, &sessions_dir);
+    let ledger_path =
+        pa_core::session_engine::rlm_ledger::rlm_ledger_path(agent_dir, &sessions_dir);
     std::fs::create_dir_all(ledger_path.parent().expect("ledger dir")).expect("ledger dir");
     let payload = format!(
         "{{\"v\":1,\"op\":\"meta\",\"at\":\"2026-09-18T00:00:00.000Z\",\"sessionsDir\":\"{}\"}}\n{records}",

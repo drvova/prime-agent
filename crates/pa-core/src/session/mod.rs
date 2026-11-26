@@ -9,6 +9,7 @@ pub mod manager_ext;
 pub mod revival;
 pub mod store;
 pub mod tree;
+pub mod usage_summary;
 pub mod window;
 mod window_cache;
 

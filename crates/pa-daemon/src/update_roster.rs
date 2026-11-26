@@ -17,9 +17,9 @@ use pa_types::daemon::{
 };
 use serde_json::{json, Map, Value};
 
-use crate::rlm_ledger::{read_rlm_subagent_display, RlmSpawnLedger};
 use crate::util::iso_from_unix_ms;
 use pa_core::session::lease::canonical_session_path;
+use pa_core::session_engine::rlm_ledger::{read_rlm_subagent_display, RlmSpawnLedger};
 
 /// One resident worker's collected data for the roster: its durable
 /// descriptor plus the live `update_snapshot` reply.
@@ -378,7 +378,7 @@ pub(crate) fn build_update_roster(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rlm_ledger::RlmSpawnInput;
+    use pa_core::session_engine::rlm_ledger::RlmSpawnInput;
 
     fn sessions_file(sessions_dir: &Path, session_id: &str) -> String {
         sessions_dir
@@ -487,7 +487,8 @@ mod tests {
         for session_id in ["p1", "c1"] {
             std::fs::write(sessions_dir.join(format!("{session_id}.jsonl")), "").unwrap();
         }
-        let ledger = RlmSpawnLedger::new(agent_dir, &sessions_dir, |_| {});
+        let ledger = RlmSpawnLedger::new(agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         ledger
             .append_spawn(&RlmSpawnInput {
                 parent: sessions_file(&sessions_dir, "p1"),

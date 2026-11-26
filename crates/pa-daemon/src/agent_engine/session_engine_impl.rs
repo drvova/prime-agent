@@ -975,7 +975,7 @@ impl SessionEngine for AgentSessionEngine {
     /// registry records it so the child's no-reply notice is withheld.
     fn agent_message_waits(
         &self,
-    ) -> Option<std::sync::Arc<crate::agent_message_wait::AgentMessageWaits>> {
+    ) -> Option<std::sync::Arc<pa_core::session_engine::agent_messaging::AgentMessageWaits>> {
         Some(std::sync::Arc::clone(&self.agent_message_waits))
     }
 

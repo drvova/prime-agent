@@ -8,7 +8,7 @@ struct Fixture {
     _dir: tempfile::TempDir,
     supervisor: Arc<Supervisor>,
     child_file: String,
-    ledger: Arc<crate::rlm_ledger::RlmSpawnLedger>,
+    ledger: Arc<pa_core::session_engine::rlm_ledger::RlmSpawnLedger>,
 }
 
 async fn fixture() -> Fixture {
@@ -37,7 +37,7 @@ async fn fixture() -> Fixture {
         .expect("the spawn ledger resolves");
     let child_file = child_file.to_string_lossy().into_owned();
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-dead".to_string(),
             parent: parent_file.to_string_lossy().into_owned(),
             child: child_file.clone(),
@@ -222,14 +222,14 @@ async fn a_retried_delete_after_the_tombstone_is_gated_on_the_worker_process() {
         .append_delete(
             "sub-dead",
             &child_file,
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .expect("the first attempt's tombstone");
     let retry = || {
         supervisor.tombstone_saved_rlm_child(
             "w-child",
             Some("sub-dead"),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
     };
 

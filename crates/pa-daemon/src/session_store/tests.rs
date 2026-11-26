@@ -722,7 +722,7 @@ fn scan_folds_the_saved_row_usage_summary() {
     // (50, 5, $0.25) - child (30, 3, $0.125).
     assert_eq!(
         info.usage,
-        Some(crate::session_usage::SessionUsageSummary {
+        Some(pa_core::session::usage_summary::SessionUsageSummary {
             input_tokens: 170,
             output_tokens: 15,
             cost: 0.625,
@@ -753,7 +753,7 @@ fn scan_keeps_messages_with_partial_usage_objects() {
     assert_eq!(info.model, Some(("p".to_string(), "m".to_string())));
     assert_eq!(
         info.usage,
-        Some(crate::session_usage::SessionUsageSummary {
+        Some(pa_core::session::usage_summary::SessionUsageSummary {
             input_tokens: 5,
             output_tokens: 1,
             cost: 0.0,
@@ -1090,7 +1090,7 @@ fn listing_and_frozen_usage_agree_on_duplicate_attribution_ids() {
             .unwrap();
     };
     append();
-    let expected = Some(crate::session_usage::SessionUsageSummary {
+    let expected = Some(pa_core::session::usage_summary::SessionUsageSummary {
         input_tokens: 100,
         output_tokens: 10,
         cost: 8.0,

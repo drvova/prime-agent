@@ -12,11 +12,11 @@ use anyhow::Result;
 use pa_core::cron::store::{AgentCronJobStore, CancelJobsFilter};
 
 use crate::registry::ResidentWorker;
-use crate::rlm_ledger::RlmSpawnLedger;
 use crate::scheduled_jobs::session_artifact_dir;
 use crate::session_store::{read_session_info, SessionFile};
 use crate::supervisor::Supervisor;
 use pa_core::session::lease::canonical_session_path;
+use pa_core::session_engine::rlm_ledger::RlmSpawnLedger;
 
 /// One tree member of a stopped root: its durable session id and file.
 struct TreeMember {
@@ -548,9 +548,10 @@ mod tests {
             .import(&moved_at, &moved_file)
             .unwrap();
         pa_core::session::store::store().remove(&moved_at).unwrap();
-        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "child-1".to_string(),
                 parent: root_file.to_string_lossy().to_string(),
                 child: child_file.to_string_lossy().to_string(),
@@ -560,7 +561,7 @@ mod tests {
             })
             .unwrap();
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "child-2".to_string(),
                 parent: root_file.to_string_lossy().to_string(),
                 child: moved_at.to_string_lossy().to_string(),
@@ -604,7 +605,8 @@ mod tests {
 
         let (root_id, root_file) = write_session(&sessions_dir, None);
         write_job(&root_file, &root_id, "job-root");
-        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
 
         let live: HashSet<String> = [canonical_session_path(&root_file)
             .to_string_lossy()
@@ -627,9 +629,10 @@ mod tests {
         std::fs::create_dir_all(&sessions_dir).unwrap();
         let (_, parent_file) = write_session(&sessions_dir, Some("orchestrator"));
         let (_, child_file) = write_session(&sessions_dir, Some("lane"));
-        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-1".to_string(),
                 parent: parent_file.to_string_lossy().to_string(),
                 child: child_file.to_string_lossy().to_string(),
@@ -644,7 +647,7 @@ mod tests {
             .append_delete(
                 "sub-1",
                 &child_file.to_string_lossy(),
-                crate::rlm_ledger::RlmLedgerDeleteReason::User,
+                pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
             )
             .unwrap();
         // A killed-mid-turn child: an aborted assistant row with partial
@@ -696,7 +699,7 @@ mod tests {
             .append_delete(
                 "sub-1",
                 &child_file.to_string_lossy(),
-                crate::rlm_ledger::RlmLedgerDeleteReason::User,
+                pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
             )
             .unwrap();
         let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();
@@ -713,9 +716,10 @@ mod tests {
         std::fs::create_dir_all(&sessions_dir).unwrap();
         let (_, parent_file) = write_session(&sessions_dir, None);
         let (_, child_file) = write_session(&sessions_dir, None);
-        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-1".to_string(),
                 parent: parent_file.to_string_lossy().to_string(),
                 child: child_file.to_string_lossy().to_string(),
@@ -728,7 +732,7 @@ mod tests {
             .append_delete(
                 "sub-1",
                 &child_file.to_string_lossy(),
-                crate::rlm_ledger::RlmLedgerDeleteReason::User,
+                pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
             )
             .unwrap();
         let usage_block = |total: f64| {
@@ -785,9 +789,10 @@ mod tests {
         std::fs::create_dir_all(&sessions_dir).unwrap();
         let (_, parent_file) = write_session(&sessions_dir, None);
         let (_, child_file) = write_session(&sessions_dir, None);
-        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-1".to_string(),
                 parent: parent_file.to_string_lossy().to_string(),
                 child: child_file.to_string_lossy().to_string(),
@@ -817,10 +822,11 @@ mod tests {
         std::fs::create_dir_all(&sessions_dir).unwrap();
         let (_, parent_file) = write_session(&sessions_dir, None);
         let (_, child_file) = write_session(&sessions_dir, None);
-        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         for child_id in ["sub-1", "sub-2"] {
             ledger
-                .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+                .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                     child_id: child_id.to_string(),
                     parent: parent_file.to_string_lossy().to_string(),
                     child: child_file.to_string_lossy().to_string(),
@@ -833,7 +839,7 @@ mod tests {
                 .append_delete(
                     child_id,
                     &child_file.to_string_lossy(),
-                    crate::rlm_ledger::RlmLedgerDeleteReason::User,
+                    pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
                 )
                 .unwrap();
         }

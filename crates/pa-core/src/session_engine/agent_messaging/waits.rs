@@ -1,28 +1,33 @@
 //! The receiving side of `agent_message.wait`: the session's parked waiters, its `waitingOn`
 //! report, and the backlog of direct messages that arrived while the session was busy and are
-//! still queued. The worker's delivery path reports every accepted delivery here; the
-//! `agent_message.wait` controller parks on it. A waiter holds no admission slot and no lock: it
-//! is a oneshot receiver.
+//! still queued. A daemon's delivery path reports every accepted delivery here; its
+//! `agent_message.wait` controller parks on it ([`wait_for_arrival`]). A waiter holds no
+//! admission slot and no lock: it is a oneshot receiver.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use pa_core::session_engine::agent_messaging::AgentMessageKind;
+use serde_json::Value;
 use tokio::sync::oneshot;
+
+use super::{
+    AgentFamilyMember, AgentMessageKind, AgentMessageWaitArrival, AgentMessageWaitFilter,
+    AgentMessageWaitOutcome, AgentMessageWaitRequest,
+};
 
 /// One accepted delivery, as a wait sees it: identity and a sanitized preview, never the body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentMessageArrival {
-    pub(crate) message_id: String,
+    pub message_id: String,
     /// The sender's live and durable session ids (the forms a wait filter matches).
-    pub(crate) sender_ids: Vec<String>,
-    pub(crate) sender_name: String,
-    pub(crate) preview: String,
-    pub(crate) kind: AgentMessageKind,
+    pub sender_ids: Vec<String>,
+    pub sender_name: String,
+    pub preview: String,
+    pub kind: AgentMessageKind,
 }
 
 /// The senders one wait accepts: `None` accepts any direct message.
-pub(crate) type AgentMessageWaitSenders = Option<Vec<String>>;
+pub type AgentMessageWaitSenders = Option<Vec<String>>;
 
 fn accepts(senders: &AgentMessageWaitSenders, arrival: &AgentMessageArrival) -> bool {
     arrival.kind == AgentMessageKind::Direct
@@ -35,8 +40,7 @@ fn accepts(senders: &AgentMessageWaitSenders, arrival: &AgentMessageArrival) -> 
 }
 
 /// The backlog bound: the worker's pending-message cap.
-const BACKLOG_LIMIT: usize =
-    pa_core::session_engine::agent_messaging::DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION;
+const BACKLOG_LIMIT: usize = super::DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION;
 
 struct Waiter {
     id: u64,
@@ -54,9 +58,9 @@ struct WaitState {
 }
 
 /// Hears a `waitingOn` change (the worker pushes a roster delta).
-pub(crate) type WaitingOnChanged = Arc<dyn Fn() + Send + Sync>;
+pub type WaitingOnChanged = Arc<dyn Fn() + Send + Sync>;
 /// Answers whether the delivery with this message id is still queued (not yet in the context).
-pub(crate) type StillQueued = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+pub type StillQueued = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// One session's agent-message waits.
 #[derive(Default)]
@@ -68,19 +72,20 @@ pub struct AgentMessageWaits {
 
 /// A started wait: the arrival when the backlog already held one, else the parked receiver.
 /// Dropping it (a timeout, a cycle, a cancelled cell) withdraws the waiter and its `waitingOn`.
-pub(crate) struct AgentMessageWait {
+pub struct AgentMessageWait {
     waits: Arc<AgentMessageWaits>,
     id: u64,
-    pub(crate) started: AgentMessageWaitStart,
+    pub started: AgentMessageWaitStart,
 }
 
-pub(crate) enum AgentMessageWaitStart {
+/// How a wait started: claimed from the backlog, or parked for the next arrival.
+pub enum AgentMessageWaitStart {
     Ready(AgentMessageArrival),
     Parked(oneshot::Receiver<AgentMessageArrival>),
 }
 
 impl AgentMessageWaits {
-    pub(crate) fn set_hooks(&self, on_change: WaitingOnChanged, still_queued: StillQueued) {
+    pub fn set_hooks(&self, on_change: WaitingOnChanged, still_queued: StillQueued) {
         *self
             .on_change
             .lock()
@@ -109,7 +114,7 @@ impl AgentMessageWaits {
     }
 
     /// The session the newest parked wait names, for the roster's `waitingOn`.
-    pub(crate) fn waiting_on(&self) -> Option<String> {
+    pub fn waiting_on(&self) -> Option<String> {
         self.state()
             .waiters
             .iter()
@@ -119,7 +124,7 @@ impl AgentMessageWaits {
 
     /// Report one accepted delivery: the oldest matching waiter takes it, else a direct message
     /// joins the backlog. A broadcast is never awaited.
-    pub(crate) fn deliver(&self, arrival: AgentMessageArrival) {
+    pub fn deliver(&self, arrival: AgentMessageArrival) {
         if arrival.kind == AgentMessageKind::Broadcast {
             return;
         }
@@ -151,7 +156,7 @@ impl AgentMessageWaits {
     }
 
     /// Start one wait: claim a still-queued backlog arrival from an accepted sender, else park.
-    pub(crate) fn begin(
+    pub fn begin(
         self: &Arc<Self>,
         senders: AgentMessageWaitSenders,
         waiting_on: Option<String>,
@@ -219,6 +224,113 @@ impl Drop for AgentMessageWait {
     }
 }
 
+/// The longest `waitingOn` chain a cycle walk follows (a family is never this deep).
+const MAX_WAIT_CHAIN: usize = 64;
+
+/// One roster row's wait edge: the session it waits on, and its display name.
+struct WaitEdge {
+    waiting_on: Option<String>,
+    name: String,
+}
+
+/// Follow `waitingOn` from `start` through the roster (rows of `activeSessionId` or `id`,
+/// `sessionId`, `sessionName`, `waitingOn`): the names along the chain when it reaches one of
+/// `own_ids`, else `None`.
+#[must_use]
+pub fn wait_cycle(roster: &[Value], start: &str, own_ids: &[&str]) -> Option<Vec<String>> {
+    let mut edges: HashMap<String, std::rc::Rc<WaitEdge>> = HashMap::new();
+    for row in roster {
+        let field = |key: &str| {
+            row.get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        };
+        let Some(active) = field("activeSessionId").or_else(|| field("id")) else {
+            continue;
+        };
+        let edge = std::rc::Rc::new(WaitEdge {
+            waiting_on: field("waitingOn").map(str::to_string),
+            name: field("sessionName")
+                .or_else(|| field("sessionId"))
+                .unwrap_or(active)
+                .to_string(),
+        });
+        // A wait names its target by live id, or by durable id for a passivated child.
+        if let Some(session_id) = field("sessionId") {
+            edges.insert(session_id.to_string(), std::rc::Rc::clone(&edge));
+        }
+        edges.insert(active.to_string(), edge);
+    }
+    let mut chain = Vec::new();
+    let mut current = start.to_string();
+    for _ in 0..MAX_WAIT_CHAIN {
+        let edge = edges.get(&current)?;
+        chain.push(edge.name.clone());
+        let next = edge.waiting_on.as_deref()?;
+        if own_ids.contains(&next) {
+            return Some(chain);
+        }
+        current = next.to_string();
+    }
+    None
+}
+
+/// Every selector form that names one family member.
+fn member_ids(member: &AgentFamilyMember) -> impl Iterator<Item = String> + '_ {
+    std::iter::once(member.id.clone()).chain(member.aliases.iter().cloned())
+}
+
+/// One `agent_message.wait` on `waits`, the session known by `own_ids`: park (publishing
+/// `waitingOn`) BEFORE the cycle walk over `roster`, so of two sessions that start waiting on
+/// each other at once the later walk sees the earlier wait; then the arrival, or the timeout.
+///
+/// # Errors
+///
+/// The roster could not be read.
+pub async fn wait_for_arrival(
+    waits: &Arc<AgentMessageWaits>,
+    request: AgentMessageWaitRequest,
+    own_ids: &[&str],
+    roster: impl std::future::Future<Output = anyhow::Result<Vec<Value>>>,
+) -> anyhow::Result<AgentMessageWaitOutcome> {
+    let senders = match &request.filter {
+        AgentMessageWaitFilter::Any => None,
+        AgentMessageWaitFilter::Members(members) => {
+            Some(members.iter().flat_map(member_ids).collect::<Vec<_>>())
+        }
+    };
+    let waiting_on = request.waiting_on.as_ref().map(|member| member.id.clone());
+    let mut wait = waits.begin(senders, waiting_on.clone());
+    let arrival = match &mut wait.started {
+        AgentMessageWaitStart::Ready(arrival) => arrival.clone(),
+        AgentMessageWaitStart::Parked(receiver) => {
+            if let Some(target) = &waiting_on {
+                let roster = roster.await?;
+                if let Some(blocked_via) = wait_cycle(&roster, target, own_ids) {
+                    return Ok(AgentMessageWaitOutcome::Cycle { blocked_via });
+                }
+            }
+            match tokio::time::timeout(request.timeout, receiver).await {
+                Ok(Ok(arrival)) => arrival,
+                // A dropped sender is the session closing: nothing will arrive.
+                Ok(Err(_)) | Err(_) => return Ok(AgentMessageWaitOutcome::Timeout),
+            }
+        }
+    };
+    // The sender's role resolves against the family at wait start.
+    let sender_role = request
+        .family
+        .iter()
+        .find(|member| member_ids(member).any(|id| arrival.sender_ids.contains(&id)))
+        .map(|member| member.relationship);
+    Ok(AgentMessageWaitOutcome::Message(AgentMessageWaitArrival {
+        message_id: arrival.message_id,
+        sender_name: arrival.sender_name,
+        sender_role,
+        preview: arrival.preview,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +379,22 @@ mod tests {
             &from_c.started,
             AgentMessageWaitStart::Ready(ready) if *ready == arrival("m-other", "c", AgentMessageKind::Direct)
         ));
+    }
+
+    /// The walk follows `waitingOn` by live or durable id and names the chain back to the caller;
+    /// a chain that ends elsewhere is no cycle.
+    #[test]
+    fn a_wait_chain_back_to_the_caller_is_a_cycle() {
+        let roster = [
+            serde_json::json!({ "activeSessionId": "a1", "sessionId": "sa", "sessionName": "a" }),
+            serde_json::json!({ "activeSessionId": "b1", "sessionId": "sb", "sessionName": "b", "waitingOn": "sc" }),
+            serde_json::json!({ "activeSessionId": "c1", "sessionId": "sc", "sessionName": "c", "waitingOn": "a1" }),
+            serde_json::json!({ "activeSessionId": "d1", "sessionName": "d", "waitingOn": "b1" }),
+        ];
+        assert_eq!(
+            wait_cycle(&roster, "b1", &["a1", "sa"]),
+            Some(vec!["b".to_string(), "c".to_string()])
+        );
+        assert_eq!(wait_cycle(&roster, "d1", &["c1"]), None);
     }
 }

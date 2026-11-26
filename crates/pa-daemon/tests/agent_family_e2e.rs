@@ -1268,7 +1268,9 @@ async fn parent_renames_a_child_end_to_end() {
 
     // The child's RLM ledger edge carries the new name (the passive roster
     // keeps it after passivation).
-    let ledger = pa_daemon::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(pa_daemon::session_store::legacy_ledger_usage));
     let edges = ledger.edges(true).expect("ledger edges");
     let edge = edges
         .iter()

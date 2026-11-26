@@ -462,7 +462,7 @@ impl Supervisor {
                             if let Some(reason) = rest
                                 .get("rlmLedgerDelete")
                                 .and_then(Value::as_str)
-                                .and_then(crate::rlm_ledger::RlmLedgerDeleteReason::from_wire)
+                                .and_then(pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::from_wire)
                             {
                                 // The delete of a stopped child: no worker to kill — the ledger
                                 // tombstone IS the deletion boundary.
@@ -573,7 +573,7 @@ impl Supervisor {
             if let Some(reason) = rest
                 .get("rlmLedgerDelete")
                 .and_then(Value::as_str)
-                .and_then(crate::rlm_ledger::RlmLedgerDeleteReason::from_wire)
+                .and_then(pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::from_wire)
             {
                 let child_id = rest
                     .get("rlmChildId")
@@ -1099,7 +1099,7 @@ impl Supervisor {
         self: &Arc<Self>,
         selector: &str,
         child_id: Option<&str>,
-        reason: crate::rlm_ledger::RlmLedgerDeleteReason,
+        reason: pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason,
     ) -> anyhow::Result<()> {
         let ledger = self
             .rlm_spawn_ledger_for(None)
@@ -1227,11 +1227,11 @@ async fn saved_session_messages(
 /// key; the selector is the child's LIVE id, NOT the file stem. Order: (1a) edge matching BOTH
 /// the stem and the id; (1b) the LAST edge carrying the id; (2) the stem-matching edge.
 fn resolve_ledger_child(
-    edges: &[crate::rlm_ledger::RlmLedgerEdge],
+    edges: &[pa_core::session_engine::rlm_ledger::RlmLedgerEdge],
     selector: &str,
     child_id: Option<&str>,
 ) -> Option<(String, String)> {
-    let stem_matches = |edge: &crate::rlm_ledger::RlmLedgerEdge| {
+    let stem_matches = |edge: &pa_core::session_engine::rlm_ledger::RlmLedgerEdge| {
         std::path::Path::new(&edge.child)
             .file_stem()
             .is_some_and(|name| name.to_string_lossy() == selector)

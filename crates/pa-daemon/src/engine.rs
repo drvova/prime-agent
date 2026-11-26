@@ -427,7 +427,7 @@ pub trait SessionEngine: Send + Sync {
     /// Engines without a kernel report `None`.
     fn agent_message_waits(
         &self,
-    ) -> Option<std::sync::Arc<crate::agent_message_wait::AgentMessageWaits>> {
+    ) -> Option<std::sync::Arc<pa_core::session_engine::agent_messaging::AgentMessageWaits>> {
         None
     }
 

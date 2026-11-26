@@ -829,7 +829,7 @@ fn saved_session_rows_publish_deleted_descendant_usage() {
         info.deleted_descendant_usage.is_none(),
         "the file scan never sets the ledger-derived field"
     );
-    info.deleted_descendant_usage = Some(crate::session_usage::SessionUsageSummary {
+    info.deleted_descendant_usage = Some(pa_core::session::usage_summary::SessionUsageSummary {
         input_tokens: 1_100,
         output_tokens: 110,
         cost: 0.5,
@@ -1272,9 +1272,11 @@ async fn adoption_settles_then_seeds_the_roster_once() {
         })
         .unwrap(),
     );
-    let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-9".to_string(),
             parent: root_file.to_string_lossy().to_string(),
             child: child_file.to_string_lossy().to_string(),
@@ -2184,7 +2186,7 @@ async fn a_ledger_delete_of_a_stopped_child_tombstones_without_a_worker() {
         .await
         .expect("the spawn ledger resolves");
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-gone".to_string(),
             parent: parent_file.to_string_lossy().into_owned(),
             child: child_file.to_string_lossy().into_owned(),
@@ -2201,7 +2203,7 @@ async fn a_ledger_delete_of_a_stopped_child_tombstones_without_a_worker() {
         .tombstone_saved_rlm_child(
             "child-gone",
             Some("sub-gone"),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .await;
     assert!(
@@ -2216,7 +2218,7 @@ async fn a_ledger_delete_of_a_stopped_child_tombstones_without_a_worker() {
     let tombstones = ledger.edges(true).expect("tombstones");
     assert_eq!(
         tombstones[0].deleted,
-        Some(crate::rlm_ledger::RlmLedgerDeleteReason::User)
+        Some(pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User)
     );
 
     // An unknown selector with no ledger edge is a clean failure (the
@@ -2225,7 +2227,7 @@ async fn a_ledger_delete_of_a_stopped_child_tombstones_without_a_worker() {
         .tombstone_saved_rlm_child(
             "no-such-child",
             None,
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .await;
     assert!(miss.is_err(), "a selector with no edge must not delete");
@@ -2348,7 +2350,7 @@ async fn the_stopped_childs_delete_removes_its_row_and_bills_the_parent() {
         .await
         .expect("the spawn ledger resolves");
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-gone".to_string(),
             parent: parent_file.to_string_lossy().into_owned(),
             child: child_transcript.to_string_lossy().into_owned(),
@@ -2363,7 +2365,7 @@ async fn the_stopped_childs_delete_removes_its_row_and_bills_the_parent() {
         .tombstone_saved_rlm_child(
             "sub-gone",
             Some("sub-gone"),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .await
         .expect("the stopped child's delete tombstones");
@@ -2462,7 +2464,7 @@ async fn a_ledger_delete_never_tombstones_an_unrelated_edge_sharing_the_child_id
         .expect("the spawn ledger resolves");
     for (child, stem) in [(&file_a, "child-a"), (&file_b, "child-b")] {
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-shared".to_string(),
                 parent: parent.clone(),
                 child: child.clone(),
@@ -2479,7 +2481,7 @@ async fn a_ledger_delete_never_tombstones_an_unrelated_edge_sharing_the_child_id
         .tombstone_saved_rlm_child(
             "child-a",
             Some("sub-shared"),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .await
         .expect("the delete resolves the stem-matching edge");
@@ -2532,7 +2534,7 @@ async fn a_ledger_child_wake_joins_an_already_hosting_resident() {
         .await
         .expect("the spawn ledger resolves");
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-kid-1".to_string(),
             parent: parent_file.to_string_lossy().into_owned(),
             child: session_file.to_string_lossy().into_owned(),

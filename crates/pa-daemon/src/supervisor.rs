@@ -203,7 +203,9 @@ pub struct Supervisor {
     log: paths::RotatingLog,
     /// Memoized ledger over the default sessions dir (ledgers are per
     /// sessions-dir families; another dir gets a fresh instance).
-    rlm_ledger: tokio::sync::Mutex<Option<std::sync::Arc<crate::rlm_ledger::RlmSpawnLedger>>>,
+    rlm_ledger: tokio::sync::Mutex<
+        Option<std::sync::Arc<pa_core::session_engine::rlm_ledger::RlmSpawnLedger>>,
+    >,
     /// The update-prepare transaction: at most one per supervisor;
     /// empty = `Serving`.
     update_prepare: PrepareCoordinator,

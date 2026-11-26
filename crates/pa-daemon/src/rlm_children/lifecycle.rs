@@ -606,7 +606,9 @@ impl SupervisorChildSessionsInner {
                 if let Some((session_dir, child_id)) = completed {
                     if let Err(error) = tokio::task::spawn_blocking(move || {
                         let Some(mut display) =
-                            crate::rlm_ledger::read_rlm_subagent_display(Path::new(&session_dir))
+                            pa_core::session_engine::rlm_ledger::read_rlm_subagent_display(
+                                Path::new(&session_dir),
+                            )
                         else {
                             return Ok(());
                         };
@@ -614,7 +616,8 @@ impl SupervisorChildSessionsInner {
                             return Ok(());
                         }
                         display.status = "completed".to_string();
-                        crate::rlm_ledger::write_rlm_subagent_display(&display).map(|_| ())
+                        pa_core::session_engine::rlm_ledger::write_rlm_subagent_display(&display)
+                            .map(|_| ())
                     })
                     .await
                     .unwrap_or_else(|error| Err(anyhow!(error)))

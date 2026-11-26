@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use pa_daemon::rlm_ledger::{RlmSpawnInput, RlmSpawnLedger};
+use pa_core::session_engine::rlm_ledger::{RlmSpawnInput, RlmSpawnLedger};
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewUiMode};
 use serde_json::{json, Value};
 

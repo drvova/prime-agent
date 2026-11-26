@@ -153,7 +153,9 @@ pub(crate) fn ledger_rename_by_child_path(
     child_path: &str,
     name: &str,
 ) {
-    let ledger = crate::rlm_ledger::RlmSpawnLedger::new(agent_dir, sessions_dir, |_| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(agent_dir, sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
     if let Err(error) = ledger.append_rename_by_child_path(child_path, name) {
         eprintln!("failed to append RLM ledger rename: {error:#}");
     }
@@ -165,9 +167,9 @@ pub(crate) fn ledger_rename_by_child_path(
 pub(crate) enum SavedDeleteCapture {
     TopLevel,
     Child {
-        usage: Option<crate::session_usage::SessionUsageSummary>,
+        usage: Option<pa_core::session::usage_summary::SessionUsageSummary>,
         /// `usage` split by model (`None` when it does not reconcile).
-        by_model: Option<Vec<crate::session_usage::ModelUsageSummary>>,
+        by_model: Option<Vec<pa_core::session::usage_summary::ModelUsageSummary>>,
         /// The canonical session key captured while the file still existed:
         /// a symlink delete unlinks the LINK, so the tombstone uses the pre-unlink key.
         canonical_path: String,
@@ -231,10 +233,12 @@ pub(crate) fn tombstone_saved_session_delete_captured(
     else {
         return 0;
     };
-    let ledger = crate::rlm_ledger::RlmSpawnLedger::new(agent_dir, sessions_dir, |_| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(agent_dir, sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
     match ledger.tombstone_child_path_with_usage(
         canonical_path,
-        crate::rlm_ledger::RlmLedgerDeleteReason::User,
+        pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         usage.as_ref(),
         by_model.as_deref(),
     ) {
@@ -1012,9 +1016,14 @@ mod tombstone_usage_tests {
         let parent = sessions_dir.join("p.jsonl");
         let child = write_child_with_usage(&sessions_dir);
         std::fs::write(&parent, "{}").unwrap();
-        let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+            &agent_dir,
+            &sessions_dir,
+            |_| {},
+        )
+        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-1".to_string(),
                 parent: parent.to_string_lossy().to_string(),
                 child: child.to_string_lossy().to_string(),
@@ -1064,7 +1073,12 @@ mod tombstone_usage_tests {
             Some("top-level"),
         );
         assert_eq!(captured, 0, "nothing tombstoned, nothing captured");
-        let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+            &agent_dir,
+            &sessions_dir,
+            |_| {},
+        )
+        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         assert!(
             ledger.edges(true).unwrap().is_empty(),
             "no edges, no tombstone"
@@ -1084,9 +1098,14 @@ mod tombstone_usage_tests {
             std::fs::write(&parent, "{}").unwrap();
             (parent, child)
         };
-        let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+            &agent_dir,
+            &sessions_dir,
+            |_| {},
+        )
+        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-9".into(),
                 parent: parent.to_string_lossy().into(),
                 child: child.to_string_lossy().into(),
@@ -1111,7 +1130,7 @@ mod tombstone_usage_tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(
             edges[0].deleted,
-            Some(crate::rlm_ledger::RlmLedgerDeleteReason::User),
+            Some(pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User),
             "the edge is tombstoned, not left live"
         );
         assert!(
@@ -1135,9 +1154,14 @@ mod tombstone_usage_tests {
         std::fs::write(&parent, "{}").unwrap();
         let fifo = sessions_dir.join("fifo.jsonl");
         std::os::unix::net::UnixListener::bind(&fifo).unwrap();
-        let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+            &agent_dir,
+            &sessions_dir,
+            |_| {},
+        )
+        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-9".into(),
                 parent: parent.to_string_lossy().into(),
                 child: fifo.to_string_lossy().into(),
@@ -1168,7 +1192,7 @@ mod tombstone_usage_tests {
         let edges = ledger.edges(true).unwrap();
         assert_eq!(
             edges[0].deleted,
-            Some(crate::rlm_ledger::RlmLedgerDeleteReason::User),
+            Some(pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User),
             "the tombstone still lands bare"
         );
     }

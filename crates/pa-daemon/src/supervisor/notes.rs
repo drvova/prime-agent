@@ -264,7 +264,7 @@ impl Supervisor {
     pub(crate) async fn rlm_spawn_ledger_for(
         self: &Arc<Self>,
         session_dir: Option<&str>,
-    ) -> Result<std::sync::Arc<crate::rlm_ledger::RlmSpawnLedger>> {
+    ) -> Result<std::sync::Arc<pa_core::session_engine::rlm_ledger::RlmSpawnLedger>> {
         let default_dir = paths::sessions_dir(&self.options.agent_dir)?;
         let requested = match session_dir {
             Some(dir) => paths::expand_tilde(dir)?,
@@ -275,13 +275,16 @@ impl Supervisor {
                 &self.options.socket_path,
                 &self.options.agent_dir,
             ));
-            return Ok(std::sync::Arc::new(crate::rlm_ledger::RlmSpawnLedger::new(
-                &self.options.agent_dir,
-                &requested,
-                move |message| {
-                    log.append(&format!("[{}] {message}", util::now_iso()));
-                },
-            )));
+            return Ok(std::sync::Arc::new(
+                pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+                    &self.options.agent_dir,
+                    &requested,
+                    move |message| {
+                        log.append(&format!("[{}] {message}", util::now_iso()));
+                    },
+                )
+                .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage)),
+            ));
         }
         let mut cached = self.rlm_ledger.lock().await;
         if let Some(ledger) = cached.as_ref() {
@@ -291,13 +294,16 @@ impl Supervisor {
             &self.options.socket_path,
             &self.options.agent_dir,
         ));
-        let ledger = std::sync::Arc::new(crate::rlm_ledger::RlmSpawnLedger::new(
-            &self.options.agent_dir,
-            &requested,
-            move |message| {
-                log.append(&format!("[{}] {message}", util::now_iso()));
-            },
-        ));
+        let ledger = std::sync::Arc::new(
+            pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+                &self.options.agent_dir,
+                &requested,
+                move |message| {
+                    log.append(&format!("[{}] {message}", util::now_iso()));
+                },
+            )
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage)),
+        );
         *cached = Some(std::sync::Arc::clone(&ledger));
         Ok(ledger)
     }

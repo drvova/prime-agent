@@ -540,7 +540,7 @@ impl Supervisor {
         self: &Arc<Self>,
         resident: &Arc<ResidentWorker>,
         child_id: Option<&str>,
-        reason: crate::rlm_ledger::RlmLedgerDeleteReason,
+        reason: pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason,
     ) -> Result<()> {
         let (session_file, session_dir, child_id) = {
             let descriptor = resident.descriptor.lock().await;
@@ -586,8 +586,9 @@ impl Supervisor {
             .with_context(|| format!("tombstone RLM subagent {child_id}"))?;
         // The display tombstone keeps the child's identity for hydration retries;
         // best-effort because the ledger tombstone is the authority.
-        let display = crate::rlm_ledger::read_rlm_subagent_display(Path::new(&session_dir));
-        let tombstone = crate::rlm_ledger::RlmSubagentDisplayEntry {
+        let display =
+            pa_core::session_engine::rlm_ledger::read_rlm_subagent_display(Path::new(&session_dir));
+        let tombstone = pa_core::session_engine::rlm_ledger::RlmSubagentDisplayEntry {
             type_tag: "rlm_subagent".to_string(),
             child_id: child_id.clone(),
             session_name: display
@@ -606,7 +607,9 @@ impl Supervisor {
             status: "deleted".to_string(),
             created_at: display.as_ref().map_or(0, |entry| entry.created_at),
         };
-        if let Err(error) = crate::rlm_ledger::write_rlm_subagent_display(&tombstone) {
+        if let Err(error) =
+            pa_core::session_engine::rlm_ledger::write_rlm_subagent_display(&tombstone)
+        {
             self.log_line(&format!(
                 "failed to reconcile display entry for tombstoned RLM subagent {child_id}: {error:#}"
             ));
@@ -636,7 +639,7 @@ impl Supervisor {
         let deleted_child = rest
             .get("rlmLedgerDelete")
             .and_then(Value::as_str)
-            .and_then(crate::rlm_ledger::RlmLedgerDeleteReason::from_wire)
+            .and_then(pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::from_wire)
             .map(|_| crate::stop_cleanup::DeletedChild {
                 child_id: rest
                     .get("rlmChildId")

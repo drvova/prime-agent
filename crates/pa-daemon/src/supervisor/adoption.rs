@@ -886,7 +886,7 @@ impl Supervisor {
             );
         let ledger = self.rlm_spawn_ledger_for(None).await?;
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: child_id.clone(),
                 parent: parent.to_string(),
                 child: child.to_string(),
@@ -899,7 +899,7 @@ impl Supervisor {
             .inspect_err(|error| {
                 self.log_line(&format!("failed to append RLM ledger spawn: {error:#}"));
             })?;
-        let display = crate::rlm_ledger::RlmSubagentDisplayEntry {
+        let display = pa_core::session_engine::rlm_ledger::RlmSubagentDisplayEntry {
             type_tag: "rlm_subagent".to_string(),
             child_id,
             session_name,
@@ -924,8 +924,8 @@ impl Supervisor {
                 .and_then(Value::as_u64)
                 .unwrap_or_else(crate::util::now_ms),
         };
-        let written =
-            crate::rlm_ledger::write_rlm_subagent_display(&display).inspect_err(|error| {
+        let written = pa_core::session_engine::rlm_ledger::write_rlm_subagent_display(&display)
+            .inspect_err(|error| {
                 self.log_line(&format!(
                     "failed to persist RLM subagent display entry: {error:#}"
                 ));

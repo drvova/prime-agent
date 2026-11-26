@@ -29,8 +29,8 @@ pub(super) enum LedgerRecord {
         child_id: String,
         child: String,
         reason: RlmLedgerDeleteReason,
-        usage: Option<crate::session_usage::SessionUsageSummary>,
-        usage_by_model: Option<Vec<crate::session_usage::ModelUsageSummary>>,
+        usage: Option<crate::session::usage_summary::SessionUsageSummary>,
+        usage_by_model: Option<Vec<crate::session::usage_summary::ModelUsageSummary>>,
     },
 }
 
@@ -44,7 +44,7 @@ fn str_field(record: &Value, key: &str) -> Option<String> {
 fn parse_deleted_usage(
     usage: &Value,
     line_no: usize,
-) -> Result<crate::session_usage::SessionUsageSummary> {
+) -> Result<crate::session::usage_summary::SessionUsageSummary> {
     let invalid = || {
         anyhow::Error::msg(format!(
             "malformed RLM ledger line {line_no}: invalid delete usage"
@@ -65,7 +65,7 @@ fn parse_deleted_usage(
     if cost.is_nan() || cost.is_sign_negative() {
         bail!("malformed RLM ledger line {line_no}: invalid delete usage");
     }
-    Ok(crate::session_usage::SessionUsageSummary {
+    Ok(crate::session::usage_summary::SessionUsageSummary {
         input_tokens,
         output_tokens,
         cost,
@@ -186,7 +186,7 @@ pub(super) struct ReplayState {
 /// edits can change the inputs of the deleted-spend fold without any append.
 #[derive(Debug)]
 pub(super) struct DeletedBucket {
-    pub(super) inputs: Vec<Option<pa_core::session::store::TranscriptGeneration>>,
+    pub(super) inputs: Vec<Option<crate::session::store::TranscriptGeneration>>,
     pub(super) children: super::DeletedChildrenByParent,
 }
 
@@ -293,7 +293,7 @@ fn artifact_session_index(agent_dir: &Path) -> ArtifactIndex {
     #[cfg(test)]
     ARTIFACT_SCANS.with(|count| count.set(count.get() + 1));
     let mut index = ArtifactIndex::default();
-    let root = agent_dir.join(crate::context_tree_children::RLM_SESSION_ARTIFACTS_DIR);
+    let root = agent_dir.join("session-artifacts");
     index.directories.push((root.clone(), path_identity(&root)));
     let Ok(parents) = std::fs::read_dir(&root) else {
         return index;
@@ -309,7 +309,7 @@ fn artifact_session_index(agent_dir: &Path) -> ArtifactIndex {
             index
                 .directories
                 .push((sub.path(), path_identity(&sub.path())));
-            let Ok(files) = pa_core::session::store::store().list(&sub.path()) else {
+            let Ok(files) = crate::session::store::store().list(&sub.path()) else {
                 continue;
             };
             for transcript in files.transcripts {
@@ -404,7 +404,7 @@ fn path_identity(path: &Path) -> Option<FileIdentity> {
 
 /// A transcript is at `path` (the ledger's edge endpoints are transcripts).
 pub(super) fn is_file(path: &Path) -> bool {
-    pa_core::session::store::store()
+    crate::session::store::store()
         .stat(path)
         .is_ok_and(|stat| stat.is_transcript)
 }

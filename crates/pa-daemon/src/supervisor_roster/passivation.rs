@@ -287,12 +287,14 @@ async fn stop_carries_the_deleted_childs_spend_to_its_parent() {
     // The RLM delete's tombstone carries no usage yet (the capture
     // amendment lands after the stop); the passivation fold bills
     // the flushed transcript.
-    let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
     ledger
         .append_delete(
             "sub-9",
             &child_artifact.to_string_lossy(),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .expect("append delete");
     // The child's live roster row, owned by the stopping worker.
@@ -481,12 +483,14 @@ async fn stop_removes_unanchored_children_and_passivates_the_top_level_row() {
     // A tombstoned child: the edge is deleted, so no live edge
     // carries the row even though the files exist.
     append_family_edge(&agent_dir, &sessions_dir, "sub-9", &root_file, &child_file);
-    let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
     ledger
         .append_delete(
             "sub-9",
             &child_file.to_string_lossy(),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .expect("append delete");
     register_root_worker(&supervisor, "w-root", &root_file).await;
