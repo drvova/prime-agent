@@ -833,7 +833,7 @@ impl Supervisor {
             || pa_core::session::lease::get_process_start_id(pid).is_none())
             && pa_core::session::lease::is_process_alive(pid).unwrap_or(false);
         match crate::boot_reap::stop_process(pid, start_id.clone()).await {
-            crate::boot_reap::ReapOutcome::Survived => {
+            pa_core::platform::process_stop::StopOutcome::Survived => {
                 self.log_line(&format!(
                     "session worker {} survived the shutdown escalation; descriptor tombstoned for the next boot",
                     resident.worker_id

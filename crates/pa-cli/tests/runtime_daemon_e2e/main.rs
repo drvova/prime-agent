@@ -13,8 +13,10 @@
 //! - Interactive turn semantics (phase 7b): [`turns`].
 //! - Reliability (phase 7c): crashes, heals, give-ups, stuck cells and the
 //!   revival after the daemon's death: [`reliability`].
+//! - The restart owner and the boot reap (phase 7c-2): [`keeper`].
 #![cfg(unix)]
 
+mod keeper;
 mod reliability;
 #[path = "../support/mod.rs"]
 mod support;

@@ -254,7 +254,9 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
 - Daemon death: an abort-class fault (stack overflow, out of memory, a fault in native code)
   ends the daemon and every session in it. A restart owner (`crates/pa-daemon/src/keeper.rs`,
   unix, for interactive, ACP and post-update launches) restarts the daemon with the same
-  backoff and give-up limit and records every death; a deliberate stop is not restarted. At
+  backoff and give-up limit and records every death; a deliberate stop is not restarted. It
+  keeps whichever daemon the launch selects: the runtime daemon's keeper keeps its records
+  under `daemon2.sock`, apart from the supervisor's. At
   boot a session that was mid-turn is revived, its interrupted turn continued or settled by
   what the transcript shows was saved, a command its kernel left running is reaped and
   reported to the model, and an idle session with an armed scheduled job is woken when the
@@ -262,8 +264,11 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon (`pa_runtime::daemon`, wire2 on
-  `daemon2.sock` beside it, one per agent dir by an OS lock on `runtime-daemon.lock`, whose pid
-  the supervisor's boot reap spares though its command line names the same socket). Both
+  `daemon2.sock` beside it, one per agent dir by an OS lock on `runtime-daemon.lock`, whose
+  recorded holder and restart owner the supervisor's boot reap spares though their command lines
+  name the same socket; a holder that does not answer on the same socket is a wedged
+  predecessor, stopped once shown to be a runtime daemon holding that lock, SIGTERM then
+  SIGKILL, before the new one takes the lock). Both
   keep sessions in the same transcript store; a session is owned by whichever process holds its
   session lease (`pa_core::session::lease`), so the two never write one session. The runtime
   daemon runs interactive turns on its task lanes (steers, follow-ups, `session.abort` parking the
@@ -284,9 +289,8 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   revives those with unfinished tasks: their orphans reaped, the death recorded as a
   `daemon_restart` crash, the interrupted task run again, continued behind the
   interrupted-turn notice (as the same task, its prompt not repeated) or left over, or, on the
-  second death in a row under it, settled as failed. Not yet: a restart owner for the runtime
-  daemon (the keeper) and a boot reap of a wedged predecessor still holding its lock. The TUI
-  and ACP still speak only to the supervisor.
+  second death in a row under it, settled as failed. The TUI and ACP still speak only to the
+  supervisor.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,

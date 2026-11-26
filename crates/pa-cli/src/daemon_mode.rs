@@ -16,17 +16,6 @@ pub fn run_daemon_mode(options: &RunOptions) -> Result<i32> {
     let agent_dir = config::get_agent_dir();
     // The daemon keeps its transcripts in this agent dir's database.
     pa_core::session::store::use_agent_dir(&agent_dir);
-    // Asked to be the restart owner: keep the daemon this command line starts instead of being
-    // it. Nothing of the session engine is built on this path.
-    #[cfg(unix)]
-    if std::env::var_os(pa_daemon::keeper::KEEPER_ENV).is_some() {
-        return pa_daemon::keeper::run_keeper(&pa_daemon::keeper::KeeperOptions {
-            exe: std::env::current_exe()?,
-            args: std::env::args_os().skip(1).collect(),
-            socket_path,
-            agent_dir,
-        });
-    }
     // Process startup: the selection is read once, from the process's own
     // environment and the global settings.
     let runtime_selected = std::env::var(RUNTIME_DAEMON_ENV).is_ok_and(|value| value == "1")
@@ -35,6 +24,27 @@ pub fn run_daemon_mode(options: &RunOptions) -> Result<i32> {
             .daemon
             .as_deref()
             == Some("runtime");
+    // Asked to be the restart owner: keep the daemon this command line starts instead of being
+    // it, with the records of the daemon it keeps. Nothing of the session engine is built on
+    // this path.
+    #[cfg(unix)]
+    if std::env::var_os(pa_daemon::keeper::KEEPER_ENV).is_some() {
+        let (socket_path, daemon) = if runtime_selected {
+            (
+                pa_runtime::daemon::socket_path(&socket_path),
+                pa_daemon::keeper::KeptDaemon::Runtime,
+            )
+        } else {
+            (socket_path, pa_daemon::keeper::KeptDaemon::Supervisor)
+        };
+        return pa_daemon::keeper::run_keeper(&pa_daemon::keeper::KeeperOptions {
+            exe: std::env::current_exe()?,
+            args: std::env::args_os().skip(1).collect(),
+            socket_path,
+            agent_dir,
+            daemon,
+        });
+    }
     if runtime_selected {
         return crate::print_runtime::daemon_session::run_runtime_daemon(
             options,

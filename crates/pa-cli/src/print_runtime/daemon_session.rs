@@ -83,7 +83,8 @@ impl SessionBuilder for DaemonSessions {
 }
 
 /// Runs the runtime daemon on the agent dir until a stop signal: takes the
-/// agent dir's runtime-daemon lock, binds `daemon2.sock` beside
+/// agent dir's runtime-daemon lock (reaping a wedged predecessor on the same
+/// socket), binds `daemon2.sock` beside
 /// `daemon_socket` (the old daemon's stale-socket cleanup first), serves,
 /// and removes the socket on the way out unless a successor took it.
 ///
@@ -97,12 +98,14 @@ pub(crate) fn run_runtime_daemon(
     agent_dir: PathBuf,
 ) -> anyhow::Result<i32> {
     let faux = super::faux_script_env().map_err(anyhow::Error::msg)?;
-    let lock = pa_core::platform::RuntimeDaemonLock::acquire(&agent_dir)?;
     let socket = pa_runtime::daemon::socket_path(daemon_socket);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        let lock =
+            pa_runtime::daemon::take_lock(&agent_dir, &socket, pa_daemon::keeper::keeper_pid())
+                .await?;
         pa_daemon::socket::prepare_socket_path(&socket).await?;
         let listener = pa_types::platform::transport::bind_transport(&socket)
             .await
@@ -144,8 +147,8 @@ pub(crate) fn run_runtime_daemon(
         )
         .await;
         pa_daemon::socket::cleanup_socket_path_after_close(&socket, identity);
+        drop(lock);
         served
     })?;
-    drop(lock);
     Ok(0)
 }

@@ -8,12 +8,15 @@
 //!   (the old daemon's transport, its stale-socket cleanup included) and
 //!   hands [`run`] the listener; each connection is one
 //!   [`crate::WireServer::serve`].
-//! - **One per agent dir.** The embedder holds
-//!   `pa_core::platform::RuntimeDaemonLock` for the process's life (an
-//!   operating-system file lock on `<agent dir>/runtime-daemon.lock`, its pid
+//! - **One per agent dir.** The embedder takes
+//!   `pa_core::platform::RuntimeDaemonLock` with [`take_lock`] and holds it
+//!   for the process's life (an operating-system file lock on
+//!   `<agent dir>/runtime-daemon.lock`, its pid, socket and restart owner
 //!   inside), so a second runtime daemon on the same agent dir refuses to
 //!   start whatever socket it was given, and the old daemon's boot reap
-//!   spares this one.
+//!   spares this one and its restart owner. A holder that does not answer on
+//!   the same socket is a wedged predecessor: [`take_lock`] stops it first
+//!   (the boot reap).
 //! - **Sessions.** A session the daemon opens is held under its
 //!   `SessionLease` (`pa_core::session::lease`) from `session.create` until
 //!   `session.stop` or the daemon's end: the old daemon, the print mode and
@@ -57,8 +60,11 @@ use crate::runtime::{Runtime, RuntimeOptions};
 use crate::session::{SessionBuilder, SessionFaults, Supervision};
 use crate::wire::WireConfig;
 
+mod boot_reap;
 mod handlers;
 mod held;
+
+pub use boot_reap::take_lock;
 
 use handlers::RuntimeHandlers;
 use held::OpenSessions;

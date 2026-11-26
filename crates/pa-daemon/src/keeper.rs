@@ -28,6 +28,14 @@
 //!   [`DAEMON_DEATH_LOG`] and handed to the next daemon, whose
 //!   `daemon_hello` shows it to every client.
 //!
+//! - **Either daemon.** A kept launch keeps whichever daemon its command line
+//!   starts ([`KeptDaemon`]): the supervisor, or the runtime daemon when that
+//!   is selected. The runtime daemon's keeper keeps its records under the
+//!   runtime daemon's own socket (`daemon2.sock`), so the two daemons' keepers
+//!   on one agent dir never take each other's socket over or read each other's
+//!   deaths; the runtime daemon records its keeper in its lock file, so the
+//!   supervisor's boot reap spares both.
+//!
 //! A kept launch is the ordinary daemon command line plus [`KEEPER_ENV`]. The
 //! launched process splits in two first thing in `main` ([`enter`]): the copy
 //! is the daemon, booting exactly as an unkept one, and the original becomes
@@ -254,14 +262,30 @@ impl RestartPolicy {
     }
 }
 
+/// Which daemon a keeper keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeptDaemon {
+    /// The supervisor: its sessions are counted from its worker descriptors
+    /// when it dies.
+    Supervisor,
+    /// The runtime daemon (`pa_runtime::daemon`): its sessions are held in
+    /// its database, which the keeper does not open, so a death record
+    /// leaves them uncounted.
+    Runtime,
+}
+
 /// What a keeper is started with: the daemon it keeps.
 pub struct KeeperOptions {
     /// The daemon executable (this one).
     pub exe: PathBuf,
     /// The daemon's arguments (this process's own).
     pub args: Vec<std::ffi::OsString>,
+    /// The socket the kept daemon serves: the keeper's records (owner, stop
+    /// intent, death log) are kept per socket, so the runtime daemon's
+    /// keeper, keyed by `daemon2.sock`, never meets the supervisor's.
     pub socket_path: PathBuf,
     pub agent_dir: PathBuf,
+    pub daemon: KeptDaemon,
 }
 
 /// Run as the keeper of the daemon `options` describes until that daemon
@@ -438,28 +462,31 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
         let verdict = POLICY.judge(consecutive, uptime);
         // Reads of the dead daemon's own records, kept off this thread so a
         // fault in them cannot end the keeper.
-        let counted = {
-            let dir = dir.clone();
-            let socket_path = options.socket_path.clone();
-            tokio::task::spawn_blocking(move || {
-                let hosted: Vec<_> = crate::descriptor::load_descriptors(&dir, &socket_path)
-                    .into_iter()
-                    .filter(|(_, descriptor)| {
-                        descriptor.lifecycle != pa_types::daemon::DaemonWorkerLifecycle::Failed
-                    })
-                    .collect();
-                let busy = hosted
-                    .iter()
-                    .filter(|(_, descriptor)| {
-                        crate::journal::WorkerRecoveryJournal::read_interrupted(Path::new(
-                            &descriptor.recovery_journal_path,
-                        ))
-                    })
-                    .count();
-                (hosted.len() as u64, busy as u64)
-            })
-            .await
-            .ok()
+        let counted = match options.daemon {
+            KeptDaemon::Runtime => None,
+            KeptDaemon::Supervisor => {
+                let dir = dir.clone();
+                let socket_path = options.socket_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    let hosted: Vec<_> = crate::descriptor::load_descriptors(&dir, &socket_path)
+                        .into_iter()
+                        .filter(|(_, descriptor)| {
+                            descriptor.lifecycle != pa_types::daemon::DaemonWorkerLifecycle::Failed
+                        })
+                        .collect();
+                    let busy = hosted
+                        .iter()
+                        .filter(|(_, descriptor)| {
+                            crate::journal::WorkerRecoveryJournal::read_interrupted(Path::new(
+                                &descriptor.recovery_journal_path,
+                            ))
+                        })
+                        .count();
+                    (hosted.len() as u64, busy as u64)
+                })
+                .await
+                .ok()
+            }
         };
         let record = DaemonDeathRecord {
             at: crate::util::now_iso(),

@@ -7,6 +7,7 @@ pub mod fs;
 pub mod lock_dir;
 pub mod perms;
 pub mod process;
+pub mod process_stop;
 pub mod runtime_daemon_lock;
 pub mod shell;
 

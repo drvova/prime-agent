@@ -264,9 +264,12 @@ SQLite implementations over `pa-log`.
   dir and serves one `WireServer::serve` per connection on the listener the embedder bound at
   `daemon::socket_path` (`daemon2.sock` beside the old daemon's socket; on Windows the old pipe
   name with `2` appended), through `pa_types::platform::transport` as the old daemon's socket is.
-  The embedder holds `pa_core::platform::RuntimeDaemonLock` (an OS file lock on
-  `<agent dir>/runtime-daemon.lock`, its pid inside) for the process's life: a second runtime
-  daemon on the agent dir refuses to start, and the supervisor's boot reap spares the pid. Its
+  The embedder takes `pa_core::platform::RuntimeDaemonLock` (an OS file lock on
+  `<agent dir>/runtime-daemon.lock`, its pid, socket and restart owner inside) with
+  `daemon::take_lock` and holds it for the process's life: a second runtime daemon on the agent
+  dir refuses to start, and the supervisor's boot reap spares the holder and its restart owner.
+  A holder that does not answer a wire2 hello on the same socket within 3 s is a wedged
+  predecessor: `take_lock` stops it (`RuntimeDaemonLock::reap_holder`) and then takes the lock. Its
   `Handlers`: `sessions.list` (the sessions dir's saved sessions and the open ones),
   `session.snapshot` (header, name, model, thinking level, entry count, leaf, open) and
   `transcript.page` (`{session, before?, limit?}`: the stored rows before `before`, at most 500)
@@ -323,9 +326,9 @@ SQLite implementations over `pa-log`.
   `pa_core::session::revival` (`transcript_evidence` from when its run started,
   `pa_log::Log::task_saved_at`; `host_death` by its run count): run again as queued, continued
   as the same task behind `TURN_INTERRUPTED_NOTICE`, stored done when its answer was saved, or,
-  on its second death in a row, stored failed with the crash's reason. Not yet: a keeper (the
-  runtime daemon is not a restart owner's launch target) and a boot reap of a wedged
-  predecessor still holding the lock, schedules (7d), cross-session features (7e), a running
+  on its second death in a row, stored failed with the crash's reason. A kept launch is kept by
+  pa-daemon's restart owner (`keeper::KeptDaemon::Runtime`), its records under `daemon2.sock`.
+  Not yet: schedules (7d), cross-session features (7e), a running
   session's model switch, and the lane's suspension across a restart (a restored lane starts
   unparked). Under the print modes (`Runtime::open`) a panic still only fails its task and the
   next one runs on a fresh engine.
