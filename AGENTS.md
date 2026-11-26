@@ -322,8 +322,9 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   of the supervisor (phase 7g-2): `session.create` takes the client's launch `options` (model,
   thinking level, system prompt, resources, autonomous run, goal, execution mode), kept in the
   database so the session's revival or wake builds it the same way; `session.set_model`
-  switches a running session within the settings' `allowedModels` (failing closed on unreadable
-  settings); `session.set_mcp_servers` admits one client's MCP servers, fenced by its owner id;
+  switches a running session within the settings' `allowedModels` (pa-core's
+  `load_model_allowlist`/`assert_model_allowed`, the old daemon's gate too: unreadable settings or a
+  malformed `allowedModels` refuse every model); `session.set_mcp_servers` admits one client's MCP servers, fenced by its owner id;
   a scheduled job made or cancelled publishes `agent/<id>/schedules`; and the `models`,
   `settings`, `sources` and `subscriptions` queries answer. A root session stopped and opened
   again waits for its new engine's build. The TUI and ACP still speak only to the supervisor.

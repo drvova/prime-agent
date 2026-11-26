@@ -104,9 +104,9 @@ impl AgentSessionEngine {
                 // model the session runs on: a routed image model excluded
                 // by `allowedModels` must not bypass it.
                 let selector = format!("{}/{}", resolved.model.provider, resolved.model.id);
-                let allowlist = crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir);
-                if let Err(refusal) = crate::model_allowlist::assert_allowed(&allowlist, &selector)
-                {
+                let allowlist =
+                    pa_core::models::load_model_allowlist(&self.cwd(), &self.config.agent_dir);
+                if let Err(refusal) = pa_core::models::assert_model_allowed(&allowlist, &selector) {
                     self.note_model_refused("image_route", &selector);
                     return Err(format!("{refusal:#}"));
                 }

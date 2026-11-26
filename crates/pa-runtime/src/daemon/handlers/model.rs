@@ -5,8 +5,10 @@
 //! A model is resolved through the agent dir's model registry: a selector
 //! (`model`) as the command line reads one, or a `provider` and `modelId`
 //! among the models whose provider is signed in. The settings'
-//! `allowedModels` allowlist is enforced on the result, and fails closed: a
-//! global settings document that cannot be read refuses every change. An
+//! `allowedModels` allowlist is enforced on the result through pa-core's
+//! gate, the one the old daemon calls, and fails closed: a global settings
+//! document that cannot be read, or an `allowedModels` that is not a list
+//! of strings, refuses every change. An
 //! open session switches its running agent (the next request uses the
 //! model) and records the `model_change` row through its engine, and the
 //! settings' default model follows, as a switch in the old daemon does; a
@@ -15,7 +17,7 @@
 use std::path::Path;
 
 use anyhow::Context as _;
-use pa_core::models::{ModelAllowlistRefusal, ModelRegistry};
+use pa_core::models::ModelRegistry;
 use serde_json::{json, Value};
 
 use super::{optional_string_arg, RuntimeHandlers};
@@ -77,27 +79,12 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                         "give session.set_model a `model`, or a `provider` and a `modelId`"
                     ),
                 };
-                // The allowlist fails closed: unreadable global settings are
-                // an unknown policy, never an unrestricted one.
-                let settings = pa_core::settings::SettingsManager::create(&cwd, &agent_dir);
-                let selector = format!("{}/{}", model.provider, model.id);
-                if let Some(error) = settings
-                    .errors()
-                    .iter()
-                    .find(|error| error.scope == pa_core::settings::SettingsScope::Global)
-                {
-                    anyhow::bail!(
-                        "The daemon model allowlist could not be read ({}); refusing to resolve \
-                         model \"{selector}\" — the daemon fails closed instead of bypassing the \
-                         configured allowedModels policy. Fix settings.json and retry.",
-                        error.message
-                    );
-                }
-                if let Some(patterns) = settings.get_allowed_models() {
-                    if !pa_core::models::model_allowed(&selector, &patterns) {
-                        return Err(ModelAllowlistRefusal { selector }.into());
-                    }
-                }
+                // The old daemon's gate: an unreadable or malformed
+                // allowlist refuses every model.
+                pa_core::models::assert_model_allowed(
+                    &pa_core::models::load_model_allowlist(&cwd, &agent_dir),
+                    &format!("{}/{}", model.provider, model.id),
+                )?;
                 anyhow::Ok(model)
             })
             .await

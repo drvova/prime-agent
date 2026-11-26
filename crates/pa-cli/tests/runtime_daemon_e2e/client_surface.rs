@@ -4,7 +4,8 @@
 //!   launch choices (here an appended system prompt), and a session created
 //!   again without any keeps the ones it was created with;
 //! - `models` lists the signed-in models, and `session.set_model` switches
-//!   a running session within the settings' `allowedModels`;
+//!   a running session within the settings' `allowedModels` (a malformed
+//!   one refuses every model);
 //! - `session.set_mcp_servers` admits one owner's servers and fences them
 //!   from another's;
 //! - a scheduled job made or cancelled publishes `agent/<id>/schedules`, and
@@ -154,6 +155,21 @@ async fn a_running_session_switches_model_within_the_allowlist() {
             .await
     )
     .contains("blocked by the daemon model allowlist"));
+    // A malformed allowlist is an unknown policy: refused, never open.
+    std::fs::write(
+        bed.agent_dir().join("settings.json"),
+        json!({ "allowedModels": "faux/*" }).to_string(),
+    )
+    .unwrap();
+    assert!(refused(
+        client
+            .call(
+                "session.set_model",
+                json!({ "session": id, "provider": "faux", "modelId": "faux-1" }),
+            )
+            .await
+    )
+    .contains("allowedModels is present but is not an array of strings"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

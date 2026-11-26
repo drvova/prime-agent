@@ -1,6 +1,9 @@
 //! Model subsystem: resolver and Prime Inference private models.
 
-pub use allowlist::{model_allowed, ModelAllowlistRefusal};
+pub use allowlist::{
+    assert_model_allowed, load_model_allowlist, model_allowed, ModelAllowlist,
+    ModelAllowlistRefusal,
+};
 pub use registry::{
     ModelRegistry, ProviderRequestConfig, QuotaFallback, ResolvedRequestAuth,
     SetModelSelectionError,

@@ -315,7 +315,9 @@ SQLite implementations over `pa-log`.
   way and a create without options keeps them. For the ACP client (`daemon/handlers/model.rs`,
   `mcp.rs`, `bus.rs`): the `models` query lists the signed-in models; `session.set_model`
   (`{session, provider, modelId}` or `{session, model}`) resolves through the model registry,
-  enforces the settings' `allowedModels` (refusing on unreadable global settings), and on an
+  enforces the settings' `allowedModels` through pa-core's gate, the old daemon's too
+  (`pa_core::models::{load_model_allowlist, assert_model_allowed}`: unreadable global settings or a
+  malformed `allowedModels` refuse every model), and on an
   open session switches the running agent, records the `model_change` row through its engine
   and makes it the settings' default, the old daemon's `set_model`; `session.set_mcp_servers`
   (`{session, owner, servers}`) replaces the MCP servers one client supplies an open session in

@@ -46,10 +46,10 @@ pub fn resolve_child_model(
     reference: Option<&str>,
     parent_model: Option<&str>,
     target: &str,
-    allowlist: &crate::model_allowlist::DaemonAllowlist,
+    allowlist: &pa_core::models::ModelAllowlist,
 ) -> Result<String> {
     let model = resolve_child_model_unchecked(agent_dir, reference, parent_model, target)?;
-    crate::model_allowlist::assert_allowed(allowlist, &model)?;
+    pa_core::models::assert_model_allowed(allowlist, &model)?;
     Ok(model)
 }
 
@@ -205,7 +205,7 @@ pub fn rlm_child_label(prompt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_allowlist::DaemonAllowlist;
+    use pa_core::models::ModelAllowlist;
     use pa_core::session_engine::rlm_notices::{compact_rlm_text, ANSWER_PREVIEW_MAX_CHARS};
     use serde_json::json;
 
@@ -241,7 +241,7 @@ mod tests {
             None,
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
@@ -251,7 +251,7 @@ mod tests {
             Some("Test-Provider/GLM-5.3"),
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
@@ -260,7 +260,7 @@ mod tests {
             Some("test-provider/glm-5.3-turbo"),
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3-turbo");
@@ -269,7 +269,7 @@ mod tests {
             Some("glm-5.3-turbo"),
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3-turbo");
@@ -278,7 +278,7 @@ mod tests {
             None,
             None,
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap_err();
         assert_eq!(
@@ -291,8 +291,7 @@ mod tests {
     fn the_allowlist_refuses_resolved_models_loudly() {
         let dir = tempfile::TempDir::new().unwrap();
         write_catalog(dir.path());
-        let allow =
-            crate::model_allowlist::DaemonAllowlist::Allowed(vec!["prime-inference/*".to_string()]);
+        let allow = pa_core::models::ModelAllowlist::Allowed(vec!["prime-inference/*".to_string()]);
         // An explicit reference outside the allowlist fails with the typed refusal.
         let error = resolve_child_model(
             dir.path(),
@@ -333,7 +332,7 @@ mod tests {
             Some("test-provider/glm-5.3"),
             None,
             "subagent",
-            &crate::model_allowlist::DaemonAllowlist::Allowed(vec!["test-provider/*".to_string()]),
+            &pa_core::models::ModelAllowlist::Allowed(vec!["test-provider/*".to_string()]),
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
@@ -342,7 +341,7 @@ mod tests {
             Some("test-provider/glm-5.3"),
             None,
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
@@ -360,7 +359,7 @@ mod tests {
             Some("test-provi"),
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap_err();
         let message = error.to_string();
@@ -380,7 +379,7 @@ mod tests {
             Some("zzz"),
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap_err();
         assert!(!error.to_string().contains("close matches:"), "{error}");
@@ -473,7 +472,7 @@ mod tests {
             Some("prime-inference/internal/glm-5.3-fast"),
             Some("prime-inference/z-ai/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "prime-inference/internal/glm-5.3-fast");
@@ -482,7 +481,7 @@ mod tests {
             Some("internal/glm-5.3-fast"),
             Some("prime-inference/z-ai/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "prime-inference/internal/glm-5.3-fast");
@@ -569,7 +568,7 @@ mod tests {
             Some(&selector),
             Some("prime-inference/z-ai/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, selector);
@@ -578,7 +577,7 @@ mod tests {
             Some(PROBE_ID),
             Some("prime-inference/z-ai/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, selector);

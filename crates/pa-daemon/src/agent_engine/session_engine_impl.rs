@@ -447,8 +447,9 @@ impl SessionEngine for AgentSessionEngine {
             (selection.provider.as_deref(), selection.model.as_deref())
         {
             let selector = format!("{provider}/{model}");
-            let allowlist = crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir);
-            if crate::model_allowlist::assert_allowed(&allowlist, &selector).is_err() {
+            let allowlist =
+                pa_core::models::load_model_allowlist(&self.cwd(), &self.config.agent_dir);
+            if pa_core::models::assert_model_allowed(&allowlist, &selector).is_err() {
                 return false;
             }
         }
