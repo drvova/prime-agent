@@ -1911,6 +1911,7 @@ fn shutdown_sandboxed_daemon(socket: &std::path::Path) {
 /// The pid of the test's daemon on `socket`: the supervisor's, from the
 /// hello frame every new connection receives, or the runtime daemon's, from
 /// the agent dir's runtime-daemon lock.
+#[cfg(unix)]
 fn daemon_pid(socket: &std::path::Path) -> u64 {
     if daemon() == Daemon::Runtime {
         let lock = socket
