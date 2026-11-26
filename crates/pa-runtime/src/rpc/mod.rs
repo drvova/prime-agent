@@ -78,6 +78,7 @@ impl LineWriter {
 
     /// The signal-exit drain (SIGTERM/SIGHUP): the 143/129 exit codes
     /// must fire even against a stalled reader, so the wait is bounded.
+    #[cfg(unix)]
     pub async fn drain_bounded(&self) {
         self.drain_within(std::time::Duration::from_secs(2)).await;
     }
