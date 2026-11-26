@@ -1,0 +1,30 @@
+                                                tmp  $0.00
+
+  q001 asked                                                                                 ##:##
+
+
+ answer 001
+
+
+  q002 asked                                                                                 ##:##
+
+
+ answer 002
+
+
+  q003 asked                                                                                 ##:##
+
+
+ answer 003
+
+
+  q004 asked                                                                                 ##:##
+                                      ↓ Ctrl+Shift+↓ to follow
+
+                                                                  Collapsed mode (Ctrl+O to expand)
+
+ >
+
+← manage (context tray)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ 0 subagents  ·  ◷ 0 heartbeats  ·  ▸ 0 shells

@@ -1,0 +1,30 @@
+                                                tmp  $0.00 + $—
+ First answer, long enough to be worth compacting later on.
+
+ Worked for # · 0 tool calls · 17k tokens
+
+
+  and again                                                                                  ##:##
+
+
+ Second answer, so the history has an older turn to summarize.
+
+ Worked for # · 0 tool calls · 8.9k tokens · 94% cached
+
+
+  /compact
+
+
+ ◆ Context compacted
+ ## Summary The user greeted the agent and got a first answer. --- **Turn Context (split turn):** ##
+ Turn prefix The user asked again. <user-messages> The user's own messages from the compacted …
+
+ Worked for # · 0 tool calls · 0 tokens
+
+                                                                  Collapsed mode (Ctrl+O to expand)
+
+ >
+
+← manage (context tray)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ 0 subagents  ·  ◷ 0 heartbeats  ·  ▸ 0 shells

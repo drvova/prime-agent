@@ -438,6 +438,8 @@ impl DaemonClient {
                     continue;
                 };
                 message_deltas.decode(&mut value);
+                #[cfg(debug_assertions)]
+                crate::inbound_recording::record(crate::inbound_recording::Via::Supervisor, &value);
                 let frame_type = value
                     .get("type")
                     .and_then(Value::as_str)
