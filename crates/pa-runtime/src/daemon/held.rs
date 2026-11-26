@@ -35,6 +35,7 @@ use crate::lock;
 use crate::runtime::Runtime;
 use crate::session::{Rebuild, SessionBuilder, SessionSpec};
 
+use super::handlers::UserBashes;
 use super::schedules::Schedules;
 
 /// The `kv` scope and key the held sessions are kept under.
@@ -86,6 +87,8 @@ pub(crate) struct Revival {
 pub(super) struct OpenSessions {
     log: std::sync::Arc<Log>,
     open: Mutex<HeldSessions>,
+    /// The open sessions' `!` commands.
+    pub(super) bashes: UserBashes,
 }
 
 #[derive(Default)]
@@ -106,6 +109,7 @@ impl OpenSessions {
         OpenSessions {
             log,
             open: Mutex::new(HeldSessions::default()),
+            bashes: UserBashes::default(),
         }
     }
 

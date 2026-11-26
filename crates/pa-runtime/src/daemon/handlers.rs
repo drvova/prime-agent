@@ -26,7 +26,9 @@ use super::schedules::Schedules;
 use crate::runtime::{AfterAbort, Runtime};
 use crate::session::{SessionBuilder, SessionSpec};
 use crate::wire::{Attached, Call, Handlers, Query};
+pub(super) use bash::UserBashes;
 
+mod bash;
 mod bus;
 mod jobs;
 mod mcp;
@@ -239,6 +241,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         );
         // Stopped on purpose: its jobs wake nothing until it is opened again.
         self.schedules.disarm(&id);
+        // Its `!` command is killed first, and none starts while it stops.
+        let _closing = self.open.bashes.close(&id).await;
         self.runtime.close_session(&id).await?;
         // Closed: its lease goes.
         self.open.remove(&id).await;
@@ -450,6 +454,8 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionWaitIdle => self.wait_idle(&args).await,
             Call::SessionSend => self.send(&args).await,
             Call::SessionSetMcpServers => self.set_mcp_servers(&args).await,
+            Call::SessionBash => self.bash(&args).await,
+            Call::SessionAbortBash => self.abort_bash(&args),
             Call::ScheduleAdd => self.schedule_add(&args).await,
             Call::ScheduleCancel => self.schedule_cancel(&args),
         }

@@ -328,7 +328,16 @@ SQLite implementations over `pa-log`.
   and `settings` (`{session?}`) the effective settings for a session's or the daemon's cwd with
   what could not be read. A scheduled job made, changed or cancelled publishes
   `agent/<id>/schedules` (`{"active": n}`) once its timer is in place, the old daemon's
-  `heartbeats_changed`. A root session stopped and opened again waits for its new engine's
+  `heartbeats_changed`. The user's `!` commands (`daemon/handlers/bash.rs`, over pa-core's
+  `pa_core::user_bash`, the old daemon's `execute_bash`/`abort_bash`): `session.bash`
+  (`{session, command, excludeFromContext?, transient?, runId?}`) answers `{session, started}`
+  as the command starts on the session's runtime, refused while another runs or the session
+  stops; the run streams `bash_start`, a `bash_output` per sanitized chunk and `bash_end` on
+  `agent/<id>/stream`, and unless `transient` its `bashExecution` row is saved and joins the
+  agent's messages (with no turn running, under the agent's idle reservation; a running turn
+  takes it as a steer). `session.abort_bash` (`{session}`) kills it (it ends `cancelled`), and
+  `session.stop` and the daemon's shutdown kill it and wait (bounded) for it to settle before
+  the session closes. A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);

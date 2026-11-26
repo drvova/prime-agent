@@ -1,129 +1,18 @@
-//! The user bash surface: the worker arms for `execute_bash`,
-//! `execute_bash_and_wait`, and `abort_bash`, with
-//! `bash_start`/`bash_output`/`bash_end` events and the `bashExecution`
-//! durable row. A TS-stack port: sanitization, the 50KB window, the spill.
+//! The worker arms for `execute_bash`, `execute_bash_and_wait`, and
+//! `abort_bash` over pa-core's user bash (`pa_core::user_bash`: the slot,
+//! the run, its events), with the `bashExecution` durable row in the
+//! worker's session store.
 
-use std::io::Write;
-use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use pa_core::user_bash::{
+    bash_identity, run_bash, start_event, AwaitedRun, BashResult, ChunkSink, RunBash,
+};
 use serde_json::{json, Map, Value};
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::worker::Worker;
-
-/// How long a run still reads output after its shell exits (TS `EXIT_STDIO_GRACE_MS`): a
-/// background process holding the inherited pipes must not hold the run open.
-const EXIT_STDIO_GRACE: std::time::Duration = std::time::Duration::from_millis(100);
-/// How long a closing session waits for its aborted runs to settle (TS
-/// `UPDATE_RESTART_ABORT_BASH_TIMEOUT_MS`).
-const CLOSE_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-/// Streaming window: chunks are retained (spilled to disk beyond this).
-const DEFAULT_MAX_BYTES: usize = 50 * 1024;
-/// Streaming retention cap: the in-memory tail (TS `maxOutputBytes`).
-const STREAM_MAX_BYTES: usize = DEFAULT_MAX_BYTES * 2;
-/// Tail truncation line budget (TS `DEFAULT_MAX_LINES`).
-const DEFAULT_MAX_LINES: usize = 2000;
-/// The TS spill prefix (temp file names in `$TMPDIR`).
-const SPILL_PREFIX: &str = "pa-bash";
-
-/// The user-bash slot: one command runs at a time (TS `_userBashRunning`),
-/// with a kill switch `abort_bash` pulls.
-pub(crate) struct UserBash {
-    /// The user-bash claim (`execute_bash` only; TS `runUserBash` guard).
-    running: AtomicBool,
-    /// Awaited bash runs in flight (TS `_bashAbortControllers.size`):
-    /// they count toward `isBashRunning` without claiming the slot.
-    awaited: AtomicUsize,
-    /// Each invocation owns its cancellation state; a later start cannot clear an earlier abort.
-    controllers: std::sync::Mutex<Vec<std::sync::Weak<CancellationToken>>>,
-    /// Signals each settle (the slot's release or an awaited run's end).
-    settled: Notify,
-}
-
-impl UserBash {
-    pub(crate) fn new() -> Self {
-        Self {
-            running: AtomicBool::new(false),
-            awaited: AtomicUsize::new(0),
-            controllers: std::sync::Mutex::new(Vec::new()),
-            settled: Notify::new(),
-        }
-    }
-
-    /// Claim and register synchronously, before the spawned task can race an abort.
-    fn claim(&self) -> Option<Arc<CancellationToken>> {
-        let mut controllers = self.controllers.lock().unwrap();
-        if self.running.swap(true, Ordering::SeqCst) {
-            return None;
-        }
-        let cancellation = Arc::new(CancellationToken::new());
-        controllers.retain(|controller| controller.strong_count() > 0);
-        controllers.push(Arc::downgrade(&cancellation));
-        Some(cancellation)
-    }
-
-    fn release(&self) {
-        self.running.store(false, Ordering::SeqCst);
-        self.settled.notify_waiters();
-    }
-
-    /// Whether a user bash or an awaited bash run is in flight (TS `isBashRunning`).
-    pub(crate) fn is_running(&self) -> bool {
-        self.running.load(Ordering::SeqCst) || self.awaited.load(Ordering::SeqCst) > 0
-    }
-
-    /// Count one awaited run (`execute_bash_and_wait`) toward [`Self::is_running`]; the returned
-    /// bracket decrements on drop, so a dropped future cannot leave the count stuck on.
-    pub(crate) fn begin_awaited(&self) -> AwaitedRun<'_> {
-        let mut controllers = self.controllers.lock().unwrap();
-        let cancellation = Arc::new(CancellationToken::new());
-        controllers.retain(|controller| controller.strong_count() > 0);
-        controllers.push(Arc::downgrade(&cancellation));
-        self.awaited.fetch_add(1, Ordering::SeqCst);
-        AwaitedRun {
-            user_bash: self,
-            cancellation,
-        }
-    }
-
-    /// Notify every in-flight run to kill its process tree (TS `abortBash`
-    /// aborts every controller); the settled runs report cancelled.
-    pub(crate) fn abort(&self) {
-        let mut controllers = self.controllers.lock().unwrap();
-        controllers.retain(|controller| {
-            if let Some(controller) = controller.upgrade() {
-                controller.cancel();
-                true
-            } else {
-                false
-            }
-        });
-    }
-
-    /// [`Self::abort`], then wait (bounded) until no run is in flight: each run kills its tree
-    /// in its own task, so a close must not exit ahead of the kills (TS `abortBashForClose`).
-    pub(crate) async fn abort_and_settle(&self) {
-        self.abort();
-        let settled = async {
-            loop {
-                // Armed before the check, so a settle in between still wakes this wait.
-                let notified = self.settled.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                if !self.is_running() {
-                    return;
-                }
-                notified.await;
-            }
-        };
-        let _ = tokio::time::timeout(CLOSE_SETTLE_TIMEOUT, settled).await;
-    }
-}
 
 impl Worker {
     /// Rust-native kernel bash activity commands. These inspect the kernel's
@@ -220,13 +109,7 @@ impl Worker {
             .unwrap_or(false);
         let run_id = payload.get("runId").and_then(Value::as_str);
         let identity = bash_identity(transient, run_id);
-        let start = json!({
-            "type": "bash_start",
-            "command": command,
-            "excludeFromContext": exclude_from_context,
-        });
-        let start = merge_identity(start, &identity);
-        self.emit_worker_event(start);
+        self.emit_worker_event(start_event(command, exclude_from_context, &identity));
         // The run outlives the response (bash can exceed the client's
         // request timeout); completion streams via bash_end.
         let core = Arc::clone(&self.core);
@@ -246,46 +129,26 @@ impl Worker {
             };
             let prefix = settings.settings().shell_command_prefix.clone();
             let shell_path = settings.settings().shell_path.clone();
+            let on_chunk: ChunkSink = {
+                let (core, events) = (Arc::clone(&core), Arc::clone(&events));
+                Arc::new(move |event| emit_session_event_frame(&core, &events, event))
+            };
             let end = run_bash(RunBash {
                 command: &command,
                 cwd: &cwd,
                 prefix: prefix.as_deref(),
                 shell_path: shell_path.as_deref(),
                 cancellation: &cancellation,
-                on_chunk: Some((Arc::clone(&core), Arc::clone(&events))),
+                on_chunk: Some(on_chunk),
             })
             .await;
             // Persist the durable row (transient runs live only in their
             // pane; reloads and rebuilds cannot resurface them).
             if !transient {
-                record_bash_result(
-                    &core,
-                    &command,
-                    &BashResult {
-                        output: end.output.clone(),
-                        exit_code: end.exit_code,
-                        cancelled: end.cancelled,
-                        truncated: end.truncated,
-                        full_output_path: end.full_output_path.clone(),
-                    },
-                    exclude_from_context,
-                );
+                record_bash_result(&core, &command, &end.result(), exclude_from_context);
             }
             user_bash.release();
-            let mut event = json!({
-                "type": "bash_end",
-                "exitCode": end.exit_code,
-                "cancelled": end.cancelled,
-                "truncated": end.truncated,
-            });
-            if let Some(path) = &end.full_output_path {
-                event["fullOutputPath"] = json!(path);
-            }
-            if let Some(error) = &end.error_message {
-                event["errorMessage"] = json!(error);
-            }
-            let event = merge_identity(event, &identity);
-            emit_session_event_frame(&core, &events, event);
+            emit_session_event_frame(&core, &events, end.end_event(&identity));
             // The queue drains after the slot is released (TS
             // `_drainQueuedMessagesAfterBash`).
             work_notify.notify_one();
@@ -386,7 +249,7 @@ impl Worker {
             cwd: &cwd,
             prefix: prefix.as_deref(),
             shell_path: shell_path.as_deref(),
-            cancellation: &awaited.cancellation,
+            cancellation: awaited.cancellation(),
             // The awaited path emits nothing (TS passes no `onChunk`).
             on_chunk: None,
         })
@@ -427,297 +290,6 @@ impl Worker {
     }
 }
 
-/// The wire identity echoed on `bash_start`/`bash_end` (TS `identity`).
-fn bash_identity(transient: bool, run_id: Option<&str>) -> Value {
-    let mut identity = serde_json::Map::new();
-    if transient {
-        identity.insert("transient".to_string(), json!(true));
-    }
-    if let Some(run_id) = run_id {
-        identity.insert("runId".to_string(), json!(run_id));
-    }
-    Value::Object(identity)
-}
-
-fn merge_identity(mut event: Value, identity: &Value) -> Value {
-    if let (Some(event), Some(identity)) = (event.as_object_mut(), identity.as_object()) {
-        for (key, value) in identity {
-            event.insert(key.clone(), value.clone());
-        }
-    }
-    event
-}
-
-/// The drop-bracket [`UserBash::begin_awaited`] returns: one awaited run's contribution to the
-/// `isBashRunning` flag, released even when the run's future is dropped mid-await.
-pub(crate) struct AwaitedRun<'a> {
-    user_bash: &'a UserBash,
-    cancellation: Arc<CancellationToken>,
-}
-
-impl Drop for AwaitedRun<'_> {
-    fn drop(&mut self) {
-        self.user_bash.awaited.fetch_sub(1, Ordering::SeqCst);
-        self.user_bash.settled.notify_waiters();
-    }
-}
-
-/// The TS `BashResult` wire shape.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BashResult {
-    output: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    exit_code: Option<i64>,
-    cancelled: bool,
-    truncated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    full_output_path: Option<String>,
-}
-
-/// The settled user-bash run (TS `UserBashEndDetails` plus the output it
-/// carries for the durable row).
-struct BashEnd {
-    output: String,
-    exit_code: Option<i64>,
-    cancelled: bool,
-    truncated: bool,
-    full_output_path: Option<String>,
-    error_message: Option<String>,
-}
-
-/// One process run (TS `executeBashWithOperations` over the local bash
-/// operations): the streaming window, the spill, and the tail truncation.
-struct RunBash<'a> {
-    command: &'a str,
-    cwd: &'a str,
-    prefix: Option<&'a str>,
-    shell_path: Option<&'a str>,
-    cancellation: &'a CancellationToken,
-    /// The streaming emit target for each sanitized chunk; `None` on
-    /// the awaited path, which emits nothing.
-    on_chunk: Option<(
-        Arc<std::sync::Mutex<crate::worker::SessionCore>>,
-        Arc<crate::worker::EventPump>,
-    )>,
-}
-
-/// The streaming accumulator (TS `onData`): the sanitizing decode, the
-/// spill, the in-memory tail window, and the chunk callback.
-struct OutputStream {
-    chunks: Vec<String>,
-    retained_bytes: usize,
-    total_bytes: usize,
-    spill: OutputSpill,
-    on_chunk: Option<(
-        Arc<std::sync::Mutex<crate::worker::SessionCore>>,
-        Arc<crate::worker::EventPump>,
-    )>,
-}
-
-impl Clone for OutputStream {
-    fn clone(&self) -> Self {
-        Self {
-            chunks: self.chunks.clone(),
-            retained_bytes: self.retained_bytes,
-            total_bytes: self.total_bytes,
-            spill: OutputSpill::new(),
-            on_chunk: self.on_chunk.clone(),
-        }
-    }
-}
-
-impl OutputStream {
-    /// The collected view (the shared clone path): this port never clones
-    /// mid-run, but the fallback keeps the collected chunks.
-    fn clone_stream(&self) -> Self {
-        self.clone()
-    }
-
-    fn push(&mut self, data: &str) {
-        let text = sanitize_output(data);
-        if text.is_empty() {
-            return;
-        }
-        self.total_bytes += text.len();
-        if self.total_bytes > DEFAULT_MAX_BYTES {
-            self.spill.open(&self.chunks);
-        }
-        self.spill.write(&text);
-        self.chunks.push(text.clone());
-        self.retained_bytes += self.chunks.last().map_or_default(String::len);
-        // The in-memory window keeps the tail (TS `maxOutputBytes`).
-        while self.retained_bytes > STREAM_MAX_BYTES && self.chunks.len() > 1 {
-            let removed = self.chunks.remove(0);
-            self.retained_bytes -= removed.len();
-        }
-        if let Some((core, events)) = &self.on_chunk {
-            emit_session_event_frame(
-                core,
-                events,
-                json!({ "type": "bash_output", "chunk": text }),
-            );
-        }
-    }
-}
-
-async fn run_bash(run: RunBash<'_>) -> BashEnd {
-    let resolved = match run.prefix.filter(|prefix| !prefix.is_empty()) {
-        Some(prefix) => format!("{prefix}\n{}", run.command),
-        None => run.command.to_string(),
-    };
-    let spawn_failure = |message: String| BashEnd {
-        output: String::new(),
-        exit_code: None,
-        cancelled: false,
-        truncated: false,
-        full_output_path: None,
-        error_message: Some(message),
-    };
-    if !std::path::Path::new(run.cwd).exists() {
-        // TS local operations reject before spawning.
-        return spawn_failure(format!(
-            "Working directory does not exist: {}\nCannot execute bash commands.",
-            run.cwd
-        ));
-    }
-    let shell = match pa_core::platform::shell::get_shell_config(run.shell_path) {
-        Ok(shell) => shell,
-        Err(error) => return spawn_failure(error.to_string()),
-    };
-    let mut command = pa_types::session_scope::tokio_command(&shell.shell);
-    command
-        .args(&shell.args)
-        .arg(&resolved)
-        .current_dir(run.cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // Its own process group on POSIX, so a kill reaches every process the
-    // command started (TS `detached: true`); Windows tree kills go through
-    // `taskkill /T`.
-    #[cfg(unix)]
-    pa_core::platform::process::set_new_process_group(command.as_std_mut());
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => return spawn_failure(error.to_string()),
-    };
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    // Only this run kills its tree, and only before it reaps the child: a
-    // reaped pid can be reused. A failed tree kill still stops the shell.
-    let kill_tree = |child: &mut tokio::process::Child| {
-        let killed = child
-            .id()
-            .is_some_and(|pid| pa_core::platform::process::kill_process_group_or_pid(pid as i32));
-        if !killed {
-            let _ = child.start_kill();
-        }
-    };
-    let abort = run.cancellation.cancelled();
-    tokio::pin!(abort);
-    // Cancellation remains sticky even if another command starts before this task runs.
-    let mut killed = run.cancellation.is_cancelled();
-    if killed {
-        kill_tree(&mut child);
-    }
-    let stream = std::sync::Arc::new(std::sync::Mutex::new(OutputStream {
-        chunks: Vec::new(),
-        retained_bytes: 0,
-        total_bytes: 0,
-        spill: OutputSpill::new(),
-        on_chunk: run.on_chunk,
-    }));
-    // stdout and stderr merge into one stream (TS wires both pipes to the
-    // same `onData`); the shared accumulator keeps the arrival order.
-    // A read can end inside a multi-byte character; each pipe's decoder holds its leading
-    // bytes for the next read (TS `TextDecoder`, `stream: true`).
-    let pump = |mut reader: Box<dyn AsyncRead + Unpin + Send>| {
-        let stream = Arc::clone(&stream);
-        async move {
-            let mut decoder = crate::streaming_utf8::StreamingUtf8::default();
-            let mut buffer = [0u8; 8192];
-            loop {
-                match reader.read(&mut buffer).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => {
-                        let text = decoder.decode_chunk(&buffer[..read]);
-                        stream.lock().unwrap().push(&text);
-                    }
-                }
-            }
-            let rest = decoder.flush();
-            stream.lock().unwrap().push(&rest);
-        }
-    };
-    let stdout_pump = stdout.map(|pipe| pump(Box::new(pipe)));
-    let stderr_pump = stderr.map(|pipe| pump(Box::new(pipe)));
-    let mut pumps = Box::pin(async move {
-        match (stdout_pump, stderr_pump) {
-            (Some(stdout_pump), Some(stderr_pump)) => {
-                futures::future::join(stdout_pump, stderr_pump).await;
-            }
-            (Some(pump), None) | (None, Some(pump)) => pump.await,
-            (None, None) => {}
-        }
-    });
-    let mut pumps_done = false;
-    // The run settles on the shell's exit, not on its pipes closing
-    // (abort_bash may kill it meanwhile; a cancelled run reports no exit code).
-    let status = loop {
-        tokio::select! {
-            // If both are ready, kill while the unreaped child still pins its PID.
-            biased;
-            () = &mut abort, if !killed => {
-                killed = true;
-                kill_tree(&mut child);
-            }
-            status = child.wait() => break status,
-            () = &mut pumps, if !pumps_done => pumps_done = true,
-        }
-    };
-    // Descendants still holding the pipes (a `cmd &`) get the grace, then the
-    // pipes close (TS `waitForChildProcess`).
-    if !pumps_done {
-        let _ = tokio::time::timeout(EXIT_STDIO_GRACE, &mut pumps).await;
-    }
-    drop(pumps);
-    // A signal death reports 128 + the signal number, like a shell's `$?` (TS
-    // `normalizedExitCode`); a cancelled run still reports none below.
-    let exit_code = status
-        .ok()
-        .and_then(|status| pa_core::platform::process::normalized_exit_code(&status))
-        .map(i64::from);
-    let cancelled = run.cancellation.is_cancelled();
-    // The pumps are dropped, so this is the last reference; a poisoned
-    // lock (a reader panicked) keeps whatever it collected.
-    let mut stream = match Arc::try_unwrap(stream) {
-        Ok(mutex) => mutex
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-        Err(stream) => stream
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone_stream(),
-    };
-    let full_output = stream.chunks.join("");
-    let (output, truncated) = truncate_tail(&full_output);
-    // A line-truncated run spills at settle even under the byte budget,
-    // so the truncation notice can always name a full-output file.
-    if truncated {
-        stream.spill.open(&stream.chunks);
-    }
-    let full_output_path = stream.spill.finalize();
-    BashEnd {
-        output,
-        exit_code: if cancelled { None } else { exit_code },
-        cancelled,
-        truncated,
-        full_output_path,
-        error_message: None,
-    }
-}
-
 /// Record one bash outcome as the durable `bashExecution` row (TS
 /// `recordBashResult`); it joins the model context unless excluded.
 fn record_bash_result(
@@ -748,173 +320,6 @@ fn record_bash_result(
         row["excludeFromContext"] = json!(true);
     }
     let _ = store.persist_entry("message", json!({ "message": row }));
-}
-
-/// Sanitize one output chunk (TS `strip-ansi` + `sanitizeBinaryOutput` +
-/// the `\r` strip in the executor's `onData`).
-fn sanitize_output(text: &str) -> String {
-    let stripped = strip_ansi(text);
-    let mut out = String::with_capacity(stripped.len());
-    for character in stripped.chars() {
-        let code = character as u32;
-        // Tab, newline, carriage return stay.
-        if matches!(code, 0x09 | 0x0a | 0x0d) {
-            out.push(character);
-            continue;
-        }
-        // Control characters and the format characters that break width
-        // rendering drop.
-        if code <= 0x1f || (0xfff9..=0xfffb).contains(&code) {
-            continue;
-        }
-        out.push(character);
-    }
-    out.replace('\r', "")
-}
-
-/// Strip ANSI escape sequences (CSI sequences and the simple two-byte
-/// escapes the `strip-ansi` package handles).
-fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(character) = chars.next() {
-        if character != '\u{1b}' {
-            out.push(character);
-            continue;
-        }
-        match chars.next() {
-            // CSI: parameters and intermediates run to the final byte (0x40-0x7e).
-            Some('[') => {
-                for next in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&next) {
-                        break;
-                    }
-                }
-            }
-            // A simple escape sequence: one following byte.
-            Some(_) => {}
-            // A trailing escape with nothing after it drops.
-            None => break,
-        }
-    }
-    out
-}
-
-/// The output spill (TS `OutputSpill`): opened once the output outgrows
-/// the window; a degraded spill never advertises a path.
-struct OutputSpill {
-    file: Option<std::fs::File>,
-    path: Option<String>,
-    failed: bool,
-}
-
-impl OutputSpill {
-    fn new() -> Self {
-        Self {
-            file: None,
-            path: None,
-            failed: false,
-        }
-    }
-
-    fn open(&mut self, replay: &[String]) {
-        if self.file.is_some() || self.failed {
-            return;
-        }
-        let path = std::env::temp_dir().join(format!(
-            "{SPILL_PREFIX}-{}.log",
-            uuid::Uuid::new_v4().simple()
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        pa_core::platform::perms::set_private_mode(&mut options);
-        let Ok(mut file) = options.open(&path) else {
-            self.failed = true;
-            return;
-        };
-        for chunk in replay {
-            if file.write_all(chunk.as_bytes()).is_err() {
-                self.failed = true;
-                return;
-            }
-        }
-        self.path = Some(path.to_string_lossy().to_string());
-        self.file = Some(file);
-    }
-
-    fn write(&mut self, text: &str) {
-        let Some(file) = self.file.as_mut() else {
-            return;
-        };
-        if file.write_all(text.as_bytes()).is_err() {
-            self.failed = true;
-            self.file = None;
-            self.path = None;
-        }
-    }
-
-    fn finalize(mut self) -> Option<String> {
-        if let Some(file) = self.file.as_mut() {
-            if file.flush().is_err() {
-                self.failed = true;
-            }
-        }
-        self.file = None;
-        if self.failed {
-            None
-        } else {
-            self.path
-        }
-    }
-}
-
-/// Tail truncation (TS `truncateTail`): the last 2000 lines within 50KB
-/// win; an oversized last line keeps its tail, blank trailing lines permitting.
-fn truncate_tail(content: &str) -> (String, bool) {
-    let total_bytes = content.len();
-    let lines: Vec<&str> = content.split('\n').collect();
-    let total_lines = lines.len();
-    if total_lines <= DEFAULT_MAX_LINES && total_bytes <= DEFAULT_MAX_BYTES {
-        return (content.to_string(), false);
-    }
-    let mut collected: Vec<&str> = Vec::new();
-    let mut output_bytes = 0usize;
-    for line in lines.iter().rev() {
-        if collected.len() >= DEFAULT_MAX_LINES {
-            break;
-        }
-        let line_bytes = line.len() + usize::from(!collected.is_empty());
-        if output_bytes + line_bytes > DEFAULT_MAX_BYTES {
-            // The oversized-line rescue: trailing blanks must not defeat
-            // the rescue, so keep as many as the budget allows and unshift
-            // the line's own tail.
-            if collected.iter().all(|collected| collected.is_empty()) {
-                let kept_blanks = collected.len().min(DEFAULT_MAX_BYTES.saturating_sub(1));
-                let budget = DEFAULT_MAX_BYTES.saturating_sub(kept_blanks);
-                let truncated_line = truncate_string_to_bytes_from_end(line, budget);
-                let mut out = String::with_capacity(DEFAULT_MAX_BYTES);
-                out.push_str(&truncated_line);
-                for _ in 0..kept_blanks {
-                    out.push('\n');
-                }
-                return (out, true);
-            }
-            break;
-        }
-        collected.push(line);
-        output_bytes += line_bytes;
-    }
-    collected.reverse();
-    (collected.join("\n"), true)
-}
-
-/// The tail `maxBytes` of one string, on char boundaries (TS `truncateStringToBytesFromEnd`).
-fn truncate_string_to_bytes_from_end(text: &str, max_bytes: usize) -> String {
-    let mut end = text.len().min(max_bytes);
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[text.len() - end..].to_string()
 }
 
 /// Sequence and broadcast one `session_event` frame (the free-standing
@@ -952,6 +357,7 @@ pub(crate) fn emit_session_event_frame(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     async fn created_worker(cwd: &std::path::Path) -> (tempfile::TempDir, Arc<Worker>) {
@@ -1098,44 +504,6 @@ mod tests {
                 "{command}"
             );
         }
-    }
-
-    #[test]
-    fn an_abort_stays_with_every_admitted_run_when_another_run_starts() {
-        let user_bash = UserBash::new();
-        let streamed = user_bash.claim().expect("claim slot");
-        let first = user_bash.begin_awaited();
-        let second = user_bash.begin_awaited();
-        user_bash.abort();
-        let later = user_bash.begin_awaited();
-        assert_eq!(
-            [
-                streamed.is_cancelled(),
-                first.cancellation.is_cancelled(),
-                second.cancellation.is_cancelled(),
-                later.cancellation.is_cancelled()
-            ],
-            [true, true, true, false],
-        );
-        user_bash.abort();
-        assert!(later.cancellation.is_cancelled());
-        user_bash.release();
-        drop((first, second, later));
-        assert!(!user_bash.is_running());
-    }
-
-    #[test]
-    fn an_abandoned_awaited_run_releases_the_flag() {
-        let user_bash = UserBash::new();
-        assert!(!user_bash.is_running());
-        {
-            let _awaited = user_bash.begin_awaited();
-            assert!(user_bash.is_running());
-        }
-        assert!(
-            !user_bash.is_running(),
-            "the dropped bracket left the awaited count stuck on"
-        );
     }
 
     #[tokio::test]
@@ -1485,34 +853,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sanitize_output_matches_the_ts_chain() {
-        assert_eq!(sanitize_output("clean\r\noutput"), "clean\noutput");
-        assert_eq!(
-            sanitize_output("\u{1b}[32mgreen\u{1b}[0m plain"),
-            "green plain"
-        );
-        assert_eq!(
-            sanitize_output("keep\ttab\nand\x00drop"),
-            "keep\ttab\nanddrop"
-        );
-        assert_eq!(sanitize_output("format\u{fff9}gone"), "formatgone");
-    }
-
-    #[test]
-    fn truncate_tail_keeps_the_tail_budget() {
-        let (content, truncated) = truncate_tail("one\ntwo\nthree\n");
-        assert!(!truncated);
-        assert_eq!(content, "one\ntwo\nthree\n");
-
-        // A long output keeps only its tail (the TS window).
-        let big = "x".repeat(DEFAULT_MAX_BYTES + 10_000);
-        let (kept, truncated) = truncate_tail(&big);
-        assert!(truncated);
-        assert!(kept.len() <= DEFAULT_MAX_BYTES);
-        assert!(big.ends_with(&kept), "the tail wins");
-    }
-
     /// Readiness wait for a racing thread's entered signal: the signal is
     /// what the caller proceeds on — the deadline only bounds failure, it can
     /// never make an assertion pass.
@@ -1629,7 +969,7 @@ mod tests {
         // bounds failure.
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            awaited.cancellation.cancelled(),
+            awaited.cancellation().cancelled(),
         )
         .await
         .expect("the abort never reached the admitted token");

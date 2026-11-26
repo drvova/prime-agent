@@ -81,6 +81,7 @@ pub mod slash_command_args;
 pub(crate) mod symbol_index;
 pub mod update;
 pub mod usage_host;
+pub mod user_bash;
 pub(crate) mod web_crawl;
 pub(crate) mod web_read;
 pub mod web_search;

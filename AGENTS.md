@@ -327,7 +327,14 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   malformed `allowedModels` refuse every model); `session.set_mcp_servers` admits one client's MCP servers, fenced by its owner id;
   a scheduled job made or cancelled publishes `agent/<id>/schedules`; and the `models`,
   `settings`, `sources` and `subscriptions` queries answer. A root session stopped and opened
-  again waits for its new engine's build. The TUI and ACP still speak only to the supervisor.
+  again waits for its new engine's build. The user's `!` commands run on pa-core's user bash
+  (`pa_core::user_bash`: one command at a time per session, the run, its `bash_*` events and its
+  `bashExecution` row), which both daemons share: the supervisor's worker answers `execute_bash`,
+  `execute_bash_and_wait` and `abort_bash` with it, and the runtime daemon `session.bash` (its
+  `bash_start`/`bash_output`/`bash_end` on `agent/<id>/stream`, its row saved and joined to the
+  model's context, or steered into a running turn) and `session.abort_bash`; stopping a session
+  or the daemon kills its running command first and admits none while it stops (phase 7g-3).
+  The TUI and ACP still speak only to the supervisor.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,

@@ -72,7 +72,7 @@ fn burst_runner(engine: Arc<dyn SessionEngine>) -> (tempfile::TempDir, TurnRunne
         recovery: Arc::new(Mutex::new(None)),
         active_session_id: "burst-session".to_string(),
         roster_pushes: crate::roster_activity::RosterPushQueue::disabled(),
-        user_bash: std::sync::Arc::new(crate::user_bash::UserBash::new()),
+        user_bash: std::sync::Arc::new(pa_core::user_bash::UserBash::new()),
         passivation: crate::worker::turn::PassivationContext {
             agent_dir: tmp.path().to_path_buf(),
             link: std::sync::Arc::new(crate::supervisor_link::SupervisorLink::new(

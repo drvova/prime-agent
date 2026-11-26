@@ -543,6 +543,33 @@ impl<B: SessionBuilder> Runtime<B> {
         cancelled
     }
 
+    /// Queues each payload it is given on `session`'s stream
+    /// (`agent/<id>/stream`, live only) as the owner's, through the
+    /// sessions' outbox: in order with what the session's turns stream.
+    ///
+    /// # Errors
+    ///
+    /// `session` cannot be a topic level.
+    pub(crate) fn stream_sender(
+        &self,
+        session: &str,
+    ) -> anyhow::Result<Arc<dyn Fn(serde_json::Value) + Send + Sync>> {
+        let topic = crate::session::SessionTopics::of(session)?.stream;
+        let outbox = self.sessions.outbox().clone();
+        let id = session.to_string();
+        Ok(Arc::new(move |payload| {
+            outbox.send(NewEvent {
+                topic: topic.clone(),
+                source: id.clone(),
+                session: Some(id.clone()),
+                payload,
+                trust: Trust::Owner,
+                cause: None,
+                reply: None,
+            });
+        }))
+    }
+
     /// The engine of `session`'s current lifetime, once it is built.
     pub(crate) fn session_engine(&self, session: &str) -> Option<crate::session::LiveEngine> {
         self.sessions.host(session)?.engine()

@@ -286,12 +286,14 @@ pub async fn run<B: SessionBuilder>(
                     continue;
                 };
                 if open.contains(id) {
+                    let closing = open.bashes.close(id).await;
                     if let Err(error) = runtime.close_session(id).await {
                         tracing::warn!(
                             "the given-up session {id} did not close cleanly: {error:#}"
                         );
                     }
                     open.remove(id).await;
+                    drop(closing);
                     schedules.disarm(id);
                 }
             }
@@ -335,6 +337,8 @@ pub async fn run<B: SessionBuilder>(
     drop(listener);
     connections.shutdown().await;
     drop(server);
+    // The `!` commands are killed before their sessions close.
+    open.bashes.close_all().await;
     given_up.abort();
     let _ = given_up.await;
     schedules.stop();

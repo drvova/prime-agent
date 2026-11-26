@@ -355,7 +355,7 @@ mod tests {
                 "/tmp".to_string(),
             ))),
             engine,
-            user_bash: Arc::new(crate::user_bash::UserBash::new()),
+            user_bash: Arc::new(pa_core::user_bash::UserBash::new()),
             roster_link: Arc::new(SupervisorLink::new(socket)),
             worker_token: "token".to_string(),
             worker_instance_id: "instance".to_string(),
@@ -429,7 +429,7 @@ mod tests {
         let queue = RosterPushQueue::spawn(crate::worker::RosterPushContext {
             core: Arc::new(Mutex::new(SessionCore::test_core(None, "/tmp".to_string()))),
             engine: Arc::new(crate::engine::ScriptedEngine::default()),
-            user_bash: Arc::new(crate::user_bash::UserBash::new()),
+            user_bash: Arc::new(pa_core::user_bash::UserBash::new()),
             roster_link: Arc::new(SupervisorLink::new(socket)),
             worker_token: "token".to_string(),
             worker_instance_id: "instance".to_string(),

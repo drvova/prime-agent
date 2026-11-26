@@ -176,7 +176,7 @@ pub struct Worker {
     acp_mcp: std::sync::Arc<std::sync::Mutex<pa_core::mcp::McpManager>>,
     /// The user-bash slot (`execute_bash` / `execute_bash_and_wait` /
     /// `abort_bash`): one command runs at a time, killed on abort.
-    pub(crate) user_bash: std::sync::Arc<crate::user_bash::UserBash>,
+    pub(crate) user_bash: std::sync::Arc<pa_core::user_bash::UserBash>,
     /// The coalescing roster push queue shared with the turn runner: the
     /// awaited bash handler enqueues the run-settle flush.
     pub(crate) roster_pushes: crate::roster_activity::RosterPushQueue,
@@ -381,7 +381,7 @@ impl Worker {
         let prompt_admissions = crate::prompt_admission::WorkerAdmissions::new();
         // Created before the session engine: `rlm_heartbeat.*` requests
         // write the shared cron store.
-        let user_bash = std::sync::Arc::new(crate::user_bash::UserBash::new());
+        let user_bash = std::sync::Arc::new(pa_core::user_bash::UserBash::new());
         let scheduled = std::sync::Arc::new(crate::scheduled_jobs::ScheduledJobs::new(
             Arc::clone(&core),
             Arc::clone(&work_notify),

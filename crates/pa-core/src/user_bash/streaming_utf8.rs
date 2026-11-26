@@ -9,14 +9,14 @@
 /// `ED A0 80` yields one U+FFFD per byte. One decoder per byte stream: feed each
 /// read to [`Self::decode_chunk`], then [`Self::flush`] once at end of stream.
 #[derive(Default)]
-pub(crate) struct StreamingUtf8 {
+pub(super) struct StreamingUtf8 {
     buffer: Vec<u8>,
 }
 
 impl StreamingUtf8 {
     /// Decode the complete characters buffered so far plus `data`; a trailing
     /// incomplete sequence waits for the next chunk.
-    pub(crate) fn decode_chunk(&mut self, data: &[u8]) -> String {
+    pub(super) fn decode_chunk(&mut self, data: &[u8]) -> String {
         self.buffer.extend_from_slice(data);
         let (text, consumed) = decode_lossy_prefix(&self.buffer);
         self.buffer.drain(..consumed);
@@ -25,7 +25,7 @@ impl StreamingUtf8 {
 
     /// End of stream: decode whatever is left, a truncated trailing sequence
     /// as one U+FFFD.
-    pub(crate) fn flush(&mut self) -> String {
+    pub(super) fn flush(&mut self) -> String {
         let buffer = std::mem::take(&mut self.buffer);
         let (mut text, consumed) = decode_lossy_prefix(&buffer);
         if consumed < buffer.len() {

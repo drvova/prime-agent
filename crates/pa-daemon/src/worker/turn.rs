@@ -25,7 +25,7 @@ pub(super) struct TurnRunner {
     pub(super) active_session_id: String,
     pub(super) roster_pushes: crate::roster_activity::RosterPushQueue,
     /// The idle passivation's live-bash gate.
-    pub(super) user_bash: std::sync::Arc<crate::user_bash::UserBash>,
+    pub(super) user_bash: std::sync::Arc<pa_core::user_bash::UserBash>,
     pub(super) passivation: PassivationContext,
     /// The shared pane-reporter slot (the Worker's `herdr` field): the
     /// runner reads it at every boundary so a create-time rebind is always

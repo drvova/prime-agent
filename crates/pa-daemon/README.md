@@ -299,6 +299,11 @@ child worker spawns (subagent class), every worker's kernel starts, and the supe
 crash-recovery adoption (background class) take a boot permit from it, so a fan-out paces with
 the host's load; the spawn handle and `rlm.collect` results carry the boot's `queued_ms`.
 
+The user's `!` commands (`user_bash.rs`): the worker's `execute_bash`, `execute_bash_and_wait` and
+`abort_bash` arms, with their shutdown-gate admission and the `bashExecution` row in the worker's
+session store, over pa-core's `pa_core::user_bash` (the slot, the run and its event shapes), which
+the runtime daemon shares.
+
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.
 

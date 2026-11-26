@@ -337,7 +337,7 @@ pub(crate) fn emit_worker_event_locked(core: &mut SessionCore, events: &EventPum
 pub(crate) struct RosterPushContext {
     pub(crate) core: Arc<Mutex<SessionCore>>,
     pub(crate) engine: std::sync::Arc<dyn SessionEngine>,
-    pub(crate) user_bash: std::sync::Arc<crate::user_bash::UserBash>,
+    pub(crate) user_bash: std::sync::Arc<pa_core::user_bash::UserBash>,
     pub(crate) roster_link: std::sync::Arc<crate::supervisor_link::SupervisorLink>,
     pub(crate) worker_token: String,
     pub(crate) worker_instance_id: String,
@@ -443,7 +443,7 @@ impl SummaryInputs {
     fn lock<'a>(
         core: &'a Mutex<SessionCore>,
         engine: &dyn SessionEngine,
-        user_bash: &crate::user_bash::UserBash,
+        user_bash: &pa_core::user_bash::UserBash,
     ) -> (std::sync::MutexGuard<'a, SessionCore>, Self) {
         loop {
             let details = ModelDetails::read(engine, ModelDetailScope::Summary);
@@ -460,7 +460,7 @@ impl SummaryInputs {
 
     fn capture(
         engine: &dyn SessionEngine,
-        user_bash: &crate::user_bash::UserBash,
+        user_bash: &pa_core::user_bash::UserBash,
         model: Option<Value>,
     ) -> Self {
         Self {
@@ -496,7 +496,7 @@ impl ConnectionStateInputs {
     fn lock<'a>(
         core: &'a Mutex<SessionCore>,
         engine: &dyn SessionEngine,
-        user_bash: &crate::user_bash::UserBash,
+        user_bash: &pa_core::user_bash::UserBash,
     ) -> (std::sync::MutexGuard<'a, SessionCore>, Self) {
         loop {
             let details = ModelDetails::read(engine, ModelDetailScope::Connection);
@@ -513,7 +513,7 @@ impl ConnectionStateInputs {
 
     fn capture(
         engine: &dyn SessionEngine,
-        user_bash: &crate::user_bash::UserBash,
+        user_bash: &pa_core::user_bash::UserBash,
         details: ModelDetails,
     ) -> Self {
         Self {

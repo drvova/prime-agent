@@ -140,6 +140,11 @@ pub enum Call {
     /// `session.set_mcp_servers`: replaces the MCP servers one client (an
     /// owner id) supplies an open session.
     SessionSetMcpServers,
+    /// `session.bash`: runs a user's `!` command on a session, its output
+    /// streamed on the session's stream.
+    SessionBash,
+    /// `session.abort_bash`: kills the session's running `!` command.
+    SessionAbortBash,
     /// `schedule.add`: schedules a prompt on a session.
     ScheduleAdd,
     /// `schedule.cancel`: cancels a scheduled job.
@@ -169,6 +174,8 @@ impl FromStr for Call {
             "session.wait_idle" => Call::SessionWaitIdle,
             "session.send" => Call::SessionSend,
             "session.set_mcp_servers" => Call::SessionSetMcpServers,
+            "session.bash" => Call::SessionBash,
+            "session.abort_bash" => Call::SessionAbortBash,
             "schedule.add" => Call::ScheduleAdd,
             "schedule.cancel" => Call::ScheduleCancel,
             unknown => {

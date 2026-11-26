@@ -346,7 +346,7 @@ async fn drive_the_fire_to_the_gate(
 /// and these are the handles the racing events land through.
 struct FiredSeam {
     core: Arc<Mutex<SessionCore>>,
-    user_bash: Arc<crate::user_bash::UserBash>,
+    user_bash: Arc<pa_core::user_bash::UserBash>,
     /// The in-flight fire: the settle barrier — the raced continuation
     /// (the post-await revalidation, the ask) runs to completion when
     /// this handle joins.

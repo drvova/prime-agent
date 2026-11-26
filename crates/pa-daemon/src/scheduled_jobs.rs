@@ -37,7 +37,7 @@ pub(crate) fn session_artifact_dir(session_file: &Path, session_id: &str) -> Opt
 pub(crate) struct QueueHooks {
     core: Arc<Mutex<SessionCore>>,
     work_notify: Arc<Notify>,
-    user_bash: Arc<crate::user_bash::UserBash>,
+    user_bash: Arc<pa_core::user_bash::UserBash>,
     store: Arc<AgentCronJobStore>,
     /// The worker recovery journal (the fire checkpoint's busy evidence).
     recovery: Arc<Mutex<Option<crate::journal::WorkerRecoveryJournal>>>,
@@ -225,7 +225,7 @@ impl ScheduledJobs {
     pub(crate) fn new(
         core: Arc<Mutex<SessionCore>>,
         work_notify: Arc<Notify>,
-        user_bash: Arc<crate::user_bash::UserBash>,
+        user_bash: Arc<pa_core::user_bash::UserBash>,
         events: Arc<crate::worker::EventPump>,
         recovery: Arc<Mutex<Option<crate::journal::WorkerRecoveryJournal>>>,
     ) -> Self {
