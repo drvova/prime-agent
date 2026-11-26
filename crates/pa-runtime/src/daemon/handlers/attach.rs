@@ -352,6 +352,7 @@ struct EngineState {
     todos: pa_types::todo::TodoList,
     compactions: usize,
     warning_shown: bool,
+    tool_calls: u64,
     usage: Value,
     auto_compaction: bool,
     goal: Value,
@@ -359,8 +360,8 @@ struct EngineState {
 }
 
 /// The old summary and connection state of one open session.
-struct Composed {
-    summary: Value,
+pub(super) struct Composed {
+    pub(super) summary: Value,
     state: Value,
     transcript: Transcript,
 }
@@ -377,13 +378,30 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 
     /// Reads open session `args.session`'s engine and transcript into the
     /// old summary and connection state.
+    async fn compose(&self, args: &Value) -> anyhow::Result<Composed> {
+        let id = self.open_session(args)?;
+        self.compose_session(&id).await
+    }
+
+    /// [`Self::compose`] of session `id`: an open session, or a subagent
+    /// below one, whose summary also names its parent and its handle
+    /// (`runtimeKind: "subagent"`, the old child worker's).
     #[expect(
         clippy::too_many_lines,
         reason = "the summary and the state are composed key by key in the old wire's order"
     )]
-    async fn compose(&self, args: &Value) -> anyhow::Result<Composed> {
-        let id = self.open_session(args)?;
-        let path = self.open.path(&id).context("the session closed")?;
+    pub(super) async fn compose_session(&self, id: &str) -> anyhow::Result<Composed> {
+        let id = id.to_string();
+        let lineage = self.runtime.subagents().lineage(&id);
+        let path = match (self.open.path(&id), &lineage) {
+            (Some(path), _) => path,
+            (None, Some(lineage)) => lineage
+                .session_file
+                .as_ref()
+                .map(PathBuf::from)
+                .with_context(|| format!("subagent {id} has no transcript"))?,
+            (None, None) => anyhow::bail!("session {id} is not open in the runtime daemon"),
+        };
         let live = self.runtime.built_engine(&id).await?;
         let engine = std::sync::Arc::clone(&live.engine);
         let read = live
@@ -428,6 +446,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                         })
                         .count(),
                     warning_shown,
+                    tool_calls: crate::subagents::branch_tool_calls(&manager),
                     usage: pa_core::usage_host::session_usage_json(&manager),
                     auto_compaction: engine.session.auto_compaction_enabled(),
                     goal: Value::Null,
@@ -567,11 +586,14 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         }
         put(
             "rlmDepth",
-            json!(read
-                .header
-                .as_ref()
-                .and_then(|header| header.rlm_depth)
-                .unwrap_or(0)),
+            json!(lineage.as_ref().map_or_else(
+                || read
+                    .header
+                    .as_ref()
+                    .and_then(|header| header.rlm_depth)
+                    .unwrap_or(0),
+                |lineage| u64::from(lineage.depth)
+            )),
         );
         put("activeSessionId", json!(id));
         put("sessionId", json!(id));
@@ -598,6 +620,15 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         if let Some(first) = &first_message {
             put("firstMessage", json!(first));
         }
+        if read.tool_calls > 0 {
+            put("toolUseCount", json!(read.tool_calls));
+        }
+        if let Some(lineage) = &lineage {
+            put("parentSessionPath", json!(lineage.parent_file));
+            put("parentActiveSessionId", json!(lineage.parent_id));
+            put("parentSessionId", json!(lineage.parent_id));
+            put("rlmChildId", json!(lineage.child_id));
+        }
         if let Some(usage) = usage {
             put("usage", usage);
         }
@@ -605,7 +636,14 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         put("workerPid", json!(std::process::id()));
         put("rosterDeltaSequence", json!(0));
         put("model", model_metadata.clone());
-        put("runtimeKind", json!("top-level"));
+        put(
+            "runtimeKind",
+            json!(if lineage.is_some() {
+                "subagent"
+            } else {
+                "top-level"
+            }),
+        );
         put("unfinishedActionCount", json!(0));
         put("anthropicWarningShown", json!(read.warning_shown));
         let summary = Value::Object(summary);

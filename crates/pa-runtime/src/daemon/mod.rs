@@ -269,13 +269,15 @@ pub async fn run<B: SessionBuilder>(
             &options.agent_dir,
             &options.session_dir,
         ));
+    let feeds = Arc::new(handlers::Feeds::default());
     // A session given up on is closed, and its lease released.
     let given_up = {
         let mut listener = runtime.listen();
-        let (runtime, open, schedules) = (
+        let (runtime, open, schedules, feeds) = (
             Arc::clone(&runtime),
             Arc::clone(&open),
             Arc::clone(&schedules),
+            Arc::clone(&feeds),
         );
         tokio::spawn(async move {
             while let Some(heard) = listener.recv().await {
@@ -299,25 +301,25 @@ pub async fn run<B: SessionBuilder>(
                     open.remove(id).await;
                     drop(closing);
                     schedules.disarm(id);
+                    feeds.due(id);
                 }
             }
         })
     };
     held::revive(&runtime, &open, &schedules, &options.agent_dir).await;
     let attached = Arc::new(Attached::default());
-    let server = runtime.wire_server(
-        RuntimeHandlers::new(
-            Arc::clone(&runtime),
-            Arc::clone(&open),
-            Arc::clone(&schedules),
-            Arc::clone(&attached),
-            options.agent_dir.clone(),
-            options.session_dir,
-            options.cwd,
-        ),
-        WireConfig::default(),
-        attached,
-    );
+    let handlers = Arc::new(RuntimeHandlers::new(
+        Arc::clone(&runtime),
+        Arc::clone(&open),
+        Arc::clone(&schedules),
+        Arc::clone(&attached),
+        feeds,
+        options.agent_dir.clone(),
+        options.session_dir,
+        options.cwd,
+    ));
+    let feed_tasks = handlers.spawn_feeds();
+    let server = runtime.wire_server(Arc::clone(&handlers), WireConfig::default(), attached);
     let mut connections = JoinSet::new();
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
@@ -341,6 +343,11 @@ pub async fn run<B: SessionBuilder>(
     drop(listener);
     connections.shutdown().await;
     drop(server);
+    for task in feed_tasks {
+        task.abort();
+        let _ = task.await;
+    }
+    drop(handlers);
     // The `!` commands are killed before their sessions close.
     open.bashes.close_all().await;
     given_up.abort();

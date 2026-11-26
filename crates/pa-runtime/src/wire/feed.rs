@@ -17,7 +17,8 @@
 //! then-last event, and the events the listener still holds from before that
 //! point are skipped as they arrive.
 //!
-//! A live-only event (`Topic::is_live_only`: stream and tool deltas), or any
+//! A live-only event (`Topic::is_live_only`: stream and tool deltas, the
+//! roster and traffic feeds), or any
 //! event of a session the log keeps nothing of (an ephemeral one), is not
 //! in the log and has no sequence number (`seq` 0): it goes to every subscription
 //! whose filter matches it as it arrives, outside the cursor and `through`

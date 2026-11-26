@@ -129,6 +129,36 @@ impl Attached {
         self.client.id()
     }
 
+    /// Follows a feed as the compat layer asks (`frames`: its subscription,
+    /// then its query): the query goes once the subscription's backfill is
+    /// done; the query's reply.
+    pub(super) async fn follow(&mut self, frames: &[ClientFrame]) -> pa_types::wire2::Outcome {
+        let [subscribe @ ClientFrame::Subscribe { sub_id, .. }, query] = frames else {
+            panic!("a feed is a subscription and a query: {frames:?}");
+        };
+        self.client.send(subscribe).await;
+        self.until(|session| {
+            session.frames.iter().any(|frame| {
+                matches!(frame, ServerFrame::Backfilled { sub_id: done, .. } if done == sub_id)
+            })
+        })
+        .await;
+        self.request(query).await
+    }
+
+    /// The events on topic `topic` so far.
+    pub(super) fn feed_events(&self, topic: &str) -> Vec<pa_types::event_log::Event> {
+        self.frames
+            .iter()
+            .filter_map(|frame| match frame {
+                ServerFrame::Event { event, .. } if event.event.topic.as_str() == topic => {
+                    Some(event.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) async fn query(&mut self, name: &str) -> Value {
         let request = self.client.id();
         self.client

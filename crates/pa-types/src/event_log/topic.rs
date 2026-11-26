@@ -20,6 +20,11 @@ use serde::{Deserialize, Serialize};
 /// with is published on a stored topic (`agent/<id>/done`).
 const LIVE_ONLY_KINDS: &[&str] = &["stream", "tool"];
 
+/// The live-only feeds `runtime/<feed>` of the agents view: the roster's
+/// row changes and the agent traffic. A client reads their current state
+/// with a query and follows the feed from then on, as it follows a stream.
+const LIVE_ONLY_FEEDS: &[&str] = &["roster", "traffic"];
+
 /// Most levels in a topic or filter.
 pub const MAX_TOPIC_LEVELS: usize = 16;
 /// Longest topic or filter, in bytes.
@@ -105,14 +110,16 @@ impl Topic {
     }
 
     /// Whether events on this topic are live only, never stored: exactly
-    /// `agent/<id>/stream` or `agent/<id>/tool`.
+    /// `agent/<id>/stream`, `agent/<id>/tool`, `runtime/roster` or
+    /// `runtime/traffic`.
     #[must_use]
     pub fn is_live_only(&self) -> bool {
         let mut levels = self.levels();
-        matches!(
-            (levels.next(), levels.next(), levels.next(), levels.next()),
-            (Some("agent"), Some(_), Some(kind), None) if LIVE_ONLY_KINDS.contains(&kind)
-        )
+        match (levels.next(), levels.next(), levels.next(), levels.next()) {
+            (Some("agent"), Some(_), Some(kind), None) => LIVE_ONLY_KINDS.contains(&kind),
+            (Some("runtime"), Some(feed), None, None) => LIVE_ONLY_FEEDS.contains(&feed),
+            _ => false,
+        }
     }
 }
 

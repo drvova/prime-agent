@@ -13,13 +13,13 @@ use pa_core::session_engine::rlm_host::{
     RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle, RlmSpawnRequest, RlmSubagentEntry,
     RlmSubagentHost,
 };
-use pa_core::session_engine::rlm_notices::compact_rlm_text;
+use pa_core::session_engine::rlm_notices::{compact_rlm_text, rlm_child_label};
 use pa_types::event_log::{AgentTarget, Priority, Route, Scope, Subscription, TopicFilter, Trust};
 
 use super::family::SpawnRecord;
 use super::{
-    child_is_unsettled, deliver_row, dispose_child, lock, now_ms, wake, Child, ChildState,
-    Delivery, Node, Subagents, SUBSCRIPTION_PREFIX,
+    child_is_unsettled, deliver_row, dispose_child, lock, now_ms, tool_use_count, wake, Child,
+    ChildState, Delivery, Node, Subagents, SUBSCRIPTION_PREFIX,
 };
 use crate::session::{SessionSpec, SubagentSpec};
 
@@ -108,6 +108,7 @@ impl RlmSubagentHost for SessionSubagents {
             ));
             lock(&tree.nodes).insert(session_id.clone(), Arc::clone(&child_node));
             let mut built = child_node.built.subscribe();
+            let waited = std::time::Instant::now();
             let opened = control.open(spec);
             // The child's engine builds on its own thread; its builder's
             // error is the spawn's.
@@ -118,9 +119,12 @@ impl RlmSubagentHost for SessionSubagents {
                 },
                 Err(error) => Err(format!("{error:#}")),
             };
+            let queued_ms = u64::try_from(waited.elapsed().as_millis()).unwrap_or(u64::MAX);
             let child = Arc::new(Child {
                 rlm_child_id: child_id.clone(),
                 factory: request.factory.is_some(),
+                label: rlm_child_label(&request.prompt),
+                queued_ms,
                 node: Arc::clone(&child_node),
                 state: tokio::sync::Mutex::new(ChildState {
                     status: "running",
@@ -209,8 +213,7 @@ impl RlmSubagentHost for SessionSubagents {
                 name,
                 session_dir: child_node.session_dir(),
                 model: selector,
-                // A child's session starts in this process: nothing to queue for.
-                queued_ms: 0,
+                queued_ms,
             })
         })
     }
@@ -229,8 +232,9 @@ impl RlmSubagentHost for SessionSubagents {
             let mut entries = Vec::with_capacity(children.len());
             for child in &children {
                 let unsettled = child_is_unsettled(child).await;
+                let tools = tool_use_count(&child.node).await;
                 let state = child.state.lock().await;
-                entries.push(roster_entry(child, &state, unsettled));
+                entries.push(roster_entry(child, &state, unsettled, tools));
             }
             Ok(entries)
         })
@@ -245,6 +249,7 @@ impl RlmSubagentHost for SessionSubagents {
             // final snapshots, sessions close.
             dispose_child(&child).await;
             let unsettled = child_is_unsettled(&child).await;
+            let tools = tool_use_count(&child.node).await;
             let entry = {
                 let mut state = child.state.lock().await;
                 state.settled = true;
@@ -252,7 +257,7 @@ impl RlmSubagentHost for SessionSubagents {
                     state.status = "cancelled";
                     state.error = Some("Deleted by parent orchestrator".to_string());
                 }
-                roster_entry(&child, &state, unsettled)
+                roster_entry(&child, &state, unsettled, tools)
             };
             child.publish_update().await;
             node.children
@@ -312,6 +317,7 @@ impl RlmSubagentHost for SessionSubagents {
                         && child.node.waits.waiting_on().as_deref()
                             == Some(node.session_id.as_str());
                     waiting_on_parent |= waiting_on_you;
+                    let tools = tool_use_count(&child.node).await;
                     let state = child.state.lock().await;
                     all_settled &= !unsettled;
                     results.push(RlmChildResult {
@@ -330,9 +336,9 @@ impl RlmSubagentHost for SessionSubagents {
                         answer_text: state.answer_text.clone(),
                         error: state.error.clone(),
                         duration_ms: Some(now_ms().saturating_sub(state.started_at_ms)),
-                        tool_use_count: None,
+                        tool_use_count: tools,
                         replied_since_task: Some(state.replied_since_task),
-                        queued_ms: None,
+                        queued_ms: Some(child.queued_ms).filter(|queued_ms| *queued_ms > 0),
                         check_status: child
                             .node
                             .engine()
@@ -555,9 +561,20 @@ impl Subagents {
                 },
                 Err(error) => Err(format!("{error:#}")),
             };
+            // Its label from the prompt its spawn recorded beside it.
+            let label = rlm_child_label(
+                pa_core::session_engine::rlm_ledger::read_rlm_subagent_display(
+                    std::path::Path::new(&child_node.session_dir()),
+                )
+                .and_then(|display| display.prompt)
+                .as_deref()
+                .unwrap_or_default(),
+            );
             let child = Arc::new(Child {
                 rlm_child_id: edge.child_id.clone(),
                 factory: edge.factory.is_some(),
+                label,
+                queued_ms: 0,
                 node: Arc::clone(&child_node),
                 state: tokio::sync::Mutex::new(ChildState {
                     status: "done",
@@ -587,7 +604,12 @@ impl Subagents {
     }
 }
 
-fn roster_entry(child: &Arc<Child>, state: &ChildState, unsettled: bool) -> RlmSubagentEntry {
+fn roster_entry(
+    child: &Arc<Child>,
+    state: &ChildState,
+    unsettled: bool,
+    tool_use_count: Option<u64>,
+) -> RlmSubagentEntry {
     RlmSubagentEntry {
         rlm_child_id: child.rlm_child_id.clone(),
         active_session_id: Some(child.node.session_id.clone()),
@@ -606,12 +628,12 @@ fn roster_entry(child: &Arc<Child>, state: &ChildState, unsettled: bool) -> RlmS
             }
         },
         activity: None,
-        tool_use_count: None,
+        tool_use_count,
         duration_ms: Some(now_ms().saturating_sub(state.started_at_ms)),
         answer_preview: state.answer_text.as_deref().map(compact_rlm_text),
         replied_since_task: Some(state.replied_since_task),
         progress_note: None,
-        label: None,
+        label: Some(child.label.clone()),
         last_activity_at: Some(state.started_at_ms),
         activity_stale_ms: None,
     }

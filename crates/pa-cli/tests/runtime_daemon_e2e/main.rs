@@ -25,10 +25,14 @@
 //! - The old daemon's session-event payloads on the stream, numbered
 //!   (phase 8b-2), and the queue view on it (phase 8b-3): [`stream`].
 //! - pa-tui's five inbound goldens replayed through `wire2_compat`
-//!   (phase 8b-3): [`goldens`].
+//!   (phase 8b-3), their replies (8c-1) and the agents view's feeds (8c-2):
+//!   [`goldens`].
+//! - The agents view's roster feed from a session's open to its stop
+//!   (phase 8c-2): [`agents_view`].
 #![cfg(unix)]
 
 mod acp_calls;
+mod agents_view;
 mod bash;
 mod client_surface;
 mod family;

@@ -399,7 +399,34 @@ pub(crate) struct FamilyMember {
     pub(crate) children: Vec<FamilyMember>,
 }
 
+/// Where a subagent stands in its family, as the old roster's summary
+/// names it: its handle, its depth below its root, its transcript, and its
+/// parent's id and transcript.
+pub(crate) struct Lineage {
+    pub(crate) child_id: String,
+    pub(crate) depth: u32,
+    pub(crate) session_file: Option<String>,
+    pub(crate) parent_id: String,
+    pub(crate) parent_file: Option<String>,
+}
+
 impl Subagents {
+    /// Where open session `id` stands in its family; `None` for a root, a
+    /// session the runtime does not run, or one whose parent is gone.
+    pub(crate) fn lineage(&self, id: &str) -> Option<Lineage> {
+        let node = self.node(id)?;
+        let parent = node.parent_node()?;
+        let session_file = lock(&node.adopted).session_file.clone();
+        let parent_file = lock(&parent.adopted).session_file.clone();
+        Some(Lineage {
+            child_id: node.rlm_child_id.clone()?,
+            depth: node.depth,
+            session_file,
+            parent_id: parent.session_id.clone(),
+            parent_file,
+        })
+    }
+
     /// The subagents below open session `id`, each with its own, in spawn
     /// order; none for a session the runtime does not run.
     pub(crate) async fn family_of(&self, id: &str) -> Vec<FamilyMember> {
@@ -694,6 +721,18 @@ impl Node {
         self.parent.as_ref().and_then(Weak::upgrade)
     }
 
+    /// The id of the session at the top of this node's family (its own for
+    /// a root).
+    fn root_id(&self) -> String {
+        let mut root = self.session_id.clone();
+        let mut parent = self.parent_node();
+        while let Some(node) = parent {
+            root.clone_from(&node.session_id);
+            parent = node.parent_node();
+        }
+        root
+    }
+
     pub(crate) fn is_disposed(&self) -> bool {
         self.disposed.load(Ordering::SeqCst)
     }
@@ -768,6 +807,12 @@ pub(crate) struct Child {
     /// A factory state's child: the factory reads its settle through
     /// collect, so no terminal notice reaches the parent.
     factory: bool,
+    /// Its task's one-line label (the old roster's `label`).
+    label: String,
+    /// How long its spawn waited for its engine before the task was given
+    /// (the old collect's `queued_ms`, there the wait for a boot permit):
+    /// 0 for a child opened again.
+    queued_ms: u64,
     node: Arc<Node>,
     state: tokio::sync::Mutex<ChildState>,
     /// The status its last `rlm_child_update` published.
@@ -786,7 +831,7 @@ impl Child {
                 .node
                 .session_name()
                 .unwrap_or_else(|| self.rlm_child_id.clone()),
-            "label": Value::Null,
+            "label": self.label,
             "status": if unsettled { "running" } else { state.status },
             "durationMs": now_ms().saturating_sub(state.started_at_ms),
             "sessionDir": self.node.session_dir(),
@@ -844,6 +889,36 @@ struct ChildState {
     /// An agent message to the parent arrived since the task was admitted;
     /// the no-reply terminal notice is withheld once set.
     replied_since_task: bool,
+}
+
+/// How many tool calls the assistant messages on the session's active
+/// branch made (the old summary's `toolUseCount`, which its worker counted
+/// the same way).
+pub(crate) fn branch_tool_calls(manager: &pa_core::session::manager::SessionManager) -> u64 {
+    manager
+        .get_branch(None)
+        .into_iter()
+        .filter_map(|entry| serde_json::to_value(entry).ok())
+        .filter(|row| row["type"] == "message" && row["message"]["role"] == "assistant")
+        .map(|row| {
+            row["message"]["content"].as_array().map_or(0, |blocks| {
+                blocks
+                    .iter()
+                    .filter(|block| block["type"] == "toolCall")
+                    .count()
+            })
+        })
+        .map(|count| u64::try_from(count).unwrap_or(u64::MAX))
+        .sum()
+}
+
+/// The tool calls of `node`'s session so far ([`branch_tool_calls`]),
+/// `None` before its first or while it has no engine.
+async fn tool_use_count(node: &Node) -> Option<u64> {
+    let engine = node.engine()?;
+    let persistence = engine.session.shared_persistence();
+    let count = branch_tool_calls(&*persistence.lock().await);
+    (count > 0).then_some(count)
 }
 
 /// Milliseconds since the Unix epoch.

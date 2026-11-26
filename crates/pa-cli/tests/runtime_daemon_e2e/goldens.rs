@@ -39,8 +39,9 @@
 //!   that went away, fails the test; `PA_BLESS_INBOUND_GOLDENS=1` rewrites
 //!   the lists after a deliberate change.
 //! - **The replies.** The session reads the recordings answered through
-//!   the compat layer (`attach`, `get_state`, `get_messages`) are sent
-//!   through it too (`pa_tui::wire2_request_frame`), and the old responses
+//!   the compat layer (`attach`, `roster_subscribe`, `get_state`,
+//!   `get_messages`) are sent through it too (`pa_tui::wire2_request_frames`),
+//!   and the old responses
 //!   their replies become (`pa_tui::wire2_response_frame`) are compared,
 //!   each with the recording's first response to the same command, under
 //!   the same mask; their differences follow the frames' in the list, a
@@ -50,10 +51,22 @@
 //!   recording did; `attach_paging` opens the recording's seeded transcript
 //!   (`seed` in its script: 260 question-and-answer turns) and pages to its
 //!   start, as the TUI scrolled there.
+//! - **The feeds.** The replay follows the roster and the agent traffic
+//!   through the layer as the TUI's agents view does, and waits until the
+//!   roster it keeps (its `roster_subscribe` reply, the `roster_update`
+//!   frames the layer makes of the feed applied) is the one `runtime.roster`
+//!   reads. Which updates a turn makes follows the feed's timing, as a
+//!   reply's run of updates follows the flush timer, so what is compared is
+//!   the roster each side's client ends with (the recording's reply with its
+//!   updates applied), a leaf per line, after the stream's lines; then the
+//!   `agent_traffic` frames, aligned by kind and outcome (the recordings
+//!   followed no traffic, and their sessions sent no agent message: a
+//!   traffic frame is a difference). A live event's id counts the feeds'
+//!   events too, so the first line compares it by its form.
 //! - **What this cannot replay.** The recordings' other replies
 //!   (`get_commands`, `get_model_catalog`, `get_session_stats`,
-//!   `heartbeats_list`, `list_kernel_bash`, `roster_subscribe`, `detach`)
-//!   and `roster_update` frames have no wire2 form yet (phases 8c and 8d).
+//!   `heartbeats_list`, `list_kernel_bash`, `detach`) have no wire2 form
+//!   yet (phase 8d).
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
@@ -70,7 +83,35 @@ fn fixture_path(name: &str, extension: &str) -> std::path::PathBuf {
 
 /// The session reads whose replies the replay compares, in the order it
 /// sends them.
-const READS: [&str; 3] = ["attach", "get_state", "get_messages"];
+const READS: [&str; 4] = ["attach", "roster_subscribe", "get_state", "get_messages"];
+
+/// The topics the compat layer follows the agents view's feeds on.
+const FEED_TOPICS: [&str; 2] = ["runtime/roster", "runtime/traffic"];
+
+/// The roster a client keeps: the entries of its `roster_subscribe` reply
+/// (`followed`), each of the `updates` (`roster_update` frames, or their
+/// payloads) applied in order, by agent, in the order they first appeared.
+fn kept_roster<'a>(followed: &Value, updates: impl IntoIterator<Item = &'a Value>) -> Vec<Value> {
+    let mut kept: Vec<Value> = followed["data"]["roster"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for update in updates {
+        for entry in update["changed"].as_array().into_iter().flatten() {
+            match kept
+                .iter_mut()
+                .find(|kept| kept["agentId"] == entry["agentId"])
+            {
+                Some(kept) => kept.clone_from(entry),
+                None => kept.push(entry.clone()),
+            }
+        }
+        for agent in update["removed"].as_array().into_iter().flatten() {
+            kept.retain(|kept| kept["agentId"] != *agent);
+        }
+    }
+    kept
+}
 
 /// Every frame the recorded supervisor stream received.
 fn recorded_frames(name: &str) -> Vec<Value> {
@@ -84,11 +125,11 @@ fn recorded_frames(name: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The recorded supervisor stream's `session_event` frames.
-fn recorded(name: &str) -> Vec<Value> {
+/// The recorded supervisor stream's frames of the `kinds`.
+fn recorded(name: &str, kinds: &[&str]) -> Vec<Value> {
     recorded_frames(name)
         .into_iter()
-        .filter(|frame| frame["type"] == "session_event")
+        .filter(|frame| kinds.iter().any(|kind| frame["type"] == *kind))
         .collect()
 }
 
@@ -159,8 +200,9 @@ fn write_seed(root: &Path, cwd: &Path, seed: &Value) -> std::path::PathBuf {
     path
 }
 
-/// Sends `command` through the compat layer on `session`'s connection; the
-/// old response its reply becomes.
+/// Sends `command` through the compat layer on `session`'s connection (a
+/// read's query, or a feed's subscription and query); the old response its
+/// reply becomes.
 async fn read(session: &mut Attached, command: &Value) -> Value {
     let command: pa_types::daemon::DaemonCommand =
         serde_json::from_value(command.clone()).expect("a TUI command");
@@ -169,17 +211,57 @@ async fn read(session: &mut Attached, command: &Value) -> Value {
         .unwrap()
         .to_string();
     let request = session.request_id();
-    let frame = pa_tui::wire2_request_frame(request, command)
-        .expect("a mapped command")
-        .expect("the layer carries the read");
-    let outcome = session.request(&frame).await;
+    let frames = pa_tui::wire2_request_frames(request, command).expect("a mapped command");
+    let outcome = match frames.as_slice() {
+        [query] => session.request(query).await,
+        [_, _] => session.follow(&frames).await,
+        other => panic!("the layer carries {name} as {other:?}"),
+    };
     pa_tui::wire2_response_frame(&name, outcome).expect("a response frame")
 }
 
+/// Reads `session`'s frames until the roster the client keeps (the
+/// `followed` reply to its `roster_subscribe`, each later update applied)
+/// has caught up with the daemon: its entry for each agent is the one
+/// `runtime.roster` reads now (the feed composes its entries after the
+/// events that make them due, so the last ones may still be on their way
+/// when a turn is done).
+async fn roster_settled(session: &mut Attached, followed: &Value) {
+    loop {
+        let id = session.request_id();
+        let roster = match session
+            .request(&pa_types::wire2::ClientFrame::Query {
+                id,
+                name: "runtime.roster".to_string(),
+                args: json!({}),
+            })
+            .await
+        {
+            pa_types::wire2::Outcome::Ok { result } => result["roster"].clone(),
+            pa_types::wire2::Outcome::Error { message } => panic!("runtime.roster: {message}"),
+        };
+        let events = session.feed_events("runtime/roster");
+        let kept = kept_roster(followed, events.iter().map(|event| &event.event.payload));
+        let caught_up = roster.as_array().is_some_and(|roster| {
+            roster.len() == kept.len() && roster.iter().all(|entry| kept.contains(entry))
+        });
+        if caught_up {
+            return;
+        }
+        let seen = session.feed_events("runtime/roster").len();
+        session
+            .until(|session| session.feed_events("runtime/roster").len() > seen)
+            .await;
+    }
+}
+
 /// What a replay received through the compat layer: the stream's frames,
+/// the roster the client keeps once the feed settled, the traffic frames,
 /// and the responses to the session reads, by command.
 struct Replayed {
     frames: Vec<Value>,
+    roster: Vec<Value>,
+    traffic: Vec<Value>,
     replies: Vec<(String, Value)>,
 }
 
@@ -238,6 +320,11 @@ async fn replay(name: &str) -> Replayed {
     )
     .await;
     replies.push(("attach".to_string(), attach.clone()));
+    // The agents view's feeds, as the TUI followed the roster after its
+    // attach (the recording has no traffic: its sessions sent no message).
+    let roster = read(&mut session, &json!({ "type": "roster_subscribe" })).await;
+    replies.push(("roster_subscribe".to_string(), roster.clone()));
+    read(&mut session, &json!({ "type": "agent_traffic_subscribe" })).await;
     let state = read(
         &mut session,
         &json!({ "type": "get_state", "activeSessionId": id }),
@@ -271,6 +358,7 @@ async fn replay(name: &str) -> Replayed {
             session.done(&accepted["task"]).await;
         }
     }
+    roster_settled(&mut session, &roster).await;
     // A scrolled-up transcript pages back to its start, as the TUI's view
     // asked for it: the head before the window's first row, on the
     // attached branch.
@@ -287,6 +375,22 @@ async fn replay(name: &str) -> Replayed {
         replies.push(("get_messages".to_string(), page));
     }
     let frames = pa_tui::wire2_live_frames(&session.events("stream")).expect("mapped frames");
+    let feeds = pa_tui::wire2_live_frames(
+        &FEED_TOPICS
+            .iter()
+            .flat_map(|topic| session.feed_events(topic))
+            .collect::<Vec<_>>(),
+    )
+    .expect("mapped feed frames");
+    let (updates, traffic): (Vec<Value>, Vec<Value>) = feeds
+        .into_iter()
+        .partition(|frame| frame["type"] == "roster_update");
+    let followed = &replies
+        .iter()
+        .find(|(command, _)| command == "roster_subscribe")
+        .expect("the replay followed the roster")
+        .1;
+    let roster = kept_roster(followed, &updates);
     let agent_dir = bed.agent_dir().display().to_string();
     let root = root.display().to_string();
     let checkout =
@@ -304,6 +408,8 @@ async fn replay(name: &str) -> Replayed {
     };
     Replayed {
         frames: frames.into_iter().map(normalized).collect(),
+        roster: roster.into_iter().map(normalized).collect(),
+        traffic: traffic.into_iter().map(normalized).collect(),
         replies: replies
             .into_iter()
             .map(|(command, reply)| (command, normalized(reply)))
@@ -416,9 +522,19 @@ fn numbering(frames: &[Value]) -> String {
         .iter()
         .filter_map(|frame| frame["meta"]["sequence"].as_u64())
         .collect();
+    // A live event's number counts every live event of the bus, the
+    // feeds' too, so it is compared by its form.
     let first_id = frames.first().map_or_else(
         || "-".to_string(),
-        |frame| masked_text(frame["meta"]["id"].as_str().unwrap_or_default()),
+        |frame| {
+            let id = frame["meta"]["id"].as_str().unwrap_or_default();
+            match id.strip_prefix("live-") {
+                Some(number) if number.bytes().all(|byte| byte.is_ascii_digit()) => {
+                    "live-N".to_string()
+                }
+                _ => masked_text(id),
+            }
+        },
     );
     format!(
         "numbers rising {}, from {}, ids like {first_id}",
@@ -562,6 +678,15 @@ fn masked_ids(text: &str) -> String {
     out
 }
 
+/// A traffic frame's signature: its entry's kind and outcome.
+fn traffic_signature(frame: &Value) -> String {
+    format!(
+        "agent_traffic {} {}",
+        frame["entry"]["kind"].as_str().unwrap_or_default(),
+        frame["entry"]["outcome"].as_str().unwrap_or_default()
+    )
+}
+
 /// One frame's signature: its kind, and the role of the row it carries.
 fn signature(frame: &Value) -> String {
     let event = &frame["event"];
@@ -671,25 +796,38 @@ fn aligned_diffs(path: &str, left: &[Value], right: &[Value], out: &mut Vec<Stri
     flush(&mut lefts, &mut rights, out);
 }
 
-/// The differences between the recorded frames and the replayed ones, under
-/// the mask: the frames are aligned by signature (a longest common
-/// subsequence), a frame only one side has is one line, and a pair that
-/// differs is one line per differing leaf.
+/// The differences between the recorded stream frames and the replayed
+/// ones, under the mask: a run of updates as its last ([`runs_collapsed`]),
+/// then [`aligned_frames`].
 fn differences(golden: &[Value], runtime: &[Value]) -> Vec<String> {
     let summary = format!(
         "meta: golden {} | runtime {}",
         numbering(golden),
         numbering(runtime)
     );
+    let mut out = vec![summary];
+    out.extend(aligned_frames(
+        &runs_collapsed(golden),
+        &runs_collapsed(runtime),
+        signature,
+        |frame| &frame["event"],
+    ));
+    out
+}
+
+/// The differences between two sides' frames under the mask: aligned by
+/// `signature` (a longest common subsequence), a frame only one side has is
+/// one line (its `body`), and a pair that differs is one line per differing
+/// leaf.
+fn aligned_frames(
+    golden: &[Value],
+    runtime: &[Value],
+    signature: fn(&Value) -> String,
+    body: fn(&Value) -> &Value,
+) -> Vec<String> {
     let (golden, runtime): (Vec<Value>, Vec<Value>) = (
-        runs_collapsed(golden)
-            .iter()
-            .map(|frame| masked(frame, None))
-            .collect(),
-        runs_collapsed(runtime)
-            .iter()
-            .map(|frame| masked(frame, None))
-            .collect(),
+        golden.iter().map(|frame| masked(frame, None)).collect(),
+        runtime.iter().map(|frame| masked(frame, None)).collect(),
     );
     let (left, right): (Vec<String>, Vec<String>) = (
         golden.iter().map(signature).collect(),
@@ -705,7 +843,7 @@ fn differences(golden: &[Value], runtime: &[Value]) -> Vec<String> {
             };
         }
     }
-    let mut out = vec![summary];
+    let mut out = Vec::new();
     let (mut i, mut j) = (0, 0);
     while i < left.len() || j < right.len() {
         if i < left.len() && j < right.len() && left[i] == right[j] {
@@ -717,10 +855,10 @@ fn differences(golden: &[Value], runtime: &[Value]) -> Vec<String> {
             i += 1;
             j += 1;
         } else if j < right.len() && (i == left.len() || table[i][j + 1] >= table[i + 1][j]) {
-            out.push(format!("+ {}: {}", right[j], runtime[j]["event"]));
+            out.push(format!("+ {}: {}", right[j], body(&runtime[j])));
             j += 1;
         } else {
-            out.push(format!("- {}: {}", left[i], golden[i]["event"]));
+            out.push(format!("- {}: {}", left[i], body(&golden[i])));
             i += 1;
         }
     }
@@ -760,8 +898,36 @@ fn reply_differences(golden: &[(String, Value)], runtime: &[(String, Value)]) ->
 /// committed list.
 async fn verify(name: &str) {
     let runtime = replay(name).await;
-    let mut found = differences(&recorded(name), &runtime.frames);
-    found.extend(reply_differences(&recorded_replies(name), &runtime.replies));
+    let mut found = differences(&recorded(name, &["session_event"]), &runtime.frames);
+    // The roster each side's client ends with: the recording's reply and
+    // updates, the replay's once its feed settled.
+    let golden_replies = recorded_replies(name);
+    let golden_roster = golden_replies
+        .iter()
+        .find(|(command, _)| command == "roster_subscribe")
+        .map_or_else(Vec::new, |(_, reply)| {
+            kept_roster(reply, &recorded(name, &["roster_update"]))
+        });
+    let mut roster = Vec::new();
+    leaf_diffs(
+        "",
+        &masked(&Value::Array(golden_roster), None),
+        &masked(&Value::Array(runtime.roster.clone()), None),
+        Arrays::Aligned,
+        &mut roster,
+    );
+    found.extend(
+        roster
+            .into_iter()
+            .map(|leaf| format!("~ roster kept: {leaf}")),
+    );
+    found.extend(aligned_frames(
+        &recorded(name, &["agent_traffic"]),
+        &runtime.traffic,
+        traffic_signature,
+        |frame| frame,
+    ));
+    found.extend(reply_differences(&golden_replies, &runtime.replies));
     let path = fixture_path(name, "diff");
     let mut text = found.join("\n");
     text.push('\n');

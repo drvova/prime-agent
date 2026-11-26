@@ -116,6 +116,11 @@ fn event_from_outbound(frame: &DaemonOutbound) -> Option<(Event, Delivery)> {
                 .remove("type");
             Some(event("runtime/roster".to_string(), payload, None))
         }
+        DaemonOutbound::AgentTraffic { entry, .. } => Some(event(
+            "runtime/traffic".to_string(),
+            serde_json::to_value(entry).expect("an entry serializes"),
+            None,
+        )),
         _ => None,
     }
 }
@@ -311,8 +316,7 @@ fn input_commands_publish_on_the_session_input_topic() {
         .map(
             |(index, command)| match outgoing(format!("p{index}"), command.clone()).unwrap() {
                 Outgoing::Publish(frame) => read_back(frame),
-                Outgoing::Query(frame) => panic!("a query: {frame:?}"),
-                Outgoing::Unmapped(command) => panic!("unmapped: {command:?}"),
+                other => panic!("not a publish: {other:?}"),
             },
         )
         .collect();
@@ -456,4 +460,84 @@ fn session_reads_query_and_their_replies_round_trip() {
                           "error": "History branch changed" }),
     );
     assert_eq!(actual, expected);
+}
+
+/// The agents view's feeds: a subscribe follows the feed's live-only topic from now and queries
+/// its state, whose reply is the old response (the recorded `roster_subscribe` reply round trips);
+/// an unsubscribe is answered by the layer as the old daemon answered it; a traffic entry on its
+/// topic comes back as the `agent_traffic` frame.
+#[test]
+fn the_feeds_follow_their_topics_and_their_frames_round_trip() {
+    let command = |kind: &str| -> DaemonCommand {
+        serde_json::from_value(json!({ "type": kind })).expect("a feed command")
+    };
+    let follow = |sub_id: &str, topic: &str, query: &str| Outgoing::Follow {
+        subscribe: ClientFrame::Subscribe {
+            sub_id: sub_id.to_string(),
+            filter: pa_types::event_log::TopicFilter::new(topic).unwrap(),
+            since: pa_types::wire2::Since::Now,
+        },
+        query: ClientFrame::Query {
+            id: "f".to_string(),
+            name: query.to_string(),
+            args: json!({}),
+        },
+    };
+    let unfollow = |sub_id: &str, kind: &str| Outgoing::Unfollow {
+        unsubscribe: ClientFrame::Unsubscribe {
+            sub_id: sub_id.to_string(),
+        },
+        response: Box::new(
+            serde_json::from_value(
+                json!({ "type": "response", "id": "f", "command": kind, "success": true }),
+            )
+            .unwrap(),
+        ),
+    };
+    let kinds = [
+        "roster_subscribe",
+        "agent_traffic_subscribe",
+        "roster_unsubscribe",
+        "agent_traffic_unsubscribe",
+    ];
+    let mapped: Vec<Outgoing> = kinds
+        .iter()
+        .map(|kind| outgoing("f".to_string(), command(kind)).unwrap())
+        .collect();
+    let recorded = recorded_frames("subagent_roster")
+        .into_iter()
+        .find(|frame| frame["type"] == "response" && frame["command"] == "roster_subscribe")
+        .expect("the recording subscribed to the roster");
+    let replied = response_from_reply(
+        "roster_subscribe",
+        recorded["id"].as_str().map(str::to_string),
+        Outcome::Ok {
+            result: recorded["data"].clone(),
+        },
+    );
+    let traffic = json!({ "type": "agent_traffic", "entry": {
+        "rootActiveSessionId": "root", "from": "alpha", "fromActiveSessionId": "c1",
+        "to": "root", "toActiveSessionId": "root", "relationship": "child", "kind": "direct",
+        "outcome": "delivered", "chars": 5, "preview": "hello", "timestampMs": 1 } });
+    let frame: DaemonOutbound = serde_json::from_value(traffic.clone()).unwrap();
+    let (event, delivery) = event_from_outbound(&frame).expect("traffic is an event");
+    assert_eq!(
+        (
+            mapped,
+            serde_json::to_value(replied).unwrap(),
+            event.event.topic.as_str().to_string(),
+            serde_json::to_value(outbound_from_event(&event, delivery).unwrap().unwrap()).unwrap(),
+        ),
+        (
+            vec![
+                follow("compat:roster", "runtime/roster", "runtime.roster"),
+                follow("compat:traffic", "runtime/traffic", "runtime.traffic"),
+                unfollow("compat:roster", "roster_unsubscribe"),
+                unfollow("compat:traffic", "agent_traffic_unsubscribe"),
+            ],
+            recorded,
+            "runtime/traffic".to_string(),
+            traffic,
+        )
+    );
 }

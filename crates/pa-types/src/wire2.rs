@@ -7,9 +7,10 @@
 //! events from where the client asks ([`Since`]), says where the replay
 //! ended ([`ServerFrame::Backfilled`]), and then streams live events, so a
 //! client that reconnects from its last sequence number misses nothing. A
-//! live-only event (`Topic::is_live_only`: a turn's stream and tool deltas)
-//! is never stored: it reaches a subscription only live, with `seq` 0, and
-//! is not a sequence number to resume from.
+//! live-only event (`Topic::is_live_only`: a turn's stream and tool deltas,
+//! the agents view's roster and traffic feeds) is never stored: it reaches a
+//! subscription only live, with `seq` 0, and is not a sequence number to
+//! resume from.
 //! The typed queries and calls arrive with the runtime that answers them;
 //! until then a query or call names its operation and carries its arguments.
 

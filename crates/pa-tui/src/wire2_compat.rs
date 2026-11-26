@@ -14,6 +14,7 @@
 //! | `agent/<id>/closed` | `{"reason": "killed" \| "shutdown" \| "completed" \| "replaced" \| "update"}` | `session_closed` |
 //! | `agent/<id>/crashed`, `recovered`, `failed`, replayed only | today's `session_crashed` / `session_recovered` / `session_failed` event, verbatim | `session_event` |
 //! | `runtime/roster` | today's `roster_update` frame without `type` (`changed`, `removed`, `resync`) | `roster_update` |
+//! | `runtime/traffic` | today's `agent_traffic` frame's `entry` | `agent_traffic` |
 //!
 //! `<id>` is the session's active id, the one `DaemonCommand`s address. On the agent topics the
 //! event's metadata becomes the frame's `meta`: `id` is the event id, `emittedAt` its `ts`
@@ -54,7 +55,21 @@
 //! | `get_messages` | `transcript.page` | `shape: "messages"`, `page`, `historyLeafId`, `capabilities` |
 //!
 //! each with `session`, the command's `activeSessionId`; an argument the command does not carry is
-//! left out. Every other command stays on the old wire.
+//! left out.
+//!
+//! The agents view's feeds become a subscription on their live-only topic, then a query whose
+//! reply's result is the old response's `data` (the feed's current state, as the old subscribe
+//! answered it); a transport sends the query once the subscription's `backfilled` arrived, so no
+//! change falls between the two. Stopping one is an unsubscribe, which the layer answers with the
+//! old response itself:
+//!
+//! | command | subscription (`subId`, filter) | query |
+//! | --- | --- | --- |
+//! | `roster_subscribe` | `compat:roster`, `runtime/roster` | `runtime.roster` (`{roster}`) |
+//! | `agent_traffic_subscribe` | `compat:traffic`, `runtime/traffic` | `runtime.traffic` (`{entries}`) |
+//! | `roster_unsubscribe`, `agent_traffic_unsubscribe` | unsubscribed | none |
+//!
+//! Every other command stays on the old wire.
 //!
 //! # Not mapped yet (phase 7 types these queries and calls)
 //!
@@ -64,13 +79,13 @@
 //!   (`get_settings`), `models` (`get_model_catalog`, `get_available_models`,
 //!   `model_catalog_changed`), `subscriptions` and `tasks` (`heartbeats_list`,
 //!   `heartbeats_changed`, `list_kernel_bash`, `factory_activity`), `get_session_stats`,
-//!   `get_commands`, `get_rlm_children`, `roster_subscribe`'s snapshot.
+//!   `get_commands`, `get_rlm_children`.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
 //!   `fork`, `label`, `export`, the auth commands, `abort`/`abort_and_send_queued`,
 //!   `abort_compaction`, `compact`, the queue mutations, `detach`.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
 //! - Connection frames: `daemon_hello` from `welcome`, `daemon_closing` from `closing`, the
-//!   direct worker link (retired: wire2 has one connection), `agent_traffic`, `history_import`,
+//!   direct worker link (retired: wire2 has one connection), `history_import`,
 //!   `session_binding` (a wire2 session keeps its id across rebuilds).
 
 use anyhow::{anyhow, Context, Result};
@@ -78,8 +93,8 @@ use pa_types::daemon::{
     DaemonCommand, DaemonEventMeta, DaemonOutbound, DaemonProtocolInfo, DaemonResponse,
     DaemonSessionClosedReason, DAEMON_PROTOCOL_NAME, DAEMON_PROTOCOL_VERSION,
 };
-use pa_types::event_log::{Event, Topic};
-use pa_types::wire2::{ClientFrame, Outcome};
+use pa_types::event_log::{Event, Topic, TopicFilter};
+use pa_types::wire2::{ClientFrame, Outcome, Since};
 use serde_json::{Map, Value};
 
 /// How an event reached the client: in a subscription's replay, or live after it.
@@ -96,6 +111,16 @@ pub(crate) enum Outgoing {
     Publish(ClientFrame),
     /// A session read: its reply's result is the old response's `data` ([`response_from_reply`]).
     Query(ClientFrame),
+    /// A feed followed: the subscription, then the query whose reply is the old response.
+    Follow {
+        subscribe: ClientFrame,
+        query: ClientFrame,
+    },
+    /// A feed no longer followed: the unsubscribe, and the old response the layer answers.
+    Unfollow {
+        unsubscribe: ClientFrame,
+        response: Box<DaemonOutbound>,
+    },
     /// A command wire2 does not carry yet (see the module docs); it stays on the old wire.
     Unmapped(Box<DaemonCommand>),
 }
@@ -178,6 +203,11 @@ pub(crate) fn outbound_from_event(
             frame.insert("type".to_string(), Value::from("roster_update"));
             serde_json::from_value(Value::Object(frame)).context("runtime/roster: the payload")?
         }
+        ["runtime", "traffic"] => DaemonOutbound::AgentTraffic {
+            entry: serde_json::from_value(payload.clone())
+                .context("runtime/traffic: the payload")?,
+            rest: Map::new(),
+        },
         // Not a TUI input today: ignored, like an unknown broadcast on the old wire.
         _ => return Ok(None),
     };
@@ -204,8 +234,13 @@ pub fn live_frames(events: &[Event]) -> Result<Vec<Value>> {
     Ok(frames)
 }
 
-/// `command` as wire2 carries it: an input command becomes a publish and a session read a query,
-/// each with `request_id` as its frame id; every other command comes back unmapped.
+/// The feeds the agents view follows: each one's subscription id, topic and query.
+const ROSTER_FEED: (&str, &str, &str) = ("compat:roster", "runtime/roster", "runtime.roster");
+const TRAFFIC_FEED: (&str, &str, &str) = ("compat:traffic", "runtime/traffic", "runtime.traffic");
+
+/// `command` as wire2 carries it: an input command becomes a publish, a session read a query, and
+/// a feed's subscribe and unsubscribe its subscription's, each request with `request_id` as its
+/// frame id; every other command comes back unmapped.
 ///
 /// # Errors
 ///
@@ -278,6 +313,18 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 ],
             )
         }
+        DaemonCommand::RosterSubscribe { .. } => return follow(request_id, ROSTER_FEED),
+        DaemonCommand::AgentTrafficSubscribe { .. } => return follow(request_id, TRAFFIC_FEED),
+        DaemonCommand::RosterUnsubscribe { .. } => {
+            return Ok(unfollow(request_id, ROSTER_FEED, "roster_unsubscribe"))
+        }
+        DaemonCommand::AgentTrafficUnsubscribe { .. } => {
+            return Ok(unfollow(
+                request_id,
+                TRAFFIC_FEED,
+                "agent_traffic_unsubscribe",
+            ))
+        }
         // The rest is the module docs' list of commands wire2 does not carry yet.
         _ => return Ok(Outgoing::Unmapped(Box::new(command))),
     };
@@ -296,6 +343,41 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
         topic,
         payload: Value::Object(payload),
     }))
+}
+
+/// Following `feed` (its subscription id, topic and query): live from now, then its state.
+fn follow(request_id: String, (sub_id, topic, query): (&str, &str, &str)) -> Result<Outgoing> {
+    Ok(Outgoing::Follow {
+        subscribe: ClientFrame::Subscribe {
+            sub_id: sub_id.to_string(),
+            filter: TopicFilter::new(topic)?,
+            since: Since::Now,
+        },
+        query: ClientFrame::Query {
+            id: request_id,
+            name: query.to_string(),
+            args: Value::Object(Map::new()),
+        },
+    })
+}
+
+/// No longer following `feed`: its unsubscribe, answered as the old daemon answered `command`.
+fn unfollow(request_id: String, (sub_id, _, _): (&str, &str, &str), command: &str) -> Outgoing {
+    Outgoing::Unfollow {
+        unsubscribe: ClientFrame::Unsubscribe {
+            sub_id: sub_id.to_string(),
+        },
+        response: Box::new(DaemonOutbound::Response {
+            response: DaemonResponse {
+                id: Some(request_id),
+                command: command.to_string(),
+                success: true,
+                data: None,
+                error: None,
+                error_info: None,
+            },
+        }),
+    }
 }
 
 /// An optional command member a mapped query forwards: its JSON, `None` when it is absent.
@@ -326,23 +408,25 @@ pub(crate) fn response_from_reply(
     }
 }
 
-/// The wire2 frame `command` becomes (request `request_id`), or `None` for a command wire2 does
-/// not carry yet; the test seam pa-cli's `runtime_daemon_e2e` drives the layer's outbound half
-/// through, against a real runtime daemon.
+/// The wire2 frames `command` becomes (request `request_id`), in the order they are sent, the
+/// reply-bearing one last; none for a command wire2 does not carry yet. The test seam pa-cli's
+/// `runtime_daemon_e2e` drives the layer's outbound half through, against a real runtime daemon.
 ///
 /// # Errors
 ///
 /// The command's session id is not a topic level.
 #[doc(hidden)]
-pub fn request_frame(request_id: String, command: DaemonCommand) -> Result<Option<ClientFrame>> {
+pub fn request_frames(request_id: String, command: DaemonCommand) -> Result<Vec<ClientFrame>> {
     Ok(match outgoing(request_id, command)? {
-        Outgoing::Publish(frame) | Outgoing::Query(frame) => Some(frame),
-        Outgoing::Unmapped(_) => None,
+        Outgoing::Publish(frame) | Outgoing::Query(frame) => vec![frame],
+        Outgoing::Follow { subscribe, query } => vec![subscribe, query],
+        Outgoing::Unfollow { unsubscribe, .. } => vec![unsubscribe],
+        Outgoing::Unmapped(_) => Vec::new(),
     })
 }
 
 /// The old response frame, as JSON, a client of this layer receives for the reply to a mapped
-/// `command`'s query; the inbound half of [`request_frame`]'s seam.
+/// `command`'s query; the inbound half of [`request_frames`]'s seam.
 ///
 /// # Errors
 ///

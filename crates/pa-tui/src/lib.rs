@@ -159,7 +159,7 @@ pub mod width;
 mod wire2_compat;
 #[doc(hidden)]
 pub use wire2_compat::{
-    live_frames as wire2_live_frames, request_frame as wire2_request_frame,
+    live_frames as wire2_live_frames, request_frames as wire2_request_frames,
     response_frame as wire2_response_frame,
 };
 

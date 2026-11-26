@@ -29,11 +29,13 @@ use crate::runtime::{AfterAbort, Runtime};
 use crate::session::{SessionBuilder, SessionSpec};
 use crate::wire::{Attached, Call, ConnectionId, Handlers, Query};
 pub(super) use bash::UserBashes;
+pub(super) use feeds::Feeds;
 
 mod attach;
 mod bash;
 mod bus;
 mod children;
+mod feeds;
 mod input;
 mod jobs;
 mod mcp;
@@ -61,17 +63,24 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     attached: Arc<Attached>,
     /// The input holds clients' connections keep on open sessions.
     holds: input::InputHolds,
+    /// The agents view's roster and traffic feeds.
+    feeds: Arc<Feeds>,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
 }
 
 impl<B: SessionBuilder> RuntimeHandlers<B> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the handlers take the daemon's shared parts and its three directories"
+    )]
     pub(super) fn new(
         runtime: Arc<Runtime<B>>,
         open: Arc<OpenSessions>,
         schedules: Arc<Schedules<B>>,
         attached: Arc<Attached>,
+        feeds: Arc<Feeds>,
         agent_dir: PathBuf,
         session_dir: PathBuf,
         cwd: PathBuf,
@@ -82,6 +91,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             schedules,
             attached,
             holds: input::InputHolds::default(),
+            feeds,
             agent_dir,
             session_dir,
             cwd,
@@ -273,6 +283,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 },
             )
             .await;
+        // Its roster entry, for the clients that follow the roster.
+        self.feeds.due(&id);
         Ok(json!({ "session": id, "path": path, "cwd": cwd, "reused": false }))
     }
 
@@ -289,8 +301,9 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         self.runtime.close_session(&id).await?;
         // Its input holds end with it: opened again, it starts unheld.
         self.release_session_holds(&id);
-        // Closed: its lease goes.
+        // Closed: its lease goes, and it leaves the roster.
         self.open.remove(&id).await;
+        self.feeds.due(&id);
         Ok(json!({ "session": id, "stopped": true }))
     }
 
@@ -462,6 +475,8 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::SessionChildren => self.children(&args).await,
             Query::SessionModel => self.model(&args).await,
             Query::SessionSystemPrompt => self.system_prompt(&args).await,
+            Query::Roster => Ok(self.roster().await),
+            Query::Traffic => Ok(self.traffic()),
         }
     }
 

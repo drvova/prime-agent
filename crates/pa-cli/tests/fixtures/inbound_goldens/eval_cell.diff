@@ -1,4 +1,4 @@
-meta: golden numbers rising true, from 2, ids like H:2 | runtime numbers rising true, from 1, ids like live-0
+meta: golden numbers rising true, from 2, ids like H:2 | runtime numbers rising true, from 1, ids like live-N
 ~ message_start assistant: .event.message.api: golden "T" | runtime "faux-H"
 ~ message_update assistant: .event.message.api: golden "T" | runtime "faux-H"
 ~ message_end assistant: .event.message.api: golden "T" | runtime "faux-H"
@@ -9,6 +9,15 @@ meta: golden numbers rising true, from 2, ids like H:2 | runtime numbers rising 
 ~ turn_end assistant: .event.message.api: golden "T" | runtime "faux-H"
 ~ agent_end: .event.messages[2].api: golden "T" | runtime "faux-H"
 ~ agent_end: .event.messages[4].api: golden "T" | runtime "faux-H"
+~ roster kept: [0].status: golden "running" | runtime "idle"
+~ roster kept: [0].summary.activity: golden "working" | runtime "idle"
+~ roster kept: [0].summary.isSessionActive: golden true | runtime false
+~ roster kept: [0].summary.isStreaming: golden true | runtime false
+~ roster kept: [0].summary.messageCount: golden 3 | runtime 4
+~ roster kept: [0].summary.model.api: golden "T" | runtime "faux-H"
+~ roster kept: [0].summary.rosterDeltaSequence: golden 5 | runtime 0
+~ roster kept: [0].summary.usage.billing: golden {"payAsYouGo":{"calls":0,"cost":0.0},"plan":{"calls":0,"cost":0.0},"flatRate":{"calls":0,"cost":0.0},"free":{"calls":0,"cost":0.0},"unknown":{"calls":1,"cost":0.0},"unclassified":{"calls":0,"cost":0.0}} | runtime null
+~ roster kept: [0].summary.workerInstanceId: golden "H" | runtime null
 ~ reply attach: .data.lastEventCursor.sequence: golden 1 | runtime 0
 ~ reply attach: .data.lastEventSequence: golden 1 | runtime 0
 ~ reply attach: .data.replay.toCursor.sequence: golden 1 | runtime 0
@@ -19,6 +28,10 @@ meta: golden numbers rising true, from 2, ids like H:2 | runtime numbers rising 
 ~ reply attach: .data.snapshot.summary.model.api: golden "T" | runtime "faux-H"
 ~ reply attach: .data.snapshot.summary.modified: golden "ISO" | runtime null
 ~ reply attach: .data.snapshot.summary.workerInstanceId: golden "H" | runtime null
+~ reply roster_subscribe: .data.roster[0].summary.attachedClients: golden 0 | runtime 1
+~ reply roster_subscribe: .data.roster[0].summary.model.api: golden "T" | runtime "faux-H"
+~ reply roster_subscribe: .data.roster[0].summary.modified: golden "ISO" | runtime null
+~ reply roster_subscribe: .data.roster[0].summary.workerInstanceId: golden "H" | runtime null
 ~ reply get_state: .data.model.api: golden "T" | runtime "faux-H"
 ~ reply get_state: .data.modified: golden "ISO" | runtime null
 ~ reply get_state: .data.workerInstanceId: golden "H" | runtime null

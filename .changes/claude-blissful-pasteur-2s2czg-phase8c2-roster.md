@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now serves the agents view's live roster and agent-message traffic in the shapes the interactive TUI reads today, and a subagent's roster row and `rlm-collect` result carry its task label, its tool-call count and how long its spawn waited, as on the default daemon.

@@ -282,6 +282,8 @@ async fn a_child_settling_while_its_parent_is_idle_wakes_the_parent() {
 /// budget): the child messages its parent once the parent's task has ended,
 /// and the parent answers it with no prompt sent. The child's reply
 /// withholds its terminal notice, so the message is the parent's one row.
+/// The delivery is the traffic pane's entry, on the traffic feed as it
+/// lands and in what `runtime.traffic` keeps.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_to_an_idle_parent_wakes_it() {
     let bed = Bed::new();
@@ -310,9 +312,29 @@ async fn a_message_to_an_idle_parent_wakes_it() {
     let id = created["session"].as_str().unwrap().to_string();
     client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
     run_turn(&mut client, &id, "spawn the kid").await;
+    let (mut traffic, _) = Client::connect(&bed.runtime_socket()).await;
+    traffic.subscribe("runtime/traffic", Since::Now).await;
     std::fs::write(&release, "go").unwrap();
     let sent = recorded(&records, "send").await;
     assert_eq!(sent["deliveryStatus"], json!("delivered"), "{sent}");
+    let kid = ok(client
+        .query("session.children", json!({ "session": id }))
+        .await)["children"][0]["activeSessionId"]
+        .clone();
+    let mut fed = match traffic.frame().await {
+        pa_types::wire2::ServerFrame::Event { event, .. } => event.event.payload,
+        other => panic!("expected the traffic entry, got {other:?}"),
+    };
+    let mut kept = ok(traffic.query("runtime.traffic", json!({})).await);
+    // The time is the delivery's.
+    fed["timestampMs"] = json!(0);
+    kept["entries"][0]["timestampMs"] = json!(0);
+    let entry = json!({
+        "rootActiveSessionId": id, "from": "kid", "fromActiveSessionId": kid, "to": id,
+        "toActiveSessionId": id, "relationship": "child", "kind": "direct",
+        "outcome": "delivered", "chars": 9, "preview": "kid reply", "timestampMs": 0,
+    });
+    assert_eq!((fed, kept), (entry.clone(), json!({ "entries": [entry] })));
     until(WAIT, "the parent's message turn", async || {
         transcript_text(&mut client, &id)
             .await

@@ -1,4 +1,8 @@
 meta: golden numbers rising true, from -, ids like - | runtime numbers rising true, from -, ids like -
+~ roster kept: [0].summary.attachedClients: golden 0 | runtime 1
+~ roster kept: [0].summary.model.api: golden "T" | runtime "faux-H"
+~ roster kept: [0].summary.modelFallbackMessage: golden "Could not restore model faux/faux-1. Using amazon-bedrock/amazon.nova-2-lite-v1:0" | runtime null
+~ roster kept: [0].summary.workerInstanceId: golden "H" | runtime null
 ~ reply attach: .data.lastEventCursor.sequence: golden 1 | runtime 0
 ~ reply attach: .data.lastEventSequence: golden 1 | runtime 0
 ~ reply attach: .data.replay.toCursor.sequence: golden 1 | runtime 0
@@ -12,6 +16,10 @@ meta: golden numbers rising true, from -, ids like - | runtime numbers rising tr
 ~ reply attach: .data.snapshot.summary.model.api: golden "T" | runtime "faux-H"
 ~ reply attach: .data.snapshot.summary.modelFallbackMessage: golden "Could not restore model faux/faux-1. Using amazon-bedrock/amazon.nova-2-lite-v1:0" | runtime null
 ~ reply attach: .data.snapshot.summary.workerInstanceId: golden "H" | runtime null
+~ reply roster_subscribe: .data.roster[0].summary.attachedClients: golden 0 | runtime 1
+~ reply roster_subscribe: .data.roster[0].summary.model.api: golden "T" | runtime "faux-H"
+~ reply roster_subscribe: .data.roster[0].summary.modelFallbackMessage: golden "Could not restore model faux/faux-1. Using amazon-bedrock/amazon.nova-2-lite-v1:0" | runtime null
+~ reply roster_subscribe: .data.roster[0].summary.workerInstanceId: golden "H" | runtime null
 ~ reply get_state: .data.model.api: golden "T" | runtime "faux-H"
 ~ reply get_state: .data.modelFallbackMessage: golden "Could not restore model faux/faux-1. Using amazon-bedrock/amazon.nova-2-lite-v1:0" | runtime null
 ~ reply get_state: .data.workerInstanceId: golden "H" | runtime null

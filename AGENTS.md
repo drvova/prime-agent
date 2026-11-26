@@ -286,6 +286,13 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   (`session.snapshot {shape: "attach" | "state"}`, `transcript.page {shape: "messages"}`,
   `pa-runtime` `daemon/handlers/attach.rs`), which `wire2_compat` maps `attach`, `get_state`
   and `get_messages` to.
+- The agents view's feeds are live only and display only: the runtime daemon's roster
+  (`runtime/roster`, the old `roster_update` without its `type`; `runtime.roster` reads the
+  entries) and agent traffic (`runtime/traffic`, the old `agent_traffic` entry;
+  `runtime.traffic` reads each root's ring) are never stored, reach no model's context and are
+  built off every turn's path (`pa-runtime` `daemon/handlers/feeds.rs`: one task hears the
+  bus, another composes the due entries from the same summary the attach serves). The inbox
+  reports a delivery's traffic once it landed, from the runtime daemon only.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

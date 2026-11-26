@@ -60,6 +60,12 @@ pub enum Query {
     SessionModel,
     /// `session.system_prompt`: an open session's system prompt.
     SessionSystemPrompt,
+    /// `runtime.roster`: every running session's roster entry; its changes
+    /// follow on `runtime/roster`.
+    Roster,
+    /// `runtime.traffic`: the agent traffic kept so far; new entries follow
+    /// on `runtime/traffic`.
+    Traffic,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -93,6 +99,8 @@ impl FromStr for Query {
             "session.context_tree" => Query::SessionContextTree,
             "session.breakdown" => Query::SessionBreakdown,
             "schedules" => Query::Schedules,
+            "runtime.roster" => Query::Roster,
+            "runtime.traffic" => Query::Traffic,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",
@@ -251,4 +259,29 @@ pub trait Handlers: Send + Sync + 'static {
     /// what its calls made it hold. Called once per connection, after its
     /// last call.
     fn disconnected(&self, connection: ConnectionId) -> impl Future<Output = ()> + Send;
+}
+
+/// Shared handlers answer as the handlers they share: the runtime daemon's
+/// serve its connections and its own feeds.
+impl<H: Handlers> Handlers for std::sync::Arc<H> {
+    fn query(
+        &self,
+        query: Query,
+        args: Value,
+    ) -> impl Future<Output = anyhow::Result<Value>> + Send {
+        H::query(self, query, args)
+    }
+
+    fn call(
+        &self,
+        call: Call,
+        args: Value,
+        connection: ConnectionId,
+    ) -> impl Future<Output = anyhow::Result<Value>> + Send {
+        H::call(self, call, args, connection)
+    }
+
+    fn disconnected(&self, connection: ConnectionId) -> impl Future<Output = ()> + Send {
+        H::disconnected(self, connection)
+    }
 }

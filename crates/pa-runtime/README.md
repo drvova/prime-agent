@@ -231,7 +231,10 @@ SQLite implementations over `pa-log`.
   receiver in 10 minutes (pa-core's constants; past them the receipt is `wake_refused` with
   `retryAfterMs`, and nothing is delivered); the sending side keeps pa-core's message limit and
   rate bucket. A delivered row is steered onto the receiver, and a settled child is given its
-  next task over it; in the runtime daemon a root is woken for it (below). The spawn's and the retask's empty inputs carry no cause: the depth bound
+  next task over it; in the runtime daemon a root is woken for it (below), and the delivery,
+  once it landed, is the traffic pane's entry on `runtime/traffic` (live only: the old
+  `agent_traffic` entry with the receiver's root, the sender's relationship to it, the outcome
+  and a sanitized preview). The spawn's and the retask's empty inputs carry no cause: the depth bound
   and the wake budget bound them. The kernel's notices (a background command's end, loss or
   silence, a background cell's end, a factory milestone) are admitted by the session's notice
   sink as the daemon's worker admits them, at once: a `Steer` one steers its row onto the
@@ -336,7 +339,18 @@ SQLite implementations over `pa-log`.
   and counter, `replay`), `{shape: "state"}` the summary, and `transcript.page {shape:
   "messages", page?, historyLeafId?}` the old cursor page (`firstEntryId`, `lastEntryId`,
   `more`, `historyLeafId`; "History branch changed" for an anchor off the branch), the rows and
-  cuts from `pa_core::session::display_transcript`; `session.create` (`{session?}` to open or create by id, or `{path}` to
+  cuts from `pa_core::session::display_transcript`. The agents view's feeds, which
+  `wire2_compat` maps `roster_subscribe` and `agent_traffic_subscribe` to
+  (`daemon/handlers/feeds.rs`): `runtime.roster` answers `{roster}`, one old `AgentRosterEntry`
+  per open session and per subagent below one (`agentId`, the attach's summary without
+  `sessionActions` and with a subagent's `parentSessionPath`, `parentActiveSessionId`,
+  `rlmChildId` and `runtimeKind: "subagent"`, `status`, `workerId`), and the live-only
+  `runtime/roster` carries `{changed: [entry]}` when an entry composed again after its session's
+  stream events differs from the one published last, and `{changed: [], removed}` when a session
+  stops or is given up on, or a subagent is deleted, with the subagents below it;
+  `runtime.traffic` answers `{entries}`, each root's newest 200 traffic entries, roots in order.
+  Neither waits on a turn: one task hears the bus and marks entries due, another composes them;
+  `session.create` (`{session?}` to open or create by id, or `{path}` to
   open a transcript by its file, and `cwd`) takes the session's `SessionLease` and holds it until
   `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
   (`session_already_active`) and the old daemon is refused one this daemon holds; a session it
@@ -524,7 +538,10 @@ SQLite implementations over `pa-log`.
   `session.pause_input`/`release_input`, `session.set_mcp_servers`, `session.stop`). Stream
   events become `session_event` frames (their payloads the old worker's, `meta` taken off) and `agent/<id>/schedules` `heartbeats_changed`; a
   subagent's status change reaches its parent's stream as the old worker's `rlm_child_update`
-  (its `session.children` row, once per status, with `parentId` under a subagent parent).
+  (its `session.children` row, once per status, with `parentId` under a subagent parent; its
+  `label` is the task's one-line label, `pa_core::session_engine::rlm_notices::rlm_child_label`).
+  `rlm.collect` reports a child's `tool_use_count` (the tool calls on its branch) and
+  `queued_ms` (how long its spawn waited for its engine), as the old daemon's collect does.
 
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
@@ -568,7 +585,9 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 - `daemon::{run, DaemonOptions, socket_path}` (`DaemonOptions::selected`: whether the daemon
   is the selected one, asked before each scheduled job). On the wire (strings, not Rust surface): the
   queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,
-  `session.breakdown`, `session.model`, `session.system_prompt`, `session.children`, and the calls `session.abort`,
+  `session.breakdown`, `session.model`, `session.system_prompt`, `session.children`,
+  `runtime.roster`, `runtime.traffic`, the live-only topics `runtime/roster` and
+  `runtime/traffic`, and the calls `session.abort`,
   `session.abort_and_send_queued`, `session.resume_queue`, `session.withdraw`,
   `session.restore`, `session.compact`, `session.pause_input`, `session.release_input`,
   `session.cancel_task`, `session.cancel_child`.
