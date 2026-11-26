@@ -9,6 +9,9 @@ description = "Prime Agent's event-driven runtime: the bus, subscriptions, per-s
 [dependencies]
 pa-types.workspace = true
 pa-log.workspace = true
+# Event sources (timers, folder watches) the runtime starts and stops by its
+# subscriptions; pa-sources is a lower crate that knows nothing of the bus.
+pa-sources.workspace = true
 pa-core = { path = "../pa-core" }
 pa-agent.workspace = true
 tokio.workspace = true

@@ -1,0 +1,1 @@
+- The event-driven runtime runs timer and folder-watch sources while a subscription hears them, and a timer that missed fires while the agent was stopped fires once when it starts again.

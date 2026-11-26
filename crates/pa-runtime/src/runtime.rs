@@ -9,6 +9,7 @@
 //! The kernel's `event-*` functions of its sessions reach its bus
 //! ([`crate::events`]).
 
+use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,7 +28,9 @@ use crate::session::{
     Finished, Outbox, Outgoing, RuntimeTaskSink, SessionBuilder, SessionRunner, SessionSpec,
     Sessions, SettleAfter, Settled,
 };
+use crate::sources::{SourceDefinition, SourceManager};
 use crate::subagents::{SessionControl, Subagents};
+use crate::subscriptions::DuplicateSubscription;
 use crate::subscriptions::MemorySessionTree;
 use crate::tasks::TaskQueue;
 
@@ -56,7 +59,7 @@ pub struct RuntimeOptions<B> {
 
 /// The runtime's model caller: `Call` routes have no model to call yet, so
 /// each is refused and reported as `system/route_failed`.
-struct NoModelCalls;
+pub(crate) struct NoModelCalls;
 
 impl ModelCaller for NoModelCalls {
     fn call(
@@ -82,6 +85,7 @@ pub struct Runtime<B: SessionBuilder> {
     /// What the subagents open, cancel and close sessions through; they hold
     /// it weakly.
     _control: Arc<dyn SessionControl>,
+    sources: SourceManager,
     publisher: tokio::task::JoinHandle<()>,
 }
 
@@ -205,6 +209,8 @@ impl<B: SessionBuilder> Runtime<B> {
             },
             trust: Trust::Owner,
         })?;
+        let sources =
+            SourceManager::spawn(Arc::clone(&log), &bus, Arc::new(pa_sources::SystemClock));
         events.attach(log, bus.registry()).await;
         let control: Arc<dyn SessionControl> = Arc::new(Control {
             sessions: Arc::clone(&sessions),
@@ -219,8 +225,50 @@ impl<B: SessionBuilder> Runtime<B> {
             runner,
             sessions,
             _control: control,
+            sources,
             publisher,
         })
+    }
+
+    /// Adds `subscription` to the bus (`Bus::add_subscription`); a source it
+    /// is the first to hear starts.
+    ///
+    /// # Errors
+    ///
+    /// A subscription with its id is already on the bus.
+    pub fn add_subscription(
+        &self,
+        subscription: Subscription,
+    ) -> Result<(), DuplicateSubscription> {
+        self.bus.add_subscription(subscription)
+    }
+
+    /// Removes the subscription `id` (`Bus::remove_subscription`); a source
+    /// it was the last to hear stops.
+    #[must_use]
+    pub fn remove_subscription(&self, id: &str) -> Option<Subscription> {
+        self.bus.remove_subscription(id)
+    }
+
+    /// Defines a timer or folder-watch source, kept in the agent's
+    /// database: it runs while a subscription's filter matches a topic it
+    /// publishes on (`timer/<name>`, `source/<name>/changed` or
+    /// `source/<name>/error`). Defining a name again the same way changes
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// The name is not one topic level, the options are not the kind's, the
+    /// kind is a webhook (webhook sources arrive with the daemon), the name
+    /// is defined already another way, or the database failed to store it.
+    pub async fn define_source(&self, definition: SourceDefinition) -> anyhow::Result<()> {
+        self.sources.define(definition).await
+    }
+
+    /// The names of the sources running now.
+    #[must_use]
+    pub fn running_sources(&self) -> BTreeSet<String> {
+        self.sources.running().borrow().clone()
     }
 
     /// Publishes `event` on the bus (`Bus::publish`).
@@ -328,9 +376,11 @@ impl<B: SessionBuilder> Runtime<B> {
         host.finish().await.map_err(anyhow::Error::msg)
     }
 
-    /// Closes every session (each finishes the task it is running) and stops
-    /// publishing their events.
+    /// Stops every source (storing each timer's last fire), closes every
+    /// session (each finishes the task it is running) and stops publishing
+    /// their events.
     pub async fn shutdown(self) {
+        self.sources.shutdown().await;
         self.sessions.close_all().await;
         self.publisher.abort();
     }

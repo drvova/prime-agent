@@ -3,9 +3,10 @@
 Prime Agent's event sources: timers, folder watches and webhooks. A source turns something
 outside a session (a time, a file change, an HTTP request) into an event on the log.
 
-It is being built beside today's scheduler as part of the move onto one event log. Nothing starts
-a source yet: the runtime will start one at its first subscription and stop it at its last,
-keeping that count itself.
+It is being built beside today's scheduler as part of the move onto one event log. `pa-runtime`
+starts a timer or watch at its first subscription and stops it at its last, keeping that count
+itself (`pa_runtime::Runtime::define_source`); webhooks are not started until the daemon hosts
+them.
 
 ## Scope
 

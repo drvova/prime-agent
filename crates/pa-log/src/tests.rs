@@ -556,6 +556,29 @@ fn source_partitions_are_replaced_whole_and_imported_once() {
     );
 }
 
+/// Every kind of source is stored and read back: the watch and webhook kinds
+/// the runtime's sources add go into the `sources` table the earlier kinds
+/// use, with no migration.
+#[test]
+fn every_source_kind_round_trips() {
+    use super::{Origin, SourceKind, SourceSet};
+    let dir = tempfile::tempdir().unwrap();
+    let log = open(dir.path());
+    let set = SourceSet {
+        sources: vec![
+            source("t", SourceKind::Timer, Some("{\"lastFiredMs\":1}")),
+            source("b", SourceKind::Bus, None),
+            source("w", SourceKind::Watch, None),
+            source("h", SourceKind::Webhook, None),
+        ],
+        subscriptions: Vec::new(),
+    };
+    log.replace_sources("runtime-sources", set.clone(), Origin::Written)
+        .wait_blocking()
+        .unwrap();
+    assert_eq!(log.sources("runtime-sources").unwrap(), set);
+}
+
 /// Values and crash records follow the same partition rules: an import of a
 /// held partition changes nothing, a write always lands, crash records keep
 /// their order, and partitions are listed by scope prefix.

@@ -3522,6 +3522,7 @@ dependencies = [
  "pa-ai",
  "pa-core",
  "pa-log",
+ "pa-sources",
  "pa-telemetry",
  "pa-types",
  "serde_json",

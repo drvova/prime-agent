@@ -147,6 +147,16 @@ impl Intake {
     }
 }
 
+/// A source's events go onto the bus through an intake: `publish` is
+/// [`Intake::send`], which never blocks, and a gone bus is a closed
+/// publisher.
+impl pa_sources::Publisher for Intake {
+    fn publish(&self, event: NewEvent) -> Result<(), pa_sources::PublisherClosed> {
+        self.send(event)
+            .map_err(|BusClosed| pa_sources::PublisherClosed)
+    }
+}
+
 fn system_topic(name: &str) -> Topic {
     Topic::new(format!("system/{name}")).expect("system topics are valid")
 }
