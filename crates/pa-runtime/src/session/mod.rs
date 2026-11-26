@@ -70,7 +70,9 @@ pub struct SessionSpec {
     /// The session keeps nothing: its transcript is in memory only (the
     /// builder writes no file for it), and it ends with the client that
     /// created it (`--no-session`, the old daemon's client-owned in-memory
-    /// session). `transcript` names no file for it.
+    /// session). `transcript` names no file for it. The runtime's stores
+    /// keep nothing of it or of the subagents it spawns: no event, task or
+    /// state of theirs is written to the agent's database.
     pub ephemeral: bool,
 }
 
@@ -596,6 +598,9 @@ pub(crate) struct Sessions<B> {
     faults: SessionFaults,
     /// The sessions' scheduled jobs, in the runtime daemon.
     jobs: JobsSlot,
+    /// The sessions the runtime's stores keep nothing of: an ephemeral
+    /// session joins as it opens, and so does a subagent of one.
+    unstored: crate::log_stores::Unstored,
     hosts: Mutex<HashMap<String, Arc<SessionHost>>>,
     /// What a queued task's store row does not keep, by task id, until it
     /// runs: its prompt's images and its trigger as a cause. A task restored
@@ -620,6 +625,7 @@ impl<B: SessionBuilder> Sessions<B> {
         subagents: Arc<Subagents>,
         faults: SessionFaults,
         jobs: JobsSlot,
+        unstored: crate::log_stores::Unstored,
     ) -> Self {
         Sessions {
             builder: Arc::new(builder),
@@ -628,6 +634,7 @@ impl<B: SessionBuilder> Sessions<B> {
             subagents,
             faults,
             jobs,
+            unstored,
             hosts: Mutex::new(HashMap::new()),
             queued: Mutex::new(HashMap::new()),
         }
@@ -674,6 +681,14 @@ impl<B: SessionBuilder> Sessions<B> {
         let topics = SessionTopics::of(&id)?;
         let mut hosts = lock(&self.hosts);
         anyhow::ensure!(!hosts.contains_key(&id), "session {id} is open already");
+        // Before it can publish anything.
+        let spawned_by_unstored = spec
+            .subagent
+            .as_ref()
+            .is_some_and(|subagent| self.unstored.contains(&subagent.parent));
+        if spec.ephemeral || spawned_by_unstored {
+            self.unstored.insert(&id);
+        }
         let node = self.subagents.node_for(&id, &spec);
         let host = SessionHost::start(
             id.clone(),

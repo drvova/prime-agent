@@ -416,6 +416,87 @@ async fn an_input_runs_a_turn_that_streams_then_reports_done() {
     bed.runtime.shutdown().await;
 }
 
+/// What the agent's database holds of `session`: its events, whether its
+/// task `task` was saved, and its state under `note`.
+fn stored_of(bed: &Bed, session: &str, task: &str) -> (usize, bool, Option<String>) {
+    let log = bed.runtime.log();
+    let events = log
+        .events_since(0, 100_000)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.event.session.as_deref() == Some(session)
+                || event.event.topic.as_str().contains(session)
+        })
+        .count();
+    (
+        events,
+        log.task_saved_at(task).unwrap().is_some(),
+        log.value(&format!("state/{session}"), "note").unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn an_ephemeral_session_leaves_no_event_task_or_state_in_the_database() {
+    let mut bed = bed(json!([{ "text": "kept" }, { "text": "not kept" }])).await;
+    let ephemeral = bed
+        .runtime
+        .create_session(SessionSpec {
+            cwd: bed.cwd.clone(),
+            ephemeral: true,
+            ..SessionSpec::default()
+        })
+        .await
+        .unwrap();
+    let mut tasks = Vec::new();
+    for session in [bed.session.clone(), ephemeral.clone()] {
+        bed.runtime
+            .add_subscription(pa_types::event_log::Subscription {
+                id: format!("note/{session}"),
+                scope: pa_types::event_log::Scope::Local {
+                    session: session.clone(),
+                },
+                filter: pa_types::event_log::TopicFilter::new(format!("session/{session}/note"))
+                    .unwrap(),
+                when: None,
+                throttle_ms: 0,
+                debounce_ms: 0,
+                route: pa_types::event_log::Route::Set {
+                    key: "note".to_string(),
+                },
+                trust: Trust::Owner,
+            })
+            .unwrap();
+        bed.input_to(&session, "hello", None, Trust::Owner).await;
+        let (_, done) = bed.until_done_of(&session).await;
+        bed.runtime.idle(&session).await;
+        // Its route has written the state once the publish returns.
+        bed.runtime
+            .publish(NewEvent {
+                topic: Topic::new(format!("session/{session}/note")).unwrap(),
+                source: "test".to_string(),
+                session: Some(session.clone()),
+                payload: json!("noted"),
+                trust: Trust::Owner,
+                cause: None,
+                reply: None,
+            })
+            .await
+            .unwrap();
+        tasks.push(done.task);
+    }
+    let kept = stored_of(&bed, &bed.session, &tasks[0]);
+    assert_eq!(
+        (
+            kept.1,
+            kept.2.is_some(),
+            stored_of(&bed, &ephemeral, &tasks[1])
+        ),
+        (true, true, (0, false, None))
+    );
+    bed.runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_steer_during_a_turn_is_read_at_its_next_step() {
     // The first model call is held until the steer is queued: the turn is

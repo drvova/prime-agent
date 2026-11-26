@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::bus::{Bus, BusParts, Listener, Published};
 use crate::events::BusEvents;
-use crate::log_stores::{LogEventStore, LogStateStore, LogTaskStore};
+use crate::log_stores::{LogEventStore, LogStateStore, LogTaskStore, Unstored};
 use crate::routes::{ModelCall, ModelCaller};
 use crate::session::{
     Finished, JobsSlot, Opening, Outbox, Outgoing, RuntimeTaskSink, SessionBuilder, SessionFaults,
@@ -171,6 +171,7 @@ impl<B: SessionBuilder> Runtime<B> {
         let tree = MemorySessionTree::default();
         let subagents = Arc::new(Subagents::new(outbox.clone(), tree.clone()));
         let jobs = JobsSlot::default();
+        let unstored = Unstored::default();
         let sessions = Arc::new(Sessions::new(
             options.builder,
             outbox,
@@ -178,6 +179,7 @@ impl<B: SessionBuilder> Runtime<B> {
             Arc::clone(&subagents),
             faults,
             Arc::clone(&jobs),
+            unstored.clone(),
         ));
         let runner = SessionRunner::new(Arc::clone(&sessions));
         let restored = async {
@@ -188,7 +190,7 @@ impl<B: SessionBuilder> Runtime<B> {
             let log = Arc::new(log.await.context("open the runtime's database")??);
             let queue = TaskQueue::new(
                 runner.clone(),
-                LogTaskStore::new(Arc::clone(&log)),
+                LogTaskStore::sparing(Arc::clone(&log), unstored.clone()),
                 options.max_concurrent_runs,
             );
             for id in &opened {
@@ -208,8 +210,8 @@ impl<B: SessionBuilder> Runtime<B> {
             }
         };
         let bus = Bus::new(BusParts {
-            events: LogEventStore::new(Arc::clone(&log)),
-            state: LogStateStore::new(Arc::clone(&log)),
+            events: LogEventStore::sparing(Arc::clone(&log), unstored.clone()),
+            state: LogStateStore::sparing(Arc::clone(&log), unstored),
             sessions: tree.clone(),
             model: NoModelCalls,
             tasks: RuntimeTaskSink {
