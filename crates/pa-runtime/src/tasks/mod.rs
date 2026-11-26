@@ -81,12 +81,20 @@ pub(crate) struct LaneState {
 /// [`Steered::Taken`], or answers [`Steered::Declined`] when the turn will
 /// not read it, including when `running` has already ended. A taken task is
 /// the running turn's to honour; the queue marks it Done.
+///
+/// `cancelled` is told of each task the queue cancelled before it ran (taken
+/// out of its lane and saved `Cancelled`), which `run` is never called for:
+/// it reports that end as a run would have, and must not block or call into
+/// the queue.
 pub trait TaskRunner: Send + Sync + 'static {
     /// Runs `task`.
     fn run(&self, task: Task) -> impl Future<Output = TaskOutcome> + Send;
 
     /// Offers the `Steer` task `steer` to the running `running`.
     fn steer(&self, running: &Task, steer: &Task) -> Steered;
+
+    /// Reports the end of `task`, cancelled while it was queued.
+    fn cancelled(&self, task: &Task);
 }
 
 /// The task queue; clones share it.
@@ -333,6 +341,7 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
             ..task
         };
         self.inner.store.save(task.clone()).await?;
+        self.inner.runner.cancelled(&task);
         Ok(Some(task))
     }
 
@@ -375,6 +384,15 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                 .by_session
                 .get_mut(session)
                 .map_or_default(|lane| std::mem::take(&mut lane.queued));
+            // A lane no worker serves (a parked or held one) is left empty:
+            // gone, so the session reads idle (as `cancel_task` leaves it).
+            if lanes
+                .by_session
+                .get(session)
+                .is_some_and(|lane| !lane.served && lane.running.is_none())
+            {
+                lanes.by_session.remove(session);
+            }
             self.inner.busy.send_replace(lanes.busy());
             queued
         };
@@ -385,6 +403,7 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                 ..task
             };
             self.inner.store.save(task.clone()).await?;
+            self.inner.runner.cancelled(&task);
             cancelled.push(task);
         }
         Ok(cancelled)

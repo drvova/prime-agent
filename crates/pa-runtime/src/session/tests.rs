@@ -470,6 +470,57 @@ async fn cancelling_a_running_task_aborts_its_turn() {
     bed.runtime.shutdown().await;
 }
 
+/// Builds over the faux builder once the test opens the gate: the session's
+/// thread is still building when the lane hands it a task.
+struct GatedBuild(FauxBuilder, Arc<tokio::sync::Semaphore>);
+
+impl SessionBuilder for GatedBuild {
+    async fn build(
+        &self,
+        id: &str,
+        spec: &SessionSpec,
+        seams: SessionSeams,
+    ) -> anyhow::Result<BuiltSession> {
+        let _open = self.1.acquire().await?;
+        self.0.build(id, spec, seams).await
+    }
+}
+
+#[tokio::test]
+async fn a_task_cancelled_before_its_session_thread_starts_it_runs_nothing() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut bed = bed_with(
+        json!(["never sent"]),
+        json!({ "compaction": { "enabled": false } }),
+        |faux| GatedBuild(faux, Arc::clone(&gate)),
+    )
+    .await;
+    bed.input("never run", None).await;
+    // The lane runs the task while the session's thread still builds.
+    let running = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            if let Some(running) = bed.runtime.lane(&bed.session).running {
+                return running;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the lane runs the task");
+    let cancelled = bed
+        .runtime
+        .cancel_task(&bed.session, &running.id)
+        .await
+        .unwrap();
+    gate.add_permits(1);
+    let (_, done) = bed.until_done().await;
+    assert_eq!(
+        (cancelled, outcome(&done), bed.transcript()),
+        (true, (TaskState::Cancelled, None, None), Vec::new())
+    );
+    bed.runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_panicking_turn_fails_its_task_and_the_next_one_runs() {
     let mut bed = bed(json!([{ "text": "after the panic" }])).await;
