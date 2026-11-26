@@ -204,7 +204,8 @@ impl SessionEngine for PacedReplyEngine {
         for delta in Self::DELTAS {
             // Past the flush interval: the park broadcasts at once (the leading edge).
             std::thread::sleep(
-                crate::streaming::UPDATE_FLUSH_INTERVAL + std::time::Duration::from_millis(10),
+                pa_core::session_engine::wire_events::UPDATE_FLUSH_INTERVAL
+                    + std::time::Duration::from_millis(10),
             );
             text.push_str(delta);
             let update = EngineEvent::AssistantUpdate {

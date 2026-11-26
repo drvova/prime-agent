@@ -68,6 +68,7 @@ pub mod state_restore_notice;
 pub mod telemetry;
 pub mod tool_bridge;
 pub mod turn_boundary;
+pub mod wire_events;
 
 mod admission;
 mod compaction_arms;

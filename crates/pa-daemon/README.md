@@ -175,9 +175,11 @@ Live token-stream rendering
 (`streaming`): turn events forward from the hosted engine to the worker's
 emit path as they arrive (one `message_update` per provider delta, the
 full partial message per frame - never buffered until turn settle); the
-worker coalesces them for broadcast in a single-slot coalescer (the
-leading edge at once; the trailing edge on an adaptive 16..=100 ms
-interval, `streaming::FlushPacer`: `pa_types::control`'s controller fed by
+worker coalesces them for broadcast in pa-core's single-slot coalescer
+(`pa_core::session_engine::wire_events`, with the update routing, the wire
+forms and the streaming context estimate; `streaming` frames and pumps what
+it flushes; the leading edge at once; the trailing edge on an adaptive
+16..=100 ms interval, `FlushPacer`: `pa_types::control`'s controller fed by
 the slowest subscriber's backlog and its dropped frames, starting at
 50 ms), while `message_start`/`message_end`/tool frames flush the
 parked update first and go out directly, so wire order and event-sequence

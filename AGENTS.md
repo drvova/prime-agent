@@ -261,6 +261,11 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   what the transcript shows was saved, a command its kernel left running is reaped and
   reported to the model, and an idle session with an armed scheduled job is woken when the
   job is due. Attached clients reconnect on their own and show what happened.
+- One session-event builder: the `session_event` payloads a daemon sends for a session's turns
+  (wire forms, update routing, the `message_update` coalescer, the live `contextUsage`
+  estimate, flush pacing) are built in `pa_core::session_engine::wire_events`, never copied into
+  a daemon; the print modes' json stream (`session_events::agent_event_json`) is a separate
+  surface.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

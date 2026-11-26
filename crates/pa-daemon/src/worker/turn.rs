@@ -780,72 +780,62 @@ impl TurnRunner {
                         message,
                         stream_event,
                     } => {
-                        let stream_kind = stream_event
-                            .as_ref()
-                            .and_then(|event| event.get("type"))
-                            .and_then(Value::as_str);
-                        let starts_message = stream_kind == Some("start");
-                        // A block-end event settles the parked delta run, so it travels
-                        // direct (flushing the parked update first, in order).
-                        let settles_run = matches!(
-                            stream_kind,
-                            Some("text_end" | "thinking_end" | "toolcall_end")
-                        );
-                        if !starts_message && !settles_run {
-                            // Streaming updates park in the coalescer; `park_update` only
-                            // returns false after the turn joined, which cannot race this closure.
-                            if let Ok(path) = pa_types::session_scope::var("PA_DAEMON_EVENT_LOG") {
-                                use std::io::Write;
-                                if let Some(value) = message.clone().into_wire() {
-                                    if let Ok(mut file) = std::fs::OpenOptions::new()
-                                        .create(true)
-                                        .append(true)
-                                        .open(&path)
-                                    {
-                                        let mut event = json!({
-                                            "type": "message_update",
-                                            "message": value,
-                                        });
-                                        if let Some(stream_event) = &stream_event {
-                                            event["assistantMessageEvent"] = stream_event.clone();
-                                        }
-                                        let _ = writeln!(file, "{event}");
-                                    }
-                                }
-                            }
-                            let sequence = core.last_event_sequence + 1;
-                            core.last_event_sequence = sequence;
-                            let delta = stream_event
-                                .as_ref()
-                                .and_then(|event| event.get("delta"))
-                                .and_then(Value::as_str)
-                                .unwrap_or_default();
-                            if !turn_coalescer.park_update(
-                                message,
-                                stream_kind.unwrap_or_default(),
+                        // A delta parks in the coalescer; the reply's `start` and a block end
+                        // (which settles the parked delta run) travel direct, flushing the
+                        // parked update first, in order.
+                        match pa_core::session_engine::wire_events::update_route(
+                            stream_event.as_ref(),
+                        ) {
+                            pa_core::session_engine::wire_events::UpdateRoute::Park {
+                                kind,
                                 delta,
-                                sequence,
-                                &events,
-                            ) {
-                                return false;
-                            }
-                            Vec::new()
-                        } else {
-                            match message.into_wire() {
-                                Some(value) => {
-                                    let mut event = json!({
-                                        "type": if starts_message { "message_start" } else { "message_update" },
-                                        "message": value,
-                                    });
-                                    if let Some(stream_event) = stream_event {
-                                        event["assistantMessageEvent"] = stream_event;
+                            } => {
+                                // Streaming updates park in the coalescer; `park_update` only
+                                // returns false after the turn joined, which cannot race this
+                                // closure.
+                                if let Ok(path) =
+                                    pa_types::session_scope::var("PA_DAEMON_EVENT_LOG")
+                                {
+                                    use std::io::Write;
+                                    if let Some(value) = message.clone().into_wire() {
+                                        if let Ok(mut file) = std::fs::OpenOptions::new()
+                                            .create(true)
+                                            .append(true)
+                                            .open(&path)
+                                        {
+                                            let mut event = json!({
+                                                "type": "message_update",
+                                                "message": value,
+                                            });
+                                            if let Some(stream_event) = &stream_event {
+                                                event["assistantMessageEvent"] =
+                                                    stream_event.clone();
+                                            }
+                                            let _ = writeln!(file, "{event}");
+                                        }
                                     }
-                                    vec![event]
                                 }
-                                // Unreachable for streamed partials; a
-                                // failed conversion frames nothing.
-                                None => Vec::new(),
+                                let sequence = core.last_event_sequence + 1;
+                                core.last_event_sequence = sequence;
+                                if !turn_coalescer
+                                    .park_update(message, &kind, &delta, sequence, &events)
+                                {
+                                    return false;
+                                }
+                                Vec::new()
                             }
+                            // Unreachable for streamed partials; a failed conversion frames
+                            // nothing.
+                            pa_core::session_engine::wire_events::UpdateRoute::Direct => message
+                                .into_wire()
+                                .map(|value| {
+                                    pa_core::session_engine::wire_events::direct_update_event(
+                                        value,
+                                        stream_event,
+                                    )
+                                })
+                                .into_iter()
+                                .collect(),
                         }
                     }
                     EngineEvent::AssistantMessage(message) => {

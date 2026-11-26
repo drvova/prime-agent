@@ -3,20 +3,17 @@
 //! The worker owns the session store, the queue, event sequencing, and wire
 //! framing; the engine owns turn behavior.
 
-use std::sync::Arc;
-
 use anyhow::Result;
 use pa_agent::abort::AbortSignal;
-use pa_core::session_engine::provider_adapter::json_round_trip;
 use pa_core::session_engine::provider_retry::{ProviderRetryPolicy, UNBOUNDED_BACKOFF_MS};
 use pa_core::session_engine::side_question::{SideQuestionSink, SideQuestionTurn};
 use serde_json::{json, Value};
 
 mod wire;
+pub(crate) use pa_core::session_engine::wire_events::{session_wire_value, AssistantSnapshot};
 pub use scripted::ScriptedEngine;
-pub(crate) use wire::session_wire_value;
 pub use wire::{
-    empty_resource_snapshot, side_question_event_value, AssistantSnapshot, BackgroundJobConsumed,
+    empty_resource_snapshot, side_question_event_value, BackgroundJobConsumed,
     BackgroundJobConsumedSink, BranchSummaryOutcome, BranchSummaryRequest, BranchSummaryRun,
     CompactionOutcome, CompactionRequest, CompactionRun, EngineEvent, EngineModelSelection,
     GoalAdmissionSink, GoalContinuation, GoalTurnEndWork, KernelNotice, KernelNoticeSink,

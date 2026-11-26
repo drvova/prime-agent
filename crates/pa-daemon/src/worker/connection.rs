@@ -85,7 +85,7 @@ impl EventPump {
             next_seq: AtomicU64::new(0),
             send_guard: std::sync::Mutex::new(()),
             dropped: AtomicU64::new(0),
-            flush: crate::streaming::FlushPacer::new(),
+            flush: crate::streaming::FlushPacer::default(),
         }
     }
 
