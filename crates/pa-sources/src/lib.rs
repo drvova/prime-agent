@@ -7,6 +7,9 @@
 //! - [`webhook`]: an HTTP listener that publishes each authenticated request
 //!   on `source/<name>/received`.
 //!
+//! [`schedule`] is the one schedule grammar and evaluator: the timers' and
+//! pa-core's scheduled jobs'.
+//!
 //! A source knows nothing of the bus or the log: it hands each event to a
 //! [`Publisher`] the runtime implements. The runtime starts a source at its
 //! first subscription and stops it at its last; that count lives in the
@@ -24,6 +27,7 @@ use serde_json::Value;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+pub mod schedule;
 pub mod timer;
 pub mod watch;
 pub mod webhook;
@@ -61,8 +65,8 @@ pub trait Publisher: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct StartContext {
     pub publisher: Arc<dyn Publisher>,
-    /// The `scheduledFor` of the last fire the log holds for this source,
-    /// when it has fired before. Only timers read it, to apply their
+    /// The `firedAt` of the last fire the log holds for this source, when
+    /// it has fired before. Only timers read it, to apply their
     /// catch-up rule ([`timer`]); other sources ignore it.
     pub last_fired_ms: Option<u64>,
 }

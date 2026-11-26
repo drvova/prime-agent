@@ -2,20 +2,22 @@
 //! expression, or once at a time, with Owner trust and the payload
 //! `{ "scheduledFor": <unix ms>, "firedAt": <unix ms> }`.
 //!
-//! Options are exactly one of `every` (`30s`, `10m`, `1h30m`, `2d`), `cron`
-//! (five fields or `@hourly`-style, read in UTC) and `at` (RFC 3339), plus an
-//! optional `tz` that is only `UTC`: zones are not supported, so cron fields
-//! are always UTC.
+//! Options are exactly one of `every` (`30s`, `10m`, `1h30m`, `2 hours`; at
+//! least 1 s), `cron` (five fields or `@hourly`-style, read in UTC) and `at`
+//! (an ISO time), plus an optional `tz` that is only `UTC`: zones are not
+//! supported, so cron fields are always UTC. The grammar and its evaluator
+//! are [`crate::schedule`], which the scheduled-jobs store reads too.
 //!
-//! **Catch-up.** A start resumes from the `scheduledFor` of the last fire the
-//! runtime holds ([`StartContext::last_fired_ms`]). Fires missed while the
-//! timer was stopped (or while the machine slept) are not replayed: when one
-//! or more were missed, the timer fires once at once, with `scheduledFor`
-//! the latest missed time, and then continues on schedule. An `every` timer
-//! that has never fired first fires one interval after its start; a cron
-//! timer that has never fired waits for its next match; an `at` timer that
-//! has never fired fires at its time, or at once when that time has passed,
-//! and never again.
+//! **Catch-up**, the scheduled-jobs store's rule. A start resumes from the
+//! `firedAt` of the last fire the runtime holds
+//! ([`StartContext::last_fired_ms`]). Fires missed while the timer was
+//! stopped (or while the machine slept) collapse into one: the timer fires
+//! once, at once, with `scheduledFor` the latest missed time. Every next
+//! fire is counted from when the last one fired, not from its schedule. An
+//! `every` timer that has never fired first fires one interval after its
+//! start; a cron timer that has never fired waits for its next match; an
+//! `at` timer that has never fired fires at its time, or at once when that
+//! time has passed, and never again.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -25,11 +27,11 @@ use pa_types::event_log::Trust;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::schedule::{Cron, Schedule};
 use crate::{source_event, source_topic, spawn, Source, SourceHandle, StartContext};
 
-mod schedule;
-
-use schedule::{Cron, Schedule};
+/// The shortest `every` a timer takes.
+const MIN_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The longest a [`SystemClock`] sleeps before it reads the time again, so
 /// a wall clock that jumped (or a machine that slept) is noticed.
@@ -99,13 +101,9 @@ impl TryFrom<TimerFields> for TimerOptions {
             ));
         }
         let schedule = match (fields.every, fields.cron, fields.at) {
-            (Some(every), None, None) => Schedule::Every {
-                interval_ms: schedule::parse_every(&every)?,
-            },
-            (None, Some(cron), None) => Schedule::Cron(Cron::parse(&cron)?),
-            (None, None, Some(at)) => Schedule::At {
-                unix_ms: schedule::parse_at(&at)?,
-            },
+            (Some(every), None, None) => Schedule::every(&every, MIN_INTERVAL),
+            (None, Some(cron), None) => Cron::parse(&cron).map(Schedule::Cron),
+            (None, None, Some(at)) => Schedule::at(&at),
             (None, None, None)
             | (Some(_), Some(_), _)
             | (Some(_), None, Some(_))
@@ -113,6 +111,7 @@ impl TryFrom<TimerFields> for TimerOptions {
                 return Err("a timer has exactly one of `every`, `cron` and `at`".to_string());
             }
         };
+        let schedule = schedule.map_err(|error| error.to_string())?;
         Ok(TimerOptions { schedule })
     }
 }
@@ -151,8 +150,7 @@ impl<C: Clock> Source for TimerSource<C> {
             "properties": {
                 "every": {
                     "type": "string",
-                    "description": "An interval of <count><unit> parts, units s, m, h, d: 30s, 10m, 1h30m. At least 1s.",
-                    "pattern": "^([0-9]+[smhd])+$"
+                    "description": "An interval of <count><unit> parts, units s, m, h, d (or sec, min, hour, day, ...): 30s, 10m, 1h30m, 2 hours. At least 1s."
                 },
                 "cron": {
                     "type": "string",
@@ -160,8 +158,7 @@ impl<C: Clock> Source for TimerSource<C> {
                 },
                 "at": {
                     "type": "string",
-                    "format": "date-time",
-                    "description": "One RFC 3339 time to fire at, once."
+                    "description": "One ISO time to fire at, once: 2026-11-25T09:30:00Z, 2026-11-25T10:30+01:00; no offset is UTC."
                 },
                 "tz": {
                     "const": "UTC",
@@ -201,15 +198,17 @@ impl<C: Clock> Source for TimerSource<C> {
                     () = clock.sleep_until(due) => {}
                 }
                 let fired_at = clock.now_ms();
-                let scheduled_for = schedule.latest_due(due, fired_at);
-                let payload = json!({ "scheduledFor": scheduled_for, "firedAt": fired_at });
+                let payload = json!({
+                    "scheduledFor": schedule.latest_due(due, fired_at),
+                    "firedAt": fired_at,
+                });
                 context.publisher.publish(source_event(
                     topic.clone(),
                     &name,
                     payload,
                     Trust::Owner,
                 ))?;
-                next = schedule.next_after(scheduled_for);
+                next = schedule.next_after(fired_at);
             }
             Ok(())
         })

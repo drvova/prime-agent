@@ -3403,6 +3403,7 @@ dependencies = [
  "pa-log",
  "pa-models",
  "pa-shell",
+ "pa-sources",
  "pa-telemetry",
  "pa-types",
  "pdf-extract",

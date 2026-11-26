@@ -1,18 +1,22 @@
-//! Cron scheduling core: schedule parsing (`in`/`every`/`at`/cron),
-//! five-field cron expression evaluation, and `/heartbeat` command parsing;
-//! the file-backed job store lives in the `store` submodule.
+//! Scheduled jobs: their schedules (read and evaluated by
+//! `pa_sources::schedule`, the grammar timer sources share) and `/heartbeat`
+//! command parsing; the file-backed job store lives in the `store`
+//! submodule.
 
 pub mod scheduler;
 pub mod store;
 
-use std::collections::BTreeSet;
+use std::time::Duration;
 
+use pa_sources::schedule::{parse_duration, Cron, DurationUnits, Schedule};
 use serde::{Deserialize, Serialize};
+
+pub(crate) use pa_sources::schedule::parse_instant;
 
 pub const DEFAULT_HEARTBEAT_SCHEDULE: &str = "every 5m";
 pub const DEFAULT_HEARTBEAT_DELIVERY_MODE: DeliveryMode = DeliveryMode::Steer;
-const ONE_SECOND_MS: u64 = 1000;
-const ONE_MINUTE_MS: u64 = 60 * ONE_SECOND_MS;
+/// The shortest interval a job's `every` schedule takes.
+const MIN_JOB_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -129,123 +133,30 @@ pub fn parse_agent_cron_schedule(
     input: &str,
     now_millis: u64,
 ) -> anyhow::Result<(AgentCronSchedule, u64)> {
-    let text: String = strip_matching_quotes(input.trim()).to_string();
-    if text.is_empty() {
-        anyhow::bail!("Cron schedule cannot be empty");
-    }
-    // `in <n> <unit>`: one-shot.
-    let lower = text.to_lowercase();
-    if let Some(rest) = lower.strip_prefix("in ") {
-        if let Some(next) = parse_in_delay(rest, now_millis) {
-            return Ok((
-                AgentCronSchedule {
-                    kind: ScheduleKind::Once,
-                    expression: text,
-                    interval_ms: None,
-                },
-                next,
-            ));
-        }
-    }
-    // `every|each <n> <unit>`: recurring interval.
-    for prefix in ["every ", "each "] {
-        if let Some(rest) = lower.strip_prefix(prefix) {
-            if let Some(next) = parse_every_delay(rest, now_millis)? {
-                let interval_ms = next - now_millis;
-                return Ok((
-                    AgentCronSchedule {
-                        kind: ScheduleKind::Interval,
-                        expression: text,
-                        interval_ms: Some(interval_ms),
-                    },
-                    next,
-                ));
-            }
-        }
-    }
-    // `at <ISO date>`: one-shot.
-    if lower.starts_with("at ") {
-        let when = parse_iso_millis(text[3..].trim())
-            .ok_or_else(|| anyhow::anyhow!("Invalid one-shot schedule. Use: at <ISO date>"))?;
-        if when <= now_millis {
-            anyhow::bail!("One-shot schedule must be in the future");
-        }
-        return Ok((
-            AgentCronSchedule {
-                kind: ScheduleKind::Once,
-                expression: text,
-                interval_ms: None,
-            },
-            when,
-        ));
-    }
-    let expression = normalize_cron_alias(&text);
-    let next_run_at = next_cron_run_after(&expression, now_millis)?;
+    let parsed = Schedule::parse(input, now_millis, MIN_JOB_INTERVAL)?;
+    let (kind, interval_ms, first_run) = match &parsed.schedule {
+        Schedule::At { unix_ms } => (ScheduleKind::Once, None, Some(*unix_ms)),
+        Schedule::Every { interval_ms } => (
+            ScheduleKind::Interval,
+            Some(*interval_ms),
+            parsed.schedule.next_after(now_millis),
+        ),
+        Schedule::Cron(_) => (
+            ScheduleKind::Cron,
+            None,
+            parsed.schedule.next_after(now_millis),
+        ),
+    };
+    let first_run =
+        first_run.ok_or_else(|| anyhow::anyhow!("Schedule {:?} never runs", parsed.expression))?;
     Ok((
         AgentCronSchedule {
-            kind: ScheduleKind::Cron,
-            expression,
-            interval_ms: None,
+            kind,
+            expression: parsed.expression,
+            interval_ms,
         },
-        next_run_at,
+        first_run,
     ))
-}
-
-fn unit_multiplier(unit: &str, allow_seconds: bool) -> Option<u64> {
-    let unit = unit.trim();
-    let seconds = allow_seconds && matches!(unit, "s" | "sec" | "secs" | "second" | "seconds");
-    if seconds {
-        return Some(ONE_SECOND_MS);
-    }
-    if matches!(unit, "m" | "min" | "mins" | "minute" | "minutes") {
-        return Some(ONE_MINUTE_MS);
-    }
-    if matches!(unit, "h" | "hr" | "hrs" | "hour" | "hours") {
-        return Some(60 * ONE_MINUTE_MS);
-    }
-    if matches!(unit, "d" | "day" | "days") {
-        return Some(24 * 60 * ONE_MINUTE_MS);
-    }
-    None
-}
-
-fn parse_in_delay(rest: &str, now_millis: u64) -> Option<u64> {
-    let (amount, unit) = split_amount_unit(rest)?;
-    let multiplier = unit_multiplier(unit, false)?;
-    Some(now_millis + amount.saturating_mul(multiplier))
-}
-
-/// `<digits> <unit?>` with the unit optionally attached (`10m`, `10 m`).
-fn split_amount_unit(rest: &str) -> Option<(u64, &str)> {
-    let rest = rest.trim();
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    let digits_len = digits.len();
-    let unit = rest[digits_len..].trim();
-    let amount: u64 = digits.parse().ok()?;
-    if !unit.is_empty()
-        && !rest[digits_len..].starts_with(char::is_whitespace)
-        && !unit.chars().all(|c| c.is_ascii_alphabetic())
-    {
-        return None;
-    }
-    Some((amount, unit))
-}
-
-fn parse_every_delay(rest: &str, now_millis: u64) -> anyhow::Result<Option<u64>> {
-    let Some((amount, unit)) = split_amount_unit(rest) else {
-        return Ok(None);
-    };
-    let Some(multiplier) = unit_multiplier(unit, true) else {
-        return Ok(None);
-    };
-    let interval_ms = amount.saturating_mul(multiplier);
-    if interval_ms < 10 * ONE_SECOND_MS {
-        anyhow::bail!("Recurring interval must be at least 10 seconds");
-    }
-    Ok(Some(now_millis + interval_ms))
 }
 
 pub fn normalize_heartbeat_schedule(input: Option<&str>) -> String {
@@ -253,10 +164,8 @@ pub fn normalize_heartbeat_schedule(input: Option<&str>) -> String {
     let Some(text) = text else {
         return DEFAULT_HEARTBEAT_SCHEDULE.to_string();
     };
-    if let Some((_, unit)) = split_amount_unit(text) {
-        if !unit.is_empty() && unit_multiplier(unit, true).is_some() {
-            return format!("every {text}");
-        }
+    if parse_duration(text, DurationUnits::WithSeconds).is_some() {
+        return format!("every {text}");
     }
     text.to_string()
 }
@@ -509,10 +418,7 @@ fn consume_leading_every_schedule(text: &str) -> Option<(String, String)> {
     for prefix in ["every ", "each "] {
         if let Some(rest) = lower.strip_prefix(prefix) {
             let first_token = rest.split_whitespace().next()?;
-            let Some((_, unit)) = split_amount_unit(first_token) else {
-                continue;
-            };
-            if unit.is_empty() || unit_multiplier(unit, true).is_none() {
+            if parse_duration(first_token, DurationUnits::WithSeconds).is_none() {
                 continue;
             }
             {
@@ -565,7 +471,7 @@ pub fn should_defer_heartbeat_cron_job(
 ///
 /// # Errors
 ///
-/// Returns an error when the interval is zero or the cron matches nothing within one year.
+/// Returns an error when the interval is zero or the cron expression does not parse.
 pub fn next_run_at_for_schedule(
     schedule: &AgentCronSchedule,
     after_millis: u64,
@@ -579,9 +485,11 @@ pub fn next_run_at_for_schedule(
             if interval_ms == 0 {
                 anyhow::bail!("Invalid interval schedule: {}", schedule.expression);
             }
-            Ok(Some(after_millis + interval_ms))
+            Ok(Schedule::Every { interval_ms }.next_after(after_millis))
         }
-        ScheduleKind::Cron => next_cron_run_after(&schedule.expression, after_millis).map(Some),
+        ScheduleKind::Cron => {
+            Ok(Schedule::Cron(Cron::parse(&schedule.expression)?).next_after(after_millis))
+        }
     }
 }
 
@@ -617,255 +525,18 @@ pub fn format_agent_cron_job(job: &AgentCronJob) -> String {
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct CronFields {
-    minute: BTreeSet<u32>,
-    hour: BTreeSet<u32>,
-    day_of_month: BTreeSet<u32>,
-    month: BTreeSet<u32>,
-    day_of_week: BTreeSet<u32>,
-}
-
-fn next_cron_run_after(expression: &str, after_millis: u64) -> anyhow::Result<u64> {
-    let fields = parse_cron_expression(expression)?;
-    // Start at the next whole minute.
-    let mut candidate = (after_millis / ONE_MINUTE_MS + 1) * ONE_MINUTE_MS;
-    let deadline = candidate + 366 * 24 * 60 * ONE_MINUTE_MS;
-    while candidate <= deadline {
-        if matches_cron_fields(candidate, &fields) {
-            return Ok(candidate);
-        }
-        candidate += ONE_MINUTE_MS;
-    }
-    anyhow::bail!("Cron schedule did not match within one year: {expression}")
-}
-
-fn parse_cron_expression(expression: &str) -> anyhow::Result<CronFields> {
-    let parts: Vec<&str> = expression.split_whitespace().collect();
-    if parts.len() != 5 {
-        anyhow::bail!(
-            "Unsupported cron schedule. Use 'in 10m', 'at <ISO date>', @hourly, or five fields: minute hour day month weekday"
-        );
-    }
-    Ok(CronFields {
-        minute: parse_cron_field(parts[0], 0, 59)?,
-        hour: parse_cron_field(parts[1], 0, 23)?,
-        day_of_month: parse_cron_field(parts[2], 1, 31)?,
-        month: parse_cron_field(parts[3], 1, 12)?,
-        day_of_week: parse_cron_field(parts[4], 0, 7)?,
-    })
-}
-
-fn parse_cron_field(field: &str, min: u32, max: u32) -> anyhow::Result<BTreeSet<u32>> {
-    let mut values = BTreeSet::new();
-    for part in field.split(',') {
-        if part.is_empty() {
-            anyhow::bail!("Invalid cron field: {field}");
-        }
-        let (range_text, step_text) = match part.split_once('/') {
-            Some((range, step)) => (range, Some(step)),
-            None => (part, None),
-        };
-        let step = match step_text {
-            None => 1,
-            Some(step) => parse_cron_number(Some(step), 1, max)?,
-        };
-        let (start, end) = if range_text == "*" {
-            (min, max)
-        } else if let Some((start_text, end_text)) = range_text.split_once('-') {
-            let start = parse_cron_number(Some(start_text), min, max)?;
-            let end = parse_cron_number(Some(end_text), min, max)?;
-            if start > end {
-                anyhow::bail!("Invalid cron range: {range_text}");
-            }
-            (start, end)
-        } else {
-            let value = parse_cron_number(Some(range_text), min, max)?;
-            (value, value)
-        };
-        let mut value = start;
-        while value <= end {
-            values.insert(value);
-            value += step;
-        }
-    }
-    Ok(values)
-}
-
-fn parse_cron_number(value: Option<&str>, min: u32, max: u32) -> anyhow::Result<u32> {
-    let Some(value) = value.filter(|value| !value.is_empty()) else {
-        anyhow::bail!("Invalid cron number: ");
-    };
-    if !value.chars().all(|char| char.is_ascii_digit()) {
-        anyhow::bail!("Invalid cron number: {value}");
-    }
-    let parsed: u32 = value
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid cron number: {value}"))?;
-    if parsed < min || parsed > max {
-        anyhow::bail!("Cron number out of range: {value}");
-    }
-    Ok(parsed)
-}
-
-/// UTC civil-time matching for the five-field cron expression.
-fn matches_cron_fields(timestamp_ms: u64, fields: &CronFields) -> bool {
-    let (minute, hour, day, month, weekday) = civil_time(timestamp_ms);
-    let day_matches =
-        fields.day_of_week.contains(&weekday) || (weekday == 0 && fields.day_of_week.contains(&7));
-    fields.minute.contains(&minute)
-        && fields.hour.contains(&hour)
-        && fields.day_of_month.contains(&day)
-        && fields.month.contains(&month)
-        && day_matches
-}
-
-/// (minute, hour, day-of-month, month, weekday) in UTC. Weekday: 0=Sunday.
-fn civil_time(timestamp_ms: u64) -> (u32, u32, u32, u32, u32) {
-    let days = timestamp_ms / (24 * 60 * ONE_MINUTE_MS);
-    let seconds_of_day = (timestamp_ms % (24 * 60 * ONE_MINUTE_MS)) / ONE_SECOND_MS;
-    let minute = (seconds_of_day / 60) % 60;
-    let hour = seconds_of_day / 3600;
-    // Civil date from days-since-epoch (Howard Hinnant's algorithm).
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { y + 1 } else { y };
-    let weekday = ((days + 4) % 7) as u32; // 1970-01-01 was a Thursday.
-    let _ = year;
-    (
-        minute as u32,
-        hour as u32,
-        day as u32,
-        month as u32,
-        weekday,
-    )
-}
-
-fn normalize_cron_alias(text: &str) -> String {
-    match text {
-        "@hourly" => "0 * * * *".to_string(),
-        "@daily" => "0 0 * * *".to_string(),
-        "@weekly" => "0 0 * * 0".to_string(),
-        "@monthly" => "0 0 1 * *".to_string(),
-        _ => text.to_string(),
-    }
-}
-
-fn strip_matching_quotes(value: &str) -> &str {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2 {
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return &value[1..value.len() - 1];
-        }
-    }
-    value
-}
-
-/// ISO-8601 parse to epoch millis (RFC 3339 subset).
-pub(crate) fn parse_iso_millis(text: &str) -> Option<u64> {
-    let text = text.trim();
-    let (date, time) = text.split_once('T')?;
-    let date_parts: Vec<&str> = date.split('-').collect();
-    if date_parts.len() != 3 {
-        return None;
-    }
-    let year: i64 = date_parts[0].parse().ok()?;
-    let month: u32 = date_parts[1].parse().ok()?;
-    let day: u32 = date_parts[2].parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    // Days since epoch via civil-date inverse.
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y.rem_euclid(400);
-    let mp = i64::from(if month > 2 { month - 3 } else { month + 9 });
-    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let (time, offset_ms) = parse_time_with_offset(time)?;
-    let millis = days * 24 * 60 * 60 * 1000 + time - offset_ms;
-    Some(millis as u64)
-}
-
-/// Time-of-day parse: HH:MM[:SS[.fff]][Z|(+/-HH:MM)] -> millis + offset.
-fn parse_time_with_offset(time: &str) -> Option<(i64, i64)> {
-    let (time, offset) = if let Some(stripped) = time.strip_suffix('Z') {
-        (stripped, 0i64)
-    } else if let Some(index) = time
-        .rfind('+')
-        .or_else(|| time[1..].rfind('-').map(|i| i + 1))
-    {
-        let offset = parse_offset(&time[index..])?;
-        (&time[..index], offset)
-    } else {
-        (time, 0)
-    };
-    let parts: Vec<&str> = time.split(':').collect();
-    if parts.is_empty() || parts.len() > 3 {
-        return None;
-    }
-    let hours: i64 = parts.first()?.parse().ok()?;
-    let minutes: i64 = parts.get(1).map_or(Some(0), |p| p.parse::<i64>().ok())?;
-    let seconds_part = parts.get(2).copied().unwrap_or("0");
-    let (seconds, millis) = match seconds_part.split_once('.') {
-        Some((seconds, fraction)) => {
-            let seconds: i64 = seconds.parse().ok()?;
-            let fraction_ms = fraction_pad(fraction)?;
-            (seconds, fraction_ms)
-        }
-        None => (seconds_part.parse().ok()?, 0),
-    };
-    if hours > 23 || minutes > 59 || seconds > 59 {
-        return None;
-    }
-    Some((
-        hours * 3_600_000 + minutes * 60_000 + seconds * 1000 + millis,
-        offset,
-    ))
-}
-
-fn fraction_pad(fraction: &str) -> Option<i64> {
-    if fraction.is_empty() || !fraction.chars().all(|char| char.is_ascii_digit()) {
-        return None;
-    }
-    let mut padded = fraction.to_string();
-    while padded.len() < 3 {
-        padded.push('0');
-    }
-    let value = padded[..3].parse::<i64>().ok()?;
-    Some(value)
-}
-
-fn parse_offset(text: &str) -> Option<i64> {
-    let (sign, rest) = match text.strip_prefix('+') {
-        Some(rest) => (1i64, rest),
-        None => text.strip_prefix('-').map(|rest| (-1i64, rest))?,
-    };
-    let parts: Vec<&str> = rest.split(':').collect();
-    let hours: i64 = parts.first()?.parse().ok()?;
-    let minutes: i64 = parts.get(1).map_or(Some(0), |p| p.parse::<i64>().ok())?;
-    Some(sign * (hours * 60 + minutes) * 60_000)
-}
-
 pub fn is_due_job(job: &AgentCronJob, now_millis: u64) -> bool {
     if job.status != JobStatus::Active {
         return false;
     }
     job.next_run_at
         .as_deref()
-        .and_then(parse_iso_millis)
+        .and_then(parse_instant)
         .is_some_and(|next| next <= now_millis)
 }
+
+#[cfg(test)]
+mod golden_tests;
 
 #[cfg(test)]
 mod tests {
@@ -898,29 +569,6 @@ mod tests {
     }
 
     #[test]
-    fn cron_expressions_evaluate() {
-        // @hourly fires at the next whole hour.
-        let (schedule, next) = parse_agent_cron_schedule("@hourly", BASE).unwrap();
-        assert_eq!(schedule.kind, ScheduleKind::Cron);
-        assert_eq!(schedule.expression, "0 * * * *");
-        let (minute, hour, _, _, _) = civil_time(next);
-        assert_eq!((minute, hour), (0, 23));
-        let (_, next) = parse_agent_cron_schedule("0 12 * * *", BASE).unwrap();
-        let (minute, hour, _, _, _) = civil_time(next);
-        assert_eq!((minute, hour), (0, 12));
-        let (_, next) = parse_agent_cron_schedule("*/15 9-17 * * 1-5", BASE).unwrap();
-        let (minute, _, _, _, weekday) = civil_time(next);
-        assert_eq!(minute % 15, 0);
-        assert!((1..=5).contains(&weekday));
-        // Day-of-week 7 matches Sunday.
-        let fields = parse_cron_expression("0 0 * * 7").unwrap();
-        assert!(matches_cron_fields(4_102_617_600_000, &fields)); // a Sunday
-        assert!(parse_agent_cron_schedule("* * * *", BASE).is_err());
-        assert!(parse_agent_cron_schedule("60 * * * *", BASE).is_err());
-        assert!(parse_agent_cron_schedule("a * * * *", BASE).is_err());
-    }
-
-    #[test]
     fn next_run_rollover() {
         let (_, next) = parse_agent_cron_schedule("@daily", BASE).unwrap();
         let schedule = AgentCronSchedule {
@@ -930,7 +578,7 @@ mod tests {
         };
         assert_eq!(
             next_run_at_for_schedule(&schedule, next).unwrap(),
-            Some(next + 24 * 60 * ONE_MINUTE_MS)
+            Some(next + 24 * 60 * 60_000)
         );
         let interval = AgentCronSchedule {
             kind: ScheduleKind::Interval,

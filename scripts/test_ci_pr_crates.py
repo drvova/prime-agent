@@ -212,6 +212,12 @@ class TheMappingTestCase(unittest.TestCase):
         self.assertEqual(outputs["crates"],
                          "pa-cli,pa-core,pa-daemon,pa-perf,pa-runtime,pa-telemetry,pa-tui")
 
+    def test_pa_sources_only_runs_pa_core_and_its_dependents(self):
+        rc, out, outputs = run_mapper(["crates/pa-sources/src/lib.rs"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(outputs["crates"],
+                         "pa-cli,pa-core,pa-daemon,pa-perf,pa-runtime,pa-sources,pa-tui")
+
     def test_an_unknown_crate_fails_safe(self):
         rc, out, outputs = run_mapper(["crates/pa-future/src/lib.rs"])
         self.assertEqual(rc, 0, out)

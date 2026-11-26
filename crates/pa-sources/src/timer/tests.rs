@@ -4,8 +4,8 @@ use pa_types::event_log::{NewEvent, Topic, Trust};
 use serde_json::json;
 use tokio::sync::watch;
 
-use super::schedule::{parse_at, Cron, Schedule};
 use super::{Clock, TimerOptions, TimerSource};
+use crate::schedule::Schedule;
 use crate::test_support::context;
 use crate::{source_event, Source};
 
@@ -76,36 +76,6 @@ fn every_refuses_sub_second_and_malformed_intervals() {
     }
 }
 
-#[test]
-fn at_reads_rfc3339_offsets_and_fractions() {
-    assert_eq!(parse_at("2026-11-25T09:30:00Z"), Ok(NOW));
-    assert_eq!(parse_at("2026-11-25T10:30:00.250+01:00"), Ok(NOW + 250));
-    assert!(parse_at("2026-02-29T00:00:00Z").is_err());
-    assert!(parse_at("2026-11-25 09:30:00").is_err());
-}
-
-#[test]
-fn cron_finds_the_next_and_latest_matching_minute() {
-    let weekday_mornings = Schedule::Cron(Cron::parse("*/15 9-10 * * 1-5").unwrap());
-    // Wednesday 09:30 → 09:45; Friday 10:50 → Monday 09:00.
-    assert_eq!(weekday_mornings.next_after(NOW), Some(NOW + 15 * MINUTE));
-    let friday_late = NOW + 2 * 24 * 60 * MINUTE + 80 * MINUTE;
-    let monday_nine = NOW + 5 * 24 * 60 * MINUTE - 30 * MINUTE;
-    assert_eq!(weekday_mornings.next_after(friday_late), Some(monday_nine));
-    // Missed from Wednesday 09:45 until Friday 10:50: the latest is Friday 10:45.
-    assert_eq!(
-        weekday_mornings.latest_due(NOW + 15 * MINUTE, friday_late),
-        friday_late - 5 * MINUTE
-    );
-    assert!(Cron::parse("0 0 30 2 *").is_err());
-    assert!(Cron::parse("60 * * * *").is_err());
-    assert!(Cron::parse("*/0 * * * *").is_err());
-    assert_eq!(
-        Cron::parse("@daily").unwrap(),
-        Cron::parse("0 0 * * *").unwrap()
-    );
-}
-
 #[tokio::test]
 async fn an_interval_fires_on_schedule_as_the_clock_moves() {
     let clock = ManualClock::at(NOW);
@@ -132,11 +102,11 @@ async fn missed_fires_are_caught_up_once_then_the_schedule_continues() {
         .start("tick", options(json!({ "every": "1m" })), context)
         .unwrap();
     assert_eq!(published.next().await, fire(NOW - MINUTE / 2, NOW));
+    // The next fire counts from the catch-up fire, not from the latest
+    // missed time: half a minute on, nothing is due.
     clock.set(NOW + MINUTE / 2);
-    assert_eq!(
-        published.next().await,
-        fire(NOW + MINUTE / 2, NOW + MINUTE / 2)
-    );
+    clock.set(NOW + MINUTE);
+    assert_eq!(published.next().await, fire(NOW + MINUTE, NOW + MINUTE));
     timer.stop().await.unwrap();
     assert_eq!(published.drain(), Vec::new());
 }

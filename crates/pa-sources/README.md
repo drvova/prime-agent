@@ -19,14 +19,20 @@ keeping that count itself.
 - **Options.** Each kind has typed serde options that refuse unknown fields, and a JSON Schema of
   them (`options_schema`) for the runtime's validation and docs. `SourceKind` starts a kind from
   JSON options.
+- **`schedule`** is the one schedule grammar and evaluator, shared with pa-core's scheduled
+  jobs. A `Schedule` fires every interval, on a cron expression, or once at a time, and answers
+  `next_after` and `latest_due`. Durations are `<count><unit>` parts (`30s`, `1h30m`,
+  `2 hours`); cron is five fields or `@hourly`-style, read in UTC, a minute firing when every
+  field matches, day-of-month and weekday included; times are ISO (`parse_instant`). A scheduled
+  job's sentence (`Schedule::parse`: `in 10m`, `every 5m`, `at <ISO time>`, cron) reads the same
+  forms. The shortest interval is the caller's: a timer takes 1 s, the scheduled-jobs store 10 s.
 - **`timer`** publishes `timer/<name>` with `{ "scheduledFor", "firedAt" }` (Unix ms), with Owner
   trust. It takes exactly one of `every` (`30s`, `1h30m`), `cron` (five fields or `@daily`-style)
-  and `at` (RFC 3339). Cron fields are read in UTC, and `tz` accepts only `"UTC"`. A cron minute
-  fires when every field matches, day-of-month and weekday included, as the scheduled-jobs store
-  reads them. Catch-up: a start resumes from the last fire the runtime passes in
-  (`StartContext::last_fired_ms`). Missed fires are not replayed: the timer fires once, at once,
-  for the latest missed time, then continues on schedule. The time comes from a `Clock`, so tests
-  move it by hand.
+  and `at` (an ISO time), read by `schedule`; `tz` accepts only `"UTC"`. Catch-up is the
+  scheduled-jobs store's rule: a start resumes from the `firedAt` of the last fire the runtime
+  passes in (`StartContext::last_fired_ms`). Missed fires collapse into one: the timer fires once,
+  at once, with `scheduledFor` the latest missed time, and every next fire is counted from when
+  the last one fired. The time comes from a `Clock`, so tests move it by hand.
 - **`watch`** publishes `source/<name>/changed` with `{ "paths", "kinds" }`, built on `notify`.
   Changes are coalesced over a window that the first change opens (`debounce_ms`, 200 by default).
   It takes an optional `glob`: without `/` the glob matches a file name at any depth, and with `/`
@@ -59,9 +65,13 @@ keeping that count itself.
 
 - `Publisher`, `PublisherClosed`, `Source`, `StartContext`, `SourceKind`, `SourceHandle`
   (`stop`, `local_addr`).
+- `schedule`: `Schedule` (`parse`, `every`, `at`, `next_after`, `latest_due`), `ParsedSchedule`,
+  `Cron` (`parse`, `expression`), `parse_duration` with `DurationUnits`, `parse_instant`,
+  `ScheduleError`.
 - `timer`: `TimerSource` (`new`, `with_clock`), `TimerOptions`, `Clock`, `SystemClock`.
 - `watch`: `WatchSource`, `WatchOptions`.
 - `webhook`: `WebhookSource`, `WebhookOptions`, `Secret`, and the limits `REPORTED_HEADERS`,
   `MAX_CONNECTIONS`, `HEADER_TIMEOUT` and `BODY_TIMEOUT`.
 
-Dependencies: `pa-types` only, among workspace crates.
+Dependencies: `pa-types` only, among workspace crates. Dependents: `pa-core` (its scheduled jobs
+read their schedules with `schedule`).
