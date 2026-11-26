@@ -63,11 +63,11 @@ mod wire;
 
 pub use bus::{Bus, BusClosed, BusParts, Heard, Intake, Listener, Published};
 pub use log_stores::{LogEventStore, LogStateStore, LogTaskStore};
-pub use routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
+pub use routes::{Announced, ModelCall, ModelCaller, TaskRequest, TaskSink};
 pub use runtime::{Runtime, RuntimeOptions};
 pub use session::{
-    BuiltSession, DriverEvents, Finished, SessionBuilder, SessionSeams, SessionSpec, SettleAfter,
-    Settled, SubagentSpec,
+    BuiltSession, DriverEvents, Finished, QueueModes, SessionBuilder, SessionSeams, SessionSpec,
+    SettleAfter, Settled, SubagentSpec,
 };
 pub use sources::{SourceDefinition, SourceLifetime};
 pub use store::{EventStore, MemoryEventStore, MemoryStateStore, StateKey, StateStore, StateWrite};

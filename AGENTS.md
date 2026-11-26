@@ -266,8 +266,12 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   the supervisor's boot reap spares though its command line names the same socket). Both
   keep sessions in the same transcript store; a session is owned by whichever process holds its
   session lease (`pa_core::session::lease`), so the two never write one session. The runtime
-  daemon has none of the recovery below yet (crash records, self-heal, boot revival, keeper:
-  phase 7c), and the TUI and ACP still speak only to the supervisor.
+  daemon runs interactive turns on its task lanes (steers, follow-ups, `session.abort` parking the
+  lane with the unread steers back at its front, `abort_and_send_queued`, withdraw and restore,
+  `session.compact` in the lane, and an `agent/<id>/accepted` per input naming its task); a
+  parked lane does not survive its restart. It has none of the recovery below yet (crash
+  records, self-heal, boot revival, keeper: phase 7c), and the TUI and ACP still speak only to
+  the supervisor.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,

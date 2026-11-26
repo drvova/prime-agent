@@ -23,9 +23,12 @@
 //!   `session.snapshot` and `transcript.page` read the transcript store;
 //!   `session.create`, `stop`, `rename`, `delete`, `set_model`, `set_effort`,
 //!   `fork`, `label` and `export` change it through pa-core's session
-//!   manager and store, or the open session's engine. `settings`, `models`,
-//!   `sources`, `subscriptions` and `tasks` are refused: they arrive in
-//!   phase 7b and later.
+//!   manager and store, or the open session's engine. An open session's
+//!   turns and queue: `session.abort`, `abort_and_send_queued`,
+//!   `resume_queue`, `withdraw`, `restore`, `compact` and the `tasks` query
+//!   (`handlers/queue.rs`); its state: `session.context`, `usage`, `tree`,
+//!   `context_tree` and `breakdown` (`handlers/state.rs`). `settings`,
+//!   `models`, `sources` and `subscriptions` are refused: they arrive later.
 //! - **Telemetry.** One `daemon event` (kind `catalog_refresh`,
 //!   `daemon_kind: runtime`) once the startup catalog refresh settles, off
 //!   the accept path; nothing the daemon serves waits on the network.

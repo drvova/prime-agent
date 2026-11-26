@@ -2,6 +2,10 @@
 //!
 //! - `agent/<id>/input`: an [`AgentInput`], the text (and images) a turn
 //!   starts from and its place in the session's lane.
+//! - `agent/<id>/accepted`: an [`AgentAccepted`], the task an input became
+//!   and how its lane admitted it ([`Admission`]), caused by the input; a
+//!   client that publishes a prompt and waits for it waits for the `done`
+//!   of that task.
 //! - `agent/<id>/done`: an [`AgentDone`], how a task of the session ended,
 //!   and for a failed one which part failed ([`TaskFailure`]).
 //!
@@ -26,6 +30,32 @@ pub struct AgentInput {
     /// absent, the route's priority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
+}
+
+/// What the runtime publishes on `agent/<id>/accepted` when an input event
+/// becomes a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAccepted {
+    /// The task's id: its `agent/<id>/done` names it.
+    pub task: String,
+    /// Where it went in the session's lane.
+    pub priority: Priority,
+    pub admission: Admission,
+}
+
+/// How a session's lane admitted a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Admission {
+    /// It waits in the lane and runs in its turn.
+    Queued,
+    /// The running turn took it (a steer): it reads it at its next step, and
+    /// the task is done at once.
+    Steered,
+    /// The lane is suspended (the session was aborted): it runs once the
+    /// queue is resumed.
+    Parked,
 }
 
 /// What a session publishes on `agent/<id>/done` when one of its tasks ends.

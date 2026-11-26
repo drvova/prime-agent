@@ -105,6 +105,21 @@ pub struct BuiltSession {
     /// autonomous flags); `None` starts it disabled, and `/autonomous`
     /// rewrites it live.
     pub autonomous: Option<AgentAutonomousConfig>,
+    /// Where its turns take their steering and follow-up modes from.
+    pub queue_modes: QueueModes,
+}
+
+/// Where a session's turns take their steering and follow-up modes from
+/// (`all`: the steers or follow-ups waiting at a step are read together;
+/// `one-at-a-time`: one per step).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueModes {
+    /// The modes the engine was built with, unchanged.
+    Built,
+    /// The global settings' `steeringMode` and `followUpMode`, read as each
+    /// turn starts: a change applies from the next turn (the runtime
+    /// daemon's sessions).
+    Settings,
 }
 
 /// What a session's turn driver (its compaction, refinement, goal and

@@ -6,13 +6,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use pa_types::event_log::{AgentInput, AgentTarget, Cause, Task, TaskFailure, TaskState, Trust};
+use pa_types::event_log::{
+    AgentAccepted, AgentInput, AgentTarget, Cause, Task, TaskFailure, TaskState, Topic, Trust,
+};
 
 use super::host::{Ran, TaskEnd};
 use super::{done_event, Queued, SessionBuilder, SessionSpec, SessionTopics, Sessions};
 use crate::events::BusEvents;
 use crate::log_stores::LogTaskStore;
-use crate::routes::{TaskRequest, TaskSink};
+use crate::routes::{Announced, TaskRequest, TaskSink};
 use crate::subagents::{
     Subagents, INBOX_SUBSCRIPTION, NOTICE_SUBSCRIPTION, SUBSCRIPTION_PREFIX as SUBAGENT_PREFIX,
 };
@@ -76,11 +78,12 @@ impl<B: SessionBuilder> SessionRunner<B> {
     }
 
     /// Cancels `session`'s running task: its turn is aborted and the task
-    /// ends `Cancelled`. Whether one was running.
-    pub(crate) fn cancel_running(&self, session: &str) -> bool {
+    /// ends `Cancelled`. The steers it took and had not read, queued again
+    /// for the caller to put back in the lane.
+    pub(crate) fn cancel_running(&self, session: &str) -> Vec<Task> {
         self.sessions
             .host(session)
-            .is_some_and(|host| host.cancel_running())
+            .map_or_default(|host| host.cancel_running())
     }
 }
 
@@ -144,6 +147,9 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
 /// the request's, and the event it runs for is the cause of what its turn
 /// publishes; an untrusted task's prompt is wrapped as
 /// `<untrusted-event source="<the event's source>">…</untrusted-event>`.
+/// A task queued for a session's input (`agent/<id>/input`) is announced on
+/// `agent/<id>/accepted` (an [`AgentAccepted`]: the task and how its lane
+/// admitted it), caused by the input, so the publish of the input carries it.
 pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
     pub(crate) queue: TaskQueue<SessionRunner<B>, LogTaskStore>,
     pub(crate) sessions: Arc<Sessions<B>>,
@@ -157,19 +163,27 @@ pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
 }
 
 impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
-    async fn queue(&self, request: TaskRequest) -> anyhow::Result<()> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the route's kinds, its prompt, its task and its announcement read top to bottom"
+    )]
+    async fn queue(&self, request: TaskRequest) -> anyhow::Result<Option<Announced>> {
         let kind = RouteKind::of(&request.subscription);
         match kind {
             RouteKind::SubagentDone { child } => {
                 self.subagents.deliver_done(child, &request.event).await;
-                return Ok(());
+                return Ok(None);
             }
             RouteKind::Inbox => {
                 self.subagents.deliver_inbox(&request.event).await;
-                return Ok(());
+                return Ok(None);
             }
             RouteKind::Notice => {
-                return self.subagents.deliver_notice(&request.event).await;
+                return self
+                    .subagents
+                    .deliver_notice(&request.event)
+                    .await
+                    .map(|()| None);
             }
             RouteKind::Event { .. } | RouteKind::Task => {}
         }
@@ -200,7 +214,7 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
             // nothing (the subscriber's own event, or a session this runtime
             // does not run).
             let Some(message) = self.events.deliver(subscription, &request.event).await? else {
-                return Ok(());
+                return Ok(None);
             };
             (message, request.priority, Vec::new())
         } else if request.prompt.is_empty() {
@@ -245,10 +259,13 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                 },
             },
         );
-        self.queue
+        let input =
+            Topic::new(format!("agent/{session}/input")).is_ok_and(|input| input == event.topic);
+        let admission = self
+            .queue
             .push(Task {
-                id,
-                session,
+                id: id.clone(),
+                session: session.clone(),
                 priority,
                 state: TaskState::Queued,
                 trigger: request.event.id.clone(),
@@ -257,6 +274,18 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                 attempts: 0,
                 error: None,
             })
-            .await
+            .await?;
+        if !input {
+            return Ok(None);
+        }
+        let accepted = AgentAccepted {
+            task: id,
+            priority,
+            admission,
+        };
+        Ok(Some(Announced {
+            topic: Topic::new(format!("agent/{session}/accepted"))?,
+            payload: serde_json::to_value(accepted)?,
+        }))
     }
 }

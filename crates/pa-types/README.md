@@ -36,7 +36,9 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   in its session's lane, ordered by `Priority`; an agent route's `AgentTarget` is a named session,
   the event's own session (`Origin`), or a new one (`Spawn`). The payloads of a session's stored
   topics: `AgentInput` (`agent/<id>/input`: the text a turn starts from, the images it carries
-  and, optionally, its lane priority; an agent route with an empty prompt starts from it) and
+  and, optionally, its lane priority; an agent route with an empty prompt starts from it),
+  `AgentAccepted` (`agent/<id>/accepted`: the task an input became, its priority and its
+  `Admission`: `queued`, `steered` into the running turn, or `parked` in a suspended lane) and
   `AgentDone` (`agent/<id>/done`: task id, outcome, error, and for a failed task its
   `TaskFailure`: a failed reply, command or turn).
 - `wire2`: the event wire between clients and the runtime: `ClientFrame` (hello, subscribe with

@@ -21,9 +21,12 @@ use pa_types::session::FileEntry;
 use serde_json::{json, Value};
 
 use crate::lock;
-use crate::runtime::Runtime;
+use crate::runtime::{AfterAbort, Runtime};
 use crate::session::{SessionBuilder, SessionSpec};
 use crate::wire::{Call, Handlers, Query};
+
+mod queue;
+mod state;
 
 /// The most entries one `transcript.page` returns, and how many it returns
 /// when the client names no `limit`.
@@ -422,23 +425,21 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 }
 
 impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
-    fn query(
-        &self,
-        query: Query,
-        args: Value,
-    ) -> impl std::future::Future<Output = anyhow::Result<Value>> + Send {
-        std::future::ready(match query {
+    async fn query(&self, query: Query, args: Value) -> anyhow::Result<Value> {
+        match query {
             Query::SessionsList => Ok(self.list()),
             Query::SessionSnapshot => self.snapshot(&args),
             Query::TranscriptPage => self.page(&args),
-            Query::Settings
-            | Query::Models
-            | Query::Sources
-            | Query::Subscriptions
-            | Query::Tasks => Err(anyhow::anyhow!(
-                "{query:?} is not yet in the runtime daemon (phase 7b+)"
-            )),
-        })
+            Query::Tasks => self.tasks(&args),
+            Query::SessionContext => self.context(&args).await,
+            Query::SessionUsage => self.usage(&args).await,
+            Query::SessionTree => self.tree(&args).await,
+            Query::SessionContextTree => self.context_tree(&args).await,
+            Query::SessionBreakdown => self.breakdown(&args).await,
+            Query::Settings | Query::Models | Query::Sources | Query::Subscriptions => Err(
+                anyhow::anyhow!("{query:?} is not yet in the runtime daemon (phase 7c+)"),
+            ),
+        }
     }
 
     async fn call(&self, call: Call, args: Value) -> anyhow::Result<Value> {
@@ -452,6 +453,12 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionFork => self.fork(&args).await,
             Call::SessionLabel => self.label(&args).await,
             Call::SessionExport => self.export(&args).await,
+            Call::SessionAbort => self.abort(&args, AfterAbort::Park).await,
+            Call::SessionAbortAndSendQueued => self.abort(&args, AfterAbort::SendQueued).await,
+            Call::SessionResumeQueue => self.resume_queue(&args),
+            Call::SessionWithdraw => self.withdraw(&args).await,
+            Call::SessionRestore => self.restore(&args).await,
+            Call::SessionCompact => self.compact(&args).await,
         }
     }
 }

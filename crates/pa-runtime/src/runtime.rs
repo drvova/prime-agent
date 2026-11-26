@@ -39,6 +39,18 @@ use crate::wire::{Handlers, WireConfig, WireServer};
 /// tasks.
 const INPUT_SUBSCRIPTION: &str = "runtime/input";
 
+/// What becomes of a session's queue when its running turn is aborted
+/// ([`Runtime::abort`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AfterAbort {
+    /// The lane is suspended: what is queued stays queued until
+    /// [`Runtime::resume_queue`].
+    Park,
+    /// The lane keeps going (resumed if it was suspended): the steers queued
+    /// run next, delivered together, then the rest.
+    SendQueued,
+}
+
 /// What a [`Runtime`] is opened with.
 pub struct RuntimeOptions<B> {
     /// Builds each session's engine.
@@ -325,6 +337,53 @@ impl<B: SessionBuilder> Runtime<B> {
         self.queue.cancel_queued(session).await?;
         self.runner.cancel_running(session);
         Ok(())
+    }
+
+    /// Aborts `session`'s running turn (its task ends `Cancelled`) and puts
+    /// the steers it took and had not read back at the front of its lane;
+    /// the lane is then parked or kept going, as `after` says. How many
+    /// steers went back.
+    ///
+    /// # Errors
+    ///
+    /// The database failed to save a steer put back.
+    pub(crate) async fn abort(&self, session: &str, after: AfterAbort) -> anyhow::Result<usize> {
+        match after {
+            AfterAbort::Park => self.queue.suspend(session),
+            AfterAbort::SendQueued => {
+                self.queue.resume(session);
+            }
+        }
+        let unread = self.runner.cancel_running(session);
+        let count = unread.len();
+        for steer in unread {
+            self.queue.push(steer).await?;
+        }
+        Ok(count)
+    }
+
+    /// Resumes `session`'s parked lane ([`AfterAbort::Park`]); whether it
+    /// was parked.
+    pub(crate) fn resume_queue(&self, session: &str) -> bool {
+        self.queue.resume(session)
+    }
+
+    /// Withdraws `session`'s queued tasks (each ends `Cancelled`) and returns
+    /// them in the order they would have run; the running one runs on.
+    ///
+    /// # Errors
+    ///
+    /// The database failed to save a withdrawn task.
+    pub(crate) async fn withdraw(
+        &self,
+        session: &str,
+    ) -> anyhow::Result<Vec<pa_types::event_log::Task>> {
+        self.queue.cancel_queued(session).await
+    }
+
+    /// What `session`'s lane holds now.
+    pub(crate) fn lane(&self, session: &str) -> crate::tasks::LaneState {
+        self.queue.lane(session)
     }
 
     /// Closes `session`: cancels its queued tasks and its running one, then

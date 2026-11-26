@@ -9,14 +9,21 @@
 //!
 //! A `Steer` task queued while its session runs a task is first offered to
 //! the running one ([`TaskRunner::steer`]); taken, it is Done without a run
-//! of its own, and declined, it waits in the lane and runs next.
+//! of its own, and declined, it waits in the lane and runs next. A `Steer`
+//! task that runs as its own is offered the `Steer` tasks queued behind it as
+//! it starts, so steers that waited together are delivered together (the
+//! session's steering mode decides whether its turn reads them as one batch
+//! or one per step).
+//!
+//! A lane can be suspended ([`TaskQueue::suspend`]): its queued tasks stay
+//! queued and none starts until it is resumed; the running one runs on.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
-use pa_types::event_log::{Priority, Task, TaskState};
+use pa_types::event_log::{Admission, Priority, Task, TaskState};
 use tokio::sync::{watch, Semaphore};
 
 use crate::lock;
@@ -46,13 +53,24 @@ pub enum Steered {
     Declined,
 }
 
+/// What a session's lane holds now ([`TaskQueue::lane`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct LaneState {
+    pub(crate) running: Option<Task>,
+    /// In the order they would run.
+    pub(crate) queued: Vec<Task>,
+    pub(crate) suspended: bool,
+}
+
 /// Runs a session's tasks; the later turn runner implements it.
 ///
 /// `run` runs one task to its end and says how it ended. The queue runs it
 /// on a Tokio task of its own, so a panic in it fails that task only. The
 /// queue never runs two tasks of one session at once.
 ///
-/// `steer` is offered a `Steer` task queued while `running` runs. It must
+/// `steer` is offered a `Steer` task queued while `running` runs, and the
+/// `Steer` tasks queued behind a `Steer` task `running` as it starts, before
+/// its `run` is called (the runner keeps them for that run). It must
 /// not block or call into the queue: it hands the task's prompt to the
 /// running turn (which reads it at its next step) and answers
 /// [`Steered::Taken`], or answers [`Steered::Declined`] when the turn will
@@ -92,6 +110,8 @@ struct Inner<R, S> {
 struct Lanes {
     by_session: HashMap<String, Lane>,
     next_order: u64,
+    /// The sessions whose lanes start no task until they are resumed.
+    suspended: HashSet<String>,
 }
 
 impl Lanes {
@@ -147,7 +167,9 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                     };
                     self.inner.store.save(failed).await?;
                 }
-                TaskState::Queued => self.enqueue(task),
+                TaskState::Queued => {
+                    self.enqueue(task);
+                }
                 TaskState::Done | TaskState::Failed | TaskState::Cancelled => {}
             }
         }
@@ -156,12 +178,12 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
 
     /// Queues `task` in its session's lane, whatever its state says (it
     /// becomes Queued), or hands it to the running task when it is a taken
-    /// `Steer`.
+    /// `Steer`; says which.
     ///
     /// # Errors
     ///
     /// The store failed to save it.
-    pub async fn push(&self, task: Task) -> anyhow::Result<()> {
+    pub async fn push(&self, task: Task) -> anyhow::Result<Admission> {
         let task = Task {
             state: TaskState::Queued,
             ..task
@@ -179,14 +201,52 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                             state: TaskState::Done,
                             ..task
                         };
-                        return self.inner.store.save(taken).await;
+                        self.inner.store.save(taken).await?;
+                        return Ok(Admission::Steered);
                     }
                     Steered::Declined => {}
                 }
             }
         }
-        self.enqueue(task);
-        Ok(())
+        Ok(self.enqueue(task))
+    }
+
+    /// Suspends `session`'s lane: its queued tasks, and those queued after,
+    /// wait until [`TaskQueue::resume`]; a running one runs on.
+    pub(crate) fn suspend(&self, session: &str) {
+        lock(&self.inner.lanes)
+            .suspended
+            .insert(session.to_string());
+    }
+
+    /// Resumes `session`'s lane, which starts its queued tasks again; whether
+    /// it was suspended.
+    pub(crate) fn resume(&self, session: &str) -> bool {
+        let (was, start) = {
+            let mut lanes = lock(&self.inner.lanes);
+            let was = lanes.suspended.remove(session);
+            let start = lanes.by_session.get_mut(session).is_some_and(|lane| {
+                let start = !lane.served && !lane.queued.is_empty();
+                lane.served |= start;
+                start
+            });
+            (was, start)
+        };
+        if start {
+            tokio::spawn(serve(Arc::clone(&self.inner), session.to_string()));
+        }
+        was
+    }
+
+    /// What `session`'s lane holds now.
+    pub(crate) fn lane(&self, session: &str) -> LaneState {
+        let lanes = lock(&self.inner.lanes);
+        let lane = lanes.by_session.get(session);
+        LaneState {
+            running: lane.and_then(|lane| lane.running.clone()),
+            queued: lane.map_or_default(|lane| lane.queued.values().cloned().collect()),
+            suspended: lanes.suspended.contains(session),
+        }
     }
 
     /// Cancels every task queued in `session`'s lane; a running one runs on.
@@ -237,22 +297,31 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
         }
     }
 
-    fn enqueue(&self, task: Task) {
+    /// Queues `task` in its lane, starting the lane's worker unless one
+    /// serves it or the lane is suspended.
+    fn enqueue(&self, task: Task) -> Admission {
         let session = task.session.clone();
-        let start = {
+        let (start, admitted) = {
             let mut lanes = lock(&self.inner.lanes);
             let order = lanes.next_order;
             lanes.next_order += 1;
+            let suspended = lanes.suspended.contains(&session);
             let lane = lanes.by_session.entry(session.clone()).or_default();
             lane.queued.insert((task.priority, order), task);
-            let start = !lane.served;
-            lane.served = true;
+            let start = !lane.served && !suspended;
+            lane.served |= start;
             self.inner.busy.send_replace(lanes.busy());
-            start
+            let admitted = if suspended {
+                Admission::Parked
+            } else {
+                Admission::Queued
+            };
+            (start, admitted)
         };
         if start {
             tokio::spawn(serve(Arc::clone(&self.inner), session));
         }
+        admitted
     }
 }
 
@@ -263,14 +332,23 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
         let Ok(_permit) = inner.permits.acquire().await else {
             return;
         };
-        let task = {
+        let (task, behind) = {
             let mut lanes = lock(&inner.lanes);
+            let suspended = lanes.suspended.contains(&session);
             let Some(lane) = lanes.by_session.get_mut(&session) else {
                 return;
             };
-            let Some((_, task)) = lane.queued.pop_first() else {
+            if lane.queued.is_empty() {
                 lanes.by_session.remove(&session);
                 inner.busy.send_replace(lanes.busy());
+                return;
+            }
+            if suspended {
+                // Resuming the lane starts a worker for it again.
+                lane.served = false;
+                return;
+            }
+            let Some((_, task)) = lane.queued.pop_first() else {
                 return;
             };
             let task = Task {
@@ -278,14 +356,49 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
                 attempts: task.attempts + 1,
                 ..task
             };
+            // The steers that waited behind a steer go with it.
+            let mut behind = Vec::new();
+            while task.priority == Priority::Steer
+                && lane
+                    .queued
+                    .first_key_value()
+                    .is_some_and(|((priority, _), _)| *priority == Priority::Steer)
+            {
+                behind.extend(lane.queued.pop_first());
+            }
             lane.running = Some(task.clone());
-            task
+            (task, behind)
         };
         if let Err(error) = inner.store.save(task.clone()).await {
             tracing::error!(
                 "task {:?} runs without its Running state saved: {error:#}",
                 task.id
             );
+        }
+        let mut declined = Vec::new();
+        for (key, steer) in behind {
+            match inner.runner.steer(&task, &steer) {
+                Steered::Taken => {
+                    let id = steer.id.clone();
+                    let taken = Task {
+                        state: TaskState::Done,
+                        ..steer
+                    };
+                    if let Err(error) = inner.store.save(taken).await {
+                        tracing::error!(
+                            "task {id:?} was delivered without its state saved: {error:#}"
+                        );
+                    }
+                }
+                Steered::Declined => declined.push((key, steer)),
+            }
+        }
+        if !declined.is_empty() {
+            let mut lanes = lock(&inner.lanes);
+            if let Some(lane) = lanes.by_session.get_mut(&session) {
+                lane.queued.extend(declined);
+            }
+            inner.busy.send_replace(lanes.busy());
         }
         let runner = Arc::clone(&inner.runner);
         let run = task.clone();

@@ -10,10 +10,12 @@
 //!   same agent dir after it (its boot reap spares the runtime daemon), a
 //!   session either one holds is refused by the other (the session lease).
 //! - One runtime daemon per agent dir.
+//! - Interactive turn semantics (phase 7b): [`turns`].
 #![cfg(unix)]
 
 #[path = "../support/mod.rs"]
 mod support;
+mod turns;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

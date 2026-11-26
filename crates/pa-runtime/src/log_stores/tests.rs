@@ -30,8 +30,11 @@ impl ModelCaller for Idle {
 }
 
 impl TaskSink for Idle {
-    fn queue(&self, _request: TaskRequest) -> impl Future<Output = anyhow::Result<()>> + Send {
-        std::future::ready(Ok(()))
+    fn queue(
+        &self,
+        _request: TaskRequest,
+    ) -> impl Future<Output = anyhow::Result<Option<crate::routes::Announced>>> + Send {
+        std::future::ready(Ok(None))
     }
 }
 

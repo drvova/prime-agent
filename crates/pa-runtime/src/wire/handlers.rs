@@ -33,6 +33,22 @@ pub enum Query {
     Subscriptions,
     /// `tasks`: queued and running tasks.
     Tasks,
+    /// `session.context`: the messages the session's next request is built
+    /// from, with its model and thinking level.
+    SessionContext,
+    /// `session.usage`: the session's message counts, token spend and
+    /// context use.
+    SessionUsage,
+    /// `session.tree`: the session's entries as a tree (id, parent, kind,
+    /// label) and its leaf.
+    SessionTree,
+    /// `session.context_tree`: the session's place in its family with its
+    /// spend and context use.
+    SessionContextTree,
+    /// `session.breakdown`: the context window's details (the next
+    /// request's estimate by category, prompt-cache totals, compactions,
+    /// spend).
+    SessionBreakdown,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -57,6 +73,11 @@ impl FromStr for Query {
             "sources" => Query::Sources,
             "subscriptions" => Query::Subscriptions,
             "tasks" => Query::Tasks,
+            "session.context" => Query::SessionContext,
+            "session.usage" => Query::SessionUsage,
+            "session.tree" => Query::SessionTree,
+            "session.context_tree" => Query::SessionContextTree,
+            "session.breakdown" => Query::SessionBreakdown,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",
@@ -88,6 +109,23 @@ pub enum Call {
     SessionLabel,
     /// `session.export`
     SessionExport,
+    /// `session.abort`: aborts the running turn and parks the session's
+    /// queue (nothing queued starts until `session.resume_queue`).
+    SessionAbort,
+    /// `session.abort_and_send_queued`: aborts the running turn and keeps
+    /// the queue going: the steers queued run next, delivered together.
+    SessionAbortAndSendQueued,
+    /// `session.resume_queue`: starts a parked queue again.
+    SessionResumeQueue,
+    /// `session.withdraw`: takes the session's queued input back out of its
+    /// queue and answers it.
+    SessionWithdraw,
+    /// `session.restore`: puts input back at the front of the session's
+    /// queue as steers, delivered together as its next turn.
+    SessionRestore,
+    /// `session.compact`: compacts the session's context in its lane and
+    /// answers how it went.
+    SessionCompact,
 }
 
 impl FromStr for Call {
@@ -104,6 +142,12 @@ impl FromStr for Call {
             "session.fork" => Call::SessionFork,
             "session.label" => Call::SessionLabel,
             "session.export" => Call::SessionExport,
+            "session.abort" => Call::SessionAbort,
+            "session.abort_and_send_queued" => Call::SessionAbortAndSendQueued,
+            "session.resume_queue" => Call::SessionResumeQueue,
+            "session.withdraw" => Call::SessionWithdraw,
+            "session.restore" => Call::SessionRestore,
+            "session.compact" => Call::SessionCompact,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

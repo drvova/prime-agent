@@ -40,7 +40,12 @@ SQLite implementations over `pa-log`.
   or Cancelled, each state saved to a `TaskStore` first. A `TaskRunner` runs each task on its own
   Tokio task, so a panic fails only that task. A `Steer` task queued while its session runs one
   is offered to the running task (`TaskRunner::steer`): taken, it is Done; declined, it runs
-  next. `cancel_queued` cancels a session's waiting tasks. `TaskQueue::restore(session)` requeues
+  next. A `Steer` task that runs as its own is offered the `Steer` tasks queued behind it as it
+  starts (the runner keeps them for that run), so steers that waited together are delivered
+  together. `push` answers how the task was admitted (`pa_types::event_log::Admission`:
+  `queued`, `steered`, or `parked` in a suspended lane). A lane can be suspended: its queued tasks
+  stay queued and none starts until it is resumed; the running one runs on. `cancel_queued`
+  cancels a session's waiting tasks. `TaskQueue::restore(session)` requeues
   that session's stored queued tasks in order and fails each running one with
   `"interrupted by restart"`; it never reads or touches another session's tasks.
 - **Wire2 server** (`WireServer::serve`): one client connection over any `AsyncRead` +
@@ -61,7 +66,8 @@ SQLite implementations over `pa-log`.
     that listener alone, and the connection catches up from the log in order. Live-only events
     lost that way cannot be recovered.
   - **Publish**: only on `CLIENT_TOPICS` (`agent/<id>/input`), as `Trust::Owner`, with the
-    client's `hello` name as `source` and `<id>` as the session; the reply is `{"seq": n}`.
+    client's `hello` name as `source` and `<id>` as the session; the reply is `{"seq": n}`, with
+    `task` and `admission` when its routes announced the task on `agent/<id>/accepted`.
   - **Query / call**: the wire keeps the operation's name a string (an unknown name costs one
     error reply, not the connection); the server parses it into `Query` or `Call`, refuses an
     unknown one, and runs `Handlers` on its own task, at most `IN_FLIGHT` per connection.
@@ -132,6 +138,18 @@ SQLite implementations over `pa-log`.
   task of their own (`RouteKind`: a subagent's `done`, the inbox, the kernel notices). An
   untrusted task's prompt is queued as `<untrusted-event source="<event source>">…</untrusted-event>`
   (the source escaped, a closing tag in the text neutralized); the system prompt is untouched.
+  A task queued for a session's own input is announced on `agent/<id>/accepted` (an
+  `AgentAccepted`: the task, its priority and its `Admission`), caused by the input: a `TaskSink`
+  may answer an `Announced` event, which the bus publishes, so it is in the input's
+  `Published::caused`. A steered task has no `done` of its own; a queued or parked one ends with
+  its `agent/<id>/done`, so a prompt-and-wait waits for that.
+- **Steering mode**: a session built with `QueueModes::Settings` (the runtime daemon's) reads
+  the global settings' `steeringMode` and `followUpMode` as each turn starts (`all`, the default
+  steering mode: the steers waiting at a step are read together; `one-at-a-time`: one per step);
+  one built with `QueueModes::Built` (the print modes') keeps the engine's. A steer taken by a running turn is read at its next step; one
+  offered before the turn reached its thread is kept for it and read as it starts. Cancelling the
+  running task withdraws the steers its turn took and had not read and hands them back to be
+  queued again.
 - **Trust gate** (`trust/`): the session's host sets the running task's trust as the task
   starts and clears it as it ends (`Owner` between tasks: a kernel prewarm, a background
   command's report); the builder gets a `TrustGate` over it and installs it as the engine's
@@ -258,15 +276,33 @@ SQLite implementations over `pa-log`.
   (`session_already_active`) and the old daemon is refused one this daemon holds;
   `session.rename`, `session.label` and `session.set_effort` change an open session through its
   engine (on the session's runtime) and a saved one under its lease; `session.set_model` and
-  `session.delete` change saved sessions only (a running session's model switch is phase 7b);
+  `session.delete` change saved sessions only (a running session's model switch is not yet
+  there);
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
-  `session.export` writes it as JSONL (`export_jsonl`). `settings`, `models`, `sources`,
-  `subscriptions` and `tasks` answer that they are not yet in the runtime daemon. At start it
+  `session.export` writes it as JSONL (`export_jsonl`). An open session's turns and queue
+  (`daemon/handlers/queue.rs`): `session.abort` aborts the running turn (its task ends
+  `Cancelled`), puts the steers it had not read back at the front of the lane and parks the lane
+  (input published meanwhile is admitted `parked`) until `session.resume_queue`;
+  `session.abort_and_send_queued` keeps the lane going, so those steers run next, together;
+  `session.withdraw` cancels the queued tasks and answers them in run order;
+  `session.restore` (`{messages}`) publishes them back as steers; `session.compact`
+  (`{instructions?}`) queues `/compact` in the lane, refused while it is parked, and answers its
+  task's outcome with the `compaction_end` it streamed; the `tasks` query answers the lane
+  (running, queued, parked). The state queries (`daemon/handlers/state.rs`) read the session
+  manager (an open session's on its runtime, a saved one's opened for the read):
+  `session.context` (`active_context`), `session.usage` (`usage_host::session_usage_json`, the
+  branch's message counts, the context use against the open model's window), `session.tree`
+  (`SessionTree` nodes and the leaf), `session.context_tree` (the root's label, model, spend and
+  context use) and `session.breakdown` (`ContextBreakdown`: the open engine's
+  `context_categories`, the prompt-cache totals, the compactions, the spend); their subagent
+  rows are empty until phase 7e. `settings`, `models`, `sources` and `subscriptions` answer that
+  they are not yet in the runtime daemon. At start it
   closes standard input, raises the open-file limit, keeps the model catalog's caches warm as
   the supervisor does and, once the startup refresh settles, sends the `daemon event`
   `catalog_refresh` with `daemon_kind: runtime`, all off the accept path. Not yet: crash
-  records, self-heal, boot revival and a keeper (7c), lanes and prompt admission (7b), schedules
-  (7d), cross-session features (7e).
+  records, self-heal, boot revival and a keeper (7c), schedules (7d), cross-session features
+  (7e), a running session's model switch, and the lane's suspension across a restart (a
+  restored lane starts unparked).
 
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
@@ -286,8 +322,9 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 - `WireServer`, `WireConfig`, `Handlers`, `Query`, `Call`, `UnknownOperation`,
   `CLIENT_TOPICS`, `IN_FLIGHT`, `MAX_TAIL`.
 - `EventStore` (`append`, `since`, `before`), `StateStore`, `StateKey`, `StateWrite`,
-  `SessionTree`, `ModelCaller`, `ModelCall`, `TaskSink`, `TaskRequest`.
-- `TaskQueue`, `TaskRunner`, `TaskOutcome`, `Steered`, `TaskStore`, `INTERRUPTED_BY_RESTART`.
+  `SessionTree`, `ModelCaller`, `ModelCall`, `TaskSink`, `TaskRequest`, `Announced`.
+- `TaskQueue` (`push` answers a `pa_types::event_log::Admission`), `TaskRunner`, `TaskOutcome`,
+  `Steered`, `TaskStore`, `INTERRUPTED_BY_RESTART`.
 - `MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`, `MemoryTaskStore`.
 - `LogEventStore`, `LogTaskStore`, `LogStateStore` (each `new(Arc<pa_log::Log>)`;
   `LogStateStore::get`).
@@ -298,9 +335,12 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   family's `agent_message.*` - its `rlm.*` subagents, the late-receipt sink, the
   background-settle wake and the kernel-notice sink, all of which the engine must install),
   `SessionSpec` (`transcript`: the file a daemon session opens), `SubagentSpec`,
-  `BuiltSession`, `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
+  `BuiltSession` (`queue_modes`: `QueueModes`), `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
   `TaskQueue::session_idle`.
-- `daemon::{run, DaemonOptions, socket_path}`.
+- `daemon::{run, DaemonOptions, socket_path}`. On the wire (strings, not Rust surface): the
+  queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,
+  `session.breakdown`, and the calls `session.abort`, `session.abort_and_send_queued`,
+  `session.resume_queue`, `session.withdraw`, `session.restore`, `session.compact`.
 
 Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-sources` (the timer and watch
 sources it starts and stops), `pa-core` (the session engine, the

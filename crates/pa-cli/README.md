@@ -25,7 +25,10 @@ until SIGINT or SIGTERM. Its `SessionBuilder` opens the transcript a session's s
 under `PRIME_AGENT_FAUX_SCRIPT`), streams the turn driver's events, and builds subagents as the
 print run does (`print_session::build_subagent`). A kept launch still splits into the keeper
 first; the runtime daemon has no keeper of its own yet (phase 7c).
-`tests/runtime_daemon_e2e/` drives it over wire2 against the real binary.
+`tests/runtime_daemon_e2e/` drives it over wire2 against the real binary; `turns.rs` there ports
+the supervisor's steer batching, queue order and abort tests (`steer_boundary_batch_e2e`,
+`queue_delivery_e2e`, `abort_kernel_e2e`) onto it, with withdraw, restore, compaction and the
+state queries.
 
 ## Print runtime
 The headless print/json modes (`print_runtime/print_session.rs`) run on an

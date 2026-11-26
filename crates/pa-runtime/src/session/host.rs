@@ -145,6 +145,15 @@ struct Turn {
     cancelled: bool,
     /// Whether the running task's turn took a steer.
     steered: bool,
+    /// The steers the running task's turn took, each with the message it
+    /// handed the agent: the ones still unread when the turn is cancelled
+    /// go back to the lane ([`SessionHost::cancel_running`]).
+    taken: Vec<(Task, pa_agent::types::AgentMessage)>,
+    /// Steers offered to a task the queue is about to run, before it reached
+    /// this thread, by that task's id: its turn takes them as it starts.
+    pending: Vec<(String, Task, pa_agent::types::AgentMessage)>,
+    /// The task that ended here last: a steer offered to it is too late.
+    ended: Option<String>,
     /// The settle to run right after the task an input event queued, by that
     /// event's id ([`SettleAfter::Task`]).
     settle_after: Option<(EventId, SettleAnswer)>,
@@ -291,27 +300,36 @@ impl SessionHost {
 
     /// Hands `steer`'s prompt to `running`'s turn while it still reads
     /// steering, unless it carries less trust than `running`: it would run
-    /// with the running task's, so it runs as its own task instead.
+    /// with the running task's, so it runs as its own task instead. A steer
+    /// offered to a task that has not reached this thread yet (the queue
+    /// offers the steers queued behind a steer as it starts it) is kept for
+    /// that task's turn, which takes it as it starts.
     pub(crate) fn steer(&self, running: &Task, steer: &Task) -> Steered {
+        if steer.trust.lowest(running.trust) != running.trust {
+            return Steered::Declined;
+        }
         let mut turn = lock(&self.control.turn);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+            });
+        let message = pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::User(
+            pa_agent::types::UserMessage {
+                content: pa_agent::types::UserContent::Text(steer.prompt.clone()),
+                timestamp,
+            },
+        ));
         match (&turn.agent, &turn.task) {
-            (Some(agent), Some(task))
-                if turn.steerable
-                    && *task == running.id
-                    && steer.trust.lowest(running.trust) == running.trust =>
-            {
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| {
-                        i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-                    });
-                agent.steer(pa_agent::types::AgentMessage::Standard(
-                    pa_agent::types::Message::User(pa_agent::types::UserMessage {
-                        content: pa_agent::types::UserContent::Text(steer.prompt.clone()),
-                        timestamp,
-                    }),
-                ));
+            (Some(agent), Some(task)) if turn.steerable && *task == running.id => {
+                agent.steer(message.clone());
                 turn.steered = true;
+                turn.taken.push((steer.clone(), message));
+                Steered::Taken
+            }
+            (_, None) if turn.ended.as_deref() != Some(running.id.as_str()) => {
+                turn.pending
+                    .push((running.id.clone(), steer.clone(), message));
                 Steered::Taken
             }
             _ => Steered::Declined,
@@ -319,17 +337,31 @@ impl SessionHost {
     }
 
     /// Cancels the running task: its turn is aborted and it ends
-    /// `Cancelled`. Whether a task was running.
-    pub(crate) fn cancel_running(&self) -> bool {
+    /// `Cancelled`. The steers its turn took and had not read yet are
+    /// withdrawn from it and returned, queued again, for the caller to put
+    /// back in the lane.
+    pub(crate) fn cancel_running(&self) -> Vec<Task> {
         let mut turn = lock(&self.control.turn);
         if turn.task.is_none() {
-            return false;
+            return Vec::new();
         }
         turn.cancelled = true;
-        if let Some(agent) = &turn.agent {
-            agent.abort();
-        }
-        true
+        turn.steerable = false;
+        let taken = std::mem::take(&mut turn.taken);
+        let Some(agent) = &turn.agent else {
+            return Vec::new();
+        };
+        agent.abort();
+        let unread = agent
+            .remove_queued_messages(|message| taken.iter().any(|(_, handed)| handed == message));
+        taken
+            .into_iter()
+            .filter(|(_, handed)| unread.contains(handed))
+            .map(|(task, _)| Task {
+                state: pa_types::event_log::TaskState::Queued,
+                ..task
+            })
+            .collect()
     }
 
     /// The engine of the session's current lifetime, once it is built.
@@ -495,6 +527,10 @@ impl<B: SessionBuilder> Lifetime<B> {
 
     /// Runs one item of work on `session` and answers it. A panic in it is
     /// answered as its failure and returned: the lifetime ends.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a task's start, run and end read in the order they happen, each beside its answer"
+    )]
     fn answer(
         &self,
         runtime: &tokio::runtime::Runtime,
@@ -514,6 +550,20 @@ impl<B: SessionBuilder> Lifetime<B> {
                     turn.steerable = true;
                     turn.cancelled = false;
                     turn.steered = false;
+                    // The steers kept for this task: its run reads them as
+                    // it starts. Any kept for another never reached here.
+                    let pending = std::mem::take(&mut turn.pending);
+                    let mut taken = Vec::new();
+                    if let Some(agent) = turn.agent.clone() {
+                        for (_, steer, message) in
+                            pending.into_iter().filter(|(id, ..)| *id == task.id)
+                        {
+                            agent.steer(message.clone());
+                            taken.push((steer, message));
+                        }
+                    }
+                    turn.steered = !taken.is_empty();
+                    turn.taken = taken;
                 }
                 self.control.trust.set(Some(RunningTask {
                     trust: task.trust,
@@ -524,8 +574,9 @@ impl<B: SessionBuilder> Lifetime<B> {
                 }));
                 let cancelled = {
                     let mut turn = lock(&self.control.turn);
-                    turn.task = None;
+                    turn.ended = turn.task.take();
                     turn.steerable = false;
+                    turn.taken.clear();
                     std::mem::take(&mut turn.cancelled)
                 };
                 self.control.trust.set(None);
@@ -806,9 +857,23 @@ impl<B: SessionBuilder> Lifetime<B> {
             if lock(&self.control.turn).cancelled {
                 return TaskEnd::CANCELLED;
             }
-            let retry_policy =
-                pa_core::settings::SettingsManager::create(&self.spec.cwd, &built.agent_dir)
-                    .get_provider_retry_policy();
+            let settings =
+                pa_core::settings::SettingsManager::create(&self.spec.cwd, &built.agent_dir);
+            let retry_policy = settings.get_provider_retry_policy();
+            let agent = engine.session.agent();
+            match built.queue_modes {
+                super::QueueModes::Built => {}
+                super::QueueModes::Settings => {
+                    let queue_mode = |mode| match mode {
+                        pa_core::settings::QueueModeSetting::All => pa_agent::agent::QueueMode::All,
+                        pa_core::settings::QueueModeSetting::OneAtATime => {
+                            pa_agent::agent::QueueMode::OneAtATime
+                        }
+                    };
+                    agent.set_steering_mode(queue_mode(settings.get_steering_mode()));
+                    agent.set_follow_up_mode(queue_mode(settings.get_follow_up_mode()));
+                }
+            }
             let publish = self.publisher();
             let prompted = engine
                 .session
@@ -823,7 +888,6 @@ impl<B: SessionBuilder> Lifetime<B> {
                     },
                 )
                 .await;
-            let agent = engine.session.agent();
             let (cancelled, steered) = {
                 let mut turn = lock(&self.control.turn);
                 turn.steerable = false;

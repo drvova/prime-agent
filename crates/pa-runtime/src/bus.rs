@@ -389,7 +389,13 @@ where
                     event: Arc::clone(event),
                     trust,
                 };
-                self.inner.tasks.queue(request).await.err()
+                match self.inner.tasks.queue(request).await {
+                    Ok(Some(announced)) => {
+                        return caused(subscription, event, &announced.topic, announced.payload);
+                    }
+                    Ok(None) => None,
+                    Err(error) => Some(error),
+                }
             }
         };
         failed.and_then(|error| {

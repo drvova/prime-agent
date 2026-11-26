@@ -76,6 +76,8 @@ impl SessionBuilder for DaemonSessions {
             agent_dir: options.config.agent_dir.clone(),
             events: DriverEvents::Stream,
             autonomous: None,
+            // A daemon session's modes follow the settings as they change.
+            queue_modes: pa_runtime::QueueModes::Settings,
         })
     }
 }

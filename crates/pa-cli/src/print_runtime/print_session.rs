@@ -115,6 +115,7 @@ impl SessionBuilder for PrintSession {
                         .autonomous
                         .as_ref()
                         .map(autonomous_runtime_config),
+                    queue_modes: pa_runtime::QueueModes::Built,
                 };
                 Ok::<_, String>((built, header))
             }
@@ -287,6 +288,7 @@ pub(super) async fn build_subagent(
         agent_dir: config.agent_dir.clone(),
         events: DriverEvents::Quiet,
         autonomous: None,
+        queue_modes: pa_runtime::QueueModes::Built,
     })
 }
 

@@ -4,7 +4,8 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use pa_types::event_log::{AgentTarget, Event, Priority, Trust};
+use pa_types::event_log::{AgentTarget, Event, Priority, Topic, Trust};
+use serde_json::Value;
 
 /// The one model call without tools a `Call` route asks for.
 #[derive(Debug, Clone, PartialEq)]
@@ -49,14 +50,26 @@ pub struct TaskRequest {
     pub trust: Trust,
 }
 
+/// What queueing a task announces: the bus publishes it as an event caused
+/// by the matching event, in that event's session (the runtime's
+/// `agent/<id>/accepted`), so it is in the publish's `Published::caused`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Announced {
+    pub topic: Topic,
+    pub payload: Value,
+}
+
 /// Turns `Agent` routes into tasks.
 ///
 /// `queue` stores the task (starting a session first for
 /// `AgentTarget::Spawn`) and returns once it is queued, without waiting for
 /// it to run: the bus awaits it while it runs routes. The task's trust is
-/// never above `request.trust`. An error is reported as a
-/// `system/route_failed` event.
+/// never above `request.trust`. It may answer an [`Announced`] event, which
+/// the bus publishes; an error is reported as a `system/route_failed` event.
 pub trait TaskSink: Send + Sync + 'static {
     /// Queues the task `request` asks for.
-    fn queue(&self, request: TaskRequest) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn queue(
+        &self,
+        request: TaskRequest,
+    ) -> impl Future<Output = anyhow::Result<Option<Announced>>> + Send;
 }

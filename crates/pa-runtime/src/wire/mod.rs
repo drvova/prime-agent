@@ -23,8 +23,11 @@
 //!   matches it as the bus fans it out, with `seq` 0; it is never replayed.
 //! - **Publish.** Only on [`CLIENT_TOPICS`] (`agent/<id>/input`), stored with
 //!   `Trust::Owner`, the client's `hello` name as `source`, and `<id>` as the
-//!   session; the reply's result is `{"seq": n}`. Publishes are handled in
-//!   the order sent.
+//!   session; the reply's result is `{"seq": n}`, with `task` and
+//!   `admission` when the publish's routes announced its task on
+//!   `agent/<id>/accepted` (an `AgentAccepted`, as the runtime's input route
+//!   does): a client that publishes a prompt and waits for it waits for that
+//!   task's `agent/<id>/done`. Publishes are handled in the order sent.
 //! - **Query and call.** Parsed into [`Query`] / [`Call`] (an unknown name is
 //!   an error reply) and answered by [`Handlers`] on their own tasks, at most
 //!   [`IN_FLIGHT`] at once per connection.
@@ -39,14 +42,14 @@ use std::sync::Arc;
 use pa_types::daemon::framing::{
     encode_private_frame, PrivateFrameLimits, PrivateFrameReader, DEFAULT_PRIVATE_FRAME_LIMITS,
 };
-use pa_types::event_log::{NewEvent, TopicFilter, Trust};
+use pa_types::event_log::{AgentAccepted, NewEvent, TopicFilter, Trust};
 use pa_types::wire2::{ClientFrame, Outcome, ServerFrame, WIRE2_VERSION};
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 
-use crate::bus::Bus;
+use crate::bus::{Bus, Published};
 use crate::routes::{ModelCaller, TaskSink};
 use crate::store::{EventStore, StateStore};
 use crate::subscriptions::SessionTree;
@@ -210,6 +213,10 @@ where
     }
 
     /// Reads the client's frames after `hello` and handles each.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match over the client's frames, each handled where it is read"
+    )]
     async fn read<R: AsyncRead + Unpin + Send>(
         &self,
         frames: &mut PrivateFrameReader<R>,
@@ -269,16 +276,24 @@ where
                         let event = NewEvent {
                             topic,
                             source: client.clone(),
-                            session,
+                            session: session.clone(),
                             payload,
                             trust: Trust::Owner,
                             cause: None,
                             reply: None,
                         };
                         match self.bus.publish(event).await {
-                            Ok(published) => Outcome::Ok {
-                                result: json!({ "seq": published.event.seq }),
-                            },
+                            Ok(published) => {
+                                let mut result = json!({ "seq": published.event.seq });
+                                let accepted = session
+                                    .as_deref()
+                                    .and_then(|session| accepted(&published, session));
+                                if let Some(accepted) = accepted {
+                                    result["task"] = json!(accepted.task);
+                                    result["admission"] = json!(accepted.admission);
+                                }
+                                Outcome::Ok { result }
+                            }
                             Err(error) => Outcome::Error {
                                 message: format!("the event was not published: {error:#}"),
                             },
@@ -310,6 +325,17 @@ where
             }
         }
     }
+}
+
+/// The task `published`'s routes announced for `session`'s input on
+/// `agent/<session>/accepted`, if any.
+pub(crate) fn accepted(published: &Published, session: &str) -> Option<AgentAccepted> {
+    let topic = format!("agent/{session}/accepted");
+    published
+        .caused
+        .iter()
+        .find(|caused| caused.event.topic.as_str() == topic)
+        .and_then(|caused| serde_json::from_value(caused.event.payload.clone()).ok())
 }
 
 /// Replies to request `id` with what `answer` comes to, holding `permit`

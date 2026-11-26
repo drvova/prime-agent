@@ -133,6 +133,7 @@ impl SessionBuilder for FauxBuilder {
             agent_dir: self.agent_dir.clone(),
             events: DriverEvents::Stream,
             autonomous: None,
+            queue_modes: crate::session::QueueModes::Built,
         })
     }
 }
