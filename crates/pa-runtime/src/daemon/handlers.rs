@@ -6,10 +6,11 @@
 //! transcript store, which every row an open session's engine writes reaches
 //! as it is written, so they never wait on a running turn. A change to an
 //! open session goes through its engine's session manager, on the session's
-//! own runtime; a change to a saved one takes the session's lease for the
-//! change, so a session another process holds is refused, never written.
+//! own runtime, once its engine's first build is done; a change to a saved
+//! one takes the session's lease for the change, so a session another
+//! process holds is refused, never written. `session.create` of a session
+//! the daemon holds open already answers it (`"reused": true`).
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -24,10 +25,13 @@ use super::held::{OpenSession, OpenSessions};
 use super::schedules::Schedules;
 use crate::runtime::{AfterAbort, Runtime};
 use crate::session::{SessionBuilder, SessionSpec};
-use crate::wire::{Call, Handlers, Query};
+use crate::wire::{Attached, Call, Handlers, Query};
 
+mod jobs;
+mod messaging;
 mod queue;
 mod state;
+mod summary;
 
 /// The most entries one `transcript.page` returns, and how many it returns
 /// when the client names no `limit`.
@@ -41,6 +45,9 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     /// The sessions' scheduled jobs: a session stopped or deleted on
     /// purpose is disarmed, so nothing wakes it.
     schedules: Arc<Schedules<B>>,
+    /// Which connections follow which sessions: a session's attached
+    /// clients.
+    attached: Arc<Attached>,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -51,6 +58,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         runtime: Arc<Runtime<B>>,
         open: Arc<OpenSessions>,
         schedules: Arc<Schedules<B>>,
+        attached: Arc<Attached>,
         agent_dir: PathBuf,
         session_dir: PathBuf,
         cwd: PathBuf,
@@ -59,6 +67,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             runtime,
             open,
             schedules,
+            attached,
             agent_dir,
             session_dir,
             cwd,
@@ -123,10 +132,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         if !open {
             return self.change_saved(path, change).await;
         }
-        let live = self
-            .runtime
-            .session_engine(&id)
-            .with_context(|| format!("session {id}'s engine is not built yet"))?;
+        let live = self.runtime.built_engine(&id).await?;
         let persistence = live.engine.session.shared_persistence();
         live.runtime
             .spawn(async move { change(&mut *persistence.lock().await) })
@@ -157,10 +163,13 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 (id, path)
             }
         };
-        anyhow::ensure!(
-            !self.open.contains(&id),
-            "session {id} is open in the runtime daemon already"
-        );
+        // Open already (the boot revived it, or another client opened it):
+        // answered as it runs, the old daemon's create-open reuse.
+        if let Some(path) = self.open.path(&id) {
+            let cwd =
+                pa_core::session::manager::read_session_header(&path).map(|header| header.cwd);
+            return Ok(json!({ "session": id, "path": path, "cwd": cwd, "reused": true }));
+        }
         let cwd = match given_cwd {
             Some(cwd) => cwd,
             None => pa_core::session::manager::read_session_header(&path)
@@ -192,7 +201,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 },
             )
             .await;
-        Ok(json!({ "session": id, "path": path, "cwd": cwd }))
+        Ok(json!({ "session": id, "path": path, "cwd": cwd, "reused": false }))
     }
 
     async fn stop(&self, args: &Value) -> anyhow::Result<Value> {
@@ -207,24 +216,6 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         // Closed: its lease goes.
         self.open.remove(&id).await;
         Ok(json!({ "session": id, "stopped": true }))
-    }
-
-    fn list(&self) -> Value {
-        let open: HashMap<String, PathBuf> = self.open.paths();
-        let mut sessions: Vec<Value> =
-            pa_core::session::discovery::scan_session_headers(&self.session_dir)
-                .into_iter()
-                .filter(|header| !open.contains_key(&header.id))
-                .map(|header| {
-                    json!({ "session": header.id, "path": header.path, "cwd": header.cwd, "open": false })
-                })
-                .collect();
-        sessions.extend(open.into_iter().map(|(id, path)| {
-            let cwd =
-                pa_core::session::manager::read_session_header(&path).map(|header| header.cwd);
-            json!({ "session": id, "path": path, "cwd": cwd, "open": true })
-        }));
-        json!({ "sessions": sessions })
     }
 
     fn snapshot(&self, args: &Value) -> anyhow::Result<Value> {
@@ -339,10 +330,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 )
             })?;
         if open {
-            let live = self
-                .runtime
-                .session_engine(&id)
-                .with_context(|| format!("session {id}'s engine is not built yet"))?;
+            let live = self.runtime.built_engine(&id).await?;
             live.runtime
                 .spawn(async move { live.engine.session.set_thinking_level(level).await })
                 .await
@@ -426,7 +414,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
     async fn query(&self, query: Query, args: Value) -> anyhow::Result<Value> {
         match query {
-            Query::SessionsList => Ok(self.list()),
+            Query::SessionsList => self.list(&args).await,
             Query::SessionSnapshot => self.snapshot(&args),
             Query::TranscriptPage => self.page(&args),
             Query::Tasks => self.tasks(&args),
@@ -435,6 +423,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::SessionTree => self.tree(&args).await,
             Query::SessionContextTree => self.context_tree(&args).await,
             Query::SessionBreakdown => self.breakdown(&args).await,
+            Query::Schedules => self.schedules(&args),
             Query::Settings | Query::Models | Query::Sources | Query::Subscriptions => Err(
                 anyhow::anyhow!("{query:?} is not yet in the runtime daemon (phase 7c+)"),
             ),
@@ -459,6 +448,9 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionRestore => self.restore(&args).await,
             Call::SessionCompact => self.compact(&args).await,
             Call::SessionWaitIdle => self.wait_idle(&args).await,
+            Call::SessionSend => self.send(&args).await,
+            Call::ScheduleAdd => self.schedule_add(&args),
+            Call::ScheduleCancel => self.schedule_cancel(&args),
         }
     }
 }

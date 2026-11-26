@@ -60,7 +60,9 @@ mod tests;
 
 pub(crate) use family::DaemonFamily;
 pub(crate) use host::SessionSubagents;
-pub(crate) use messages::{late_sent_agent_message_sink, FamilyMessages, FamilyObserve};
+pub(crate) use messages::{
+    late_sent_agent_message_sink, FamilyMessages, FamilyObserve, MessageSender,
+};
 pub(crate) use notices::kernel_notice_sink;
 
 /// What names a child's `agent/<child>/done` subscription: this, then the
@@ -244,6 +246,16 @@ impl Subagents {
     /// The session is not open, its engine could not be built, or the row
     /// has no loop form.
     pub(crate) async fn deliver_row_to(&self, id: &str, row: &CustomMessage) -> anyhow::Result<()> {
+        let node = self.built_node(id).await?;
+        deliver_row(&node, serde_json::to_value(row)?, Delivery::Steer)
+    }
+
+    /// The node of open session `id` once its engine is built.
+    ///
+    /// # Errors
+    ///
+    /// The session is not open, or its engine could not be built.
+    pub(crate) async fn built_node(&self, id: &str) -> anyhow::Result<Arc<Node>> {
         let node = self
             .node(id)
             .ok_or_else(|| anyhow::anyhow!("session {id} is not open"))?;
@@ -256,7 +268,7 @@ impl Subagents {
             }
             Err(_) => anyhow::bail!("session {id} ended before its engine was built"),
         }
-        deliver_row(&node, serde_json::to_value(row)?)
+        Ok(node)
     }
 
     /// The node of the session `spec` opens as `id`: the one a spawn made for
@@ -628,6 +640,24 @@ impl Node {
         endpoint
     }
 
+    /// [`Self::endpoint`] with the name the session's transcript holds now:
+    /// a root renamed through the daemon is renamed there.
+    async fn named_endpoint(&self) -> Value {
+        let mut endpoint = self.endpoint();
+        if let Some(engine) = self.engine() {
+            let name = engine
+                .session
+                .shared_persistence()
+                .lock()
+                .await
+                .get_session_name();
+            if let Some(name) = name.filter(|name| !name.is_empty()) {
+                endpoint["sessionName"] = json!(name);
+            }
+        }
+        endpoint
+    }
+
     /// Resolves one direct child by every selector the roster exposes.
     async fn find_child(&self, target: &str) -> Result<Arc<Child>, String> {
         let children: Vec<Arc<Child>> = self.children.lock().await.clone();
@@ -902,7 +932,7 @@ async fn settle_child(child: &Arc<Child>, run_error: Option<String>, trust: Trus
         let notified = match (&parent, notice.filter(|_| !child.factory)) {
             (Some(parent), Some(notice)) => serde_json::to_value(notice)
                 .map_err(|error| anyhow::anyhow!("the notice failed its wire conversion: {error}"))
-                .and_then(|value| deliver_row(parent, value))
+                .and_then(|value| deliver_row(parent, value, Delivery::Steer))
                 .inspect_err(|error| {
                     tracing::error!("an RLM child notice was not delivered: {error:#}");
                 })
@@ -1001,11 +1031,21 @@ fn wake(node: &Node, trust: Trust, priority: Option<Priority>) -> anyhow::Result
     Ok(())
 }
 
-/// Delivers one custom row to a node's session: steers its loop form into
-/// the agent (a streaming session takes it at its next turn boundary; the
-/// quiescence drive runs it when idle), then fires the node's activity.
-/// One delivery path for tasks, replies and notices alike.
-fn deliver_row(node: &Arc<Node>, row: Value) -> anyhow::Result<()> {
+/// Where a delivered row goes on its session's agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Delivery {
+    /// Steered: a streaming session takes it at its next turn boundary.
+    Steer,
+    /// Queued behind the running turn: the agent takes it once that turn
+    /// would end.
+    FollowUp,
+}
+
+/// Delivers one custom row to a node's session: puts its loop form on the
+/// agent as `delivery` says (the quiescence drive runs it when idle), then
+/// fires the node's activity. One delivery path for tasks, replies, notices
+/// and messages alike.
+fn deliver_row(node: &Arc<Node>, row: Value, delivery: Delivery) -> anyhow::Result<()> {
     let _delivery_guard = lock(&node.delivery_gate);
     if node.is_disposed() {
         anyhow::bail!("Cannot deliver to a disposed inline session");
@@ -1018,7 +1058,10 @@ fn deliver_row(node: &Arc<Node>, row: Value) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("the target session is not running"))?;
     let loop_row = custom_message_to_loop_row(&custom)
         .ok_or_else(|| anyhow::anyhow!("the delivered row failed its loop conversion"))?;
-    engine.session.agent().steer(loop_row);
+    match delivery {
+        Delivery::Steer => engine.session.agent().steer(loop_row),
+        Delivery::FollowUp => engine.session.agent().follow_up(loop_row),
+    }
     node.activity.notify_waiters();
     Ok(())
 }

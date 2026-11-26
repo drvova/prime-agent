@@ -290,15 +290,23 @@ SQLite implementations over `pa-log`.
   dir refuses to start, and the supervisor's boot reap spares the holder and its restart owner.
   A holder that does not answer a wire2 hello on the same socket within 3 s is a wedged
   predecessor: `take_lock` stops it (`RuntimeDaemonLock::reap_holder`) and then takes the lock. Its
-  `Handlers`: `sessions.list` (the sessions dir's saved sessions and the open ones),
-  `session.snapshot` (header, name, model, thinking level, entry count, leaf, open) and
+  `Handlers`: `sessions.list` (the sessions dir's saved sessions and the open ones, or
+  `{"open": true}` the open ones only; each row in the old daemon's session-summary shape,
+  `daemon/handlers/summary.rs`: the session's id as `id`, `activeSessionId` and `sessionId`, its
+  name, model, times and message count from its transcript, and for an open one its lane's
+  activity, waiting prompts and `attachedClients`, the connections whose subscriptions match its
+  `agent/<id>/done`, `wire::Attached`), `session.snapshot` (header, name, model, thinking level,
+  entry count, leaf, open) and
   `transcript.page` (`{session, before?, limit?}`: the stored rows before `before`, at most 500)
   read the transcript store; `session.create` (`{session?}` to open or create by id, or `{path}` to
   open a transcript by its file, and `cwd`) takes the session's `SessionLease` and holds it until
   `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
-  (`session_already_active`) and the old daemon is refused one this daemon holds;
+  (`session_already_active`) and the old daemon is refused one this daemon holds; a session it
+  holds open already (revived at boot, opened by another client) is answered as it runs
+  (`"reused": true`), the old daemon's create-open reuse;
   `session.rename`, `session.label` and `session.set_effort` change an open session through its
-  engine (on the session's runtime) and a saved one under its lease; `session.set_model` and
+  engine (on the session's runtime, once its first build is done: `Runtime::built_engine`, which
+  the state queries wait on too) and a saved one under its lease; `session.set_model` and
   `session.delete` change saved sessions only (a running session's model switch is not yet
   there);
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
@@ -323,7 +331,15 @@ SQLite implementations over `pa-log`.
   context use) and `session.breakdown` (`ContextBreakdown`: the open engine's
   `context_categories`, the prompt-cache totals, the compactions, the spend); an open
   session's tree has a child node and its breakdown an agent row for each subagent below it,
-  read from that subagent's engine (`Subagents::family_of`). **Families**
+  read from that subagent's engine (`Subagents::family_of`). For the CLI's daemon commands:
+  `session.send` (`daemon/handlers/messaging.rs`; `{session, message, delivery?, from?,
+  client?}`) delivers the old daemon's `send_message`: today's `agent_message` row on the
+  session's inbox (`Subagents::send_message`), from the client (`{clientId}`, spending no wake
+  budget) or another open session, steered or (`follow_up`) queued behind a running turn, a
+  saved session opened for it first, answering the old daemon's receipt; the `schedules` query
+  (`{session?, all?}`) and `schedule.add` (`{session, schedule, prompt}`) and `schedule.cancel`
+  (`{job}`) list, add and cancel the jobs of the sessions it holds on pa-core's job store
+  (`daemon/handlers/jobs.rs`, `Schedules::{jobs, add, cancel}`), the old daemon's `cron_*`. **Families**
   (`subagents/family.rs`): each spawn, settle (done), rename and delete is recorded in the
   supervisor's RLM spawn ledger and the child's `rlm-subagent.json`
   (`pa_core::session_engine::rlm_ledger`), the spawn's edge before the child is given its task

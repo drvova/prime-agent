@@ -46,7 +46,9 @@ use anyhow::Context as _;
 use pa_core::cron::scheduler::{
     AgentCronScheduler, AgentCronSchedulerHooks, FIRE_SETTLE_TIMEOUT_MS,
 };
-use pa_core::cron::store::{AgentCronJobStore, CancelJobsFilter, SessionBinding};
+use pa_core::cron::store::{
+    AgentCronJobStore, CancelJobsFilter, CreateAgentCronJobInput, SessionBinding,
+};
 use pa_core::cron::{
     is_heartbeat_cron_job, should_defer_heartbeat_cron_job, AgentCronJob, HeartbeatSessionActivity,
     JobStatus,
@@ -73,6 +75,15 @@ const SKIPPED: &str = "skipped";
 
 /// The prefix of a job's timer source's name.
 const TIMER_PREFIX: &str = "schedule-";
+
+/// Which jobs a listing shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum JobsShown {
+    /// The active and paused ones.
+    Live,
+    /// Every one, the cancelled and finished too.
+    All,
+}
 
 /// Whether this daemon is the selected one now.
 pub(super) type Selected = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -236,6 +247,83 @@ impl<B: SessionBuilder> Schedules<B> {
                 remove_timer(&runtime, job).await;
             }
         });
+    }
+
+    /// The jobs of session `id` (every session the daemon holds open or
+    /// dormant when `None`), soonest first; active and paused ones only
+    /// unless `shown` is [`JobsShown::All`]. The client's `schedule list`.
+    pub(super) fn jobs(&self, id: Option<&str>, shown: JobsShown) -> Vec<AgentCronJob> {
+        let stores: Vec<Arc<AgentCronJobStore>> = lock(&self.armed)
+            .iter()
+            .filter(|(session, _)| id.is_none_or(|id| id == session.as_str()))
+            .map(|(_, armed)| Arc::clone(&armed.store))
+            .collect();
+        let mut jobs: Vec<AgentCronJob> = stores
+            .iter()
+            .flat_map(|store| store.list())
+            .filter(|job| match shown {
+                JobsShown::Live => matches!(job.status, JobStatus::Active | JobStatus::Paused),
+                JobsShown::All => true,
+            })
+            .collect();
+        jobs.sort_by(|left, right| left.next_run_at.cmp(&right.next_run_at));
+        jobs
+    }
+
+    /// Schedules `prompt` on open session `id` at `schedule` (the store's
+    /// grammar), as the old daemon's `cron_add`; its timer follows at the
+    /// lane's next pass.
+    ///
+    /// # Errors
+    ///
+    /// The session's jobs are not armed (it is not open), or the store
+    /// refused the job (an empty prompt, a schedule it cannot read).
+    pub(super) fn add(
+        &self,
+        id: &str,
+        schedule: &str,
+        prompt: &str,
+    ) -> anyhow::Result<AgentCronJob> {
+        let armed = lock(&self.armed)
+            .get(id)
+            .cloned()
+            .with_context(|| format!("session {id} is not open in the runtime daemon"))?;
+        let runtime_kind = if lock(&self.subagents).contains(id) {
+            "subagent"
+        } else {
+            "top-level"
+        };
+        let job = armed.store.create(&CreateAgentCronJobInput {
+            active_session_id: armed.binding.active_session_id.clone(),
+            session_id: armed.binding.session_id.clone(),
+            session_file: armed.binding.session_file.clone(),
+            cwd: armed.binding.cwd.clone(),
+            runtime_kind: Some(runtime_kind.to_string()),
+            prompt: prompt.to_string(),
+            schedule_text: schedule.to_string(),
+            ..Default::default()
+        })?;
+        armed.pass.notify_one();
+        Ok(job)
+    }
+
+    /// Cancels job `job` of whichever session the daemon holds keeps it, as
+    /// the old daemon's `cron_cancel`; its timer goes at the lane's next
+    /// pass.
+    ///
+    /// # Errors
+    ///
+    /// No held session keeps the job (`No cron job found: <job>`), or the
+    /// store could not be written.
+    pub(super) fn cancel(&self, job: &str) -> anyhow::Result<AgentCronJob> {
+        let sessions: Vec<Arc<Armed>> = lock(&self.armed).values().cloned().collect();
+        for armed in sessions {
+            if let Some(cancelled) = armed.store.cancel(job, pa_core::autonomous::now_millis())? {
+                armed.pass.notify_one();
+                return Ok(cancelled);
+            }
+        }
+        anyhow::bail!("No cron job found: {job}")
     }
 
     /// Stops every session's lane, for the daemon's shutdown; the jobs and

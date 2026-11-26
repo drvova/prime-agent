@@ -49,6 +49,9 @@ pub enum Query {
     /// request's estimate by category, prompt-cache totals, compactions,
     /// spend).
     SessionBreakdown,
+    /// `schedules`: the scheduled jobs of one session or of every session
+    /// the runtime holds.
+    Schedules,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -78,6 +81,7 @@ impl FromStr for Query {
             "session.tree" => Query::SessionTree,
             "session.context_tree" => Query::SessionContextTree,
             "session.breakdown" => Query::SessionBreakdown,
+            "schedules" => Query::Schedules,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",
@@ -129,6 +133,14 @@ pub enum Call {
     /// `session.wait_idle`: answers once the session is at rest: nothing
     /// queued or running in its lane, and every subagent below it settled.
     SessionWaitIdle,
+    /// `session.send`: delivers a message to a session as an agent message
+    /// from the client (or from another session), opening a saved session
+    /// for it.
+    SessionSend,
+    /// `schedule.add`: schedules a prompt on a session.
+    ScheduleAdd,
+    /// `schedule.cancel`: cancels a scheduled job.
+    ScheduleCancel,
 }
 
 impl FromStr for Call {
@@ -152,6 +164,9 @@ impl FromStr for Call {
             "session.restore" => Call::SessionRestore,
             "session.compact" => Call::SessionCompact,
             "session.wait_idle" => Call::SessionWaitIdle,
+            "session.send" => Call::SessionSend,
+            "schedule.add" => Call::ScheduleAdd,
+            "schedule.cancel" => Call::ScheduleCancel,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

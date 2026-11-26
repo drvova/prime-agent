@@ -18,8 +18,8 @@ use pa_types::event_log::{AgentTarget, Priority, Route, Scope, Subscription, Top
 
 use super::family::SpawnRecord;
 use super::{
-    child_is_unsettled, deliver_row, dispose_child, lock, now_ms, wake, Child, ChildState, Node,
-    Subagents, SUBSCRIPTION_PREFIX,
+    child_is_unsettled, deliver_row, dispose_child, lock, now_ms, wake, Child, ChildState,
+    Delivery, Node, Subagents, SUBSCRIPTION_PREFIX,
 };
 use crate::session::{SessionSpec, SubagentSpec};
 
@@ -194,7 +194,7 @@ impl RlmSubagentHost for SessionSubagents {
                 target: None,
                 timestamp: now_ms(),
             });
-            deliver_row(&child_node, kickoff_row)?;
+            deliver_row(&child_node, kickoff_row, Delivery::Steer)?;
             wake(&child_node, node.trust.current(), /*priority*/ None)?;
             let selector = lock(&child_node.adopted)
                 .model_selector

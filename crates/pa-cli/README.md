@@ -67,7 +67,10 @@ frames of the goal loop, and the refinement rows with
 ## Daemon client
 The daemon-backed public commands (`list`, `stop`, `rename`, `send`, `schedule`) talk to the
 pa-daemon supervisor over its JSONL Unix socket through the crate-private client module
-(`daemon_client.rs`). The client never spawns a daemon - the TS CLI only auto-starts one for
+(`daemon_client.rs`), or, with the runtime daemon selected, to the runtime daemon over wire2 on
+`daemon2.sock` beside the same socket (`runtime_daemon_client.rs`; `daemon_command.rs` maps
+each command to its query or call and resolves the session selector against `sessions.list`),
+rendering the same output. The client never spawns a daemon - the TS CLI only auto-starts one for
 the internal `daemon start`/`open` commands, which are not reachable from the public surface.
 
 ## Packaged layout

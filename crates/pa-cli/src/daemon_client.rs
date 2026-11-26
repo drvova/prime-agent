@@ -241,7 +241,7 @@ fn daemon_protocol(hello: &serde_json::Value) -> Result<DaemonProtocolInfo> {
 }
 
 /// `Socket: <path>. Daemon log: <log path>.`
-fn endpoint_details(socket_path: &Path) -> String {
+pub(crate) fn endpoint_details(socket_path: &Path) -> String {
     let log = pa_daemon::paths::daemon_log_path(socket_path, &config::get_agent_dir());
     format!(
         "Socket: {}. Daemon log: {}.",
@@ -252,7 +252,7 @@ fn endpoint_details(socket_path: &Path) -> String {
 
 /// Node's `connect` error message for the same failure, so the printed
 /// error matches the TS product (`connect ENOENT <path>` and friends).
-fn node_connect_error(error: &std::io::Error, socket_path: &Path) -> String {
+pub(crate) fn node_connect_error(error: &std::io::Error, socket_path: &Path) -> String {
     let path = socket_path.display().to_string();
     match error.kind() {
         std::io::ErrorKind::NotFound => format!("connect ENOENT {path}"),

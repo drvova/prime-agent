@@ -38,7 +38,7 @@ const SOURCE: &str = "runtime-daemon";
 impl<B: SessionBuilder> RuntimeHandlers<B> {
     /// The id of the open session `args.session` names, refused for one the
     /// daemon does not hold open.
-    fn open_session(&self, args: &Value) -> anyhow::Result<String> {
+    pub(super) fn open_session(&self, args: &Value) -> anyhow::Result<String> {
         let (id, _, open) = self.session(args)?;
         anyhow::ensure!(open, "session {id} is not open in the runtime daemon");
         Ok(id)

@@ -311,8 +311,14 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   children; a `Record` notice only persists and a `WakeIdle` one is dropped by a busy session
   (`pa_core::session_engine::bash_notices`). `session.wait_idle` waits for those notice turns
   too. Its kernel timer and watch sources are kept in the database and run again after a
-  restart for the subscriptions the bus keeps. The TUI and ACP still speak only to the
-  supervisor.
+  restart for the subscriptions the bus keeps. A client opening a session it holds open
+  already (one its boot revived) is answered with that session, as the supervisor's create-open
+  reuse does, and a change or state read right after `session.create` waits for the engine's
+  first build. The daemon-backed CLI commands (`list`, `sessions`, `stop`, `rename`, `send`,
+  `schedule`) speak wire2 to it while it is selected (`crates/pa-cli/src/daemon_command.rs`:
+  `sessions.list` rows in the supervisor's summary shape, `session.send` delivering the
+  supervisor's `agent_message` row and waking a saved session, `schedules`/`schedule.add`/
+  `schedule.cancel` on the same job store). The TUI and ACP still speak only to the supervisor.
 - Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
   recovery above starts from the transcript. The default store is one SQLite database,
   `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,

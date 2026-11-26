@@ -541,12 +541,30 @@ impl<B: SessionBuilder> Runtime<B> {
         self.sessions.host(session)?.engine()
     }
 
-    /// A wire2 server whose clients read and publish on the runtime's bus
-    /// and whose queries and calls `handlers` answers.
+    /// The engine of open session `session`, once its first build is done:
+    /// a client's change or read right after `session.create` waits for it.
+    ///
+    /// # Errors
+    ///
+    /// The session is not open, its engine could not be built, or it is
+    /// being rebuilt after a crash.
+    pub(crate) async fn built_engine(
+        &self,
+        session: &str,
+    ) -> anyhow::Result<crate::session::LiveEngine> {
+        self.sessions.subagents().built_node(session).await?;
+        self.session_engine(session)
+            .with_context(|| format!("session {session}'s engine is being rebuilt"))
+    }
+
+    /// A wire2 server whose clients read and publish on the runtime's bus,
+    /// whose queries and calls `handlers` answers, and which records in
+    /// `attached` which connections follow which sessions.
     pub(crate) fn wire_server<H: Handlers>(
         &self,
         handlers: H,
         config: WireConfig,
+        attached: Arc<crate::wire::Attached>,
     ) -> WireServer<
         LogEventStore,
         LogStateStore,
@@ -555,7 +573,7 @@ impl<B: SessionBuilder> Runtime<B> {
         RuntimeTaskSink<B>,
         H,
     > {
-        WireServer::new(self.bus.clone(), handlers, config)
+        WireServer::attached_to(self.bus.clone(), handlers, config, attached)
     }
 
     /// The sessions' family tree: the runtime daemon attaches its family

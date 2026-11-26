@@ -13,7 +13,8 @@
 //! - a runtime daemon killed mid-turn is restarted onto the same agent dir:
 //!   the program the cut-off cell left running is reaped, the cell is
 //!   answered once as of unknown outcome, and the turn continues behind the
-//!   interrupted-turn notice without its prompt being repeated.
+//!   interrupted-turn notice without its prompt being repeated, and a
+//!   client that opens the revived session is answered with it.
 //!
 //! The crashes use the debug-only seams: the faux script's `panicOn` and the
 //! kernel's `(%test-block marker)`.
@@ -372,8 +373,11 @@ async fn a_turn_cut_off_by_the_daemons_death_is_continued_and_its_cell_answered_
     let texts = session.texts().await;
     let results = tool_results(&mut session).await;
     let snapshot = session.query("session.snapshot").await;
+    // A client opening the session the boot revived is answered with it.
+    let reopened = session.call("session.create", json!({})).await;
     assert_eq!(
         (
+            reopened["reused"].clone(),
             done["outcome"].clone(),
             exits(pid),
             session
@@ -400,6 +404,7 @@ async fn a_turn_cut_off_by_the_daemons_death_is_continued_and_its_cell_answered_
             crash_fields(&snapshot["lastCrash"]),
         ),
         (
+            json!(true),
             json!("done"),
             true,
             vec![json!([

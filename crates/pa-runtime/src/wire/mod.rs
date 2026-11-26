@@ -28,6 +28,9 @@
 //!   `agent/<id>/accepted` (an `AgentAccepted`, as the runtime's input route
 //!   does): a client that publishes a prompt and waits for it waits for that
 //!   task's `agent/<id>/done`. Publishes are handled in the order sent.
+//! - **Attached.** While one of a connection's subscriptions matches a
+//!   session's `agent/<id>/done`, the connection is one of the session's
+//!   attached clients (`attached`), as the session list counts them.
 //! - **Query and call.** Parsed into [`Query`] / [`Call`] (an unknown name is
 //!   an error reply) and answered by [`Handlers`] on their own tasks, at most
 //!   [`IN_FLIGHT`] at once per connection.
@@ -54,9 +57,11 @@ use crate::routes::{ModelCaller, TaskSink};
 use crate::store::{EventStore, StateStore};
 use crate::subscriptions::SessionTree;
 
+mod attached;
 mod feed;
 mod handlers;
 
+pub(crate) use attached::Attached;
 pub use feed::MAX_TAIL;
 use feed::{last_seq, Control, Feed};
 pub use handlers::{Call, Handlers, Query, UnknownOperation};
@@ -94,6 +99,7 @@ pub struct WireServer<E, K, G, M, T, H> {
     handlers: Arc<H>,
     config: WireConfig,
     client_topics: Arc<Vec<TopicFilter>>,
+    attached: Arc<Attached>,
 }
 
 impl<E, K, G, M, T, H> Clone for WireServer<E, K, G, M, T, H> {
@@ -103,6 +109,7 @@ impl<E, K, G, M, T, H> Clone for WireServer<E, K, G, M, T, H> {
             handlers: Arc::clone(&self.handlers),
             config: self.config,
             client_topics: Arc::clone(&self.client_topics),
+            attached: Arc::clone(&self.attached),
         }
     }
 }
@@ -124,6 +131,17 @@ where
     /// A filter in [`CLIENT_TOPICS`] is not valid (a fixed list).
     #[must_use]
     pub fn new(bus: Bus<E, K, G, M, T>, handlers: H, config: WireConfig) -> Self {
+        Self::attached_to(bus, handlers, config, Arc::default())
+    }
+
+    /// [`Self::new`], recording which connections follow which sessions in
+    /// `attached`.
+    pub(crate) fn attached_to(
+        bus: Bus<E, K, G, M, T>,
+        handlers: H,
+        config: WireConfig,
+        attached: Arc<Attached>,
+    ) -> Self {
         WireServer {
             bus,
             handlers: Arc::new(handlers),
@@ -134,6 +152,7 @@ where
                     .map(|filter| TopicFilter::new(*filter).expect("client topics are valid"))
                     .collect(),
             ),
+            attached,
         }
     }
 
@@ -191,11 +210,12 @@ where
         let (out, outbound) = mpsc::channel(self.config.outbound_capacity.get());
         let (control, controls) = mpsc::channel(1);
         let feed = Feed::new(self.bus.events(), out.clone(), welcome_seq);
+        let connection = self.attached.connect();
         let session = async {
             // Whichever ends first ends the other; ending drops their
             // senders, so the writer sends what is queued and ends.
             tokio::select! {
-                read = self.read(&mut frames, client, control, out) => read,
+                read = self.read(&mut frames, client, control, out, &connection) => read,
                 feeding = feed.run(listener, controls) => feeding,
             }
         };
@@ -223,6 +243,7 @@ where
         client: String,
         control: mpsc::Sender<Control>,
         out: mpsc::Sender<ServerFrame>,
+        connection: &attached::Connection,
     ) -> anyhow::Result<()> {
         let in_flight = Arc::new(Semaphore::new(IN_FLIGHT));
         // Dropped with the connection, which aborts what is still running.
@@ -258,18 +279,24 @@ where
                     sub_id,
                     filter,
                     since,
-                } => control
-                    .send(Control::Subscribe {
-                        sub_id,
-                        filter,
-                        since,
-                    })
-                    .await
-                    .map_err(|_| anyhow::anyhow!("the connection's feed ended"))?,
-                ClientFrame::Unsubscribe { sub_id } => control
-                    .send(Control::Unsubscribe { sub_id })
-                    .await
-                    .map_err(|_| anyhow::anyhow!("the connection's feed ended"))?,
+                } => {
+                    connection.subscribed(&sub_id, &filter);
+                    control
+                        .send(Control::Subscribe {
+                            sub_id,
+                            filter,
+                            since,
+                        })
+                        .await
+                        .map_err(|_| anyhow::anyhow!("the connection's feed ended"))?;
+                }
+                ClientFrame::Unsubscribe { sub_id } => {
+                    connection.unsubscribed(&sub_id);
+                    control
+                        .send(Control::Unsubscribe { sub_id })
+                        .await
+                        .map_err(|_| anyhow::anyhow!("the connection's feed ended"))?;
+                }
                 ClientFrame::Publish { id, topic, payload } => {
                     let session = topic.levels().nth(1).map(str::to_string);
                     let outcome = if self.client_topics.iter().any(|f| f.matches(&topic)) {

@@ -124,10 +124,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     ) -> anyhow::Result<(String, T, Option<LiveEngine>)> {
         let (id, path, open) = self.session(args)?;
         if open {
-            let live = self
-                .runtime
-                .session_engine(&id)
-                .with_context(|| format!("session {id}'s engine is not built yet"))?;
+            let live = self.runtime.built_engine(&id).await?;
             let persistence = live.engine.session.shared_persistence();
             let value = live
                 .runtime

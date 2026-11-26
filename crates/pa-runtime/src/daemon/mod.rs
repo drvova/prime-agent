@@ -30,8 +30,12 @@
 //!   turns and queue: `session.abort`, `abort_and_send_queued`,
 //!   `resume_queue`, `withdraw`, `restore`, `compact` and the `tasks` query
 //!   (`handlers/queue.rs`); its state: `session.context`, `usage`, `tree`,
-//!   `context_tree` and `breakdown` (`handlers/state.rs`). `settings`,
-//!   `models`, `sources` and `subscriptions` are refused: they arrive later.
+//!   `context_tree` and `breakdown` (`handlers/state.rs`). For the CLI's
+//!   daemon commands: the list's rows in the old daemon's summary shape
+//!   (`handlers/summary.rs`), `session.send` (`handlers/messaging.rs`), and
+//!   the `schedules` query with `schedule.add` and `schedule.cancel`
+//!   (`handlers/jobs.rs`). `settings`, `models`, `sources` and
+//!   `subscriptions` are refused: they arrive later.
 //! - **Reliability.** The daemon's sessions are supervised
 //!   (`crate::session` faults): a panic on a session's threads or a stuck
 //!   cell ends that session's lifetime only; the crash is appended to
@@ -63,7 +67,7 @@ use tokio::task::JoinSet;
 use crate::bus::Heard;
 use crate::runtime::{Runtime, RuntimeOptions};
 use crate::session::{SessionBuilder, SessionFaults, Supervision};
-use crate::wire::WireConfig;
+use crate::wire::{Attached, WireConfig};
 
 mod boot_reap;
 mod handlers;
@@ -274,16 +278,19 @@ pub async fn run<B: SessionBuilder>(
         })
     };
     held::revive(&runtime, &open, &schedules, &options.agent_dir).await;
+    let attached = Arc::new(Attached::default());
     let server = runtime.wire_server(
         RuntimeHandlers::new(
             Arc::clone(&runtime),
             Arc::clone(&open),
             Arc::clone(&schedules),
+            Arc::clone(&attached),
             options.agent_dir.clone(),
             options.session_dir,
             options.cwd,
         ),
         WireConfig::default(),
+        attached,
     );
     let mut connections = JoinSet::new();
     let mut shutdown = std::pin::pin!(shutdown);

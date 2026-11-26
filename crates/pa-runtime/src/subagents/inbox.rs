@@ -30,27 +30,41 @@ use pa_core::session_engine::agent_messaging::{
 use pa_types::event_log::Event;
 use serde_json::{json, Value};
 
-use super::{deliver_row, lock, wake_on_delivery, Subagents};
+use super::{deliver_row, lock, wake_on_delivery, Delivery, Subagents};
 
-/// What `agent/<to>/inbox` carries: `{id, from, row}`.
+/// What `agent/<to>/inbox` carries: `{id, from, row}`, with
+/// `"deliveryMode": "follow_up"` for a follow-up; a client's message
+/// (`session.send`) has no `from`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InboxMessage {
     /// The message's id (`agentmsg_…`): its receipt's.
     pub(crate) id: String,
-    /// The sending session's id: whose wake budget a wake spends.
-    pub(crate) from: String,
+    /// The sending session's id: whose wake budget a wake spends. `None`
+    /// for a client's message, which spends none (only sessions can answer
+    /// each other without end).
+    pub(crate) from: Option<String>,
     /// The `agent_message` row the receiver takes.
     pub(crate) row: Value,
     /// A direct message, or one of a broadcast's (which ends no wait).
     pub(crate) kind: AgentMessageKind,
+    /// Steered, or (`follow_up`) queued behind a receiver's running turn; an
+    /// idle receiver is woken for either.
+    pub(crate) delivery: Delivery,
 }
 
 impl InboxMessage {
     /// The event payload.
     pub(crate) fn payload(&self) -> Value {
-        let mut payload = json!({ "id": self.id, "from": self.from, "row": self.row });
+        let mut payload = json!({ "id": self.id, "row": self.row });
+        if let Some(from) = &self.from {
+            payload["from"] = json!(from);
+        }
         if let Some(kind) = self.kind.to_wire() {
             payload["messageKind"] = json!(kind);
+        }
+        match self.delivery {
+            Delivery::Steer => {}
+            Delivery::FollowUp => payload["deliveryMode"] = json!("follow_up"),
         }
         payload
     }
@@ -60,9 +74,14 @@ impl InboxMessage {
         let text = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_string);
         Some(InboxMessage {
             id: text("id")?,
-            from: text("from")?,
+            from: text("from"),
             row: payload.get("row")?.clone(),
             kind: AgentMessageKind::from_wire(payload.get("messageKind").and_then(Value::as_str)),
+            delivery: if text("deliveryMode").as_deref() == Some("follow_up") {
+                Delivery::FollowUp
+            } else {
+                Delivery::Steer
+            },
         })
     }
 }
@@ -136,24 +155,35 @@ impl Subagents {
             // sender's budget; one in a turn queues it unbudgeted.
             let queued = agent.state().await.is_streaming;
             if !queued {
-                if let Err(retry_after_ms) = receiver.wakes.admit(&message.from, Instant::now()) {
-                    return Ok(AgentMessageDeliveryStatus::WakeRefused { retry_after_ms });
+                if let Some(from) = &message.from {
+                    if let Err(retry_after_ms) = receiver.wakes.admit(from, Instant::now()) {
+                        return Ok(AgentMessageDeliveryStatus::WakeRefused { retry_after_ms });
+                    }
                 }
             }
             let details = &message.row["details"];
             let arrival = AgentMessageArrival {
                 message_id: message.id.clone(),
-                sender_ids: vec![message.from.clone()],
+                sender_ids: message.from.iter().cloned().collect(),
                 sender_name: details["from"]["sessionName"]
                     .as_str()
-                    .unwrap_or(&message.from)
+                    .or(message.from.as_deref())
+                    .or_else(|| details["from"]["clientId"].as_str())
+                    .unwrap_or("unknown")
                     .to_string(),
                 preview: create_agent_message_preview(
                     details["message"].as_str().unwrap_or_default(),
                 ),
                 kind: message.kind,
             };
-            deliver_row(&receiver, message.row)?;
+            // A follow-up waits behind a running turn; an idle receiver runs
+            // either at once.
+            let delivery = if queued {
+                message.delivery
+            } else {
+                Delivery::Steer
+            };
+            deliver_row(&receiver, message.row, delivery)?;
             // The receiving side of the receiver's waits hears every
             // delivery it took.
             receiver.waits.deliver(arrival);
