@@ -214,14 +214,24 @@ async fn mcp_servers_are_fenced_by_their_owner() {
     );
 }
 
-/// Reads frames until an `agent/<id>/schedules` event arrives; its payload.
-async fn schedules_change(client: &mut Client, id: &str) -> Value {
+/// The payload of the next `agent/<id>/schedules` event: among `early`, the
+/// frames that came before the changing call's reply, or else read after.
+async fn schedules_change(client: &mut Client, id: &str, early: Vec<ServerFrame>) -> Value {
     let topic = format!("agent/{id}/schedules");
+    let change = |frame: ServerFrame| match frame {
+        ServerFrame::Event { event, .. } if event.event.topic.to_string() == topic => {
+            Some(event.event.payload)
+        }
+        _ => None,
+    };
+    // The lane's pass can publish before the call that changed the jobs
+    // answers, so the frames that came before its reply are looked at first.
+    if let Some(payload) = early.into_iter().find_map(&change) {
+        return payload;
+    }
     loop {
-        if let ServerFrame::Event { event, .. } = client.frame().await {
-            if event.event.topic.to_string() == topic {
-                return event.event.payload;
-            }
+        if let Some(payload) = change(client.frame().await) {
+            return payload;
         }
     }
 }
@@ -238,17 +248,19 @@ async fn a_schedule_change_is_published_and_the_bus_queries_show_its_timer() {
     client
         .subscribe(&format!("agent/{id}/schedules"), Since::Now)
         .await;
+    let mut early = Vec::new();
     let job = ok(client
-        .call(
+        .call_keeping(
             "schedule.add",
             json!({ "session": id, "schedule": "every 1h", "prompt": "check in" }),
+            &mut early,
         )
         .await)["job"]["id"]
         .as_str()
         .unwrap()
         .to_string();
     assert_eq!(
-        schedules_change(&mut client, &id).await,
+        schedules_change(&mut client, &id, early).await,
         json!({ "active": 1 })
     );
     let sources = ok(client.query("sources", json!({})).await);
@@ -274,9 +286,12 @@ async fn a_schedule_change_is_published_and_the_bus_queries_show_its_timer() {
             .any(|subscription| subscription["id"] == format!("schedule:{job}")),
         "{subscriptions}"
     );
-    ok(client.call("schedule.cancel", json!({ "job": job })).await);
+    let mut early = Vec::new();
+    ok(client
+        .call_keeping("schedule.cancel", json!({ "job": job }), &mut early)
+        .await);
     assert_eq!(
-        schedules_change(&mut client, &id).await,
+        schedules_change(&mut client, &id, early).await,
         json!({ "active": 0 })
     );
     let settings = ok(client.query("settings", json!({ "session": id })).await);

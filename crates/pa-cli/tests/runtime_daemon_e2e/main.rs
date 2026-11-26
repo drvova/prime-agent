@@ -257,6 +257,16 @@ impl Client {
     }
 
     async fn call(&mut self, method: &str, args: Value) -> Outcome {
+        self.call_keeping(method, args, &mut Vec::new()).await
+    }
+
+    /// `call`, keeping in `events` the frames that arrive before its reply.
+    async fn call_keeping(
+        &mut self,
+        method: &str,
+        args: Value,
+        events: &mut Vec<ServerFrame>,
+    ) -> Outcome {
         let id = self.id();
         self.send(&ClientFrame::Call {
             id: id.clone(),
@@ -264,7 +274,7 @@ impl Client {
             args,
         })
         .await;
-        self.reply(&id, &mut Vec::new()).await
+        self.reply(&id, events).await
     }
 
     async fn query(&mut self, name: &str, args: Value) -> Outcome {
