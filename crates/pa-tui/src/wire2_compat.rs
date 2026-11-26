@@ -9,21 +9,29 @@
 //!
 //! | topic | payload | old frame |
 //! | --- | --- | --- |
-//! | `agent/<id>/stream` | today's `session_event.event` object, verbatim | `session_event` |
+//! | `agent/<id>/stream` | today's `session_event.event` object, plus `meta.sequence` (below) | `session_event` |
 //! | `agent/<id>/side_question` | today's `side_question_event.event` object, verbatim | `side_question_event` |
 //! | `agent/<id>/closed` | `{"reason": "killed" \| "shutdown" \| "completed" \| "replaced" \| "update"}` | `session_closed` |
 //! | `runtime/roster` | today's `roster_update` frame without `type` (`changed`, `removed`, `resync`) | `roster_update` |
 //!
 //! `<id>` is the session's active id, the one `DaemonCommand`s address. On the agent topics the
-//! event's metadata becomes the frame's `meta`: `id` is the event id, `sequence` the event's `seq`,
-//! `emittedAt` its `ts` (ISO-8601, milliseconds), and `replayed` is set for an event delivered
-//! before its subscription's `backfilled` frame. The TUI keeps the highest `sequence` it applied
-//! as its resume point, so the runtime must number a session's events in one increasing order
-//! (gaps are fine: the log's `seq` qualifies), report the same numbering as the snapshot's
-//! `lastEventSequence`, and resume a subscription with `Since::After { seq }` from it. There is no
-//! cursor generation on wire2 (the log outlives the process), so `meta.cursor` is absent; the TUI
-//! reads it only when `sequence` is missing. An event on any other topic is not a TUI input today
-//! and is ignored, like an unknown broadcast on the old wire.
+//! event's metadata becomes the frame's `meta`: `id` is the event id, `emittedAt` its `ts`
+//! (ISO-8601, milliseconds), and `replayed` is set for an event delivered before its
+//! subscription's `backfilled` frame. `sequence` is the session's own event counter, the one the
+//! snapshot reports as `lastEventSequence` and the TUI keeps the highest of as its resume point:
+//!
+//! - On `agent/<id>/closed`, a stored topic, it is the event's `seq`, and a subscription resumes
+//!   with `Since::After { seq }` from it (gaps are fine: the log's `seq` qualifies). A
+//!   `side_question_event` frame carries no `meta`.
+//! - `agent/<id>/stream` is live only (`Topic::is_live_only`): its events reach a subscription
+//!   only live, with `seq` 0, which is no resume point. The runtime carries the session's counter
+//!   in the payload instead, as `meta.sequence` beside the old event's own members; the layer
+//!   takes it out, so the TUI sees the old event unchanged. A stream event without it has no
+//!   `sequence`. A reconnecting client resumes the stream from the snapshot, not from the log.
+//!
+//! There is no cursor generation on wire2 (the log outlives the process), so `meta.cursor` is
+//! absent; the TUI reads it only when `sequence` is missing. An event on any other topic is not a
+//! TUI input today and is ignored, like an unknown broadcast on the old wire.
 //!
 //! Outbound, the input commands become one publish each on `agent/<id>/input` (owner trust): the
 //! payload is the command's own JSON without `type` and `activeSessionId`, plus `kind` - the old
@@ -82,14 +90,14 @@ pub(crate) fn outbound_from_event(
 ) -> Result<Option<DaemonOutbound>> {
     let levels: Vec<&str> = event.event.topic.levels().collect();
     let payload = &event.event.payload;
-    let meta = |active_session_id: &str| DaemonEventMeta {
+    let meta = |active_session_id: &str, sequence: Option<u64>| DaemonEventMeta {
         id: event.id.0.clone(),
         protocol: DaemonProtocolInfo {
             name: DAEMON_PROTOCOL_NAME.to_string(),
             version: DAEMON_PROTOCOL_VERSION,
         },
         active_session_id: Some(active_session_id.to_string()),
-        sequence: Some(event.seq),
+        sequence,
         cursor: None,
         emitted_at: crate::update_restart_wait::iso_from_unix_ms(event.ts),
         replayed: match delivery {
@@ -98,12 +106,25 @@ pub(crate) fn outbound_from_event(
         },
     };
     let outbound = match levels.as_slice() {
-        ["agent", id, "stream"] => DaemonOutbound::SessionEvent {
-            active_session_id: (*id).to_string(),
-            event: payload.clone(),
-            meta: Some(meta(id)),
-            rest: Map::new(),
-        },
+        ["agent", id, "stream"] => {
+            let mut payload = payload.clone();
+            let sequence = payload
+                .as_object_mut()
+                .ok_or_else(|| anyhow!("{}: the payload is not an object", event.event.topic))?
+                .remove("meta")
+                .map(|meta| {
+                    meta.get("sequence").and_then(Value::as_u64).ok_or_else(|| {
+                        anyhow!("{}: `meta.sequence` is not a count", event.event.topic)
+                    })
+                })
+                .transpose()?;
+            DaemonOutbound::SessionEvent {
+                active_session_id: (*id).to_string(),
+                event: payload,
+                meta: Some(meta(id, sequence)),
+                rest: Map::new(),
+            }
+        }
         ["agent", id, "side_question"] => DaemonOutbound::SideQuestionEvent {
             active_session_id: (*id).to_string(),
             event: payload.clone(),
@@ -115,7 +136,7 @@ pub(crate) fn outbound_from_event(
                 payload.get("reason").cloned().unwrap_or(Value::Null),
             )
             .with_context(|| format!("{}: the close reason", event.event.topic))?,
-            meta: Some(meta(id)),
+            meta: Some(meta(id, Some(event.seq))),
             rest: Map::new(),
         },
         ["runtime", "roster"] => {

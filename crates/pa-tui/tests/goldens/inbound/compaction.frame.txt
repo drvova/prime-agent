@@ -1,7 +1,7 @@
                                                 tmp  $0.00 + $—
  First answer, long enough to be worth compacting later on.
 
- Worked for # · 0 tool calls · 17k tokens
+ Worked for # · 0 tool calls · 18k tokens
 
 
   and again                                                                                  ##:##
@@ -9,7 +9,7 @@
 
  Second answer, so the history has an older turn to summarize.
 
- Worked for # · 0 tool calls · 8.9k tokens · 94% cached
+ Worked for # · 0 tool calls · 9.1k tokens · 94% cached
 
 
   /compact

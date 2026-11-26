@@ -13,13 +13,13 @@
 
  alpha reported back.
 
- Worked for # · 1 tool call · 27k tokens · 31% cached
+ Worked for # · 1 tool call · 27k tokens · 32% cached
 
  ✉ Agent message · ↓ alpha
 
  noted
 
- Worked for # · 0 tool calls · 9.2k tokens · 94% cached
+ Worked for # · 0 tool calls · 9.4k tokens · 94% cached
 
                                                                   Collapsed mode (Ctrl+O to expand)
 

@@ -219,6 +219,19 @@ The client commands of the clipboard/auth/update group: `/copy` (the last assist
 ## Depends on
 pa-types only (the daemon wire protocol types live there). The headless `UiMode` is the verifier seam: it drives the identical attach/submit/stream/render path without a TTY and captures rendered frames.
 
+## The wire2 port (phase 8)
+
+The TUI still speaks the old wire only. Its move onto wire2 starts from an oracle and a mapping,
+neither on the live transport yet. `tests/goldens/inbound/*.jsonl` are five streams recorded from
+the supervisor on the faux engine with a debug build's `PA_TUI_RECORD_INBOUND` tap
+(`src/inbound_recording.rs`, absent from release builds), each with the frame it ends on;
+`tests/inbound_goldens_headless.rs` replays them through the real client decode and event pump.
+`src/wire2_compat.rs` maps wire2 events (`agent/<id>/stream`, `side_question`, `closed`,
+`runtime/roster`) to the `DaemonOutbound` frames they stand for and the input commands to a publish
+on `agent/<id>/input`; its module docs state the contract the runtime honours (the stream is live
+only, so the session's event counter rides in the payload's `meta.sequence`) and list what is left
+to map. Every recorded frame round-trips through it.
+
 ## Transcript caching
 
 Fullscreen transcript frames render the visible entry window through a persistent entry cursor. Per-entry, per-detail line caches retain visited rows; unseen entries stay unrendered. A card's own expansion toggle (a click, a search reveal) re-measures that card alone; the heights below it stay cached. Selection highlighting restyles only the rows the selection change touched (cached rows, never a rebuild from raw entries), and appends, entry growth, and tail re-anchors fold into the sparse window's bookkeeping instead of a geometry pass. Absolute-row operations, including paused detail changes, use separately cached count-only geometry and paint only the requested window. Cold geometry still scans uncached content; the exceptional copy fallbacks walk only the selected range from the viewport cursor. The frame's end sections — the splash and the streaming tail (the shortcut guide, pending bash output, the loaders) — render only when the visible window reaches them, and frames without a selection skip the restyle pass (its styled rows are the cached window verbatim). These caches and viewport coordinates are private to this crate; wire types and dependency direction are unchanged.

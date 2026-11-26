@@ -42,16 +42,22 @@ fn event_from_outbound(frame: &DaemonOutbound) -> Option<(Event, Delivery)> {
                 Some(true) => Delivery::Backfill,
                 Some(false) | None => Delivery::Live,
             };
+            let id = EventId(meta.map_or_else(|| format!("{topic}:0"), |meta| meta.id.clone()));
+            let topic = Topic::new(topic).expect("a recorded session id is a topic level");
             let event = Event {
-                id: EventId(meta.map_or_else(|| format!("{topic}:0"), |meta| meta.id.clone())),
-                seq: meta.and_then(|meta| meta.sequence).unwrap_or_default(),
+                id,
+                seq: if topic.is_live_only() {
+                    0
+                } else {
+                    meta.and_then(|meta| meta.sequence).unwrap_or_default()
+                },
                 ts: meta
                     .and_then(|meta| crate::agents_view_state::iso_to_unix_ms(&meta.emitted_at))
                     .map_or(0, |ms| {
                         u64::try_from(ms).expect("a recorded time is after 1970")
                     }),
                 event: NewEvent {
-                    topic: Topic::new(topic).expect("a recorded session id is a topic level"),
+                    topic,
                     source: "runtime".to_string(),
                     session: None,
                     payload,
@@ -68,11 +74,21 @@ fn event_from_outbound(frame: &DaemonOutbound) -> Option<(Event, Delivery)> {
             event: payload,
             meta,
             ..
-        } => Some(event(
-            format!("agent/{active_session_id}/stream"),
-            payload.clone(),
-            meta.as_ref(),
-        )),
+        } => {
+            // Live only: `seq` 0, the session's counter in the payload's `meta`.
+            let mut payload = payload.clone();
+            if let Some(sequence) = meta.as_ref().and_then(|meta| meta.sequence) {
+                payload
+                    .as_object_mut()
+                    .expect("a session event is an object")
+                    .insert("meta".to_string(), json!({ "sequence": sequence }));
+            }
+            Some(event(
+                format!("agent/{active_session_id}/stream"),
+                payload,
+                meta.as_ref(),
+            ))
+        }
         DaemonOutbound::SideQuestionEvent {
             active_session_id,
             event: payload,
@@ -152,6 +168,11 @@ fn closes_and_side_questions_round_trip_and_other_topics_are_ignored() {
                           "emittedAt": "2026-11-25T00:12:25.013Z", "replayed": true } }),
         json!({ "type": "side_question_event", "activeSessionId": "s1",
                 "event": { "type": "side_question_end", "id": "q1" } }),
+        // A stream event the runtime sent without the session's counter: no resume point.
+        json!({ "type": "session_event", "activeSessionId": "s1",
+                "event": { "type": "agent_start" },
+                "meta": { "id": "e2", "protocol": { "name": "prime-agent.daemon", "version": 7 },
+                          "activeSessionId": "s1", "emittedAt": "2026-11-25T00:12:25.013Z" } }),
     ];
     let back: Vec<Value> = frames
         .iter()
