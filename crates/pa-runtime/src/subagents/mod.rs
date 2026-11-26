@@ -366,15 +366,19 @@ impl Subagents {
             }
         };
         // A failed reply is read from the transcript, as the turn left it.
-        let run_error = match (done.outcome, done.failure) {
+        let cut = match (done.outcome, done.failure) {
             (TaskState::Done, _) | (TaskState::Failed, Some(TaskFailure::Reply)) => None,
             (TaskState::Failed, Some(TaskFailure::Turn | TaskFailure::Command) | None) => {
-                Some(done.error.unwrap_or_default())
+                Some(RunCut::failed(done.error.unwrap_or_default()))
             }
-            (TaskState::Cancelled, _) => Some("The subagent's task was cancelled".to_string()),
+            (TaskState::Cancelled, _) => Some(RunCut {
+                status: "cancelled",
+                error: "The subagent's task was cancelled".to_string(),
+            }),
             (TaskState::Queued | TaskState::Running, _) => return,
         };
-        settle_child(&child, run_error, event.event.trust).await;
+        settle_child(&child, cut, event.event.trust).await;
+        child.publish_update().await;
     }
 }
 
@@ -463,32 +467,7 @@ impl Subagents {
         let children = node.children.lock().await.clone();
         let mut rows = Vec::with_capacity(children.len());
         for child in &children {
-            let unsettled = child_is_unsettled(child).await;
-            let state = child.state.lock().await;
-            let mut row = json!({
-                "id": child.rlm_child_id,
-                "activeSessionId": child.node.session_id,
-                "sessionName": child
-                    .node
-                    .session_name()
-                    .unwrap_or_else(|| child.rlm_child_id.clone()),
-                "label": Value::Null,
-                "status": if unsettled { "running" } else { state.status },
-                "durationMs": now_ms().saturating_sub(state.started_at_ms),
-                "sessionDir": child.node.session_dir(),
-            });
-            if let Some(model) = lock(&child.node.adopted).model_selector.clone() {
-                row["model"] = json!(model);
-            }
-            if let Some(answer) = &state.answer_text {
-                row["answerPreview"] = json!(
-                    pa_core::session_engine::rlm_notices::compact_rlm_text(answer)
-                );
-            }
-            if let Some(error) = &state.error {
-                row["error"] = json!(error);
-            }
-            rows.push(row);
+            rows.push(child.row().await);
         }
         rows
     }
@@ -522,6 +501,8 @@ pub(crate) struct Node {
     pub(crate) tree: Weak<Subagents>,
     /// The session's id.
     pub(crate) session_id: String,
+    /// Its handle under its parent, when it is a spawned child.
+    rlm_child_id: Option<String>,
     /// Where it runs, and its environment: a child inherits both.
     cwd: PathBuf,
     env: BTreeMap<String, String>,
@@ -588,6 +569,10 @@ impl Node {
         Node {
             tree: Arc::downgrade(tree),
             session_id,
+            rlm_child_id: spec
+                .subagent
+                .as_ref()
+                .map(|subagent| subagent.child_id.clone()),
             cwd: spec.cwd.clone(),
             env: spec.env.clone(),
             adopted: Mutex::new(Adopted {
@@ -772,6 +757,76 @@ pub(crate) struct Child {
     factory: bool,
     node: Arc<Node>,
     state: tokio::sync::Mutex<ChildState>,
+    /// The status its last `rlm_child_update` published.
+    published: Mutex<Option<&'static str>>,
+}
+
+impl Child {
+    /// Its roster row (see [`Subagents::roster`]).
+    async fn row(&self) -> Value {
+        let unsettled = child_is_unsettled(self).await;
+        let state = self.state.lock().await;
+        let mut row = json!({
+            "id": self.rlm_child_id,
+            "activeSessionId": self.node.session_id,
+            "sessionName": self
+                .node
+                .session_name()
+                .unwrap_or_else(|| self.rlm_child_id.clone()),
+            "label": Value::Null,
+            "status": if unsettled { "running" } else { state.status },
+            "durationMs": now_ms().saturating_sub(state.started_at_ms),
+            "sessionDir": self.node.session_dir(),
+        });
+        if let Some(model) = lock(&self.node.adopted).model_selector.clone() {
+            row["model"] = json!(model);
+        }
+        if let Some(answer) = &state.answer_text {
+            row["answerPreview"] = json!(pa_core::session_engine::rlm_notices::compact_rlm_text(
+                answer
+            ));
+        }
+        if let Some(error) = &state.error {
+            row["error"] = json!(error);
+        }
+        row
+    }
+
+    /// Publishes its row as `{"type": "rlm_child_update", "child": row}` on
+    /// its parent's `agent/<parent>/stream`, the old worker's child-update
+    /// sink: once per status, with `parentId` when the parent is a subagent
+    /// itself.
+    async fn publish_update(&self) {
+        let mut row = self.row().await;
+        let status = match row["status"].as_str() {
+            Some("running") => "running",
+            Some("done") => "done",
+            Some("error") => "error",
+            Some("cancelled") => "cancelled",
+            _ => return,
+        };
+        if lock(&self.published).replace(status) == Some(status) {
+            return;
+        }
+        let (Some(parent), Some(tree)) = (self.node.parent_node(), self.node.tree.upgrade()) else {
+            return;
+        };
+        if let Some(parent_id) = &parent.rlm_child_id {
+            row["parentId"] = json!(parent_id);
+        }
+        let Ok(topic) = Topic::new(format!("agent/{}/stream", parent.session_id)) else {
+            return;
+        };
+        tree.outbox.send(NewEvent {
+            topic,
+            source: parent.session_id.clone(),
+            session: Some(parent.session_id.clone()),
+            payload: json!({ "type": "rlm_child_update", "child": row }),
+            trust: parent.trust.current(),
+            cause: None,
+            reply: None,
+        });
+    }
 }
 
 struct ChildState {
@@ -803,7 +858,7 @@ fn now_ms() -> u64 {
 /// the collect wait and the roster rows all read this one fact, so a row
 /// delivered to a settled child reads unsettled until the child's next task
 /// takes it. A disposed child keeps no live work: its verdict stands.
-async fn child_is_unsettled(child: &Arc<Child>) -> bool {
+async fn child_is_unsettled(child: &Child) -> bool {
     if child.node.is_disposed() {
         return false;
     }
@@ -925,7 +980,24 @@ pub(crate) async fn drive_to_quiescence(
 /// assistant row that stopped on a provider error settles failed like a
 /// failed task. A row delivered to the child since its task took its last
 /// one starts its next task, with the trust of the one that ended.
-async fn settle_child(child: &Arc<Child>, run_error: Option<String>, trust: Trust) {
+/// How a child's task ended short of its answer: the roster's `error`
+/// for a failed one, `cancelled` (as the old daemon's) for a cancelled one,
+/// and why.
+struct RunCut {
+    status: &'static str,
+    error: String,
+}
+
+impl RunCut {
+    fn failed(error: String) -> Self {
+        RunCut {
+            status: "error",
+            error,
+        }
+    }
+}
+
+async fn settle_child(child: &Arc<Child>, cut: Option<RunCut>, trust: Trust) {
     let engine = child.node.engine();
     // The last assistant row: its text is the answer the collect envelope
     // and the no-reply notice carry; a provider-error stop on it is the
@@ -968,13 +1040,13 @@ async fn settle_child(child: &Arc<Child>, run_error: Option<String>, trust: Trus
         }
         state.settled = true;
         state.answer_text = answer.map(|text| cap_text(&text, ANSWER_TEXT_MAX_CHARS));
-        let notice = if let Some(error) = run_error.or(terminal_error) {
-            state.status = "error";
-            state.error = Some(error.clone());
+        let notice = if let Some(cut) = cut.or(terminal_error.map(RunCut::failed)) {
+            state.status = cut.status;
+            state.error = Some(cut.error.clone());
             Some(create_rlm_child_failure_message(
                 &child.rlm_child_id,
                 &name,
-                &error,
+                &cut.error,
                 now_ms(),
             ))
         } else {

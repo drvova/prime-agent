@@ -58,6 +58,8 @@ pub enum Query {
     /// `session.model`: an open session's model, thinking level and the
     /// levels its model supports.
     SessionModel,
+    /// `session.system_prompt`: an open session's system prompt.
+    SessionSystemPrompt,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -82,6 +84,7 @@ impl FromStr for Query {
             "sources" => Query::Sources,
             "session.children" => Query::SessionChildren,
             "session.model" => Query::SessionModel,
+            "session.system_prompt" => Query::SessionSystemPrompt,
             "subscriptions" => Query::Subscriptions,
             "tasks" => Query::Tasks,
             "session.context" => Query::SessionContext,

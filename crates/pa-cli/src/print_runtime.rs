@@ -451,7 +451,7 @@ pub(crate) async fn build_engine(
 mod faux;
 
 pub(crate) use faux::{
-    build_faux_engine_with, faux_response_steps, faux_script_env, FauxChildQueue,
+    build_faux_engine_with, faux_response_steps, faux_script_env, script_env, FauxChildQueue,
 };
 
 /// The switchable provider target the session's stream reads per call
@@ -470,6 +470,11 @@ pub(crate) enum HeadlessEmbedding {
         /// run's bus, its subagents, the late-receipt sink and the
         /// background-bash wake.
         seams: pa_runtime::SessionSeams,
+        /// A scripted session's own faux response queue, keyed by this id
+        /// (the runtime daemon's sessions, each answering its script from
+        /// the start as a supervisor worker does); `None` answers from the
+        /// process's shared `faux` queue (the print run's one session).
+        faux_lane: Option<String>,
     },
     /// A spawned subagent: the runtime's seams, and its engine deltas.
     Child {
@@ -537,7 +542,9 @@ pub(crate) struct HeadlessEmbeddingFields {
 /// drive's), the RPC mode's wake is the built handle's notify.
 pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> HeadlessEmbeddingFields {
     let seams = match embedding {
-        HeadlessEmbedding::Root { seams } | HeadlessEmbedding::Child { seams, .. } => Some(seams),
+        HeadlessEmbedding::Root { seams, .. } | HeadlessEmbedding::Child { seams, .. } => {
+            Some(seams)
+        }
         HeadlessEmbedding::Rpc => None,
     };
     let (bash_wake, rpc_bash_wake) = if let Some(seams) = seams {

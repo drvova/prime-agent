@@ -70,6 +70,7 @@ impl SessionBuilder for PrintSession {
                 return build_subagent(
                     &self.options,
                     self.faux.as_ref(),
+                    /*child_script*/ None,
                     id,
                     spec,
                     subagent,
@@ -86,7 +87,10 @@ impl SessionBuilder for PrintSession {
                     self.faux.as_ref(),
                     Some(manager),
                     self.options.app_mode.as_str(),
-                    &super::HeadlessEmbedding::Root { seams },
+                    &super::HeadlessEmbedding::Root {
+                        seams,
+                        faux_lane: None,
+                    },
                 )
                 .await?;
                 let engine = Arc::new(headless.engine);
@@ -142,6 +146,7 @@ impl SessionBuilder for PrintSession {
 pub(super) async fn build_subagent(
     options: &RunOptions,
     faux: Option<&serde_json::Value>,
+    child_script: Option<&serde_json::Value>,
     id: &str,
     spec: &SessionSpec,
     subagent: &pa_runtime::SubagentSpec,
@@ -164,9 +169,13 @@ pub(super) async fn build_subagent(
         .or(subagent.parent_thinking)
         .unwrap_or(pa_types::ai::ModelThinkingLevel::Medium);
     let (lane, thinking) = if let Some(script) = faux {
+        // Its `children.<name>` entry, else the script every child of the
+        // runtime daemon's scripted sessions runs
+        // (`PRIME_AGENT_FAUX_CHILD_SCRIPT`, the old worker's `childScript`).
         let queue = script
             .get("children")
             .and_then(|children| children.get(&name))
+            .or(child_script)
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "PRIME_AGENT_FAUX_SCRIPT has no \"children.{name}\" entry: a scripted print run \

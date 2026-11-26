@@ -1,5 +1,7 @@
 //! The state queries: `session.context`, `session.usage`, `session.tree`,
-//! `session.context_tree` and `session.breakdown`, answered from pa-core's
+//! `session.context_tree`, `session.breakdown` and `session.system_prompt`
+//! (an open session's engine's system prompt, the old `get_system_prompt`),
+//! answered from pa-core's
 //! own readers of a session manager (`active_context`, `get_tree`,
 //! `usage_host::session_usage_json`, `turn_boundary::context_usage`) and,
 //! for an open session, its engine (`context_categories`).
@@ -168,6 +170,12 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 "modelId": model_id,
             })),
         }))
+    }
+
+    pub(super) async fn system_prompt(&self, args: &Value) -> anyhow::Result<Value> {
+        let id = self.open_session(args)?;
+        let live = self.runtime.built_engine(&id).await?;
+        Ok(json!({ "session": id, "systemPrompt": live.engine.system_prompt }))
     }
 
     pub(super) async fn usage(&self, args: &Value) -> anyhow::Result<Value> {

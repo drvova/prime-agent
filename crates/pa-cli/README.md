@@ -25,8 +25,11 @@ until SIGINT or SIGTERM. Its `SessionBuilder` opens the transcript a session's s
 options (provider, model, thinking, system prompt and appended ones, skills, prompt templates;
 the autonomous run on `BuiltSession`, the goal seeded on a fresh branch, `executionMode` `acp` as
 the telemetry mode), builds the engine through the headless assembly (the faux provider
-under `PRIME_AGENT_FAUX_SCRIPT`), streams the turn driver's events, and builds subagents as the
-print run does (`print_session::build_subagent`); a session's engine binds its kernel's
+under `PRIME_AGENT_FAUX_SCRIPT`, each session answering from a queue of its own,
+`faux-<session id>`, as each supervisor worker does), streams the turn driver's events, and
+builds subagents as the print run does (`print_session::build_subagent`; a scripted session's
+subagent runs `PRIME_AGENT_FAUX_CHILD_SCRIPT` when the script names none for it, the
+supervisor's `childScript`); a session's engine binds its kernel's
 `schedule.*` and `rlm_heartbeat.*` to the seams' `scheduled_jobs` (a print run has none, so its
 `schedule.*` still refuses). The daemon's `selected` re-reads the global settings before each
 scheduled job (`daemon_mode::settings_select_runtime_daemon`; the environment switch is read

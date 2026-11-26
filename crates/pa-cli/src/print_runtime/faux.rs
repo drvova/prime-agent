@@ -16,17 +16,22 @@ use crate::print_runtime::{
 /// seam; never set by the product): `None` on a live run, an error when
 /// the script does not parse.
 pub(crate) fn faux_script_env() -> Result<Option<serde_json::Value>, String> {
-    let Some(script) = std::env::var_os("PRIME_AGENT_FAUX_SCRIPT") else {
+    script_env("PRIME_AGENT_FAUX_SCRIPT")
+}
+
+/// The script in the environment variable `name`: the JSON itself, or (as
+/// the interactive and ACP harnesses give it to the supervisor) the path of
+/// a file holding it, read as the supervisor's worker reads it. `None` when
+/// it is unset, an error when it does not parse.
+pub(crate) fn script_env(name: &str) -> Result<Option<serde_json::Value>, String> {
+    let Some(script) = std::env::var_os(name) else {
         return Ok(None);
     };
-    // The JSON itself, or (as the interactive and ACP harnesses give it to
-    // the supervisor) the path of a file holding it, read as the
-    // supervisor's worker reads it.
     match serde_json::from_str(&script.to_string_lossy()) {
         Ok(script) => Ok(Some(script)),
         Err(error) => pa_daemon::worker::read_script_file(std::path::Path::new(&script))
             .map(Some)
-            .ok_or_else(|| format!("invalid PRIME_AGENT_FAUX_SCRIPT: {error}")),
+            .ok_or_else(|| format!("invalid {name}: {error}")),
     }
 }
 
@@ -77,16 +82,17 @@ pub(crate) async fn build_faux_engine_with(
     // The stable faux identity (`api: "faux"`, `provider: "faux"`): fixtures can declare
     // faux-provider models in models.json. A spawned child gets its own api
     // lane so its queue never interleaves with its parent's.
-    let (api, child_queue) = match embedding {
+    let (api, child_queue, session_lane) = match embedding {
         HeadlessEmbedding::Child { overrides, .. } => match &overrides.lane {
-            ChildLane::Faux(queue) => (format!("faux-{}", queue.child_id), Some(queue)),
+            ChildLane::Faux(queue) => (format!("faux-{}", queue.child_id), Some(queue), None),
             ChildLane::Real(_) => {
                 return Err("a real-provider child builds through the headless builder".to_string());
             }
         },
-        HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => ("faux".to_string(), None),
+        HeadlessEmbedding::Root { faux_lane, .. } => ("faux".to_string(), None, faux_lane.as_ref()),
+        HeadlessEmbedding::Rpc => ("faux".to_string(), None, None),
     };
-    let registration =
+    let register = |api: String| {
         pa_ai::faux::register_faux_provider(pa_ai::faux::RegisterFauxProviderOptions {
             api: Some(api),
             provider: Some("faux".to_string()),
@@ -105,19 +111,35 @@ pub(crate) async fn build_faux_engine_with(
                 .get("tokensPerSecond")
                 .and_then(serde_json::Value::as_f64),
             ..Default::default()
-        });
-    if let Some(queue) = child_queue {
-        registration.set_responses(queue.steps.clone());
-        registration.set_repeat_last_response(queue.repeat_last);
-    } else {
-        registration.set_responses(response_steps);
+        })
+    };
+    let script_queue = |registration: &pa_ai::faux::FauxProviderRegistration| {
+        registration.set_responses(response_steps.clone());
         registration.set_repeat_last_response(
             script
                 .get("repeatLastResponse")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
         );
+    };
+    let registration = register(api);
+    if let Some(queue) = child_queue {
+        registration.set_responses(queue.steps.clone());
+        registration.set_repeat_last_response(queue.repeat_last);
+    } else {
+        script_queue(&registration);
     }
+    // A runtime daemon session answers from a queue of its own, as each
+    // session of the supervisor does from its own worker's: the shared
+    // `faux` lane above stays for a model a `models.json` names on it.
+    let registration = match session_lane {
+        Some(session) => {
+            let own = register(format!("faux-{session}"));
+            script_queue(&own);
+            own
+        }
+        None => registration,
+    };
     let model = registration.get_model();
     let thinking_level = match embedding {
         HeadlessEmbedding::Child { overrides, .. } => {
@@ -174,8 +196,19 @@ pub(crate) async fn build_faux_engine_with(
             session_manager,
             extra_host_handlers,
             conversation_log_path: None,
-            additional_skill_paths: vec![],
-            additional_prompt_paths: vec![],
+            // The resources the launch names, as on the real path (the
+            // runtime daemon's ACP sessions forward `--skill` and
+            // `--prompt-template`).
+            additional_skill_paths: config
+                .skills
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            additional_prompt_paths: config
+                .prompt_templates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
             extra_builtin_skill_overrides: vec![],
             rlm_subagent_host,
             rlm_usage_store: None,

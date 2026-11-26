@@ -2357,6 +2357,11 @@ fn runtime_daemon_request(socket: &std::path::Path, command: &Value) -> Value {
         "list" => ("query", "sessions.list", json!({ "open": true })),
         "get_messages" => ("query", "session.context", json!({ "session": session })),
         "get_rlm_children" => ("query", "session.children", json!({ "session": session })),
+        "get_system_prompt" => (
+            "query",
+            "session.system_prompt",
+            json!({ "session": session }),
+        ),
         // The old `wait_for_idle` answers once nothing runs, a held queue
         // included: the lane's `tasks` until it runs nothing.
         "wait_for_idle" => {
@@ -3329,16 +3334,6 @@ macro_rules! on_the_runtime_daemon {
 // - `acp_daemon_attached_close_keeps_the_worker_and_new_rebinds_it` and
 //   `acp_daemon_attached_default_session_persists_and_resumes` read the
 //   supervisor's worker descriptors, which the runtime daemon has none of;
-// - `acp_daemon_attached_forwards_cli_session_options` reads the session's
-//   system prompt with `get_system_prompt`, which wire2 has no query for;
-// - `acp_session_list_and_load_restore_a_saved_session_in_a_new_process`:
-//   the scripted faux provider is process-global, so in one runtime daemon
-//   the second process's startup session restarts the loaded session's
-//   response queue (it answers the script's first reply again);
-// - the spawn lanes (`acp_prompt_settles_after_rlm_quiescence`,
-//   `acp_cancel_during_settle_cancels_the_subagents`,
-//   `acp_eof_during_settle_exits_and_leaves_resident_subagents`) need
-//   `rlm_child_update` on the runtime stream and the child-script seam.
 on_the_runtime_daemon!(
     acp_initialize_matches_the_ts_golden,
     acp_second_initialize_is_served,
@@ -3386,4 +3381,9 @@ on_the_runtime_daemon!(
     acp_user_bash_maps_to_a_synthetic_tool_call,
     acp_daemon_attached_close_stop_failure_fences_the_session,
     acp_daemon_attached_close_holds_the_input_pause_until_the_next_session_new,
+    acp_session_list_and_load_restore_a_saved_session_in_a_new_process,
+    acp_prompt_settles_after_rlm_quiescence,
+    acp_cancel_during_settle_cancels_the_subagents,
+    acp_eof_during_settle_exits_and_leaves_resident_subagents,
+    acp_daemon_attached_forwards_cli_session_options,
 );

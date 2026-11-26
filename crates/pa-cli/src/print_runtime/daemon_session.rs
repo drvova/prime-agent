@@ -21,6 +21,10 @@ use crate::mode::RunOptions;
 struct DaemonSessions {
     options: RunOptions,
     faux: Option<serde_json::Value>,
+    /// The script every subagent of a scripted session runs when the
+    /// session's script names none for it (`PRIME_AGENT_FAUX_CHILD_SCRIPT`,
+    /// the supervisor's `childScript` seam; never set by the product).
+    child_faux: Option<serde_json::Value>,
 }
 
 impl SessionBuilder for DaemonSessions {
@@ -34,6 +38,7 @@ impl SessionBuilder for DaemonSessions {
             return super::print_session::build_subagent(
                 &self.options,
                 self.faux.as_ref(),
+                self.child_faux.as_ref(),
                 id,
                 spec,
                 subagent,
@@ -107,7 +112,10 @@ impl SessionBuilder for DaemonSessions {
             self.faux.as_ref(),
             Some(manager),
             mode.as_str(),
-            &super::HeadlessEmbedding::Root { seams },
+            &super::HeadlessEmbedding::Root {
+                seams,
+                faux_lane: Some(id.to_string()),
+            },
         )
         .await
         .map_err(anyhow::Error::msg)?;
@@ -148,6 +156,8 @@ pub(crate) fn run_runtime_daemon(
     agent_dir: PathBuf,
 ) -> anyhow::Result<i32> {
     let faux = super::faux_script_env().map_err(anyhow::Error::msg)?;
+    let child_faux =
+        super::script_env("PRIME_AGENT_FAUX_CHILD_SCRIPT").map_err(anyhow::Error::msg)?;
     let socket = pa_runtime::daemon::socket_path(daemon_socket);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -180,6 +190,7 @@ pub(crate) fn run_runtime_daemon(
                 builder: DaemonSessions {
                     options: options.clone(),
                     faux,
+                    child_faux,
                 },
             },
             async {

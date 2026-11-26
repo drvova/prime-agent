@@ -130,6 +130,7 @@ impl RlmSubagentHost for SessionSubagents {
                     started_at_ms: now_ms(),
                     replied_since_task: false,
                 }),
+                published: std::sync::Mutex::new(None),
             });
             // Teardown can run while the engine is being built. Checked
             // while the roster is held so disposal either takes this child
@@ -180,6 +181,7 @@ impl RlmSubagentHost for SessionSubagents {
             children.push(Arc::clone(&child));
             drop(children);
             drop(spawn_gate);
+            child.publish_update().await;
             tree.tree
                 .insert(session_id.clone(), node.session_id.clone());
             subscribe_done(&tree, &session_id, &node.session_id)?;
@@ -252,6 +254,7 @@ impl RlmSubagentHost for SessionSubagents {
                 }
                 roster_entry(&child, &state, unsettled)
             };
+            child.publish_update().await;
             node.children
                 .lock()
                 .await
@@ -564,6 +567,7 @@ impl Subagents {
                     started_at_ms: now_ms(),
                     replied_since_task: false,
                 }),
+                published: std::sync::Mutex::new(None),
             });
             if let Err(error) = outcome {
                 tracing::warn!(

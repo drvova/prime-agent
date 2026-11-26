@@ -452,6 +452,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::Subscriptions => Ok(self.subscriptions()),
             Query::SessionChildren => self.children(&args).await,
             Query::SessionModel => self.model(&args).await,
+            Query::SessionSystemPrompt => self.system_prompt(&args).await,
         }
     }
 
