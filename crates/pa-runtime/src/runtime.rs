@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use pa_types::event_log::{
-    AgentTarget, NewEvent, Priority, Route, Scope, Subscription, TopicFilter, Trust,
+    AgentDone, AgentTarget, NewEvent, Priority, Route, Scope, Subscription, TopicFilter, Trust,
 };
 use tokio::sync::mpsc;
 
@@ -231,7 +231,7 @@ impl<B: SessionBuilder> Runtime<B> {
             runner: runner.clone(),
         });
         subagents.attach(bus.registry(), Arc::downgrade(&control));
-        let publisher = tokio::spawn(publish_outgoing(bus.clone(), outgoing));
+        let publisher = tokio::spawn(publish_outgoing(bus.clone(), queue.clone(), outgoing));
         Ok(Runtime {
             bus,
             queue,
@@ -488,9 +488,12 @@ impl<B: SessionBuilder> Runtime<B> {
     }
 }
 
-/// Publishes the sessions' events in the order they were queued.
+/// Publishes the sessions' events in the order they were queued. A task's
+/// `agent/<id>/done` first ends it in its lane, so a client that hears the
+/// `done` and reads the lane does not find the task still running.
 async fn publish_outgoing<B: SessionBuilder>(
     bus: RuntimeBus<B>,
+    queue: TaskQueue<SessionRunner<B>, LogTaskStore>,
     mut outgoing: mpsc::UnboundedReceiver<Outgoing>,
 ) {
     while let Some(outgoing) = outgoing.recv().await {
@@ -502,6 +505,17 @@ async fn publish_outgoing<B: SessionBuilder>(
             }
         };
         let topic = event.topic.clone();
+        if let Some(session) = event.session.as_deref() {
+            let of = topic
+                .as_str()
+                .strip_prefix("agent/")
+                .and_then(|rest| rest.strip_suffix("/done"));
+            if of == Some(session) {
+                if let Ok(done) = serde_json::from_value::<AgentDone>(event.payload.clone()) {
+                    queue.reported(session, &done.task);
+                }
+            }
+        }
         let result = bus.publish(event).await;
         match published {
             Some(published) => {
