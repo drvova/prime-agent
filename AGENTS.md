@@ -263,7 +263,10 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   job is due. Attached clients reconnect on their own and show what happened.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
-  `"daemon": "runtime"` selects the runtime daemon (`pa_runtime::daemon`, wire2 on
+  `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the
+  supervisor (`PRIME_AGENT_DAEMON_SUPERVISOR=1`, set by the interactive TUI's spawn and the
+  update coordinator's successor, which speak the old wire until the TUI moves to wire2 in 8e;
+  the keeper keeps the supervisor for them) (`pa_runtime::daemon`, wire2 on
   `daemon2.sock` beside it, one per agent dir by an OS lock on `runtime-daemon.lock`, whose
   recorded holder and restart owner the supervisor's boot reap spares though their command lines
   name the same socket; a holder that does not answer on the same socket is a wedged

@@ -34,7 +34,12 @@ supervisor's `childScript`); a session's engine binds its kernel's
 `schedule.*` still refuses). The daemon's `selected` re-reads the global settings before each
 scheduled job (`daemon_mode::settings_select_runtime_daemon`; the environment switch is read
 once). A kept launch still splits into the keeper
-first; the runtime daemon has no keeper of its own yet (phase 7c).
+first; the runtime daemon has no keeper of its own yet (phase 7c). A launcher that waits on the
+supervisor's socket (the interactive TUI's `ensure_daemon_running`, the update coordinator's
+successor) sets `PRIME_AGENT_DAEMON_SUPERVISOR=1` on the daemon it spawns
+(`daemon_mode::SUPERVISOR_ENV`): that process and the daemon its keeper keeps are the supervisor
+whatever the opt-in says, until the TUI speaks wire2 (phase 8e). `tests/runtime_opt_in_launch_tmux_e2e.rs`
+is its verifier.
 `tests/runtime_daemon_e2e/` drives it over wire2 against the real binary; `turns.rs` there ports
 the supervisor's steer batching, queue order and abort tests (`steer_boundary_batch_e2e`,
 `queue_delivery_e2e`, `abort_kernel_e2e`) onto it, with withdraw, restore, compaction and the

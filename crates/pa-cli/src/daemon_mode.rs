@@ -1,7 +1,9 @@
 //! `--mode daemon`: the supervisor process. The interactive client spawns this
 //! mode (detached) when no daemon is listening. With the runtime daemon
 //! selected (`PRIME_AGENT_RUNTIME_DAEMON=1`, or `"daemon": "runtime"` in the
-//! global settings) it is the runtime daemon instead, on its own socket.
+//! global settings) it is the runtime daemon instead, on its own socket,
+//! unless its launcher waits on the supervisor's socket and says so
+//! ([`SUPERVISOR_ENV`]).
 
 use anyhow::Result;
 
@@ -10,6 +12,15 @@ use crate::mode::RunOptions;
 
 /// The environment switch that selects the runtime daemon.
 const RUNTIME_DAEMON_ENV: &str = "PRIME_AGENT_RUNTIME_DAEMON";
+
+/// The internal override a launcher that waits on the supervisor's socket
+/// (`daemon.sock`) sets on the `--mode daemon` process it spawns: that process
+/// is the supervisor whatever the runtime-daemon opt-in says. The interactive
+/// TUI and the update coordinator's successor speak the old wire only until the
+/// TUI moves to wire2, so the opt-in must not turn their daemon into the
+/// runtime daemon on `daemon2.sock`. A restart owner passes it on to the daemon
+/// it keeps, which inherits its environment.
+pub(crate) const SUPERVISOR_ENV: &str = "PRIME_AGENT_DAEMON_SUPERVISOR";
 
 /// Whether the process's own environment selects the runtime daemon; read
 /// once, at startup.
@@ -34,9 +45,10 @@ pub fn run_daemon_mode(options: &RunOptions) -> Result<i32> {
     let agent_dir = config::get_agent_dir();
     // The daemon keeps its transcripts in this agent dir's database.
     pa_core::session::store::use_agent_dir(&agent_dir);
-    // Process startup: which daemon this process is.
-    let runtime_selected =
-        env_selects_runtime_daemon() || settings_select_runtime_daemon(&agent_dir);
+    // Process startup: which daemon this process is. A launcher that waits on the
+    // supervisor's socket outranks the opt-in.
+    let runtime_selected = std::env::var_os(SUPERVISOR_ENV).is_none()
+        && (env_selects_runtime_daemon() || settings_select_runtime_daemon(&agent_dir));
     // Asked to be the restart owner: keep the daemon this command line starts instead of being
     // it, with the records of the daemon it keeps. Nothing of the session engine is built on
     // this path.

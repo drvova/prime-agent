@@ -59,6 +59,9 @@ pub fn spawn_supervisor(
     if let Some(roster_path) = roster_path {
         command.env(UPDATE_ROSTER_ENV, roster_path);
     }
+    // The coordinator waits for the successor's hello on the supervisor's socket: the
+    // runtime-daemon opt-in must not make it the runtime daemon.
+    command.env(crate::daemon_mode::SUPERVISOR_ENV, "1");
     // The successor runs under its own restart owner (see `pa_daemon::keeper`); a rollback
     // binary that predates the owner ignores the variable and runs unkept.
     #[cfg(unix)]
