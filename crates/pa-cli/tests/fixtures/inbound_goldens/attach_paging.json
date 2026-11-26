@@ -1,0 +1,15 @@
+{
+  "prefix": "atpag",
+  "settings": {
+    "onboardingCompleted": true,
+    "onboardingShown": true,
+    "telemetry": {
+      "noticeShown": true
+    }
+  },
+  "script": {
+    "responses": [],
+    "contextWindow": 128000
+  },
+  "steps": []
+}

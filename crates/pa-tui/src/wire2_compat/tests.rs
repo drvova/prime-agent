@@ -205,6 +205,60 @@ fn closes_and_side_questions_round_trip_and_other_topics_are_ignored() {
     );
 }
 
+/// A fault stored while no client listened (the crash a daemon's death leaves, recorded at the
+/// next boot) reaches a client that attaches later as the frame the stream mirrored live; live,
+/// the stream's own copy is the frame and the stored one is ignored.
+#[test]
+fn a_stored_fault_replays_as_its_session_event_and_is_ignored_live() {
+    let crashed = json!({ "type": "session_crashed", "kind": "daemon_restart",
+        "message": "the daemon stopped", "location": "", "thread": "", "at": "2026-11-26T00:00:00.000Z" });
+    let fault = |topic: &str, seq: u64| Event {
+        id: EventId(format!("e{seq}")),
+        seq,
+        ts: 1_795_700_000_000,
+        event: NewEvent {
+            topic: Topic::new(topic).unwrap(),
+            source: "s1".to_string(),
+            session: Some("s1".to_string()),
+            payload: if topic.ends_with("crashed") {
+                crashed.clone()
+            } else {
+                json!({ "type": "session_recovered", "failures": 1, "queuedInputSuspended": false })
+            },
+            trust: Trust::Owner,
+            cause: None,
+            reply: None,
+        },
+    };
+    let frame = |event: &Event, delivery| {
+        outbound_from_event(event, delivery)
+            .unwrap()
+            .map(|frame| serde_json::to_value(frame).unwrap())
+    };
+    let meta = |id: &str| {
+        json!({ "id": id, "protocol": { "name": "prime-agent.daemon", "version": 7 },
+                "activeSessionId": "s1", "emittedAt": "2026-11-26T13:33:20.000Z", "replayed": true })
+    };
+    assert_eq!(
+        [
+            frame(&fault("agent/s1/crashed", 4), Delivery::Backfill),
+            frame(&fault("agent/s1/recovered", 5), Delivery::Backfill),
+            frame(&fault("agent/s1/crashed", 6), Delivery::Live),
+        ],
+        [
+            Some(
+                json!({ "type": "session_event", "activeSessionId": "s1", "event": crashed,
+                         "meta": meta("e4") })
+            ),
+            Some(json!({ "type": "session_event", "activeSessionId": "s1",
+                         "event": { "type": "session_recovered", "failures": 1,
+                                    "queuedInputSuspended": false },
+                         "meta": meta("e5") })),
+            None,
+        ]
+    );
+}
+
 #[test]
 fn input_commands_publish_on_the_session_input_topic() {
     let input: PromptInput = serde_json::from_value(json!({

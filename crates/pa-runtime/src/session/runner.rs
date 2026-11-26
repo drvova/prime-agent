@@ -19,7 +19,7 @@ use crate::subagents::{
     Subagents, INBOX_SUBSCRIPTION, NOTICE_SUBSCRIPTION, SUBSCRIPTION_PREFIX as SUBAGENT_PREFIX,
 };
 use crate::subscriptions::MemorySessionTree;
-use crate::tasks::{Steered, TaskOutcome, TaskQueue, TaskRunner};
+use crate::tasks::{LaneState, Steered, TaskOutcome, TaskQueue, TaskRunner};
 
 /// The prefix of the subscriptions that hear a scheduled job's timer
 /// (`schedule:<job>`, routed to the job's session).
@@ -145,6 +145,12 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
         self.sessions
             .host(&running.session)
             .map_or(Steered::Declined, |host| host.steer(running, steer))
+    }
+
+    fn lane_changed(&self, session: &str, lane: &LaneState) {
+        if let Some(stream) = self.sessions.subagents().stream(session) {
+            stream.lane_changed(lane);
+        }
     }
 }
 

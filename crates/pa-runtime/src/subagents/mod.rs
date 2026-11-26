@@ -1219,6 +1219,7 @@ fn deliver_row(node: &Arc<Node>, row: Value, delivery: Delivery) -> anyhow::Resu
         Delivery::Steer => engine.session.agent().steer(loop_row),
         Delivery::FollowUp => engine.session.agent().follow_up(loop_row),
     }
+    node.stream.queue_changed();
     node.activity.notify_waiters();
     Ok(())
 }

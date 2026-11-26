@@ -112,3 +112,74 @@ async fn a_turn_streams_the_old_session_events_numbered_in_order() {
         "the stream: {stream:?}"
     );
 }
+
+/// The queue view (phase 8b-3), as the old worker sends it: a prompt that
+/// runs at once is never listed; one queued behind the running turn is
+/// listed in its lane, then is the active turn as it leaves the lane,
+/// `committing` once its row settles and `running` from its reply's first
+/// frame, and the view ends idle before its `done`. Each view is one
+/// numbered `session_action_update`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_queued_behind_a_turn_streams_the_old_queue_view_through_its_phases() {
+    let bed = Bed::new();
+    let cwd = bed.dir.path().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let _daemon = bed.runtime_daemon(&json!({ "responses": [
+        cell("Sleeping.", "(bash \"sleep 2\" (hash 'wait-ms #f))\n(displayln \"slept\")"),
+        "slept",
+        "the queued reply",
+    ]}));
+    let mut session = Attached::open(&bed, &cwd).await;
+    session.publish("sleep first", None).await;
+    session.until_streamed("tool_execution_start").await;
+    let queued = session.publish("then this", Some("follow_up")).await;
+    session.done(&queued["task"]).await;
+
+    let stream = session.payloads("stream");
+    let views: Vec<Value> = stream
+        .iter()
+        .filter(|event| event["type"] == "session_action_update")
+        .map(|event| event["actions"].clone())
+        .collect();
+    // The frame each view follows.
+    let after = |view: &Value| -> String {
+        let at = stream
+            .iter()
+            .position(|event| event["actions"] == *view)
+            .unwrap_or_else(|| panic!("{view} is not among the views {views:?}"));
+        let event = &stream[at - 1];
+        format!(
+            "{} {}",
+            event["type"].as_str().unwrap_or_default(),
+            event["message"]["role"].as_str().unwrap_or_default()
+        )
+    };
+    let active = |phase: &str| {
+        json!({ "queuedCount": 0, "steering": [], "followUps": [],
+            "active": { "kind": "turn", "phase": phase, "label": "then this" } })
+    };
+    assert_eq!(
+        (
+            views.clone(),
+            after(&active("committing")),
+            after(&active("running")),
+            stream
+                .iter()
+                .filter(|event| event["type"] == "session_action_update")
+                .all(|event| event["meta"]["sequence"].is_u64()),
+        ),
+        (
+            vec![
+                json!({ "queuedCount": 1, "steering": [], "followUps": ["then this"] }),
+                active("preparing"),
+                active("committing"),
+                active("running"),
+                json!({ "queuedCount": 0, "steering": [], "followUps": [] }),
+            ],
+            "message_end user".to_string(),
+            "message_start assistant".to_string(),
+            true,
+        ),
+        "the stream: {stream:?}"
+    );
+}

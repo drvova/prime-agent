@@ -79,7 +79,8 @@ pub use sources::{SourceDefinition, SourceLifetime};
 pub use store::{EventStore, MemoryEventStore, MemoryStateStore, StateKey, StateStore, StateWrite};
 pub use subscriptions::{DuplicateSubscription, MemorySessionTree, SessionTree};
 pub use tasks::{
-    MemoryTaskStore, Steered, TaskOutcome, TaskQueue, TaskRunner, TaskStore, INTERRUPTED_BY_RESTART,
+    LaneState, MemoryTaskStore, Steered, TaskOutcome, TaskQueue, TaskRunner, TaskStore,
+    INTERRUPTED_BY_RESTART,
 };
 pub use wire::{
     Call, ConnectionId, Handlers, Query, UnknownOperation, WireConfig, WireServer, CLIENT_TOPICS,

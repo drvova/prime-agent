@@ -22,6 +22,9 @@
 //!   counter spans the session's lifetimes; `session.snapshot` reports it as
 //!   `lastEventSequence`.
 //!
+//! In the session-event shapes the stream also carries the session's queue
+//! view, `session_action_update` ([`actions`]).
+//!
 //! Under supervision a crash is mirrored onto the stream as the old
 //! supervisor sends it, without a sequence: `session_crashed`, then for a
 //! run the crash cut off (its `agent_start` went out, its `agent_end` never
@@ -51,6 +54,10 @@ use super::{DriverEvents, Outbox};
 use crate::lock;
 use crate::trust::TaskTrust;
 
+mod actions;
+
+use actions::{QueueView, TurnPoint};
+
 /// One session's stream.
 pub(crate) struct SessionStream {
     outbox: Outbox,
@@ -75,6 +82,9 @@ struct StreamState {
     context: Option<ContextUsage>,
     /// The lifetime's billing stamp, which settled assistant rows carry.
     billing: Option<SessionBilling>,
+    /// The lifetime's agent: the rows waiting on it are in the queue view.
+    agent: Weak<Agent>,
+    view: QueueView,
 }
 
 impl SessionStream {
@@ -104,6 +114,7 @@ impl SessionStream {
         };
         stream.billing = Some(engine.session.billing());
         stream.context = context;
+        stream.agent = Arc::downgrade(engine.session.agent());
     }
 
     /// The last `meta.sequence` the session's stream consumed (0 before the
@@ -120,12 +131,58 @@ impl SessionStream {
 
     /// [`Self::publish`] with `trust` (a client's `!` command is the
     /// owner's).
+    ///
+    /// In the session-event shapes the queue view is the stream's own
+    /// ([`actions`]): the turn driver's projection, the json stream's, is
+    /// not sent, and a row it settles moves the view's phase.
     pub(crate) fn publish_as(&self, payload: &Value, trust: Trust) {
         let mut state = lock(&self.state);
-        if state.sequenced {
-            self.direct(&mut state, vec![payload.clone()], trust);
-        } else {
+        if !state.sequenced {
             self.send(payload.clone(), trust);
+            return;
+        }
+        if payload["type"] == "session_action_update" {
+            return;
+        }
+        self.direct(&mut state, vec![payload.clone()], trust);
+        if payload["type"] == "message_end"
+            && matches!(payload["message"]["role"].as_str(), Some("user" | "custom"))
+        {
+            self.turn_point(&mut state, TurnPoint::RowSettled);
+        }
+    }
+
+    /// A session command's task (`/compact`, ...) starts: in the
+    /// session-event shapes it is a run on the stream, as the old worker
+    /// framed it (`agent_start`, `turn_start`).
+    pub(crate) fn session_command_started(&self) {
+        let mut state = lock(&self.state);
+        if state.sequenced {
+            self.direct(
+                &mut state,
+                vec![
+                    json!({ "type": "agent_start" }),
+                    json!({ "type": "turn_start" }),
+                ],
+                self.trust.current(),
+            );
+        }
+    }
+
+    /// The session command's run ends: its terminal `turn_end` (with the
+    /// failure, if it failed) and its `agent_end`.
+    pub(crate) fn session_command_ended(&self, error: Option<&str>) {
+        let mut state = lock(&self.state);
+        if state.sequenced {
+            let mut end = json!({ "type": "turn_end" });
+            if let Some(error) = error {
+                end["error"] = json!(error);
+            }
+            self.direct(
+                &mut state,
+                vec![end, json!({ "type": "agent_end" })],
+                self.trust.current(),
+            );
         }
     }
 
@@ -178,6 +235,7 @@ impl SessionStream {
             return;
         }
         let trust = self.trust.current();
+        let mut point = None;
         let frames = match event {
             AgentEvent::AgentStart => {
                 self.open_run();
@@ -217,6 +275,7 @@ impl SessionStream {
                 let Some(value) = session_wire_value(message) else {
                     return;
                 };
+                point = Some(TurnPoint::ReplyStarted);
                 vec![direct_update_event(value, Some(json!({ "type": "start" })))]
             }
             AgentEvent::MessageUpdate {
@@ -275,7 +334,11 @@ impl SessionStream {
                 "isError": is_error,
             })],
         };
-        self.direct(&mut lock(&self.state), frames, trust);
+        let mut state = lock(&self.state);
+        self.direct(&mut state, frames, trust);
+        if let Some(point) = point {
+            self.turn_point(&mut state, point);
+        }
     }
 
     /// A settled row: an assistant row's `message_end` (with its billing
@@ -340,6 +403,12 @@ impl SessionStream {
             vec![end]
         };
         self.direct(&mut state, frames, trust);
+        if matches!(
+            message,
+            AgentMessage::Standard(Message::User(_)) | AgentMessage::Custom(_)
+        ) {
+            self.turn_point(&mut state, TurnPoint::RowSettled);
+        }
     }
 
     /// Opens a run: its coalescer, and the flusher that sends the trailing

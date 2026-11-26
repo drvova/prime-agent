@@ -23,13 +23,16 @@
 //!   prompt's cancel, the settled wait, the model and level, and the
 //!   subagent roster: [`acp_calls`].
 //! - The old daemon's session-event payloads on the stream, numbered
-//!   (phase 8b-2): [`stream`].
+//!   (phase 8b-2), and the queue view on it (phase 8b-3): [`stream`].
+//! - pa-tui's five inbound goldens replayed through `wire2_compat`
+//!   (phase 8b-3): [`goldens`].
 #![cfg(unix)]
 
 mod acp_calls;
 mod bash;
 mod client_surface;
 mod family;
+mod goldens;
 mod keeper;
 mod reliability;
 mod schedules;

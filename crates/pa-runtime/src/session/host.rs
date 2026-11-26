@@ -498,7 +498,13 @@ fn serve<B: SessionBuilder>(
 ) {
     let mut rebuild = match opening {
         Opening::Fresh => None,
-        Opening::Revived(rebuild) => Some(rebuild),
+        // The crash the daemon's death was, recorded as the session opened:
+        // mirrored as a live one is (a client that attaches later replays
+        // it from the stored topics).
+        Opening::Revived(rebuild) => {
+            lifetime.node.stream.crashed(&rebuild.crash);
+            Some(rebuild)
+        }
     };
     let mut failures = rebuild.as_ref().map_or(0, |rebuild| rebuild.failures);
     loop {
@@ -836,7 +842,9 @@ impl<B: SessionBuilder> Lifetime<B> {
                     }
                 };
                 // The `done` goes behind the turn's stream and ahead of
-                // anything a settle streams.
+                // anything a settle streams; the queue view's end of the
+                // task goes ahead of it.
+                self.node.stream.task_ended(&task.id);
                 self.outbox
                     .send(done_event(&self.topics, &task, &end, &cause));
                 let _ = outcome.send(Ran::Reported(end));
@@ -1090,7 +1098,14 @@ impl<B: SessionBuilder> Lifetime<B> {
             .session
             .classify_session_command(&task.prompt);
         if let Some(command) = command {
-            return Self::run_session_command(session, &command, &images).await;
+            self.node.stream.session_command_started();
+            let end = Self::run_session_command(session, &command, &images).await;
+            let error = match &end.outcome {
+                TaskOutcome::Failed(error) => Some(error.as_str()),
+                TaskOutcome::Done | TaskOutcome::Cancelled => None,
+            };
+            self.node.stream.session_command_ended(error);
+            return end;
         }
         let Hosted {
             built,

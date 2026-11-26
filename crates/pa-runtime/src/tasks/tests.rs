@@ -31,6 +31,8 @@ impl TaskRunner for Gate {
     }
 
     fn cancelled(&self, _task: &Task) {}
+
+    fn lane_changed(&self, _session: &str, _lane: &LaneState) {}
 }
 
 struct Harness {

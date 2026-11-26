@@ -1,0 +1,14 @@
+meta: golden numbers rising true, from 2, ids like H:2 | runtime numbers rising true, from 1, ids like live-0
+~ message_start assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ message_update assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ message_end assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ turn_end assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ agent_end: .event.messages[2].api: golden "T" | runtime "faux-H"
+~ message_start assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ message_update assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ message_end assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ turn_end assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ agent_end: .event.messages[1].api: golden "T" | runtime "faux-H"
+~ session_action_update: .event.actions.active: golden {"kind":"turn","phase":"running","label":"and again"} | runtime null
+~ session_action_update: .event.actions.queuedCount: golden 1 | runtime 0
+~ session_action_update: .event.actions.steering: golden ["/compact"] | runtime []

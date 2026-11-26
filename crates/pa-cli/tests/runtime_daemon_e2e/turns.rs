@@ -119,12 +119,20 @@ impl Attached {
 
     /// The payloads of the events on the session's `kind` topic so far.
     pub(super) fn payloads(&self, kind: &str) -> Vec<Value> {
+        self.events(kind)
+            .into_iter()
+            .map(|event| event.event.payload)
+            .collect()
+    }
+
+    /// The events on the session's `kind` topic so far.
+    pub(super) fn events(&self, kind: &str) -> Vec<pa_types::event_log::Event> {
         let topic = format!("agent/{}/{kind}", self.id);
         self.frames
             .iter()
             .filter_map(|frame| match frame {
                 ServerFrame::Event { event, .. } if event.event.topic.as_str() == topic => {
-                    Some(event.event.payload.clone())
+                    Some(event.clone())
                 }
                 _ => None,
             })

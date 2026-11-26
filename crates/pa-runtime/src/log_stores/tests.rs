@@ -14,7 +14,9 @@ use crate::lock;
 use crate::routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
 use crate::store::MemoryStateStore;
 use crate::subscriptions::MemorySessionTree;
-use crate::tasks::{Steered, TaskOutcome, TaskQueue, TaskRunner, INTERRUPTED_BY_RESTART};
+use crate::tasks::{
+    LaneState, Steered, TaskOutcome, TaskQueue, TaskRunner, INTERRUPTED_BY_RESTART,
+};
 
 fn open(dir: &Path) -> Arc<Log> {
     Arc::new(Log::open(dir.join("agent.db"), DEFAULT_EVENT_RETENTION).expect("the log opens"))
@@ -146,6 +148,8 @@ impl TaskRunner for Gate {
     }
 
     fn cancelled(&self, _task: &Task) {}
+
+    fn lane_changed(&self, _session: &str, _lane: &LaneState) {}
 }
 
 /// The database's task store, recording every save the queue makes.

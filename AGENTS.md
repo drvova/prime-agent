@@ -269,7 +269,15 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   on `agent/<id>/stream` (`pa-runtime` `session/stream.rs`), each numbered with the session's
   own `meta.sequence` (the counter `session.snapshot` reports as `lastEventSequence`), and a
   crash is mirrored onto the stream as the supervisor sends it: `session_crashed`, a cut-off
-  run's `turn_end {error}` and `agent_end`, then `session_recovered` or `session_failed`.
+  run's `turn_end {error}` and `agent_end`, then `session_recovered` or `session_failed`. The
+  crash a daemon's death left is mirrored when its revived session opens, and a client that
+  attaches later replays it from the stored fault topics (`wire2_compat` maps a replayed
+  `agent/<id>/crashed|recovered|failed` to the same frame). The stream also carries the queue
+  view the old worker sent, `session_action_update`, built from the lane and the rows waiting
+  on the agent (`session/stream/actions.rs`), and frames a session command's task as a run
+  (`agent_start` … `agent_end`); the turn driver's own projection is not sent there. pa-cli's
+  `runtime_daemon_e2e` `goldens` replays pa-tui's five inbound goldens through `wire2_compat`
+  and pins what still differs from the recording (`tests/fixtures/inbound_goldens/*.diff`).
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

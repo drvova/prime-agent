@@ -56,15 +56,16 @@ pub enum Steered {
     Declined,
 }
 
-/// What a session's lane holds now ([`TaskQueue::lane`]).
+/// What a session's lane holds ([`TaskQueue::lane`],
+/// [`TaskRunner::lane_changed`]).
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct LaneState {
-    pub(crate) running: Option<Task>,
+pub struct LaneState {
+    pub running: Option<Task>,
     /// In the order they would run.
-    pub(crate) queued: Vec<Task>,
-    pub(crate) suspended: bool,
+    pub queued: Vec<Task>,
+    pub suspended: bool,
     /// How many holds stop it ([`TaskQueue::hold`]).
-    pub(crate) holds: usize,
+    pub holds: usize,
 }
 
 /// Runs a session's tasks; the later turn runner implements it.
@@ -86,6 +87,11 @@ pub(crate) struct LaneState {
 /// out of its lane and saved `Cancelled`), which `run` is never called for:
 /// it reports that end as a run would have, and must not block or call into
 /// the queue.
+///
+/// `lane_changed` is told what a session's lane holds each time a task joins
+/// it, leaves it to run, ends there or is cancelled out of it, under the
+/// queue's lock, so the reports reach it in the order the changes happened.
+/// It must not block or call into the queue.
 pub trait TaskRunner: Send + Sync + 'static {
     /// Runs `task`.
     fn run(&self, task: Task) -> impl Future<Output = TaskOutcome> + Send;
@@ -95,6 +101,9 @@ pub trait TaskRunner: Send + Sync + 'static {
 
     /// Reports the end of `task`, cancelled while it was queued.
     fn cancelled(&self, task: &Task);
+
+    /// Reports what `session`'s lane holds after a change.
+    fn lane_changed(&self, session: &str, lane: &LaneState);
 }
 
 /// The task queue; clones share it.
@@ -137,6 +146,21 @@ impl Lanes {
                 .holds
                 .get(session)
                 .is_some_and(|holds| !holds.is_empty())
+    }
+
+    /// What `session`'s lane holds now.
+    fn state(&self, session: &str) -> LaneState {
+        let lane = self.by_session.get(session);
+        LaneState {
+            running: lane
+                .and_then(|lane| lane.running.clone())
+                .filter(|running| {
+                    lane.and_then(|lane| lane.reported.as_deref()) != Some(&running.id)
+                }),
+            queued: lane.map_or_default(|lane| lane.queued.values().cloned().collect()),
+            suspended: self.suspended.contains(session),
+            holds: self.holds.get(session).map_or(0, BTreeSet::len),
+        }
     }
 
     fn busy(&self) -> usize {
@@ -323,6 +347,11 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                     .map(|(key, _)| *key)?;
                 lane.queued.remove(&key)
             });
+            if taken.is_some() {
+                self.inner
+                    .runner
+                    .lane_changed(session, &lanes.state(session));
+            }
             // A lane no worker serves (a stopped one) is left empty: gone,
             // so the session reads idle.
             if lanes.by_session.get(session).is_some_and(|lane| {
@@ -357,18 +386,7 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
 
     /// What `session`'s lane holds now.
     pub(crate) fn lane(&self, session: &str) -> LaneState {
-        let lanes = lock(&self.inner.lanes);
-        let lane = lanes.by_session.get(session);
-        LaneState {
-            running: lane
-                .and_then(|lane| lane.running.clone())
-                .filter(|running| {
-                    lane.and_then(|lane| lane.reported.as_deref()) != Some(&running.id)
-                }),
-            queued: lane.map_or_default(|lane| lane.queued.values().cloned().collect()),
-            suspended: lanes.suspended.contains(session),
-            holds: lanes.holds.get(session).map_or(0, BTreeSet::len),
-        }
+        lock(&self.inner.lanes).state(session)
     }
 
     /// Cancels every task queued in `session`'s lane; a running one runs on.
@@ -384,6 +402,11 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                 .by_session
                 .get_mut(session)
                 .map_or_default(|lane| std::mem::take(&mut lane.queued));
+            if !queued.is_empty() {
+                self.inner
+                    .runner
+                    .lane_changed(session, &lanes.state(session));
+            }
             // A lane no worker serves (a parked or held one) is left empty:
             // gone, so the session reads idle (as `cancel_task` leaves it).
             if lanes
@@ -454,6 +477,9 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
             lane.queued.insert((task.priority, order), task);
             let start = !lane.served && !suspended;
             lane.served |= start;
+            self.inner
+                .runner
+                .lane_changed(&session, &lanes.state(&session));
             self.inner.busy.send_replace(lanes.busy());
             let admitted = if suspended {
                 Admission::Parked
@@ -470,6 +496,10 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
 }
 
 /// Runs `session`'s lane until it is empty.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one loop: pick, save, offer the steers behind, run, save the end, each reported"
+)]
 async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: String) {
     loop {
         // The semaphore is never closed, so the permit always comes.
@@ -511,6 +541,7 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
                 behind.extend(lane.queued.pop_first());
             }
             lane.running = Some(task.clone());
+            inner.runner.lane_changed(&session, &lanes.state(&session));
             (task, behind)
         };
         if let Err(error) = inner.store.save(task.clone()).await {
@@ -542,6 +573,7 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
             if let Some(lane) = lanes.by_session.get_mut(&session) {
                 lane.queued.extend(declined);
             }
+            inner.runner.lane_changed(&session, &lanes.state(&session));
             inner.busy.send_replace(lanes.busy());
         }
         let runner = Arc::clone(&inner.runner);
@@ -570,6 +602,7 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
         if let Some(lane) = lanes.by_session.get_mut(&session) {
             lane.running = None;
         }
+        inner.runner.lane_changed(&session, &lanes.state(&session));
         inner.busy.send_replace(lanes.busy());
     }
 }

@@ -44,7 +44,9 @@ SQLite implementations over `pa-log`.
   next. A `Steer` task that runs as its own is offered the `Steer` tasks queued behind it as it
   starts (the runner keeps them for that run), so steers that waited together are delivered
   together. `push` answers how the task was admitted (`pa_types::event_log::Admission`:
-  `queued`, `steered`, or `parked` in a suspended lane). A lane can be suspended: its queued tasks
+  `queued`, `steered`, or `parked` in a suspended lane). `TaskRunner::lane_changed` hears what
+  a lane holds (`LaneState`) after each task joins it, leaves it to run, ends there or is
+  cancelled out of it, under the queue's lock, so its reports arrive in order. A lane can be suspended: its queued tasks
   stay queued and none starts until it is resumed; the running one runs on. `cancel_queued`
   cancels a session's waiting tasks. `TaskQueue::restore(session)` requeues
   that session's stored queued tasks in order and fails each running one with
@@ -123,7 +125,23 @@ SQLite implementations over `pa-log`.
   `message_end`, `compaction_summary_delta` while a summary is written; a tool's update and end
   name no tool, as the old frames do not), each frame, driver events, `!` commands and child
   updates included, numbered with the session's `meta.sequence`, a parked update consuming its
-  number as it parks; then `agent/<id>/done` (stored, an `AgentDone`: task,
+  number as it parks. In those shapes the stream carries the old worker's queue view,
+  `session_action_update` (`session/stream/actions.rs`), built from the lane's reports and the
+  rows waiting on the agent: a task queued behind work (its lane running, holding a task or
+  stopped) is listed in its lane (`Steer` under `steering`, the rest under `followUps`), a
+  task that joined an idle lane never is, the waiting rows follow with `rlmChildStatus` marking
+  a child's status notice; the task leaving the lane is the active `turn`, `preparing` with its
+  row's text as label (a wake task's, its first waiting row's), `committing` once its first user
+  or custom row settles, `running` from its reply's first frame, and gone before its `done`; an
+  unchanged view, and the idle one a session starts from, is not sent. The turn driver's own
+  projection (the goal surface's frames) is not sent there, and a session command's task is
+  framed as a run (`agent_start`, `turn_start`, its rows, `turn_end` with its failure if it
+  failed, `agent_end`), as the old worker framed it. Goal-minted turns (a budget steer, a held
+  continuation) are not lane tasks and are not in the view yet. The update flush runs at the
+  fixed 50 ms the old pacer starts from, without its backlog feedback: the backpressure point
+  here is each connection's listener (16,384 events behind before it loses any and catches up
+  stored events from the log), a lost live update is superseded by the next (each carries the
+  whole message) and the snapshot covers the rest. Then `agent/<id>/done` (stored, an `AgentDone`: task,
   outcome, error, and the `TaskFailure`: a failed reply, command or turn), queued behind the
   stream, with the task's trust. A turn whose last reply is a failed model request fails its
   task as a failed reply.
@@ -521,7 +539,7 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 - `EventStore` (`append`, `since`, `before`), `StateStore`, `StateKey`, `StateWrite`,
   `SessionTree`, `ModelCaller`, `ModelCall`, `TaskSink`, `TaskRequest`, `Announced`.
 - `TaskQueue` (`push` answers a `pa_types::event_log::Admission`), `TaskRunner`, `TaskOutcome`,
-  `Steered`, `TaskStore`, `INTERRUPTED_BY_RESTART`.
+  `Steered`, `LaneState`, `TaskStore`, `INTERRUPTED_BY_RESTART`.
 - `MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`, `MemoryTaskStore`.
 - `LogEventStore`, `LogTaskStore`, `LogStateStore` (each `new(Arc<pa_log::Log>)`;
   `LogStateStore::get`).

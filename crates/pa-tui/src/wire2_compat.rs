@@ -12,6 +12,7 @@
 //! | `agent/<id>/stream` | today's `session_event.event` object, plus `meta.sequence` (below) | `session_event` |
 //! | `agent/<id>/side_question` | today's `side_question_event.event` object, verbatim | `side_question_event` |
 //! | `agent/<id>/closed` | `{"reason": "killed" \| "shutdown" \| "completed" \| "replaced" \| "update"}` | `session_closed` |
+//! | `agent/<id>/crashed`, `recovered`, `failed`, replayed only | today's `session_crashed` / `session_recovered` / `session_failed` event, verbatim | `session_event` |
 //! | `runtime/roster` | today's `roster_update` frame without `type` (`changed`, `removed`, `resync`) | `roster_update` |
 //!
 //! `<id>` is the session's active id, the one `DaemonCommand`s address. On the agent topics the
@@ -28,6 +29,12 @@
 //!   in the payload instead, as `meta.sequence` beside the old event's own members; the layer
 //!   takes it out, so the TUI sees the old event unchanged. A stream event without it has no
 //!   `sequence`. A reconnecting client resumes the stream from the snapshot, not from the log.
+//!
+//! A session's faults are stored topics the runtime also mirrors onto its stream, unnumbered, as
+//! they happen. Live, the stream's copy is the frame and the stored one is ignored; replayed (a
+//! client that attaches after the fault, such as one the daemon's death and revival happened
+//! without), the stored one is, so a later client sees the fault the session's attached clients
+//! were shown. Its frame carries no `sequence`, as the stream's copy does not.
 //!
 //! There is no cursor generation on wire2 (the log outlives the process), so `meta.cursor` is
 //! absent; the TUI reads it only when `sequence` is missing. An event on any other topic is not a
@@ -125,6 +132,16 @@ pub(crate) fn outbound_from_event(
                 rest: Map::new(),
             }
         }
+        ["agent", id, "crashed" | "recovered" | "failed"] => match delivery {
+            Delivery::Backfill => DaemonOutbound::SessionEvent {
+                active_session_id: (*id).to_string(),
+                event: payload.clone(),
+                meta: Some(meta(id, None)),
+                rest: Map::new(),
+            },
+            // The stream carried it live.
+            Delivery::Live => return Ok(None),
+        },
         ["agent", id, "side_question"] => DaemonOutbound::SideQuestionEvent {
             active_session_id: (*id).to_string(),
             event: payload.clone(),
@@ -151,6 +168,26 @@ pub(crate) fn outbound_from_event(
         _ => return Ok(None),
     };
     Ok(Some(outbound))
+}
+
+/// The old frames, as JSON, that a client of this layer receives for `events` delivered live, in
+/// order; an event on a topic the TUI has no input for is left out. The test seam a verifier
+/// outside the crate drives this layer through: pa-cli's `runtime_daemon_e2e` replays the inbound
+/// goldens' scripts against a real runtime daemon, captures the events it sends, and compares
+/// what this returns with the recorded supervisor stream.
+///
+/// # Errors
+///
+/// An event is on a mapped topic but its payload is not that topic's shape.
+#[doc(hidden)]
+pub fn live_frames(events: &[Event]) -> Result<Vec<Value>> {
+    let mut frames = Vec::with_capacity(events.len());
+    for event in events {
+        if let Some(frame) = outbound_from_event(event, Delivery::Live)? {
+            frames.push(serde_json::to_value(frame)?);
+        }
+    }
+    Ok(frames)
 }
 
 /// `command` as wire2 carries it: an input command becomes a publish with `request_id` as its

@@ -1,0 +1,33 @@
+{
+  "prefix": "promp",
+  "settings": {
+    "onboardingCompleted": true,
+    "onboardingShown": true,
+    "telemetry": {
+      "noticeShown": true
+    }
+  },
+  "script": {
+    "reasoning": true,
+    "responses": [
+      {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "The user said hello; answer briefly."
+          },
+          {
+            "type": "text",
+            "text": "Hello! I stream this answer in small pieces so the client sees several message updates before the turn ends."
+          }
+        ]
+      }
+    ],
+    "contextWindow": 128000
+  },
+  "steps": [
+    {
+      "prompt": "hello"
+    }
+  ]
+}
