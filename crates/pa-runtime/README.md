@@ -92,8 +92,8 @@ SQLite implementations over `pa-log`.
   session host), entered with its `pa_types::session_scope` (id, cwd, environment). The
   embedder's `SessionBuilder` builds the engine there, so the composition root picks provider,
   settings and session manager, what the turn driver reports (`DriverEvents`: its json events
-  on the stream, or quiet as the text print mode), the autonomous run it starts with, and its
-  `InlineSubagents` if it hosts any; each build is a fresh engine whose kernel comes from the
+  on the stream, or quiet as the text print mode) and the autonomous run it starts with, and it
+  installs the `SessionSeams` the runtime hands it; each build is a fresh engine whose kernel comes from the
   spare pool, never a copy. At build the stream's listener, the goal usage accounting, the
   autonomous accounting and the natural-turn-end continuation hook are wired on, in that
   order. A task runs a session command (`/compact`, `/refine`, `/goal`, `/autonomous`,
@@ -156,15 +156,34 @@ SQLite implementations over `pa-log`.
   (`[agent-message from event <source>]`, then pa-core's `event_delivery_message`) and counts as
   delivered. A session never gets its own events, and a session the runtime does not run gets
   none (a subscription restored from an earlier run waits for its session).
+- **Subagents** (`subagents/`): every open session has a node in the runtime's family tree.
+  `rlm-spawn` gates on pa-core's `rlm_depth` bound (a root's resolves when its engine is
+  built; a child's is its parent's, fixed), checks the name, and opens the child as a runtime
+  session (`SessionSpec::subagent`: its parent, handle, depth and requested model, which its
+  builder resolves; a build error is the spawn's error), with the parent's cwd (or the one it
+  asks for), environment and running task's trust; the child's session gets its own trust
+  gate. The task is delivered as the parent's `agent_message` row and run by an empty
+  `AgentInput` on `agent/<child>/input` (an empty input runs the rows delivered to a session
+  as the quiescence drive runs them; a subagent's task ends at rest, so its `done` follows its
+  subtree). The parent hears the child through the subscription `subagent/<child>` on
+  `agent/<child>/done`, whose route queues no task: it settles the child (its answer and
+  verdict) and steers the no-reply notice or the failure row onto the parent's agent. The
+  family's `agent_message.*` delivers the same row through the same steer path, and starts a
+  settled child's next task. `rlm-collect` waits on the parent's activity (each settle fires
+  it) to its deadline, and ends with its cell when the kernel stops it; `rlm-list-subagents`,
+  `rlm-delete-subagent` (the child and its subtree cancelled, their kernels disposed and
+  sessions closed) and `rlm-rename` read and change the roster. A session is at rest when no
+  child is unsettled, no late receipt is pending, no row waits on its agent and no background
+  command runs: the settle drives it there, the goal and autonomous continuations wait for it,
+  and `finish` ends every subagent.
 - **Turn driver** (`turn/`, moved from pa-cli's print runtime, run by the sessions above):
   `TurnBoundary` (the overflow compact-and-retry, the requested and threshold compaction arms,
-  the auto-refine reviews and the disposal drain; public, so an embedder's `InlineSubagents`
-  drive their turns through it), the goal surface (goal updates, queued goal turns, budget
+  the auto-refine reviews and the disposal drain), the goal surface (goal updates, queued goal turns, budget
   steers, the backoff wake), the autonomous run (gate commands after each settled turn, its
   continuations and exit contract), the natural-turn-end hook composing the goal and
   autonomous arms (both defer behind unsettled subagent work), the session slash commands,
-  and the auto-retry events. Their json events go to the session's stream; a
-  `TurnBoundary::new` prints its own on stdout.
+  and the auto-retry events. Their json events go to the session's stream (a
+  `TurnBoundary::new`, the tests' own, prints its events on stdout).
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
 
@@ -173,8 +192,8 @@ No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStor
 `TaskStore`). No engine assembly (the embedder's `SessionBuilder`). No model calls for `Call`
 routes yet (behind `ModelCaller`). No event sources (`pa-sources`, publishing through `Intake`).
 No socket listener (the daemon accepts connections and hands each to `WireServer::serve`), and
-no query or call backend (behind `Handlers`). No inline-subagent host (the embedder's
-`InlineSubagents`; the print modes' lives in pa-cli). No persistence of other subscriptions yet (the kernel's event subscriptions are kept); a
+no query or call backend (behind `Handlers`). No model resolution for a subagent (its builder's, from its
+`SubagentSpec`). No persistence of other subscriptions yet (the kernel's event subscriptions are kept); a
 task's `done` carries no cause chain yet. Nothing bounds how wide a cascade grows within the hop
 limit, or how many events an `Intake` or the sessions' outbox buffers.
 
@@ -191,10 +210,11 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `LogStateStore::get`).
 - `Runtime` (`open`, `publish`, `listen`, `create_session`, `cancel`, `idle`, `settle`, `finish`,
   `shutdown`), `RuntimeOptions`, `SessionBuilder` (`build(id, spec, seams)`), `SessionSeams`
-  (the session's trust gate and the host requests the runtime answers, its `event.*`, both of
-  which the engine must install), `SessionSpec`, `BuiltSession`, `DriverEvents`,
-  `InlineSubagents`, `SettleAfter`, `Settled`, `Finished`; `TaskQueue::session_idle`.
-- The turn driver's `TurnBoundary`.
+  (the session's trust gate, the host requests the runtime answers - its `event.*` and its
+  family's `agent_message.*` - its `rlm.*` subagents, the late-receipt sink and the
+  background-bash wake, all of which the engine must install), `SessionSpec`, `SubagentSpec`,
+  `BuiltSession`, `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
+  `TaskQueue::session_idle`.
 
 Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-core` (the session engine, the
 kernel's spare pool, the turn driver's compaction, refinement, goal and autonomous seams) and

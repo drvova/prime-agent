@@ -13,6 +13,7 @@ use super::{done_event, SessionBuilder, SessionSpec, SessionTopics, Sessions};
 use crate::events::BusEvents;
 use crate::log_stores::LogTaskStore;
 use crate::routes::{TaskRequest, TaskSink};
+use crate::subagents::{Subagents, SUBSCRIPTION_PREFIX};
 use crate::subscriptions::MemorySessionTree;
 use crate::tasks::{Steered, TaskOutcome, TaskQueue, TaskRunner};
 
@@ -99,7 +100,8 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
 /// its text and images, and its priority when it names one. A kernel event
 /// subscription's task starts from the message its event delivers
 /// ([`BusEvents::deliver`]), and none is queued for the subscriber's own
-/// event. Its trust is
+/// event. A subagent's `done` queues no task: it settles the subagent, whose
+/// notice its parent's agent takes ([`Subagents::deliver_done`]). Its trust is
 /// the request's; an untrusted task's prompt is wrapped as
 /// `<untrusted-event source="<the event's source>">…</untrusted-event>`.
 pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
@@ -108,12 +110,18 @@ pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
     pub(crate) tree: MemorySessionTree,
     /// The kernel's event bus: what its subscriptions' events deliver.
     pub(crate) events: Arc<BusEvents>,
+    /// The sessions' subagents: what their `done` settles.
+    pub(crate) subagents: Arc<Subagents>,
     /// Where a spawned session without a `cwd` of its own runs.
     pub(crate) cwd: PathBuf,
 }
 
 impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
     async fn queue(&self, request: TaskRequest) -> anyhow::Result<()> {
+        if let Some(child) = request.subscription.strip_prefix(SUBSCRIPTION_PREFIX) {
+            self.subagents.deliver_done(child, &request.event).await;
+            return Ok(());
+        }
         let event = &request.event.event;
         let session = match request.target {
             AgentTarget::Session { session } => session,
@@ -127,6 +135,7 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                     name,
                     cwd: cwd.map_or_else(|| self.cwd.clone(), PathBuf::from),
                     env: std::collections::BTreeMap::new(),
+                    subagent: None,
                 })?;
                 if let Some(parent) = &event.session {
                     self.tree.insert(id.clone(), parent.clone());
@@ -161,6 +170,9 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
         // untouched: it stays cache-stable.)
         let prompt = match request.trust {
             Trust::Owner => prompt,
+            // An empty input carries no content: it wakes the session over
+            // the rows already delivered to it.
+            Trust::Untrusted if prompt.is_empty() => prompt,
             Trust::Untrusted => {
                 let attribute = event
                     .source

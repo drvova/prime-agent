@@ -27,6 +27,7 @@ use crate::session::{
     Finished, Outbox, Outgoing, RuntimeTaskSink, SessionBuilder, SessionRunner, SessionSpec,
     Sessions, SettleAfter, Settled,
 };
+use crate::subagents::{SessionControl, Subagents};
 use crate::subscriptions::MemorySessionTree;
 use crate::tasks::TaskQueue;
 
@@ -78,7 +79,37 @@ pub struct Runtime<B: SessionBuilder> {
     queue: TaskQueue<SessionRunner<B>, LogTaskStore>,
     runner: SessionRunner<B>,
     sessions: Arc<Sessions<B>>,
+    /// What the subagents open, cancel and close sessions through; they hold
+    /// it weakly.
+    _control: Arc<dyn SessionControl>,
     publisher: tokio::task::JoinHandle<()>,
+}
+
+/// The runtime's sessions and their tasks, as the subagents reach them.
+struct Control<B: SessionBuilder> {
+    sessions: Arc<Sessions<B>>,
+    queue: TaskQueue<SessionRunner<B>, LogTaskStore>,
+    runner: SessionRunner<B>,
+}
+
+impl<B: SessionBuilder> SessionControl for Control<B> {
+    fn open(&self, spec: SessionSpec) -> anyhow::Result<String> {
+        self.sessions.open(spec)
+    }
+
+    fn cancel(&self, session: &str) -> pa_agent::BoxFut<'_, anyhow::Result<()>> {
+        let session = session.to_string();
+        Box::pin(async move {
+            self.queue.cancel_queued(&session).await?;
+            self.runner.cancel_running(&session);
+            Ok(())
+        })
+    }
+
+    fn close(&self, session: &str) -> pa_agent::BoxFut<'_, ()> {
+        let session = session.to_string();
+        Box::pin(async move { self.sessions.close(&session).await })
+    }
 }
 
 impl<B: SessionBuilder> Runtime<B> {
@@ -109,7 +140,14 @@ impl<B: SessionBuilder> Runtime<B> {
         // The sessions' events wait in the outbox until the bus is up.
         let (outbox, outgoing) = Outbox::channel();
         let events = Arc::new(BusEvents::new(agent_dir, outbox.clone()));
-        let sessions = Arc::new(Sessions::new(options.builder, outbox, Arc::clone(&events)));
+        let tree = MemorySessionTree::default();
+        let subagents = Arc::new(Subagents::new(outbox.clone(), tree.clone()));
+        let sessions = Arc::new(Sessions::new(
+            options.builder,
+            outbox,
+            Arc::clone(&events),
+            Arc::clone(&subagents),
+        ));
         let runner = SessionRunner::new(Arc::clone(&sessions));
         let restored = async {
             let mut opened = Vec::with_capacity(options.sessions.len());
@@ -138,7 +176,6 @@ impl<B: SessionBuilder> Runtime<B> {
                 return Err(error);
             }
         };
-        let tree = MemorySessionTree::default();
         let bus = Bus::new(BusParts {
             events: LogEventStore::new(Arc::clone(&log)),
             state: LogStateStore::new(Arc::clone(&log)),
@@ -149,6 +186,7 @@ impl<B: SessionBuilder> Runtime<B> {
                 sessions: Arc::clone(&sessions),
                 tree,
                 events: Arc::clone(&events),
+                subagents: Arc::clone(&subagents),
                 cwd: options.cwd,
             },
             listener_capacity: options.listener_capacity,
@@ -168,12 +206,19 @@ impl<B: SessionBuilder> Runtime<B> {
             trust: Trust::Owner,
         })?;
         events.attach(log, bus.registry()).await;
+        let control: Arc<dyn SessionControl> = Arc::new(Control {
+            sessions: Arc::clone(&sessions),
+            queue: queue.clone(),
+            runner: runner.clone(),
+        });
+        subagents.attach(bus.registry(), Arc::downgrade(&control));
         let publisher = tokio::spawn(publish_outgoing(bus.clone(), outgoing));
         Ok(Runtime {
             bus,
             queue,
             runner,
             sessions,
+            _control: control,
             publisher,
         })
     }

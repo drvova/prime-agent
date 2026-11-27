@@ -439,27 +439,35 @@ pub(crate) use faux::{
 /// (shared with the RPC mode, whose picker model switches swap it live).
 pub type ProviderTargetSlot = std::sync::Arc<std::sync::RwLock<Option<ProviderTarget>>>;
 
-/// What one engine build varies by session: the print root (inline
-/// subagents over its node), a spawned inline child (its own model,
-/// auth, and session), or the RPC mode (no inline subagents — today's
-/// behavior).
+/// What one engine build varies by session: a print-runtime session (the
+/// print root, or a spawned subagent with its own model, auth and session),
+/// each over what the runtime gives its engine, or the RPC mode (no
+/// subagents).
 pub(crate) enum HeadlessEmbedding {
+    /// The print root.
     Root {
-        node: std::sync::Arc<crate::print_rlm::InlineSessionNode>,
         /// What the runtime gives the session's engine (`pa_runtime::SessionBuilder`):
-        /// its trust gate and its `event.*` on the run's bus.
-        seams: Option<pa_runtime::SessionSeams>,
+        /// its trust gate, its `event.*` and family `agent_message.*` on the
+        /// run's bus, its subagents, the late-receipt sink and the
+        /// background-bash wake.
+        seams: pa_runtime::SessionSeams,
     },
-    Child(Box<ChildEngineOverrides>),
+    /// A spawned subagent: the runtime's seams, and its engine deltas.
+    Child {
+        seams: pa_runtime::SessionSeams,
+        overrides: Box<ChildEngineOverrides>,
+    },
     Rpc,
 }
 
-/// One spawned inline child's engine deltas: its model lane, the
-/// thinking level it runs, and the parent-edge identity.
+/// One spawned subagent's engine deltas: its model lane, the thinking
+/// level it runs, its depth, and the parent-edge identity.
 pub(crate) struct ChildEngineOverrides {
-    pub node: std::sync::Arc<crate::print_rlm::InlineSessionNode>,
     pub lane: ChildLane,
     pub thinking: pa_types::ai::ModelThinkingLevel,
+    pub depth: u32,
+    /// The subagent's session dir (its semantic-edge ledger lives there).
+    pub session_dir: std::path::PathBuf,
     pub semantic_parent_session_id: Option<String>,
     pub spawned_by_request_id: Option<String>,
     /// The spawn carried a factory run tag.
@@ -474,11 +482,11 @@ pub(crate) enum ChildLane {
 }
 
 /// The per-embedding fields both headless builders (the real provider
-/// and the faux script) share: the inline host + agent-message handlers
-/// with the RLM depth, the background-bash wake both engine seams fire
-/// (the completion row's admission wake and the kernel's
-/// background-settle callback), and the late agent-message receipt sink
-/// print sessions record through.
+/// and the faux script) share: the subagent host and the runtime's host
+/// requests with the RLM depth, the background-bash wake both engine seams
+/// fire (the completion row's admission wake and the kernel's
+/// background-settle callback), the late agent-message receipt sink print
+/// sessions record through, and the trust gate.
 pub(crate) struct HeadlessEmbeddingFields {
     pub(crate) rlm_subagent_host:
         Option<Arc<dyn pa_core::session_engine::rlm_host::RlmSubagentHost>>,
@@ -490,43 +498,23 @@ pub(crate) struct HeadlessEmbeddingFields {
     /// queue-pump listener parks on it; `None` outside the RPC embedding.
     pub(crate) rpc_bash_wake: Option<Arc<Notify>>,
     /// The late fire-and-forget `agent_message.send` receipt sink
-    /// (#10-print); `None` for the RPC embedding (no print node).
+    /// (#10-print); `None` for the RPC embedding.
     pub(crate) on_late_sent_agent_message: Option<pa_core::LateSentAgentMessageHandler>,
     /// What the kernel asks before each call past it: a runtime session's
-    /// trust gate; `None` for an inline child and the RPC embedding.
+    /// trust gate; `None` for the RPC embedding.
     pub(crate) call_policy: Option<Arc<dyn pa_core::kernel::CallPolicy>>,
 }
 
-/// The embedding-owned fields for one headless engine build: print
-/// sessions wake on the inline node's activity (every quiescence park
-/// listens on it), the RPC mode on the built handle's notify.
+/// The embedding-owned fields for one headless engine build: a print
+/// session's come from the runtime's seams (its wake is its quiescence
+/// drive's), the RPC mode's wake is the built handle's notify.
 pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> HeadlessEmbeddingFields {
-    let node = match embedding {
-        HeadlessEmbedding::Root { node, .. } => Some(Arc::clone(node)),
-        HeadlessEmbedding::Child(overrides) => Some(Arc::clone(&overrides.node)),
+    let seams = match embedding {
+        HeadlessEmbedding::Root { seams } | HeadlessEmbedding::Child { seams, .. } => Some(seams),
         HeadlessEmbedding::Rpc => None,
     };
-    let seams = match embedding {
-        HeadlessEmbedding::Root { seams, .. } => seams.as_ref(),
-        HeadlessEmbedding::Child(_) | HeadlessEmbedding::Rpc => None,
-    };
-    let (rlm_subagent_host, extra_host_handlers) = match &node {
-        Some(node) => {
-            let (host, mut handlers) = crate::print_rlm::inline_subagent_wiring(node);
-            if let Some(seams) = seams {
-                handlers.merge(seams.host_handlers.clone());
-            }
-            (Some(host), Some(handlers))
-        }
-        None => (None, None),
-    };
-    let (bash_wake, rpc_bash_wake) = if let Some(node) = &node {
-        let node = Arc::clone(node);
-        (
-            Arc::new(move || node.activity.notify_waiters())
-                as pa_core::session_engine::bash_notices::BashNoticeWake,
-            None,
-        )
+    let (bash_wake, rpc_bash_wake) = if let Some(seams) = seams {
+        (Arc::clone(&seams.bash_wake), None)
     } else {
         let notify = Arc::new(Notify::new());
         let wake = {
@@ -536,23 +524,21 @@ pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> Headle
         };
         (wake, Some(notify))
     };
-    let on_late_sent_agent_message = node
-        .as_ref()
-        .map(crate::print_rlm::late_sent_agent_message_sink);
     HeadlessEmbeddingFields {
-        rlm_subagent_host,
-        extra_host_handlers,
+        rlm_subagent_host: seams.map(|seams| Arc::clone(&seams.subagents)),
+        extra_host_handlers: seams.map(|seams| seams.host_handlers.clone()),
         rlm_depth: match embedding {
-            HeadlessEmbedding::Child(overrides) => Some(overrides.node.depth),
+            HeadlessEmbedding::Child { overrides, .. } => Some(overrides.depth),
             HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => None,
         },
         factory_child: matches!(
             embedding,
-            HeadlessEmbedding::Child(overrides) if overrides.factory_child
+            HeadlessEmbedding::Child { overrides, .. } if overrides.factory_child
         ),
         bash_wake,
         rpc_bash_wake,
-        on_late_sent_agent_message,
+        on_late_sent_agent_message: seams
+            .map(|seams| Arc::clone(&seams.on_late_sent_agent_message)),
         call_policy: seams.map(|seams| Arc::clone(&seams.call_policy)),
     }
 }
@@ -657,7 +643,7 @@ pub(crate) async fn build_headless_engine_with(
     let pinned = credential_pin.is_some();
     registry.set_credential_pin(&config.agent_dir, credential_pin);
     let model = match embedding {
-        HeadlessEmbedding::Child(overrides) => match &overrides.lane {
+        HeadlessEmbedding::Child { overrides, .. } => match &overrides.lane {
             ChildLane::Real(model) => (**model).clone(),
             ChildLane::Faux(_) => {
                 return Err("a scripted child builds through the faux builder".to_string());
@@ -696,7 +682,7 @@ pub(crate) async fn build_headless_engine_with(
     // Children serve their own provider target (the route-authoritative
     // stream would serve the parent's model, and children have no
     // image-model routing).
-    let (stream_fn, image_model_router) = if matches!(embedding, HeadlessEmbedding::Child(_)) {
+    let (stream_fn, image_model_router) = if matches!(embedding, HeadlessEmbedding::Child { .. }) {
         (
             switchable_stream_fn(std::sync::Arc::clone(&provider_target)),
             None,
@@ -780,13 +766,13 @@ pub(crate) async fn build_headless_engine_with(
         call_policy,
     } = headless_embedding_fields(embedding);
     let (semantic_edges, thinking_level) = match embedding {
-        HeadlessEmbedding::Child(overrides) => (
+        HeadlessEmbedding::Child { overrides, .. } => (
             Some(
                 pa_core::session_engine::semantic_edges::SemanticEdgeIdentity {
                     session_id: session_manager.get_session_id().to_string(),
                     // A spawned child's ledger lives in its rlm session dir.
                     ledger_path: pa_core::session_engine::semantic_edges::semantic_edge_ledger_path(
-                        Some(std::path::Path::new(&overrides.node.session_dir)),
+                        Some(&overrides.session_dir),
                         session_manager.get_session_artifact_dir().as_deref(),
                     ),
                     parent_session_id: overrides.semantic_parent_session_id.clone(),

@@ -16,8 +16,9 @@ serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# Session and task ids: UUIDv7, the transcript store's own session-id form.
-uuid = { version = "1", features = ["v7"] }
+# Session and task ids: UUIDv7, the transcript store's own session-id form;
+# a subagent's handle (`sub-<8 hex>`): random, UUIDv4.
+uuid = { version = "1", features = ["v4", "v7"] }
 
 [dev-dependencies]
 # `test-util` (tokio time pause) is test-only: the throttle, debounce and

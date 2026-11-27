@@ -16,7 +16,7 @@
 //!
 //! Each surface emits its json events through an [`EventSink`]: the session's
 //! stream for a runtime session, stdout for a boundary made with
-//! `TurnBoundary::new` (an inline subagent's, whose json mode is off).
+//! `TurnBoundary::new` (the tests' own).
 
 pub(crate) mod auto_retry;
 pub(crate) mod autonomous;

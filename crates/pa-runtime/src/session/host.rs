@@ -28,6 +28,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use pa_core::agent_state::EventRequester;
+use pa_core::session_engine::agent_messaging::register_agent_message_host_handlers;
 use pa_core::session_engine::event_bus_host::register_event_bus_host_handlers;
 
 use super::{
@@ -36,6 +37,10 @@ use super::{
 };
 use crate::events::{BusEvents, SessionEvents};
 use crate::lock;
+use crate::subagents::{
+    dispose, drive_to_quiescence, has_unsettled_rlm_work, late_sent_agent_message_sink,
+    FamilyMessages, Node, SessionSubagents,
+};
 use crate::tasks::{Steered, TaskOutcome};
 use crate::trust::{TaskTrust, TrustGate};
 use crate::turn::autonomous::{latest_assistant_error, HeadlessAutonomous};
@@ -107,7 +112,6 @@ pub(crate) struct SessionHost {
 
 /// What the runtime reaches a running turn through, from outside the
 /// session's thread: steering and cancellation never wait for the turn.
-#[derive(Default)]
 struct TurnControl {
     turn: Mutex<Turn>,
     /// The running task's trust: what its events carry and what its
@@ -141,13 +145,17 @@ impl SessionHost {
     pub(crate) fn start<B: SessionBuilder>(
         id: String,
         spec: SessionSpec,
+        node: Arc<Node>,
         topics: SessionTopics,
         builder: Arc<B>,
         outbox: Outbox,
         events: Arc<BusEvents>,
     ) -> std::io::Result<Self> {
         let (work, queued) = mpsc::unbounded_channel();
-        let control = Arc::new(TurnControl::default());
+        let control = Arc::new(TurnControl {
+            turn: Mutex::new(Turn::default()),
+            trust: node.trust.clone(),
+        });
         let thread = std::thread::Builder::new()
             .name(format!(
                 "session-{}",
@@ -160,6 +168,7 @@ impl SessionHost {
                         &Lifetime {
                             id,
                             spec,
+                            node,
                             topics,
                             builder,
                             outbox,
@@ -326,6 +335,8 @@ impl SessionHost {
 struct Lifetime<B> {
     id: String,
     spec: SessionSpec,
+    /// The session's place in the family tree.
+    node: Arc<Node>,
     topics: SessionTopics,
     builder: Arc<B>,
     outbox: Outbox,
@@ -536,7 +547,7 @@ impl<B: SessionBuilder> Lifetime<B> {
             }
             Work::Settle(settled) => {
                 let answer = session_scope::catching_panics(AssertUnwindSafe(|| {
-                    runtime.block_on(Self::settle(session))
+                    runtime.block_on(self.settle(session))
                 }));
                 let (answer, panicked) = match answer {
                     Ok(answer) => (answer.map(Some), Ok(())),
@@ -553,7 +564,7 @@ impl<B: SessionBuilder> Lifetime<B> {
             }
             Work::Finish(finished) => {
                 let answer = session_scope::catching_panics(AssertUnwindSafe(|| {
-                    runtime.block_on(Self::finish(session))
+                    runtime.block_on(self.finish(session))
                 }));
                 let (answer, panicked) = match answer {
                     Ok(answer) => (Ok(answer), Ok(())),
@@ -589,16 +600,33 @@ impl<B: SessionBuilder> Lifetime<B> {
                 }),
                 &mut host_handlers,
             );
+            register_agent_message_host_handlers(
+                Arc::new(FamilyMessages(Arc::clone(&self.node))),
+                &mut host_handlers,
+            );
             let seams = SessionSeams {
                 call_policy: Arc::new(gate),
                 host_handlers,
+                subagents: Arc::new(SessionSubagents(Arc::clone(&self.node))),
+                on_late_sent_agent_message: late_sent_agent_message_sink(&self.node),
+                bash_wake: {
+                    let node = Arc::clone(&self.node);
+                    Arc::new(move || node.activity.notify_waiters())
+                },
             };
             runtime.block_on(self.builder.build(&self.id, &self.spec, seams))
         }));
         let built = match built {
             Ok(Ok(built)) => built,
-            Ok(Err(error)) => return Err(format!("build the session: {error:#}")),
-            Err(_) => return Err("building the session panicked".to_string()),
+            Ok(Err(error)) => {
+                self.node.built(Err(format!("{error:#}")));
+                return Err(format!("build the session: {error:#}"));
+            }
+            Err(_) => {
+                let error = "building the session panicked".to_string();
+                self.node.built(Err(error.clone()));
+                return Err(error);
+            }
         };
         let agent = Arc::clone(built.engine.session.agent());
         let json = built.events == DriverEvents::Stream;
@@ -617,6 +645,9 @@ impl<B: SessionBuilder> Lifetime<B> {
                 })
                 .await;
             let engine = &built.engine;
+            self.node
+                .adopt(engine, &built.model, &built.agent_dir)
+                .await;
             let goal = Arc::new(PrintGoalSurface::with_sink(json, self.publisher()));
             goal.seed_publish_baseline(engine).await;
             let goal_updated_at_start = engine.goal_state().await.updated_at;
@@ -629,16 +660,24 @@ impl<B: SessionBuilder> Lifetime<B> {
             });
             let _ = autonomous.wire_accounting(&agent).await;
             // Both continuation arms defer while subagent work is unsettled;
-            // the hook holds the subagents weakly, as the engine's own agent
-            // keeps the hook.
-            let unsettled = built.subagents.as_ref().map(|subagents| {
-                let subagents = Arc::downgrade(subagents);
-                Arc::new(move || match subagents.upgrade() {
-                    Some(subagents) => subagents.unsettled(),
+            // the hook holds the node weakly, as the engine's own agent keeps
+            // the hook.
+            let unsettled = {
+                let node = Arc::downgrade(&self.node);
+                Arc::new(move || match node.upgrade() {
+                    Some(node) => Box::pin(async move { has_unsettled_rlm_work(&node).await })
+                        as pa_agent::BoxFut<'static, bool>,
                     None => Box::pin(std::future::ready(false)),
                 }) as UnsettledWork
-            });
-            wire_continuation_hook(engine, &agent, &built.model, &goal, &autonomous, unsettled);
+            };
+            wire_continuation_hook(
+                engine,
+                &agent,
+                &built.model,
+                &goal,
+                &autonomous,
+                Some(unsettled),
+            );
             let global_harness_dir =
                 pa_core::refinement::get_global_harness_state_dir(&built.agent_dir);
             Hosted {
@@ -651,6 +690,7 @@ impl<B: SessionBuilder> Lifetime<B> {
             }
         });
         lock(&self.control.turn).agent = Some(agent);
+        self.node.built(Ok(()));
         Ok(hosted)
     }
 
@@ -679,7 +719,13 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// ([`Lifetime::run_session_command`]). A prompt runs the pre-turn boundary,
     /// the prompt with its retries, a steer the run took but did not read,
     /// the settled-turn boundary, then the goal's queued turns and, when the
-    /// goal does not own the wake-up, the autonomous run's held ones.
+    /// goal does not own the wake-up, the autonomous run's held ones. An
+    /// empty prompt runs none of that: it drives the rows delivered to the
+    /// session to quiescence, as a subagent's every task ends doing.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a task's steps read linearly, each with the end it fails with"
+    )]
     async fn run_task(
         &self,
         session: &mut Hosted,
@@ -704,85 +750,106 @@ impl<B: SessionBuilder> Lifetime<B> {
         } = session;
         let engine = &built.engine;
         let turn_failed = |reason: String| TaskEnd::failed(TaskFailure::Turn, reason);
-        if let Err(error) = boundary
-            .run_pre_turn(engine, &built.model, built.api_key.clone())
-            .await
-        {
-            return turn_failed(error);
-        }
-        // Cancelled before its run started: there is no run to abort.
-        if lock(&self.control.turn).cancelled {
-            return TaskEnd::CANCELLED;
-        }
-        let retry_policy =
-            pa_core::settings::SettingsManager::create(&self.spec.cwd, &built.agent_dir)
-                .get_provider_retry_policy();
-        let publish = self.publisher();
-        let prompted = engine
-            .session
-            .prompt_with_auto_retry(
-                &task.prompt,
-                images,
-                &retry_policy,
-                built.model.context_window,
-                |event| {
-                    publish(&crate::turn::auto_retry::auto_retry_event_json(event));
-                    std::future::ready(Ok(()))
-                },
-            )
-            .await;
-        let agent = engine.session.agent();
-        let (cancelled, steered) = {
-            let mut turn = lock(&self.control.turn);
-            turn.steerable = false;
-            (turn.cancelled, turn.steered)
-        };
-        if cancelled {
-            return TaskEnd::CANCELLED;
-        }
-        if let Err(error) = prompted {
-            return turn_failed(format!("{error:#}"));
-        }
-        // A steer taken as the run settled was never read: it runs now, as
-        // part of this task. Rows other work queued on the agent (a
-        // subagent's reply) wait for the settle's quiescence drive.
-        if steered && agent.has_queued_messages() {
-            if let Err(error) = agent.continue_run().await {
+        // An empty input wakes the session over the rows delivered to it
+        // (a subagent's task, a message to it): they run as its quiescence
+        // drive runs them, below.
+        if !task.prompt.is_empty() {
+            if let Err(error) = boundary
+                .run_pre_turn(engine, &built.model, built.api_key.clone())
+                .await
+            {
+                return turn_failed(error);
+            }
+            // Cancelled before its run started: there is no run to abort.
+            if lock(&self.control.turn).cancelled {
+                return TaskEnd::CANCELLED;
+            }
+            let retry_policy =
+                pa_core::settings::SettingsManager::create(&self.spec.cwd, &built.agent_dir)
+                    .get_provider_retry_policy();
+            let publish = self.publisher();
+            let prompted = engine
+                .session
+                .prompt_with_auto_retry(
+                    &task.prompt,
+                    images,
+                    &retry_policy,
+                    built.model.context_window,
+                    |event| {
+                        publish(&crate::turn::auto_retry::auto_retry_event_json(event));
+                        std::future::ready(Ok(()))
+                    },
+                )
+                .await;
+            let agent = engine.session.agent();
+            let (cancelled, steered) = {
+                let mut turn = lock(&self.control.turn);
+                turn.steerable = false;
+                (turn.cancelled, turn.steered)
+            };
+            if cancelled {
+                return TaskEnd::CANCELLED;
+            }
+            if let Err(error) = prompted {
                 return turn_failed(format!("{error:#}"));
             }
-            agent.wait_for_idle().await;
-        }
-        let settled = async {
-            let (model, api_key) = (&built.model, &built.api_key);
-            boundary
-                .run_at_settled_turn(engine, model, api_key.clone(), global_harness_dir.clone())
+            // A steer taken as the run settled was never read: it runs now, as
+            // part of this task. Rows other work queued on the agent (a
+            // subagent's reply) wait for the settle's quiescence drive.
+            if steered && agent.has_queued_messages() {
+                if let Err(error) = agent.continue_run().await {
+                    return turn_failed(format!("{error:#}"));
+                }
+                agent.wait_for_idle().await;
+            }
+            let settled = async {
+                let (model, api_key) = (&built.model, &built.api_key);
+                boundary
+                    .run_at_settled_turn(engine, model, api_key.clone(), global_harness_dir.clone())
+                    .await?;
+                goal.drive_boundary(
+                    engine,
+                    boundary,
+                    model,
+                    api_key.clone(),
+                    global_harness_dir.clone(),
+                )
                 .await?;
-            goal.drive_boundary(
+                // The goal arm takes exclusive priority: the autonomous arm
+                // drains its held continuations only when the goal does not own
+                // the wake-up.
+                if !engine.goal_owns_continuation_wakeup().await {
+                    autonomous
+                        .drive_boundary(
+                            engine,
+                            boundary,
+                            model,
+                            api_key.clone(),
+                            global_harness_dir.clone(),
+                        )
+                        .await?;
+                }
+                Ok::<_, String>(())
+            };
+            if let Err(error) = settled.await {
+                return turn_failed(error);
+            }
+        }
+        // A subagent's task ends at rest: the rows its turns left and its own
+        // subagents' settles run first, so its `done` follows its subtree.
+        if task.prompt.is_empty() || self.node.is_subagent() {
+            if let Err(error) = drive_to_quiescence(
+                &self.node,
                 engine,
                 boundary,
-                model,
-                api_key.clone(),
+                &built.model,
+                built.api_key.clone(),
                 global_harness_dir.clone(),
             )
-            .await?;
-            // The goal arm takes exclusive priority: the autonomous arm
-            // drains its held continuations only when the goal does not own
-            // the wake-up.
-            if !engine.goal_owns_continuation_wakeup().await {
-                autonomous
-                    .drive_boundary(
-                        engine,
-                        boundary,
-                        model,
-                        api_key.clone(),
-                        global_harness_dir.clone(),
-                    )
-                    .await?;
+            .await
+            {
+                return turn_failed(error);
             }
-            Ok::<_, String>(())
-        };
-        if let Err(error) = settled.await {
-            return turn_failed(error);
         }
         match latest_assistant_error(engine).await {
             Some(error) => TaskEnd::failed(
@@ -866,8 +933,8 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// owed continuation, the autonomous continuation held behind the
     /// subagents, and the boundary drains whatever turns those armed (a
     /// threshold continuation, a budget steer, more subagents).
-    async fn settle(session: &mut Hosted) -> Result<Settled, String> {
-        Self::drive_to_rest(session).await?;
+    async fn settle(&self, session: &mut Hosted) -> Result<Settled, String> {
+        self.drive_to_rest(session).await?;
         let engine = &session.built.engine;
         let messages: Vec<pa_types::session::AgentMessage> = engine
             .session
@@ -894,7 +961,7 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// The settle's drive: every admitted subagent settles and its replies
     /// and notices run as turns, then the deferred continuations deliver and
     /// the boundary drains what they armed, until nothing more runs.
-    async fn drive_to_rest(session: &mut Hosted) -> Result<(), String> {
+    async fn drive_to_rest(&self, session: &mut Hosted) -> Result<(), String> {
         let Hosted {
             built,
             boundary,
@@ -906,19 +973,17 @@ impl<B: SessionBuilder> Lifetime<B> {
         let engine = &built.engine;
         let model = &built.model;
         loop {
-            if let Some(subagents) = &built.subagents {
-                if subagents
-                    .drive_to_quiescence(
-                        engine,
-                        boundary,
-                        model,
-                        built.api_key.clone(),
-                        global_harness_dir.clone(),
-                    )
-                    .await?
-                {
-                    continue;
-                }
+            if drive_to_quiescence(
+                &self.node,
+                engine,
+                boundary,
+                model,
+                built.api_key.clone(),
+                global_harness_dir.clone(),
+            )
+            .await?
+            {
+                continue;
             }
             // The subagents are at rest: only an owed continuation delivers.
             match engine
@@ -994,7 +1059,7 @@ impl<B: SessionBuilder> Lifetime<B> {
 
     /// Finishes the run: the disposal drain (the refinements its turns
     /// started), then the subagents' end.
-    async fn finish(session: &mut Hosted) -> Finished {
+    async fn finish(&self, session: &mut Hosted) -> Finished {
         let Hosted {
             built,
             boundary,
@@ -1009,9 +1074,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                 global_harness_dir.clone(),
             )
             .await;
-        if let Some(subagents) = &built.subagents {
-            subagents.dispose().await;
-        }
+        dispose(&self.node).await;
         Finished {
             refine_command_failed: boundary.refine_command_failed(),
         }

@@ -1,27 +1,18 @@
-//! RLM child model resolution and roster text helpers: reference resolution against the
-//! credential-backed catalog, the spawn-time thinking-support check, the requested child cwd,
-//! plus the roster text caps.
+//! RLM child model resolution and the roster label: reference resolution against the
+//! credential-backed catalog, the spawn-time thinking-support check, and the one-line task
+//! label (the requested child cwd and the roster text caps are pa-core's, beside the notices).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{anyhow, bail, Result};
 use pa_ai::models::{get_supported_thinking_levels, thinking_level_from_str};
 use pa_core::kernel::rlm_runtime::{find_rlm_model_matches, RlmModelInfo};
+use pa_core::session_engine::rlm_notices::cap_text;
 
 /// Close matches listed in model-resolution errors.
 const MODEL_ERROR_SUGGESTION_LIMIT: usize = 3;
-/// Cap on the answer preview handed to the parent model.
-pub const ANSWER_PREVIEW_MAX_CHARS: usize = 160;
 /// Cap on the one-line task label shown in kernel rosters.
 pub const LABEL_MAX_CHARS: usize = 200;
-/// Cap on the FULL final-answer text the collect envelope carries (the
-/// settle-binding data plane): the roster preview stays
-/// [`ANSWER_PREVIEW_MAX_CHARS`], while a consumer that binds outputs from
-/// the answer (the factory's output ports) needs the whole fenced JSON,
-/// so the lane is bounded instead of unbounded, never ballooning the
-/// collect reply for a runaway answer.
-pub const ANSWER_TEXT_MAX_CHARS: usize = 65_536;
-const ELLIPSIS: &str = "...";
 
 /// The model catalog the RLM surface resolves against: the same
 /// credential-backed list `rlm.find_models` searches (entitled `internal/*` models resolve).
@@ -174,27 +165,6 @@ pub fn assert_thinking_supported(
     );
 }
 
-/// The directory a child starts in: a requested `cwd` resolves against the
-/// session cwd and is canonicalized (project-context discovery walks its
-/// ancestors), otherwise the child shares the session cwd.
-///
-/// # Errors
-/// Returns an error naming `operation` when the requested directory does not exist.
-pub fn resolve_child_cwd(
-    session_cwd: &Path,
-    requested: Option<&str>,
-    operation: &str,
-) -> Result<PathBuf> {
-    let Some(requested) = requested else {
-        return Ok(session_cwd.to_path_buf());
-    };
-    let joined = session_cwd.join(requested);
-    match pa_types::platform::canonicalize(&joined) {
-        Ok(cwd) if cwd.is_dir() => Ok(cwd),
-        _ => bail!("{operation} cwd {} is not a directory", joined.display()),
-    }
-}
-
 /// Rejection message for an unresolved model reference: the
 /// unavailability, the selector form, and close matches for retry.
 fn model_unavailable_error(
@@ -220,13 +190,6 @@ fn model_unavailable_error(
     }
 }
 
-/// Collapse whitespace and cap at the roster limit.
-#[must_use]
-pub fn compact_rlm_text(text: &str) -> String {
-    let compact: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    cap_text(&compact, ANSWER_PREVIEW_MAX_CHARS)
-}
-
 /// One-line task label: collapsed prompt, capped for roster rows.
 #[must_use]
 pub fn rlm_child_label(prompt: &str) -> String {
@@ -239,20 +202,11 @@ pub fn rlm_child_label(prompt: &str) -> String {
     cap_text(&collapsed, LABEL_MAX_CHARS)
 }
 
-/// Whitespace-collapsed text capped at `max` chars with an ellipsis.
-#[must_use]
-pub fn cap_text(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let kept: String = text.chars().take(max - ELLIPSIS.len()).collect();
-    format!("{}{}", kept.trim_end(), ELLIPSIS)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model_allowlist::DaemonAllowlist;
+    use pa_core::session_engine::rlm_notices::{compact_rlm_text, ANSWER_PREVIEW_MAX_CHARS};
     use serde_json::json;
 
     /// A models.json custom provider, like the pa-core registry tests.
@@ -652,24 +606,5 @@ mod tests {
         let preview = compact_rlm_text(&long_answer);
         assert_eq!(preview.chars().count(), ANSWER_PREVIEW_MAX_CHARS);
         assert!(preview.ends_with("..."));
-    }
-
-    #[test]
-    fn the_binding_lane_keeps_far_more_than_the_preview_cap() {
-        // The collect envelope's full-answer lane: a fenced JSON output
-        // longer than the 160-character roster preview binds whole from
-        // it, so the bound stays far above the preview cap and only a
-        // genuinely oversized payload (over ANSWER_TEXT_MAX_CHARS) sees
-        // the ellipsis.
-        let long = "y".repeat(ANSWER_TEXT_MAX_CHARS + 50);
-        let capped = cap_text(&long, ANSWER_TEXT_MAX_CHARS);
-        assert_eq!(capped.chars().count(), ANSWER_TEXT_MAX_CHARS);
-        assert!(capped.ends_with("..."));
-        let wide_json = format!(
-            "{{\"blob\": \"{}\"}}",
-            "z".repeat(ANSWER_PREVIEW_MAX_CHARS * 4)
-        );
-        let lane = cap_text(&wide_json, ANSWER_TEXT_MAX_CHARS);
-        assert_eq!(lane, wide_json, "a wide-but-bounded JSON keeps its tail");
     }
 }
