@@ -1145,6 +1145,61 @@ async fn a_command_killed_with_its_kernel_is_announced_as_lost_by_the_next_kerne
 }
 
 on_each_shell! {
+/// The command a model's call waits for is listed as that call's from its
+/// first line, written before it can start: a kernel that ends at any moment
+/// once the command has started leaves it listed as the call's own, and the
+/// next kernel names the call in its notice.
+async fn a_waited_command_is_listed_as_its_calls_before_it_starts(shell) {
+    let dir = tempfile::tempdir().unwrap();
+    let started = pipe_in(dir.path(), "started");
+    let artifacts = dir.path().join("artifacts");
+    let saved = |handlers| SchemeKernelOptions {
+        shell,
+        host_handlers: handlers,
+        cwd: dir.path().to_path_buf(),
+        artifact_dir: Some(artifacts.clone()),
+        ..SchemeKernelOptions::default()
+    };
+    let (handlers, _received) = recording(&[("bash.completed", json!({}))]);
+    let (provisioner, kernel) = kernel_with(saved(handlers)).await;
+    let cell = kernel.execute(
+        "(bash \"echo up > started; sleep 300\" (hash 'wait-ms #f))",
+        KernelExecuteOptions {
+            signal: None,
+            timeout_ms: None,
+            on_stream: None,
+            on_late_sent_agent_message: None,
+            tool_call_id: Some("call-1".to_string()),
+        },
+    );
+    let listed = async {
+        read(&started).await;
+        let lines: Vec<Value> = std::fs::read_to_string(artifacts.join(super::super::job::RUNNING_FILE))
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let record: Value = serde_json::from_str(line).unwrap();
+                json!([record["command"], record["running"], record["call"]])
+            })
+            .collect();
+        provisioner.kill().await;
+        lines
+    };
+    let (_ended, lines) = tokio::join!(cell, listed);
+    let (handlers, mut received) = recording(&[("bash.completed", json!({}))]);
+    let (_provisioner, _kernel) = kernel_with(saved(handlers)).await;
+    let (_, notice) = next(&mut received).await;
+    assert_eq!(
+        (lines, notice["toolCallId"].clone()),
+        (
+            vec![json!(["echo up > started; sleep 300", true, "call-1"])],
+            json!("call-1"),
+        )
+    );
+}
+}
+
+on_each_shell! {
 /// A command's environment: prompts and pagers off over everything, quiet
 /// defaults under the session's and its settings' own values, and a UTF-8
 /// character type only where the session names no locale.
