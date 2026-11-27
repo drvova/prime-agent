@@ -14,8 +14,9 @@
 //! - [`session_command`]: `/compact`, `/refine`, `/goal` and `/autonomous`
 //!   run at the boundary ([`execute_prompt_session_command`]).
 //!
-//! Each surface emits its json events through an [`EventSink`]: stdout for
-//! the print modes, the bus for a runtime session.
+//! Each surface emits its json events through an [`EventSink`]: the session's
+//! stream for a runtime session, stdout for a boundary made with
+//! `TurnBoundary::new` (an inline subagent's, whose json mode is off).
 
 pub(crate) mod auto_retry;
 pub(crate) mod autonomous;

@@ -341,7 +341,7 @@ async fn child_is_unsettled(child: &Arc<InlineChild>) -> bool {
 /// The goal/autonomous continuation gates and the drive's return read
 /// this one predicate: the live session state — not a bookkeeping flag
 /// alone — is the fact (TS `child.isSessionActive`).
-pub(crate) async fn has_unsettled_rlm_work(node: &Arc<InlineSessionNode>) -> bool {
+async fn has_unsettled_rlm_work(node: &Arc<InlineSessionNode>) -> bool {
     if node
         .pending_receipts
         .load(std::sync::atomic::Ordering::SeqCst)
@@ -367,7 +367,7 @@ pub(crate) async fn has_unsettled_rlm_work(node: &Arc<InlineSessionNode>) -> boo
 /// descendants, and return once the session is idle with an empty queue
 /// and a settled subtree — `true` when any turn drained (the drive loop
 /// re-enters the boundary so the turns it armed drain).
-pub(crate) async fn drive_to_quiescence(
+async fn drive_to_quiescence(
     node: &Arc<InlineSessionNode>,
     engine: &Arc<SessionEngine>,
     boundary: &mut TurnBoundary,
@@ -612,8 +612,42 @@ async fn dispose_child(child: &Arc<InlineChild>) {
     }
 }
 
+/// The print root's inline subagents as the runtime's session reads them:
+/// the unsettled-work probe, the quiescence drive, and the exit disposal,
+/// all over the root's node.
+pub(crate) struct PrintSubagents(pub(crate) Arc<InlineSessionNode>);
+
+impl pa_runtime::InlineSubagents for PrintSubagents {
+    fn unsettled(&self) -> pa_agent::BoxFut<'static, bool> {
+        let root = Arc::clone(&self.0);
+        Box::pin(async move { has_unsettled_rlm_work(&root).await })
+    }
+
+    fn drive_to_quiescence<'a>(
+        &'a self,
+        engine: &'a Arc<SessionEngine>,
+        boundary: &'a mut TurnBoundary,
+        model: &'a Model,
+        api_key: Option<String>,
+        global_harness_dir: std::path::PathBuf,
+    ) -> pa_agent::BoxFut<'a, Result<bool, String>> {
+        Box::pin(drive_to_quiescence(
+            &self.0,
+            engine,
+            boundary,
+            model,
+            api_key,
+            global_harness_dir,
+        ))
+    }
+
+    fn dispose(&self) -> pa_agent::BoxFut<'_, ()> {
+        Box::pin(dispose_inline_subagents(&self.0))
+    }
+}
+
 /// Tear every inline descendant of the root down.
-pub(crate) async fn dispose_inline_subagents(root: &Arc<InlineSessionNode>) {
+async fn dispose_inline_subagents(root: &Arc<InlineSessionNode>) {
     {
         let _delivery_guard = root.delivery_gate.lock().unwrap();
         root.disposed

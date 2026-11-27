@@ -1,0 +1,1 @@
+- Internal: print (`-p`) and json (`--mode json`) runs now run their turns on the event-driven runtime (`pa-runtime`); their output and exit codes are unchanged, and `--no-session` keeps the runtime's log out of the agent dir.

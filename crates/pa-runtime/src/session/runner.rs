@@ -6,18 +6,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use pa_types::event_log::{AgentDone, AgentInput, AgentTarget, NewEvent, Task, TaskState};
+use pa_types::event_log::{AgentInput, AgentTarget, Task, TaskFailure, TaskState};
 
-use super::{SessionBuilder, SessionSpec, SessionTopics, Sessions};
+use super::host::{Ran, TaskEnd};
+use super::{done_event, SessionBuilder, SessionSpec, SessionTopics, Sessions};
 use crate::log_stores::LogTaskStore;
 use crate::routes::{TaskRequest, TaskSink};
 use crate::subscriptions::MemorySessionTree;
 use crate::tasks::{Steered, TaskOutcome, TaskQueue, TaskRunner};
 
-/// Runs each task as a turn of its session: on the session's host thread,
-/// then publishes the stored `agent/<id>/done` ([`AgentDone`]) after the
-/// turn's stream, and returns the outcome. A task whose session is not open
-/// fails.
+/// Runs each task as a turn of its session on the session's host thread,
+/// which queues the stored `agent/<id>/done` (an `AgentDone`, with the
+/// failed part of a failed task) behind the turn's stream, and returns the
+/// outcome. A task whose session is not open, or that never reached its
+/// thread, fails, and its `done` is published here.
 pub(crate) struct SessionRunner<B> {
     sessions: Arc<Sessions<B>>,
 }
@@ -47,44 +49,36 @@ impl<B: SessionBuilder> SessionRunner<B> {
 impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
     #[tracing::instrument(level = "debug", skip_all, fields(task = %task.id, session = %task.session))]
     async fn run(&self, task: Task) -> TaskOutcome {
-        let outcome = match self.sessions.host(&task.session) {
-            Some(host) => host.run(task.clone()).await,
-            None => TaskOutcome::Failed(format!(
-                "session {} is not open in this runtime",
-                task.session
+        let images = self.sessions.take_images(&task.id);
+        let ran = match self.sessions.host(&task.session) {
+            Some(host) => host.run(task.clone(), images).await,
+            None => Ran::Unreported(TaskEnd::failed(
+                TaskFailure::Turn,
+                format!("session {} is not open in this runtime", task.session),
             )),
         };
-        let (state, error) = match &outcome {
-            TaskOutcome::Done => (TaskState::Done, None),
-            TaskOutcome::Failed(error) => (TaskState::Failed, Some(error.clone())),
-            TaskOutcome::Cancelled => (TaskState::Cancelled, None),
-        };
-        // A session id that is no topic level was never opened: nobody can
-        // listen for its outcome.
-        if let Ok(topics) = SessionTopics::of(&task.session) {
-            let done = AgentDone {
-                task: task.id.clone(),
-                outcome: state,
-                error,
-            };
-            let published = self
-                .sessions
-                .outbox()
-                .publish(NewEvent {
-                    topic: topics.done,
-                    source: task.session.clone(),
-                    session: Some(task.session.clone()),
-                    payload: serde_json::to_value(done).unwrap_or_default(),
-                    trust: task.trust,
-                    cause: None,
-                    reply: None,
-                })
-                .await;
-            if let Err(error) = published {
-                tracing::error!("task {:?} ended without its done event: {error:#}", task.id);
+        let end = match ran {
+            Ran::Reported(end) => end,
+            Ran::Unreported(end) => {
+                // A session id that is no topic level was never opened:
+                // nobody can listen for its outcome.
+                if let Ok(topics) = SessionTopics::of(&task.session) {
+                    let published = self
+                        .sessions
+                        .outbox()
+                        .publish(done_event(&topics, &task, &end))
+                        .await;
+                    if let Err(error) = published {
+                        tracing::error!(
+                            "task {:?} ended without its done event: {error:#}",
+                            task.id
+                        );
+                    }
+                }
+                end
             }
-        }
-        outcome
+        };
+        end.outcome
     }
 
     fn steer(&self, running: &Task, steer: &Task) -> Steered {
@@ -101,8 +95,8 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
 /// (`AgentTarget::Spawn`, in its `cwd` or else the runtime's, recorded as a
 /// subagent of the event's session). It starts from the route's prompt at
 /// the route's priority; an empty prompt takes the event's [`AgentInput`]:
-/// its text, and its priority when it names one. Its trust is the
-/// request's.
+/// its text and images, and its priority when it names one. Its trust is
+/// the request's.
 pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
     pub(crate) queue: TaskQueue<SessionRunner<B>, LogTaskStore>,
     pub(crate) sessions: Arc<Sessions<B>>,
@@ -133,16 +127,22 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                 id
             }
         };
-        let (prompt, priority) = if request.prompt.is_empty() {
+        let (prompt, priority, images) = if request.prompt.is_empty() {
             let input = serde_json::from_value::<AgentInput>(event.payload.clone())
                 .context("the event carries no input text")?;
-            (input.text, input.priority.unwrap_or(request.priority))
+            (
+                input.text,
+                input.priority.unwrap_or(request.priority),
+                input.images,
+            )
         } else {
-            (request.prompt, request.priority)
+            (request.prompt, request.priority, Vec::new())
         };
+        let id = uuid::Uuid::now_v7().to_string();
+        self.sessions.attach_images(&id, images);
         self.queue
             .push(Task {
-                id: uuid::Uuid::now_v7().to_string(),
+                id,
                 session,
                 priority,
                 state: TaskState::Queued,

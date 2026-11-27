@@ -21,7 +21,8 @@ use crate::bus::{Bus, BusParts, Listener, Published};
 use crate::log_stores::{LogEventStore, LogStateStore, LogTaskStore};
 use crate::routes::{ModelCall, ModelCaller};
 use crate::session::{
-    Outbox, Outgoing, RuntimeTaskSink, SessionBuilder, SessionRunner, SessionSpec, Sessions,
+    Finished, Outbox, Outgoing, RuntimeTaskSink, SessionBuilder, SessionRunner, SessionSpec,
+    Sessions, SettleAfter, Settled,
 };
 use crate::subscriptions::MemorySessionTree;
 use crate::tasks::TaskQueue;
@@ -44,6 +45,9 @@ pub struct RuntimeOptions<B> {
     pub listener_capacity: NonZeroUsize,
     /// Where a session spawned for an event without a `cwd` of its own runs.
     pub cwd: PathBuf,
+    /// The sessions to open with the runtime: their engines start building
+    /// while its database opens, so opening it costs a first turn nothing.
+    pub sessions: Vec<SessionSpec>,
 }
 
 /// The runtime's model caller: `Call` routes have no model to call yet, so
@@ -77,15 +81,18 @@ pub struct Runtime<B: SessionBuilder> {
 impl<B: SessionBuilder> Runtime<B> {
     /// Opens the runtime over `agent_dir`'s database (the transcript store's
     /// `agent.db`), keeps `options.spare_kernels` Scheme kernels built in the
-    /// background and subscribes every session's input. It restores no
-    /// task: a session's tasks are restored when it is opened
-    /// ([`Runtime::create_session`]), so another process running other
-    /// sessions on the same database is never touched. Nothing here touches
-    /// the network.
+    /// background, opens `options.sessions` while the database opens,
+    /// restores those sessions' tasks and subscribes every session's input.
+    /// It restores no other session's task: a session's tasks are restored
+    /// when it is opened (here or by [`Runtime::create_session`]), so
+    /// another process running other sessions on the same database is never
+    /// touched. Nothing here touches the network.
     ///
     /// # Errors
     ///
-    /// The database cannot be opened or migrated.
+    /// A session cannot be opened (see [`Runtime::create_session`]), the
+    /// database cannot be opened or migrated, or a session's tasks cannot be
+    /// restored from it; the sessions opened are closed again.
     ///
     /// # Panics
     ///
@@ -94,19 +101,39 @@ impl<B: SessionBuilder> Runtime<B> {
         let database = pa_core::session::store::database_path(agent_dir);
         let log = tokio::task::spawn_blocking(move || {
             pa_log::Log::open(database, pa_log::DEFAULT_EVENT_RETENTION)
-        })
-        .await
-        .context("open the runtime's database")??;
-        let log = Arc::new(log);
+        });
         pa_core::kernel::keep_spare_scheme_kernels(options.spare_kernels);
+        // The sessions' events wait in the outbox until the bus is up.
         let (outbox, outgoing) = Outbox::channel();
         let sessions = Arc::new(Sessions::new(options.builder, outbox));
         let runner = SessionRunner::new(Arc::clone(&sessions));
-        let queue = TaskQueue::new(
-            runner.clone(),
-            LogTaskStore::new(Arc::clone(&log)),
-            options.max_concurrent_runs,
-        );
+        let restored = async {
+            let mut opened = Vec::with_capacity(options.sessions.len());
+            for spec in options.sessions {
+                opened.push(sessions.open(spec)?);
+            }
+            let log = Arc::new(log.await.context("open the runtime's database")??);
+            let queue = TaskQueue::new(
+                runner.clone(),
+                LogTaskStore::new(Arc::clone(&log)),
+                options.max_concurrent_runs,
+            );
+            for id in &opened {
+                queue
+                    .restore(id)
+                    .await
+                    .with_context(|| format!("restore the tasks of session {id}"))?;
+            }
+            anyhow::Ok((log, queue))
+        }
+        .await;
+        let (log, queue) = match restored {
+            Ok(restored) => restored,
+            Err(error) => {
+                sessions.close_all().await;
+                return Err(error);
+            }
+        };
         let tree = MemorySessionTree::default();
         let bus = Bus::new(BusParts {
             events: LogEventStore::new(Arc::clone(&log)),
@@ -198,6 +225,52 @@ impl<B: SessionBuilder> Runtime<B> {
         self.queue.session_idle(session).await;
     }
 
+    /// Runs `session` to rest `after` the work it names, on the session's
+    /// own thread: drives its subagents to quiescence and runs the turns
+    /// they leave, the goal's owed continuation, the autonomous one held
+    /// behind them, and whatever those turns arm; then reports how the run
+    /// ended. A settle armed behind a task that stops the run (a failed
+    /// command or turn, a cancel) answers `None`. It is queued or armed when
+    /// this is called, and answers once every event it streamed is on the
+    /// bus, behind the `done` of the task it follows.
+    ///
+    /// # Errors
+    ///
+    /// The session is not open or its engine could not be built, or a turn
+    /// the settle ran failed; the error is its reason.
+    pub fn settle(
+        &self,
+        session: &str,
+        after: SettleAfter,
+    ) -> impl std::future::Future<Output = anyhow::Result<Option<Settled>>> + Send + 'static {
+        let settled = self.sessions.host(session).map(|host| host.settle(after));
+        let session = session.to_string();
+        async move {
+            match settled {
+                Some(settled) => settled.await.map_err(anyhow::Error::msg),
+                None => Err(anyhow::anyhow!(
+                    "session {session} is not open in this runtime"
+                )),
+            }
+        }
+    }
+
+    /// Finishes `session`'s run: waits for the refinements its turns started
+    /// and ends its subagents, then reports what that found. Answers once
+    /// every event it streamed is on the bus. The session stays open, with
+    /// no subagents, until [`Runtime::shutdown`].
+    ///
+    /// # Errors
+    ///
+    /// The session is not open or its engine could not be built.
+    pub async fn finish(&self, session: &str) -> anyhow::Result<Finished> {
+        let host = self
+            .sessions
+            .host(session)
+            .with_context(|| format!("session {session} is not open in this runtime"))?;
+        host.finish().await.map_err(anyhow::Error::msg)
+    }
+
     /// Closes every session (each finishes the task it is running) and stops
     /// publishing their events.
     pub async fn shutdown(self) {
@@ -211,7 +284,14 @@ async fn publish_outgoing<B: SessionBuilder>(
     bus: RuntimeBus<B>,
     mut outgoing: mpsc::UnboundedReceiver<Outgoing>,
 ) {
-    while let Some(Outgoing { event, published }) = outgoing.recv().await {
+    while let Some(outgoing) = outgoing.recv().await {
+        let (event, published) = match outgoing {
+            Outgoing::Event { event, published } => (event, published),
+            Outgoing::Then(then) => {
+                then();
+                continue;
+            }
+        };
         let topic = event.topic.clone();
         let result = bus.publish(event).await.map(|_| ());
         match published {
