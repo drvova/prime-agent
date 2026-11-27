@@ -42,7 +42,7 @@ use crate::subagents::{
     late_sent_agent_message_sink, FamilyMessages, Node, SessionSubagents,
 };
 use crate::tasks::{Steered, TaskOutcome};
-use crate::trust::{RunningTask, TaskTrust, TrustGate};
+use crate::trust::{RunningTask, TaskTrust, TrustGate, WorkingDir};
 use crate::turn::autonomous::{latest_assistant_error, HeadlessAutonomous};
 use crate::turn::boundary::TurnBoundary;
 use crate::turn::continuation::{wire_continuation_hook, UnsettledWork};
@@ -610,6 +610,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                         name: self.spec.name.clone().unwrap_or_else(|| self.id.clone()),
                         cwd: self.spec.cwd.to_string_lossy().into_owned(),
                     },
+                    dir: WorkingDir::new(&self.spec.cwd),
                 }),
                 &mut host_handlers,
             );

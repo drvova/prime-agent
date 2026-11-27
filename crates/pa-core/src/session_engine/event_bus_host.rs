@@ -12,7 +12,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use pa_types::events::EventBusRequest;
+use pa_types::events::{EventBusRequest, EventSourceKind};
 use serde_json::Value;
 
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
@@ -49,7 +49,10 @@ impl EventBusController for NoEventBus {
 /// One `event.*` call as telemetry counts it (never a name, a payload, or a prompt).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EventRequestFact {
-    SourceDefined,
+    /// A source defined, by its kind.
+    SourceDefined {
+        kind: EventSourceKind,
+    },
     /// A publication, with how many subscriptions it matched.
     Published {
         matched: u64,
@@ -133,7 +136,15 @@ pub(crate) fn observe_event_bus_requests(
                     let result = handler(payload).await;
                     observer(match (&result, request_type) {
                         (Err(_), _) => EventRequestFact::Failed,
-                        (Ok(_), "event.define_source") => EventRequestFact::SourceDefined,
+                        (Ok(answer), "event.define_source") => EventRequestFact::SourceDefined {
+                            kind: if answer.get("timer").is_some() {
+                                EventSourceKind::Timer
+                            } else if answer.get("watch").is_some() {
+                                EventSourceKind::Watch
+                            } else {
+                                EventSourceKind::Bus
+                            },
+                        },
                         (Ok(answer), "event.publish") => EventRequestFact::Published {
                             matched: answer.get("matched").and_then(Value::as_u64).unwrap_or(0),
                         },

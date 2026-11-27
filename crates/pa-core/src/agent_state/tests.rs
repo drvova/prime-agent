@@ -200,6 +200,8 @@ fn the_event_bus_imports_its_sources_and_subscriptions() {
                 owner_name: "owner".to_string(),
                 defined_at: 1,
                 published_count: 3,
+                timer: None,
+                watch: None,
             },
         )]
         .into_iter()

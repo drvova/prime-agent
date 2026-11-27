@@ -211,7 +211,7 @@ impl<B: SessionBuilder> Runtime<B> {
         })?;
         let sources =
             SourceManager::spawn(Arc::clone(&log), &bus, Arc::new(pa_sources::SystemClock));
-        events.attach(log, bus.registry()).await;
+        events.attach(log, bus.registry(), sources.clone()).await;
         let control: Arc<dyn SessionControl> = Arc::new(Control {
             sessions: Arc::clone(&sessions),
             queue: queue.clone(),
@@ -251,7 +251,7 @@ impl<B: SessionBuilder> Runtime<B> {
     }
 
     /// Defines a timer or folder-watch source, kept in the agent's
-    /// database: it runs while a subscription's filter matches a topic it
+    /// database when its lifetime is `Kept`: it runs while a subscription's filter matches a topic it
     /// publishes on (`timer/<name>`, `source/<name>/changed` or
     /// `source/<name>/error`). Defining a name again the same way changes
     /// nothing.
@@ -269,6 +269,13 @@ impl<B: SessionBuilder> Runtime<B> {
     #[must_use]
     pub fn running_sources(&self) -> BTreeSet<String> {
         self.sources.running().borrow().clone()
+    }
+
+    /// The names of the sources running, as it changes: for tests to wait
+    /// on.
+    #[cfg(test)]
+    pub(crate) fn running_sources_changes(&self) -> tokio::sync::watch::Receiver<BTreeSet<String>> {
+        self.sources.running()
     }
 
     /// Publishes `event` on the bus (`Bus::publish`).

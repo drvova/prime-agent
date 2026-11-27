@@ -4,9 +4,17 @@
 ;; published.
 
 ;; Define, or redefine, an event source this session owns: its record.
-(define (event-source-define name schema #:description [description ""])
+;; With `#:timer` (a hash of one of 'every, 'cron, 'at) or `#:watch` (a hash
+;; of 'path and optionally 'glob, 'recursive, 'debounce-ms) it is a timer or a
+;; folder watch, which publishes its own events, and `schema` is #f.
+(define (event-source-define name schema
+                             #:description [description ""]
+                             #:timer [timer #f]
+                             #:watch [watch #f])
   (%host-call "event.define_source"
-              (hash 'name name 'schema schema 'description description)))
+              (%options (hash 'name name 'schema schema 'description description)
+                        'timer timer
+                        'watch watch)))
 
 ;; Remove one of this session's sources and every subscription to it:
 ;; {removed, subscriptionsRemoved}.

@@ -22,8 +22,10 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   controller in its own permit pool and persistence.
 - `events`: the event bus's wire vocabulary: the `event_bus` command's typed `EventBusRequest`
   (define, remove, publish, subscribe, unsubscribe, list), the delivery mode, and the source and
-  subscription records the daemon's bus keeps and lists. pa-core's kernel functions build the
-  requests and pa-daemon's supervisor answers them.
+  subscription records the daemon's bus keeps and lists, with a source's kind
+  (`EventSourceKind`: bus, timer, watch) and a timer's or watch's spec (`TimerSpec`,
+  `WatchSpec`). pa-core's kernel functions build the requests and pa-daemon's supervisor (or a
+  headless run's pa-runtime) answers them.
 - `event_log`: the vocabulary of the event-driven core (being built beside the daemon; it
   replaces `events`): `Event`/`NewEvent` with `Trust` (owner or untrusted, only ever lowered
   along a chain of causes) and a cause chain bounded by `MAX_HOPS`; `Topic` and `TopicFilter`

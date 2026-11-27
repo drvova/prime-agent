@@ -14,7 +14,7 @@ use pa_types::event_log::{
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, watch};
 
-use super::{SourceDefinition, SourceManager};
+use super::{SourceDefinition, SourceLifetime, SourceManager};
 use crate::bus::{Bus, BusParts};
 use crate::routes::{TaskRequest, TaskSink};
 use crate::runtime::NoModelCalls;
@@ -143,6 +143,7 @@ fn definition(name: &str, kind: SourceKind, options: Value) -> SourceDefinition 
         kind,
         options,
         owner: Some("worker".to_string()),
+        lifetime: SourceLifetime::Kept,
     }
 }
 

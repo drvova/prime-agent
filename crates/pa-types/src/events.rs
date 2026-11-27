@@ -41,7 +41,15 @@ pub enum EventBusRequest {
         name: String,
         #[serde(default)]
         description: String,
+        /// A bus source's payload schema; a timer's or a watch's is its
+        /// kind's, and this is `false` or `null`.
         schema: Value,
+        /// Makes it a timer source, which fires on its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timer: Option<TimerSpec>,
+        /// Makes it a folder-watch source, which reports changes on its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        watch: Option<WatchSpec>,
     },
     /// Remove one of the requester's own sources and the subscriptions to it.
     RemoveSource { name: String },
@@ -77,6 +85,77 @@ pub struct EventSourceRecord {
     pub owner_name: String,
     pub defined_at: u64,
     pub published_count: u64,
+    /// When it is a timer source: when it fires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timer: Option<TimerSpec>,
+    /// When it is a folder-watch source: what it watches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<WatchSpec>,
+}
+
+impl EventSourceRecord {
+    /// Its kind: a timer or a watch by the spec it carries, else a bus
+    /// source its owner publishes.
+    #[must_use]
+    pub fn kind(&self) -> EventSourceKind {
+        match (&self.timer, &self.watch) {
+            (Some(_), _) => EventSourceKind::Timer,
+            (None, Some(_)) => EventSourceKind::Watch,
+            (None, None) => EventSourceKind::Bus,
+        }
+    }
+}
+
+/// What publishes a source's events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventSourceKind {
+    /// Its owner, with `event-publish`.
+    Bus,
+    /// A timer, on `timer/<name>`.
+    Timer,
+    /// A folder watch, on `source/<name>/changed` and `source/<name>/error`.
+    Watch,
+}
+
+impl EventSourceKind {
+    /// Its name, as the kernel and telemetry spell it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bus => "bus",
+            Self::Timer => "timer",
+            Self::Watch => "watch",
+        }
+    }
+}
+
+/// When a timer source fires: exactly one of `every` (`5m`), `cron` (five
+/// fields in UTC) and `at` (an ISO time), in pa-sources' schedule grammar.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimerSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub every: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
+/// What a folder-watch source watches: `path` (under the defining session's
+/// working directory), optionally only names matching `glob`, in subfolders
+/// unless `recursive` is false, coalescing a burst of changes over
+/// `debounce-ms`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct WatchSpec {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glob: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recursive: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debounce_ms: Option<u64>,
 }
 
 /// A subscription, as the bus keeps and lists it.
