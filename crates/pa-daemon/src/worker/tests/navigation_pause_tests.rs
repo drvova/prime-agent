@@ -2,6 +2,8 @@
 //! `acquireQueuedWorkPause` + `waitForIdle`): a steer parked behind the
 //! interrupted turn stays parked while the navigation settles and swaps,
 //! then delivers on the navigated-to branch.
+use std::time::Duration;
+
 use super::*;
 
 const TURN_DELAY_MS: u64 = 1500;

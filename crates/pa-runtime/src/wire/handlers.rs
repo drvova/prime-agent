@@ -260,6 +260,16 @@ pub enum Call {
     /// `session.abort_retry`: stops the automatic retry an open session's
     /// turn waits on.
     SessionAbortRetry,
+    /// `session.start_side_question`: starts a `/btw` question or a
+    /// `/better` rewrite beside an open session's turns, streamed on
+    /// `agent/<id>/side_question`.
+    SessionStartSideQuestion,
+    /// `session.abort_side_question`: aborts the calling connection's side
+    /// run of an open session.
+    SessionAbortSideQuestion,
+    /// `session.record_better_outcome`: counts what the user did with a
+    /// `/better` rewrite.
+    SessionRecordBetterOutcome,
 }
 
 impl FromStr for Call {
@@ -312,6 +322,9 @@ impl FromStr for Call {
             "session.mutate_queued_message" => Call::SessionMutateQueuedMessage,
             "session.abort_compaction" => Call::SessionAbortCompaction,
             "session.abort_retry" => Call::SessionAbortRetry,
+            "session.start_side_question" => Call::SessionStartSideQuestion,
+            "session.abort_side_question" => Call::SessionAbortSideQuestion,
+            "session.record_better_outcome" => Call::SessionRecordBetterOutcome,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

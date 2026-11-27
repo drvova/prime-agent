@@ -6,23 +6,21 @@
 use anyhow::Result;
 use pa_agent::abort::AbortSignal;
 use pa_core::session_engine::provider_retry::{ProviderRetryPolicy, UNBOUNDED_BACKOFF_MS};
-use pa_core::session_engine::side_question::{SideQuestionSink, SideQuestionTurn};
+use pa_core::session_engine::side_question::SideQuestionSink;
 use serde_json::{json, Value};
 
 mod wire;
 pub(crate) use pa_core::session_engine::branch_summarization::{
     BranchSummaryOutcome, BranchSummaryRequest, BranchSummaryRun,
 };
+pub(crate) use pa_core::session_engine::side_runs::{SideQuestionOutcome, SideQuestionRequest};
 pub(crate) use pa_core::session_engine::wire_events::{session_wire_value, AssistantSnapshot};
 pub use scripted::ScriptedEngine;
 pub use wire::{
-    empty_resource_snapshot, side_question_event_value, BackgroundJobConsumed,
-    BackgroundJobConsumedSink, CompactionOutcome, CompactionRequest, CompactionRun, EngineEvent,
-    EngineModelSelection, GoalAdmissionSink, GoalContinuation, GoalTurnEndWork, KernelNotice,
-    KernelNoticeSink, PromptBatchRow, PromptRequest, RlmSessionIdentity, SavedSessionContext,
-    SemanticSpawnOrigin, SessionInputProbe, SideQuestionOutcome, SideQuestionRequest,
-    SIDE_QUESTION_STATUS_CANCELLED, SIDE_QUESTION_STATUS_COMPLETE, SIDE_QUESTION_STATUS_ERROR,
-    SIDE_QUESTION_STATUS_RUNNING,
+    empty_resource_snapshot, BackgroundJobConsumed, BackgroundJobConsumedSink, CompactionOutcome,
+    CompactionRequest, CompactionRun, EngineEvent, EngineModelSelection, GoalAdmissionSink,
+    GoalContinuation, GoalTurnEndWork, KernelNotice, KernelNoticeSink, PromptBatchRow,
+    PromptRequest, RlmSessionIdentity, SavedSessionContext, SemanticSpawnOrigin, SessionInputProbe,
 };
 
 mod scripted;

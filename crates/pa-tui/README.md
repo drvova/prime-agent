@@ -248,7 +248,10 @@ live-only `runtime/models` back to `model_catalog_changed`, and the tree moves a
 `import_jsonl` as the `session.fork_entry` and `session.import_jsonl` calls, an error reply's
 `info` becoming the response's `errorInfo`), and the queue edit and aborts
 (`mutate_queued_message`, `abort_compaction`, `abort_retry` as the
-`session.mutate_queued_message`, `session.abort_compaction` and `session.abort_retry` calls);
+`session.mutate_queued_message`, `session.abort_compaction` and `session.abort_retry` calls),
+and the side runs (`start_side_question`, `abort_side_question`, `record_better_outcome` as the
+`session.start_side_question`, `session.abort_side_question` and `session.record_better_outcome`
+calls, their events coming back from `agent/<id>/side_question` as `side_question_event`);
 its module docs state the contract the runtime honours (the stream is live
 only, so the session's event counter rides in the payload's `meta.sequence`) and list what is left
 to map. Every recorded frame round-trips through it. A session's stored fault topics

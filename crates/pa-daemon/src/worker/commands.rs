@@ -3,7 +3,7 @@
 use super::{
     clear_withdrawn_progress_note, json, persist_custom_row, response_failure, response_success,
     KillCloseReason, Lane, QueueCheckpoint, QueuedItem, Result, SessionFile, TurnSettle, VecDeque,
-    Worker, PROMPT_ABORTED_BEFORE_DELIVERY, SIDE_QUESTION_SETTLE_TIMEOUT,
+    Worker, PROMPT_ABORTED_BEFORE_DELIVERY,
 };
 
 use serde_json::Value;
@@ -732,7 +732,7 @@ impl Worker {
         // TS `closeSession` aborts the side questions per attached client
         // before `closeSessionOnce`'s arms run.
         self.side_questions
-            .abort_all_and_settle(SIDE_QUESTION_SETTLE_TIMEOUT)
+            .abort_all_and_settle(pa_core::session_engine::side_runs::SIDE_RUN_SETTLE_TIMEOUT)
             .await;
         // `killed` cancels the session's scheduled jobs; `replaced` keeps the plain
         // cron jobs but cancels the subagent's RLM heartbeats; `shutdown` keeps them

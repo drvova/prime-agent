@@ -63,6 +63,7 @@ pub mod session_events;
 mod session_search;
 pub mod settings_view;
 pub mod side_question;
+pub mod side_runs;
 pub mod slash_commands;
 pub mod state_restore_notice;
 pub mod telemetry;

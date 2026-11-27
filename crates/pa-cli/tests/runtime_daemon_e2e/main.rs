@@ -48,6 +48,9 @@
 //!   8d-2c): [`queue_edit`].
 //! - A rewind's workspace checkpoints, restored as the old daemon restores
 //!   them (phase 8d-2d): [`checkpoints`].
+//! - A session's side runs (`/btw`, `/better` and its outcome), answered
+//!   and streamed as the old daemon answers and streams them (phase 8d-3):
+//!   [`side_questions`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -64,6 +67,7 @@ mod reliability;
 mod replace;
 mod saved_list;
 mod schedules;
+mod side_questions;
 mod stream;
 #[path = "../support/mod.rs"]
 mod support;

@@ -1,7 +1,7 @@
 //! The engine wire types: the prompt records, the event stream shape, the
 //! goal-continuation + bash-notice plumbing, the RLM session identity, and
-//! the compaction/branch-summary/side-question records.
-use super::{json, AssistantSnapshot, SideQuestionTurn, Value};
+//! the compaction and branch-summary records.
+use super::{json, AssistantSnapshot, Value};
 
 /// One user prompt accepted by the engine.
 #[derive(Debug, Clone)]
@@ -296,85 +296,4 @@ pub enum CompactionOutcome {
     Aborted,
     /// Failed; the string is the engine error message.
     Failed { error: String },
-}
-
-/// One side-question request (the `start_side_question` command fields).
-#[derive(Debug, Clone)]
-pub struct SideQuestionRequest {
-    /// Caller-generated id; echoed on every event of the run.
-    pub side_question_id: String,
-    pub question: String,
-    /// A `/btw` question, or a `/better` rewrite of `question` (whose running events then carry
-    /// progress labels, and whose final answer is the rewrite).
-    pub kind: pa_types::better::SideRunKind,
-    /// Earlier `{question, answer}` exchanges replayed before the question.
-    pub previous_turns: Vec<SideQuestionTurn>,
-}
-
-/// How one side-question run ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SideQuestionOutcome {
-    /// Answered; the string is the final answer text.
-    Complete { answer: String },
-    /// Aborted mid-run; the string is the partial answer streamed so far.
-    Aborted { answer: String },
-    /// Failed; the string is the provider/engine error message.
-    Failed { answer: String, error: String },
-}
-
-/// Wire form of one side-question status.
-pub const SIDE_QUESTION_STATUS_RUNNING: &str = "running";
-pub const SIDE_QUESTION_STATUS_COMPLETE: &str = "complete";
-pub const SIDE_QUESTION_STATUS_CANCELLED: &str = "cancelled";
-pub const SIDE_QUESTION_STATUS_ERROR: &str = "error";
-
-/// Wire form of one side-question event.
-#[must_use]
-pub fn side_question_event_value(
-    request: &SideQuestionRequest,
-    answer: &str,
-    status: &str,
-    error_message: Option<&str>,
-) -> Value {
-    let mut event = json!({
-        "id": request.side_question_id,
-        "question": request.question,
-        "answer": answer,
-        "status": status,
-    });
-    if let Some(error_message) = error_message {
-        event["errorMessage"] = json!(error_message);
-    }
-    event
-}
-
-impl SideQuestionOutcome {
-    /// The wire status of this outcome.
-    #[must_use]
-    pub fn status_str(&self) -> &'static str {
-        match self {
-            SideQuestionOutcome::Complete { .. } => SIDE_QUESTION_STATUS_COMPLETE,
-            SideQuestionOutcome::Aborted { .. } => SIDE_QUESTION_STATUS_CANCELLED,
-            SideQuestionOutcome::Failed { .. } => SIDE_QUESTION_STATUS_ERROR,
-        }
-    }
-
-    /// The answer text carried by the final event (partial on abort/failure).
-    #[must_use]
-    pub fn answer(&self) -> &str {
-        match self {
-            SideQuestionOutcome::Complete { answer }
-            | SideQuestionOutcome::Aborted { answer }
-            | SideQuestionOutcome::Failed { answer, .. } => answer,
-        }
-    }
-
-    /// The error message carried by the final event, when the run failed.
-    #[must_use]
-    pub fn error_message(&self) -> Option<&str> {
-        match self {
-            SideQuestionOutcome::Failed { error, .. } => Some(error.as_str()),
-            _ => None,
-        }
-    }
 }

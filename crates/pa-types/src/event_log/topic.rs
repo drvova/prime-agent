@@ -13,12 +13,13 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// The last level of a live-only topic `agent/<id>/<kind>`: the stream of a
-/// turn's deltas and its tool progress. Their events are fanned out to the
+/// turn's deltas, its tool progress, and the session's side runs (`/btw`,
+/// `/better`), which never enter its history. Their events are fanned out to the
 /// bus's listeners as they happen and never stored: they have no sequence
 /// number (`Event::seq` is 0), a subscription to them replays nothing, and
 /// a listener that falls behind loses the ones it missed. What a turn ends
 /// with is published on a stored topic (`agent/<id>/done`).
-const LIVE_ONLY_KINDS: &[&str] = &["stream", "tool"];
+const LIVE_ONLY_KINDS: &[&str] = &["stream", "tool", "side_question"];
 
 /// The live-only feeds `runtime/<feed>`: the agents view's roster row
 /// changes and agent traffic, and the model catalog's changes. A client reads

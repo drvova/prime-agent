@@ -108,6 +108,9 @@
 //! | `mutate_queued_message` | `session.mutate_queued_message` | `{status}` (`applied`, `rejected`) |
 //! | `abort_compaction` | `session.abort_compaction` | none |
 //! | `abort_retry` | `session.abort_retry` | none |
+//! | `start_side_question` | `session.start_side_question` | none (the run streams on `agent/<id>/side_question`) |
+//! | `abort_side_question` | `session.abort_side_question` | `{aborted}` |
+//! | `record_better_outcome` | `session.record_better_outcome` | none |
 //!
 //! What the TUI reads beside a session's turns becomes one query each, built the same way (the
 //! command's members, plus `session` for a session's), whose reply's result is the old response's
@@ -672,6 +675,36 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 &command,
             )
         }
+        DaemonCommand::StartSideQuestion {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.start_side_question",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::AbortSideQuestion {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.abort_side_question",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::RecordBetterOutcome {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.record_better_outcome",
+                active_session_id,
+                &command,
+            )
+        }
         DaemonCommand::GetUsage { .. } => {
             return command_query(request_id, "usage", None, &command);
         }
@@ -754,7 +787,7 @@ fn command_query(
 
 /// The commands the old daemon answered without `data`: their call's `null` result is left out
 /// of the response again.
-const ANSWERED_WITHOUT_DATA: [&str; 10] = [
+const ANSWERED_WITHOUT_DATA: [&str; 12] = [
     "set_scoped_models",
     "set_service_tier",
     "set_transport",
@@ -765,6 +798,8 @@ const ANSWERED_WITHOUT_DATA: [&str; 10] = [
     "reload",
     "mark_anthropic_warning_shown",
     "abort_branch_summary",
+    "start_side_question",
+    "record_better_outcome",
 ];
 
 /// Following `feed` (its subscription id, topic and query): live from now, then its state.
