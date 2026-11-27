@@ -73,6 +73,7 @@ pub mod wire_events;
 
 mod admission;
 mod compaction_arms;
+pub use compaction_arms::CompactionAbortArm;
 mod loop_guard;
 mod nested_context;
 mod prompt_retry;
