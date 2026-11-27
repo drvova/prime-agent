@@ -32,11 +32,14 @@ use super::Bed;
 /// Both daemons run offline.
 const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
 
-/// A form that holds its cell until `marker` exists.
-fn hold_until(marker: &Path) -> String {
+/// A form that holds its cell until `marker` exists: short checks in a loop,
+/// so no shell command outlives the kernel's 10 s yield (one that did would
+/// end the turn with the command still running).
+pub(super) fn hold_until(marker: &Path) -> String {
+    let check = format!("test -f '{}'", marker.display());
     format!(
-        "(bash {:?})",
-        format!("until [ -f '{}' ]; do sleep 0.05; done", marker.display())
+        "(define (hold) (if (= 0 (hash-ref (bash {check:?}) 'exit-code)) 'released \
+         (begin (bash \"sleep 0.1\") (hold)))) (hold)"
     )
 }
 
