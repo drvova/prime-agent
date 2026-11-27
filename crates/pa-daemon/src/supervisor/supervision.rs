@@ -133,6 +133,13 @@ impl Drop for PreAuthPumps {
 /// cannot register (no pidfd, descriptor exhaustion, Windows).
 const ADOPTED_EXIT_FALLBACK_POLL: Duration = Duration::from_secs(30);
 
+/// The spawn-publish gap seam (the `PA_DAEMON_BIND_CAPTURE_GAP_MS` seam
+/// family), debug builds only: a pause between a hosted session's start and
+/// the publish of its identity, so the session's own registration provably
+/// lands in that window instead of racing it by microseconds.
+#[cfg(debug_assertions)]
+const SPAWN_PUBLISH_GAP_ENV: &str = "PA_DAEMON_SPAWN_PUBLISH_GAP_MS";
+
 impl Supervisor {
     /// The crash path's failure-count update: a stable-lifetime child was healthy, so its
     /// death starts a fresh count; a spawn-dies-fast child (or an adopted pid) accumulates.
@@ -701,6 +708,14 @@ impl Supervisor {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let (env, removed_env) = session_env(client_launch_env, launch_env);
+        // The descriptor stays locked from before the session starts until its
+        // identity is published below. The session registers over the socket as
+        // soon as its thread runs, and the registration takes the descriptor's pid
+        // as the identity the monitor watches: one that read the placeholder (0 on
+        // a fresh create, the predecessor's on a relaunch) armed an exit watch on
+        // the hosted id, which no OS process has, so the watch reported the new
+        // session dead at once and the supervisor restarted it under its create.
+        let mut descriptor = resident.descriptor.lock().await;
         let session =
             crate::session_host::HostedSession::start(crate::session_host::HostedLaunch {
                 worker_id: resident.worker_id.clone(),
@@ -709,6 +724,12 @@ impl Supervisor {
                 removed_env,
             })
             .with_context(|| format!("host session worker {}", resident.worker_id))?;
+        #[cfg(debug_assertions)]
+        if let Ok(raw) = pa_types::session_scope::var(SPAWN_PUBLISH_GAP_ENV) {
+            if let Ok(ms @ 1..=2_000) = raw.parse::<u64>() {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+        }
         let child = SpawnedWorker {
             orphan_generation: OrphanGeneration {
                 // The session's processes are the daemon's children: their
@@ -726,7 +747,6 @@ impl Supervisor {
             eprintln!("[supervisor] hosted session {:?}", child.id());
         }
         let spawn_record = {
-            let mut descriptor = resident.descriptor.lock().await;
             // Capture the child's start identity alongside its pid (TS `getProcessStartId`
             // at spawn): the holder checks need it to recognize a recycled pid.
             let child_pid = child.id().unwrap_or(0);
@@ -749,7 +769,10 @@ impl Supervisor {
             // lose the descriptor's whole payload — the recovery journal
             // pointer and the durable create command the next boot's
             // revival replays.
-            persist_worker_at(&resident.descriptor_path, &descriptor, spawn_record_sync)
+            let persisted =
+                persist_worker_at(&resident.descriptor_path, &descriptor, spawn_record_sync);
+            drop(descriptor);
+            persisted
         };
         // Fail closed: a spawn record that could not land would leave the
         // successor boot adopting this pid as live (or a recycled pid as the

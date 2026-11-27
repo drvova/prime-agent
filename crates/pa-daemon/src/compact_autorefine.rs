@@ -452,9 +452,7 @@ mod tests {
 
     #[test]
     fn refine_session_command_hands_completion_off_the_turn_runner() {
-        let _faux = FAUX_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _faux = FAUX_TEST_LOCK.blocking_lock();
         for (reply, succeeds) in [
             (
                 r#"{"summary":"one edit","edits":[{"action":"create","kind":"memory","id":"m1","title":"t","content":"c"}]}"#,
