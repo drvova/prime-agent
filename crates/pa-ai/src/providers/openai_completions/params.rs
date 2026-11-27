@@ -369,12 +369,22 @@ mod tests {
     /// storage is the single owner of the team header).
     #[test]
     fn prime_inference_adds_no_team_header_the_caller_did_not_pass() {
-        std::env::set_var("PRIME_TEAM_ID", "cli-profile-team");
+        // The session sees `PRIME_TEAM_ID`; session code reads the environment only
+        // through its scope, so the process environment stays untouched.
+        let scope =
+            pa_types::session_scope::enter(Some(pa_types::session_scope::SessionScope::new(
+                "team-header-test".to_string(),
+                std::path::PathBuf::new(),
+                [("PRIME_TEAM_ID".to_string(), "cli-profile-team".to_string())]
+                    .into_iter()
+                    .collect(),
+                std::collections::BTreeSet::new(),
+            )));
         let model = models_generated::get_model("prime-inference", "z-ai/glm-5.3")
             .expect("the catalog carries a prime-inference model");
         let compat = crate::providers::openai_completions::get_compat(model);
         let headers = build_headers(model, "k", None, None, &compat, None);
-        std::env::remove_var("PRIME_TEAM_ID");
+        drop(scope);
         assert!(
             headers
                 .iter()
