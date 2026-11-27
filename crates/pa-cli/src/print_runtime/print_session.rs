@@ -107,6 +107,7 @@ impl SessionBuilder for PrintSession {
                     engine,
                     model: headless.model,
                     api_key: headless.api_key,
+                    provider_target: headless.provider_target,
                     agent_dir: self.options.config.agent_dir.clone(),
                     events: if self.options.app_mode == AppMode::Json {
                         DriverEvents::Stream
@@ -307,6 +308,7 @@ pub(super) async fn build_subagent(
         engine: Arc::new(headless.engine),
         model: headless.model,
         api_key: headless.api_key,
+        provider_target: headless.provider_target,
         agent_dir: config.agent_dir.clone(),
         events: DriverEvents::Quiet,
         autonomous: None,

@@ -144,6 +144,7 @@ impl SessionBuilder for TreeBuilder {
             engine: Arc::new(engine),
             model,
             api_key: None,
+            provider_target: Arc::default(),
             agent_dir: self.agent_dir.clone(),
             events: DriverEvents::Stream,
             autonomous: None,

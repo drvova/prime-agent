@@ -218,3 +218,130 @@ async fn the_setting_switches_answer_and_write_as_the_old_daemons_do() {
     );
     assert_eq!(take_settings(&bed.agent_dir()), old_settings);
 }
+
+/// A loopback `openai-completions` provider that refuses every request and
+/// keeps each one's JSON body: where a session's requests went.
+struct Provider {
+    port: u16,
+    bodies: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+}
+
+impl Provider {
+    fn start() -> Self {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let bodies: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = std::sync::Arc::default();
+        let kept = std::sync::Arc::clone(&bodies);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let mut reader = std::io::BufReader::new(stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0; length];
+                if reader.read_exact(&mut body).is_ok() {
+                    if let Ok(body) = serde_json::from_slice(&body) {
+                        kept.lock().unwrap().push(body);
+                    }
+                }
+                let refusal = r#"{"error":{"message":"recorded","type":"invalid_request_error"}}"#;
+                let _ = write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{refusal}",
+                    refusal.len()
+                );
+            }
+        });
+        Provider { port, bodies }
+    }
+
+    /// The model and service tier of each request it received, in order.
+    fn requests(&self) -> Vec<(Value, Value)> {
+        self.bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|body| (body["model"].clone(), body["service_tier"].clone()))
+            .collect()
+    }
+}
+
+/// A switch on the runtime daemon retargets the session's next request, as
+/// on the old daemon: `session.set_model` sends it to the new model,
+/// `session.set_service_tier` with the new tier, and `session.cycle_model`
+/// to the next model with the active tier. (The session's provider target
+/// was its embedder's alone, so each switch moved the transcript, the
+/// settings and the events while the requests still went to the faux model
+/// the session started on.)
+#[tokio::test(flavor = "multi_thread")]
+async fn a_switch_retargets_the_sessions_next_request() {
+    let bed = Bed::new();
+    let provider = Provider::start();
+    let model = |id: &str| {
+        json!({ "id": id, "name": id, "api": "openai-completions", "reasoning": true,
+                "contextWindow": 128_000, "maxTokens": 4096 })
+    };
+    std::fs::write(
+        bed.agent_dir().join("models.json"),
+        // OpenRouter keeps the priority tier on every model.
+        json!({ "providers": { "openrouter": {
+            "api": "openai-completions",
+            "baseUrl": format!("http://127.0.0.1:{}/v1", provider.port),
+            "apiKey": "sk-openrouter",
+            "models": [model("m-1"), model("m-2")],
+        } } })
+        .to_string(),
+    )
+    .unwrap();
+    let _daemon = bed.runtime_daemon_with(
+        &json!({ "responses": ["hi"] }),
+        &[("NO_PROXY", "127.0.0.1"), ("no_proxy", "127.0.0.1")],
+    );
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = ok(client.call("session.create", json!({})).await);
+    let id = created["session"].as_str().unwrap().to_string();
+    client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
+    // One request per turn: a refusal is not retried.
+    ok(client
+        .call(
+            "session.set_auto_retry",
+            json!({ "session": id, "enabled": false }),
+        )
+        .await);
+    ok(client
+        .call(
+            "session.set_model",
+            json!({ "session": id, "provider": "openrouter", "modelId": "m-1" }),
+        )
+        .await);
+    ok(client
+        .call(
+            "session.set_service_tier",
+            json!({ "session": id, "serviceTier": "priority" }),
+        )
+        .await);
+    super::run_turn(&mut client, &id, "first").await;
+    ok(client
+        .call("session.cycle_model", json!({ "session": id }))
+        .await);
+    super::run_turn(&mut client, &id, "second").await;
+    assert_eq!(
+        provider.requests(),
+        [
+            (json!("m-1"), json!("priority")),
+            (json!("m-2"), json!("priority")),
+        ]
+    );
+}

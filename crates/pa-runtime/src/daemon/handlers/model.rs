@@ -19,21 +19,32 @@
 //! gate, the one the old daemon calls, and fails closed: a global settings
 //! document that cannot be read, or an `allowedModels` that is not a list
 //! of strings, refuses every change. An
-//! open session switches its running agent (the next request uses the
-//! model) and records the `model_change` row through its engine, and the
-//! settings' default model follows, as a switch in the old daemon does; a
-//! saved one has the row appended under its lease.
+//! open session switches its running agent and records the `model_change`
+//! row through its engine, and the settings' default model follows, as a
+//! switch in the old daemon does; a saved one has the row appended under its
+//! lease.
+//!
+//! A switch of an open session retargets its next request: the slot its
+//! engine's stream reads its provider target from
+//! (`pa_runtime::BuiltSession::provider_target`) gets the model, its request
+//! auth (resolved through the session's credential pin, as its build
+//! resolves it) and its active service tier (the session's tier preference
+//! clamped to the model), as the old worker's `set_model` and the RPC
+//! mode's model switch install theirs, and the turn boundary's model facts
+//! follow. A model whose request auth does not resolve is refused before
+//! anything moves.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
 use pa_core::models::ModelRegistry;
-use pa_types::ai::ModelThinkingLevel;
+use pa_core::session_engine::provider_adapter::ProviderTarget;
+use pa_types::ai::{ModelThinkingLevel, ServiceTier};
 use serde_json::{json, Value};
 
 use super::{optional_string_arg, string_arg, RuntimeHandlers};
-use crate::session::SessionBuilder;
+use crate::session::{LiveEngine, SessionBuilder};
 
 /// The agent dir's model registry: its sign-ins and `models.json`.
 pub(super) fn registry(agent_dir: &Path) -> ModelRegistry {
@@ -105,7 +116,16 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         let (provider, model_id) = (model.provider.clone(), model.id.clone());
         if open {
             let live = self.runtime.built_engine(&id).await?;
+            let (_, preference) = self.running(&id).await?;
+            let target = self
+                .provider_target(
+                    &live,
+                    &model,
+                    pa_types::ai::clamp_service_tier(Some(&model), preference),
+                )
+                .await?;
             let switched = model.clone();
+            let retargeted = live.clone();
             live.runtime
                 .spawn(async move {
                     live.engine
@@ -115,6 +135,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 })
                 .await
                 .context("the session's runtime ended during the change")??;
+            retarget(&retargeted, target).await?;
             // The next session starts on the switched model.
             let (agent_dir, provider, model_id) =
                 (self.agent_dir.clone(), provider.clone(), model_id.clone());
@@ -282,4 +303,67 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         self.feeds.due(id);
         Ok(effective)
     }
+
+    /// The provider target that sends open session `live`'s requests to
+    /// `model` at `tier` (see the module documentation): its request auth
+    /// resolved through the session's credential pin; refused when it does
+    /// not resolve.
+    pub(super) async fn provider_target(
+        &self,
+        live: &LiveEngine,
+        model: &pa_types::ai::Model,
+        tier: Option<ServiceTier>,
+    ) -> anyhow::Result<ProviderTarget> {
+        let pin = {
+            let persistence = live.engine.session.shared_persistence();
+            live.runtime
+                .spawn(async move {
+                    persistence
+                        .lock()
+                        .await
+                        .get_header()
+                        .and_then(pa_types::session::SessionHeader::credential_pin)
+                })
+                .await
+                .context("the session's runtime ended during the read")?
+        };
+        let (agent_dir, model) = (self.agent_dir.clone(), model.clone());
+        tokio::task::spawn_blocking(move || {
+            let mut registry = registry(&agent_dir);
+            registry.set_credential_pin(&agent_dir, pin);
+            let resolved = registry.get_api_key_and_headers(&model, model.headers.as_ref());
+            anyhow::ensure!(
+                resolved.ok,
+                "{}",
+                resolved.error.unwrap_or_else(|| format!(
+                    "no request auth resolves for {}/{}",
+                    model.provider, model.id
+                ))
+            );
+            Ok(ProviderTarget {
+                api_key: resolved.api_key,
+                model,
+                service_tier: tier,
+                headers: resolved.headers,
+                admission_credential: resolved.admission_credential,
+            })
+        })
+        .await
+        .context("the request auth's thread panicked")?
+    }
+}
+
+/// Points open session `live`'s next request at `target` (see the module
+/// documentation), and moves the turn boundary's model facts with it.
+pub(super) async fn retarget(live: &LiveEngine, target: ProviderTarget) -> anyhow::Result<()> {
+    let engine = std::sync::Arc::clone(&live.engine);
+    let model = target.model.clone();
+    *live
+        .provider_target
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(target);
+    live.runtime
+        .spawn(async move { engine.update_model_facts(&model).await })
+        .await
+        .context("the session's runtime ended during the change")
 }

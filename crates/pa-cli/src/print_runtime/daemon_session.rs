@@ -127,10 +127,34 @@ impl SessionBuilder for DaemonSessions {
                 .await
                 .map_err(|error| anyhow::anyhow!("{error:#}"))?;
         }
+        // The session's requests carry its service tier, as the old worker's
+        // create applies it: its last tier row (else the settings' default),
+        // clamped to the model. A switch moves it from there.
+        let preference = {
+            let persistence = engine.session.shared_persistence();
+            let manager = persistence.lock().await;
+            manager.active_context().service_tier
+        };
+        let preference = preference.or_else(|| {
+            Some(
+                pa_core::settings::SettingsManager::create(&spec.cwd, &options.config.agent_dir)
+                    .get_default_service_tier(),
+            )
+        });
+        if let Some(target) = headless
+            .provider_target
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+        {
+            target.service_tier =
+                pa_types::ai::clamp_service_tier(Some(&headless.model), preference);
+        }
         Ok(BuiltSession {
             engine,
             model: headless.model,
             api_key: headless.api_key,
+            provider_target: headless.provider_target,
             agent_dir: options.config.agent_dir.clone(),
             // Its clients read the old daemon's session-event payloads.
             events: DriverEvents::SessionEvents,

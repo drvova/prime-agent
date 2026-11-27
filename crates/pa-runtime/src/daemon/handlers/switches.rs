@@ -34,7 +34,10 @@
 //! A change of the active service tier (a tier set, or a model cycled to
 //! one that keeps a different tier) is the old `service_tier_changed`
 //! event on the session's stream; a model or level change reaches the
-//! roster feed.
+//! roster feed. A cycled model and a set tier retarget the session's next
+//! request, as `session.set_model` does (`handlers/model.rs`): the cycled
+//! model with its request auth and active tier, the set tier as the
+//! active one.
 
 use anyhow::Context as _;
 use pa_core::settings::switches::{self, CycleDirection};
@@ -42,7 +45,7 @@ use pa_core::settings::SettingsManager;
 use pa_types::ai::{Model, ServiceTier, Transport};
 use serde_json::{json, Value};
 
-use super::model::registry;
+use super::model::{registry, retarget};
 use super::RuntimeHandlers;
 use crate::session::SessionBuilder;
 
@@ -67,7 +70,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     /// Open session `id`'s running model (the whole model, as the registry
     /// lists it) and its service-tier preference (its last
     /// `service_tier_change` row).
-    async fn running(&self, id: &str) -> anyhow::Result<(Model, Option<ServiceTier>)> {
+    pub(super) async fn running(&self, id: &str) -> anyhow::Result<(Model, Option<ServiceTier>)> {
         let live = self.runtime.built_engine(id).await?;
         let (running, preference) = live
             .runtime
@@ -142,6 +145,11 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         };
         let model = next.model;
         let live = self.runtime.built_engine(&id).await?;
+        let before = pa_types::ai::clamp_service_tier(Some(&running), preference);
+        let after = pa_types::ai::clamp_service_tier(Some(&model), preference);
+        // Its request auth resolves before anything moves.
+        let target = self.provider_target(&live, &model, after).await?;
+        let retargeted = live.clone();
         let pinned = next
             .thinking_level
             .as_deref()
@@ -168,14 +176,13 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             })
             .await
             .context("the session's runtime ended during the change")??;
+        retarget(&retargeted, target).await?;
         // The next session starts on the cycled model.
         let (provider, model_id) = (model.provider.clone(), model.id.clone());
         self.write_settings(&id, move |settings| {
             settings.set_default_model_and_provider(&provider, &model_id)
         })
         .await?;
-        let before = pa_types::ai::clamp_service_tier(Some(&running), preference);
-        let after = pa_types::ai::clamp_service_tier(Some(&model), preference);
         self.tier_moved(&id, before, after)?;
         self.feeds.due(&id);
         Ok(json!({
@@ -232,9 +239,18 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         let (model, preference) = self.running(&id).await?;
         let before = pa_types::ai::clamp_service_tier(Some(&model), preference);
         let after = pa_types::ai::clamp_service_tier(Some(&model), Some(tier));
+        // The session's next request carries the active tier.
+        let live = self.runtime.built_engine(&id).await?;
+        if let Some(target) = live
+            .provider_target
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+        {
+            target.service_tier = after;
+        }
         if preference != Some(tier) {
             // The row keeps the requested tier, not the clamped one.
-            let live = self.runtime.built_engine(&id).await?;
             live.runtime
                 .spawn(async move {
                     let persistence = live.engine.session.shared_persistence();

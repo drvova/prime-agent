@@ -400,7 +400,12 @@ SQLite implementations over `pa-log`.
   (`pa_core::models::{load_model_allowlist, assert_model_allowed}`: unreadable global settings or a
   malformed `allowedModels` refuse every model), and on an
   open session switches the running agent, records the `model_change` row through its engine
-  and makes it the settings' default, the old daemon's `set_model`; `session.set_mcp_servers`
+  and makes it the settings' default, the old daemon's `set_model`, and retargets the session's
+  next request: the slot its stream reads its provider target from (`BuiltSession::
+  provider_target`, which the embedder's build hands over) gets the model, its request auth
+  (through the session's credential pin; a model whose auth does not resolve is refused before
+  anything moves) and its active tier, and the turn boundary's model facts follow;
+  `session.set_mcp_servers`
   (`{session, owner, servers}`) replaces the MCP servers one client supplies an open session in
   its engine's MCP manager, fenced by the owner id (another owner's list is refused, its clear
   changes nothing), refused while a turn runs, a failed replacement rolled back, the old daemon's
@@ -456,8 +461,10 @@ SQLite implementations over `pa-log`.
   `session.set_auto_compaction`, `session.set_auto_retry` (the settings the next turn reads; the
   queue modes and auto-compaction also switch the running session). A move of the active tier
   (the preference clamped to the model) is the old `service_tier_changed` on the session's
-  stream; a cycled model or level reaches the roster feed. The requests' tier itself is not
-  applied yet: the session's provider target belongs to its embedder. A root session stopped and opened again waits for its new engine's
+  stream; a cycled model or level reaches the roster feed. A cycled model retargets the next
+  request as `session.set_model` does, and a set tier becomes the active tier the next request
+  carries; a session's build starts it at its tier row's tier (else the settings' default)
+  clamped to its model, as the old worker's create. A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);

@@ -130,6 +130,7 @@ impl SessionBuilder for FauxBuilder {
             engine: Arc::new(engine),
             model: self.model.clone(),
             api_key: None,
+            provider_target: Arc::default(),
             agent_dir: self.agent_dir.clone(),
             events: DriverEvents::Stream,
             autonomous: None,

@@ -133,6 +133,9 @@ pub(crate) struct LiveEngine {
     pub(crate) runtime: tokio::runtime::Handle,
     /// The lifetime's autonomous run state, as its turns account it.
     pub(crate) autonomous: Arc<tokio::sync::Mutex<pa_core::autonomous::AutonomousRuntimeState>>,
+    /// The slot its engine's stream reads its provider target from
+    /// ([`crate::BuiltSession::provider_target`]).
+    pub(crate) provider_target: pa_core::session_engine::provider_adapter::ProviderTargetSlot,
 }
 
 /// One session's host thread, as the runtime holds it.
@@ -1058,6 +1061,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                 engine: Arc::clone(&hosted.built.engine),
                 runtime: runtime.handle().clone(),
                 autonomous: hosted.autonomous.state_handle(),
+                provider_target: Arc::clone(&hosted.built.provider_target),
             });
         }
         self.node.built(Ok(()));

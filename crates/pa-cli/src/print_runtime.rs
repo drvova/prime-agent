@@ -455,8 +455,9 @@ pub(crate) use faux::{
 };
 
 /// The switchable provider target the session's stream reads per call
-/// (shared with the RPC mode, whose picker model switches swap it live).
-pub type ProviderTargetSlot = std::sync::Arc<std::sync::RwLock<Option<ProviderTarget>>>;
+/// (shared with the RPC mode and the runtime daemon, whose model and tier
+/// switches swap it live).
+pub(crate) use pa_core::session_engine::provider_adapter::ProviderTargetSlot;
 
 /// What one engine build varies by session: a print-runtime session (the
 /// print root, or a spawned subagent with its own model, auth and session),

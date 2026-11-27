@@ -20,6 +20,7 @@ use pa_core::kernel::{CallPolicy, HostRequestHandlers};
 use pa_core::session_engine::bash_notices::{BashNoticeWake, KernelNoticeSink};
 use pa_core::session_engine::engine::SessionEngine;
 use pa_core::session_engine::headless::HeadlessTerminalResult;
+use pa_core::session_engine::provider_adapter::ProviderTargetSlot;
 use pa_core::session_engine::rlm_host::RlmSubagentHost;
 use pa_core::session_engine::runtime_wiring::KernelCronWiring;
 use pa_core::LateSentAgentMessageHandler;
@@ -297,6 +298,12 @@ pub struct BuiltSession {
     pub engine: Arc<SessionEngine>,
     pub model: Model,
     pub api_key: Option<String>,
+    /// The slot the engine's stream reads its provider target (model, request
+    /// auth, service tier) from on every request: the runtime daemon's model
+    /// and tier switches write it, so the session's next request goes to
+    /// what the switch chose. An engine whose stream does not read it (a
+    /// test's) is not retargeted.
+    pub provider_target: ProviderTargetSlot,
     /// The agent dir the engine was built over: its settings and harness
     /// state.
     pub agent_dir: PathBuf,
