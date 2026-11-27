@@ -273,7 +273,8 @@ pa-core's (`session::navigation`, `branch_summarization::run_branch_summary`,
 replacements' rules (`fork`'s starting point, `import_jsonl`'s copy target, the replaced session's
 working directory and their refusals) are pa-core's `session::replacement`, shared with it too.
 
-Workspace checkpoints (`workspace_checkpoints.rs`): a shadow git store per
+Workspace checkpoints (`workspace_checkpoints.rs`, over pa-core's
+`session::checkpoints::CheckpointStore`, which the runtime daemon shares): a shadow git store per
 workspace (own git dir, one index per session, user git config shut out)
 snapshots the files before and after every turn, on the turn's blocking thread;
 `navigate_tree` with `restoreFiles` restores the target's tree after the leaf move, leaving paths

@@ -45,6 +45,7 @@ use pa_core::session_engine::agent_messaging::{
 };
 use pa_core::session_engine::event_bus_host::register_event_bus_host_handlers;
 
+use super::checkpoints::Checkpoints;
 use super::faults::{
     keep_fault, orphan_journal, publish_fault, reap_orphans, record_crash, LifetimeFaults, Rebuild,
     SessionFaults,
@@ -178,6 +179,9 @@ pub(crate) struct LiveEngine {
     /// The slot its engine's stream reads its provider target from
     /// ([`crate::BuiltSession::provider_target`]).
     pub(crate) provider_target: pa_core::session_engine::provider_adapter::ProviderTargetSlot,
+    /// The lifetime's workspace checkpoints ([`Checkpoints`]); `None` for a
+    /// subagent or a session kept in memory.
+    pub(crate) checkpoints: Option<Arc<Checkpoints>>,
 }
 
 /// One session's host thread, as the runtime holds it.
@@ -735,6 +739,9 @@ struct Hosted {
     /// it was capped by this run.
     goal_updated_at_start: Option<u64>,
     global_harness_dir: PathBuf,
+    /// The lifetime's workspace checkpoints; `None` for a subagent or a
+    /// session kept in memory.
+    checkpoints: Option<Arc<Checkpoints>>,
 }
 
 impl<B: SessionBuilder> Lifetime<B> {
@@ -1142,12 +1149,21 @@ impl<B: SessionBuilder> Lifetime<B> {
             );
             let global_harness_dir =
                 pa_core::refinement::get_global_harness_state_dir(&built.agent_dir);
+            // A transcript kept on disk, of a root session: its workspace's
+            // checkpoints (a subagent's writes land in its parent's turn).
+            let checkpoints = (self.spec.subagent.is_none() && !self.spec.ephemeral).then(|| {
+                Arc::new(Checkpoints::new(
+                    built.agent_dir.clone(),
+                    self.spec.cwd.clone(),
+                ))
+            });
             Hosted {
                 boundary: TurnBoundary::with_sink(json, self.publisher()),
                 goal,
                 autonomous,
                 goal_updated_at_start,
                 global_harness_dir,
+                checkpoints,
                 built,
             }
         });
@@ -1159,6 +1175,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                 runtime: runtime.handle().clone(),
                 autonomous: hosted.autonomous.state_handle(),
                 provider_target: Arc::clone(&hosted.built.provider_target),
+                checkpoints: hosted.checkpoints.clone(),
             });
         }
         self.node.built(Ok(()));
@@ -1214,6 +1231,7 @@ impl<B: SessionBuilder> Lifetime<B> {
             goal,
             autonomous,
             global_harness_dir,
+            checkpoints,
             ..
         } = session;
         let engine = &built.engine;
@@ -1251,6 +1269,12 @@ impl<B: SessionBuilder> Lifetime<B> {
                 }
             }
             let publish = self.publisher();
+            // The workspace before the turn, recorded with the workspace as
+            // it settled on the entries the turn appended.
+            let opening = match checkpoints {
+                Some(checkpoints) => checkpoints.begin(engine).await,
+                None => None,
+            };
             let prompted = engine
                 .session
                 .prompt_with_auto_retry(
@@ -1269,6 +1293,9 @@ impl<B: SessionBuilder> Lifetime<B> {
                 turn.steerable = false;
                 (turn.cancelled, turn.steered)
             };
+            if let Some(opening) = opening {
+                Checkpoints::settle(opening, engine).await;
+            }
             if cancelled {
                 return TaskEnd::CANCELLED;
             }

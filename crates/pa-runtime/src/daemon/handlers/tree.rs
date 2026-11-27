@@ -21,9 +21,11 @@
 //!   the new branch, and its goal reloaded from it (a change is the old
 //!   `goal_update` on the session's stream). A summary aborted answers
 //!   `{cancelled: true, aborted: true}`; the target being the leaf already,
-//!   `{cancelled: false}`. The runtime daemon keeps no workspace
-//!   checkpoints, so `restoreFiles` restores nothing and the answer carries
-//!   no `files`.
+//!   `{cancelled: false}`. With `restoreFiles`, the workspace goes back to
+//!   the target's checkpoint (`crate::session` checkpoints: the one before a
+//!   re-entered prompt's turn, else the one its turn settled at), the files
+//!   changed outside the session left alone: `files` is `{restored,
+//!   conflicts}` (or `{error}`), absent when the target has none.
 //! - `session.abort_branch_summary {session}` (`abort_branch_summary`): aborts
 //!   the summary a navigation of the session runs, if one does.
 //! - `session.export_html {session, outputPath?}` (`export_html`): `{path}`,
@@ -179,6 +181,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         }
         let hold = self.hold_for_move(&id, "navigate").await?;
         let (new_leaf, editor_text) = navigation::navigation_point(&target);
+        let transcript_id = session_id.clone();
 
         let mut summary = None;
         if request.summarize {
@@ -244,7 +247,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         let summarized = summary.is_some();
         let (label, target_id) = (request.label.clone(), request.target_id.clone());
         let engine = Arc::clone(&live.engine);
-        let (summary_entry, goal) = live
+        let (summary_entry, goal, moved_to) = live
             .runtime
             .spawn(async move {
                 let persistence = engine.session.shared_persistence();
@@ -284,6 +287,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                     }
                     None
                 };
+                let moved_to = manager.get_leaf_id().map(str::to_string);
                 drop(manager);
                 // The moved branch invalidates an armed review.
                 engine.session.discard_compact_auto_refine();
@@ -302,15 +306,28 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 drop(driver);
                 let changed = pa_core::goals::goal_update_dedupe_projection(&before)
                     != pa_core::goals::goal_update_dedupe_projection(&after);
-                anyhow::Ok((summary_entry, changed.then_some(after)))
+                anyhow::Ok((summary_entry, changed.then_some(after), moved_to))
             })
             .await
             .context("the session's runtime ended during the move")??;
+        // The files follow the committed move, while the lane is still held:
+        // a failed restore leaves a conversation-only rewind and says why.
+        let files = match (&live.checkpoints, request.restore_files) {
+            (Some(checkpoints), true) => {
+                checkpoints
+                    .rewind(transcript_id, &target, old_leaf, moved_to)
+                    .await
+            }
+            (Some(_), false) | (None, _) => None,
+        };
         drop(hold);
         if let Some(goal) = goal {
             (self.runtime.stream_sender(&id)?)(json!({ "type": "goal_update", "goal": goal }));
         }
         let mut data = json!({ "cancelled": false });
+        if let Some(files) = files {
+            data["files"] = files;
+        }
         if let Some(editor_text) = editor_text {
             data["editorText"] = json!(editor_text);
         }

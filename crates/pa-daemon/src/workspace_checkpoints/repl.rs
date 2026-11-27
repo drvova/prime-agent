@@ -60,7 +60,7 @@ impl ReplCheckpoints {
 
     /// This session's rows, oldest first (a torn last line is skipped).
     fn rows(store: &Store) -> Vec<ReplRow> {
-        std::fs::read_to_string(&store.repl_path)
+        std::fs::read_to_string(store.repl_log())
             .unwrap_or_default()
             .lines()
             .filter_map(|line| serde_json::from_str(line).ok())
@@ -93,7 +93,7 @@ impl WorkspaceCheckpointController for ReplCheckpoints {
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&store.repl_path)?;
+            .open(store.repl_log())?;
         writeln!(file, "{}", serde_json::to_string(&row)?)?;
         Ok(WorkspaceCheckpoint {
             id: row.id,

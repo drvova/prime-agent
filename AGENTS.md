@@ -333,8 +333,17 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `session.last_assistant_text`, `session.navigate_tree`, `session.abort_branch_summary` and
   `session.export_html` (`pa-runtime` `daemon/handlers/tree.rs`) apply them. A runtime
   navigation holds the session's lane for the move and aborts a running turn first, rebuilds
-  the context onto the new branch and publishes a changed goal as the old `goal_update`; the
-  runtime keeps no workspace checkpoints, so its `restoreFiles` restores nothing yet.
+  the context onto the new branch and publishes a changed goal as the old `goal_update`.
+- One workspace checkpoint store (`pa_core::session::checkpoints::CheckpointStore`: a shadow git
+  repository per workspace under `<agent dir>/checkpoints/`, one index and record log per
+  transcript, the user's git config shut out). Both daemons record each prompt's turn
+  (`record_turn`: the workspace before it under its first appended entry, as it settled under its
+  new leaf) and rewind a `restoreFiles` navigation with it (`rewind`: the target's tree, paths
+  changed outside the session left alone and named, the abandoned state recorded for the way
+  back). The runtime's store belongs to a root session's lifetime on disk (`pa-runtime`
+  `session/checkpoints.rs`; none for a subagent or a session in memory), and every git call runs
+  on a blocking thread; a navigation restores the files after its move commits, before its lane
+  hold ends.
 - One set of whole-session replacement rules: where a `fork {entryId, position}` starts and the
   text it hands back, where an `import_jsonl` copies its file, and the working directory a
   replaced session runs in with its refusals and their `errorInfo`

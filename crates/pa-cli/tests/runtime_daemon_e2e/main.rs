@@ -46,11 +46,14 @@
 //! - A session's queue edits, and the aborts of its compaction and its
 //!   retry, answered and run as the old daemon answers and runs them (phase
 //!   8d-2c): [`queue_edit`].
+//! - A rewind's workspace checkpoints, restored as the old daemon restores
+//!   them (phase 8d-2d): [`checkpoints`].
 #![cfg(unix)]
 
 mod acp_calls;
 mod agents_view;
 mod bash;
+mod checkpoints;
 mod client_surface;
 mod family;
 mod goldens;

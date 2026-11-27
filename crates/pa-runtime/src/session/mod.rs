@@ -33,6 +33,7 @@ use crate::events::BusEvents;
 use crate::lock;
 use crate::subagents::Subagents;
 
+mod checkpoints;
 mod faults;
 mod host;
 mod runner;

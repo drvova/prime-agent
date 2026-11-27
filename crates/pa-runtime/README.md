@@ -484,8 +484,14 @@ SQLite implementations over `pa-log`.
   (`get_user_messages_for_forking`), `session.last_assistant_text` (`get_last_assistant_text`),
   `session.navigate_tree` (`navigate_tree`: the lane held for the move and a running turn aborted
   first, the abandoned branch summarized on the session's model when asked, the context rebuilt
-  onto the new branch and a changed goal published as `goal_update`; no workspace checkpoints, so
-  `restoreFiles` restores nothing), `session.abort_branch_summary` and `session.export_html`.
+  onto the new branch and a changed goal published as `goal_update`; with `restoreFiles`, the
+  files rewound to the target's workspace checkpoint before the hold ends, `files: {restored,
+  conflicts}`), `session.abort_branch_summary` and `session.export_html`. Workspace checkpoints
+  (8d-2d, `session/checkpoints.rs`, over pa-core's `session::checkpoints::CheckpointStore`):
+  a root session on disk captures its workspace before each prompt's turn and records it, with
+  the workspace as the turn settled, on the entries the turn appended; the store is opened per
+  transcript (a fork or an import has its own) in the lifetime's working directory, and a
+  workspace that cannot be checkpointed turns them off for the lifetime.
   The whole-session replacements (`daemon/handlers/replace.rs`, pa-core's
   `session::replacement` rules): `session.fork_entry` (`fork {entryId, position}`: the path to the
   entry copied into a new transcript beside the session's, `{cancelled, selectedText?}`; an
