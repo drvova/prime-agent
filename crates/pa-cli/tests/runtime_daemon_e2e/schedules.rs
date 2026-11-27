@@ -9,6 +9,9 @@
 //!   session (the next daemon wakes it when the job is due);
 //! - a heartbeat whose time passed while no daemon ran fires once at the next
 //!   boot, its next run counted from that fire;
+//! - a heartbeat still fires after a restart when the killed daemon left the
+//!   store's state lock held: the next daemon's lane runs its failed passes
+//!   again until the lock is stale;
 //! - a session stopped on purpose is never woken by its due job;
 //! - a plain scheduled job runs its prompt as a turn;
 //! - a runtime daemon the settings no longer select skips its jobs.
@@ -111,16 +114,20 @@ impl Session {
             .collect()
     }
 
-    /// Its only job, as the store keeps it.
-    fn job(&self, bed: &Bed) -> pa_core::cron::AgentCronJob {
-        let partition = self
-            .path
+    /// Its scheduled-jobs partition.
+    fn partition(&self) -> PathBuf {
+        self.path
             .parent()
             .and_then(std::path::Path::parent)
             .expect("a sessions dir")
             .join("session-artifacts")
             .join(&self.id)
-            .join("scheduled-jobs.json");
+            .join("scheduled-jobs.json")
+    }
+
+    /// Its only job, as the store keeps it.
+    fn job(&self, bed: &Bed) -> pa_core::cron::AgentCronJob {
+        let partition = self.partition();
         let state = pa_core::agent_state::StateDatabase::open(
             &pa_core::session::store::database_path(&bed.agent_dir()),
         )
@@ -164,6 +171,37 @@ async fn a_heartbeat_keeps_firing_across_a_daemon_restart() {
     until(FIRE_WAIT, "a heartbeat after the restart", async || {
         (session.rows(&mut client, "heartbeat_prompt").await > before).then_some(())
     })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_heartbeat_fires_after_a_restart_once_the_killed_daemons_jobs_lock_is_stale() {
+    let bed = Bed::new();
+    let daemon = bed.runtime_daemon(&script(HEARTBEAT));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let session = Session::create(&mut client).await;
+    let before = until(FIRE_WAIT, "the first heartbeat", async || {
+        let rows = session.rows(&mut client, "heartbeat_prompt").await;
+        (rows > 0).then_some(rows)
+    })
+    .await;
+    drop(client);
+    // Killed while it held the store's state lock (as a kill during a
+    // claim or a fire's record leaves it): the next daemon's passes fail
+    // until the lock is stale.
+    drop(daemon);
+    std::fs::create_dir_all(pa_core::platform::lock_dir::LockDir::path_for(
+        &session.partition(),
+    ))
+    .expect("the dead daemon's lock");
+
+    let _daemon = bed.runtime_daemon(&plain());
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    until(
+        FIRE_WAIT,
+        "a heartbeat once the lock is stale",
+        async || (session.rows(&mut client, "heartbeat_prompt").await > before).then_some(()),
+    )
     .await;
 }
 
