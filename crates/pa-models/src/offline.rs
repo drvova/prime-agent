@@ -15,26 +15,35 @@ fn offline_flag() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pa_types::session_scope::{self, SessionScope};
+    use std::collections::{BTreeMap, BTreeSet};
 
-    // NOTE: process-global env mutation in tests is unsafe in Rust 2024 and
-    // racy across the test binary; the parsing rule is covered through the
-    // private helper instead.
+    /// `is_catalog_offline` inside a session scope where `PI_OFFLINE` is `raw`
+    /// (`None` hides it), so the process environment stays untouched.
+    fn offline_with(raw: Option<&str>) -> bool {
+        let env: BTreeMap<String, String> = raw
+            .map(|raw| ("PI_OFFLINE".to_string(), raw.to_string()))
+            .into_iter()
+            .collect();
+        let hidden: BTreeSet<String> = raw
+            .is_none()
+            .then(|| "PI_OFFLINE".to_string())
+            .into_iter()
+            .collect();
+        let _scope = session_scope::enter(Some(SessionScope::new(
+            "offline-test".to_string(),
+            std::path::PathBuf::new(),
+            env,
+            hidden,
+        )));
+        is_catalog_offline()
+    }
+
     #[test]
     fn parses_offline_values() {
-        let yes = |raw: &str| {
-            std::env::remove_var("PI_OFFLINE");
-            // SAFETY: single-threaded test runtime before tokio starts.
-            std::env::set_var("PI_OFFLINE", raw);
-            is_catalog_offline()
-        };
-        assert!(yes("1"));
-        assert!(yes("true"));
-        assert!(yes("YES"));
-        assert!(yes(" Yes "));
-        assert!(!yes("0"));
-        assert!(!yes("no"));
-        assert!(!yes("maybe"));
-        std::env::remove_var("PI_OFFLINE");
-        assert!(!is_catalog_offline());
+        let answers =
+            ["1", "true", "YES", " Yes ", "0", "no", "maybe"].map(|raw| offline_with(Some(raw)));
+        assert_eq!(answers, [true, true, true, true, false, false, false]);
+        assert!(!offline_with(None));
     }
 }
