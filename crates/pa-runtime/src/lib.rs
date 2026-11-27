@@ -33,6 +33,10 @@
 //!   the goal surface, the autonomous run, the continuation hook, the
 //!   session slash commands), which the runtime's sessions run.
 //!
+//! - Sources: timers and folder watches ([`SourceDefinition`],
+//!   `pa-sources`) defined on the runtime and kept in its database, each
+//!   running while a subscription hears it.
+//!
 //! The `Memory*` implementations are for tests and headless use.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -43,6 +47,7 @@ mod log_stores;
 mod routes;
 mod runtime;
 mod session;
+mod sources;
 mod store;
 mod subagents;
 mod subscriptions;
@@ -59,6 +64,7 @@ pub use session::{
     BuiltSession, DriverEvents, Finished, SessionBuilder, SessionSeams, SessionSpec, SettleAfter,
     Settled, SubagentSpec,
 };
+pub use sources::SourceDefinition;
 pub use store::{EventStore, MemoryEventStore, MemoryStateStore, StateKey, StateStore, StateWrite};
 pub use subscriptions::{DuplicateSubscription, MemorySessionTree, SessionTree};
 pub use tasks::{

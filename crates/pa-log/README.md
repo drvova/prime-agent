@@ -62,8 +62,11 @@ in it. `pa-runtime` keeps its events, task lanes and state in it (`pa_runtime::L
 - **The agent's other state, by partition** (schema migration 3). A partition is named by a
   scope the caller chooses (one per file it replaces) and counts once the `partitions` table
   holds it; from then on its rows are the truth.
-  - `sources` (timer and bus sources, with a timer's claimed run) and `subscriptions`:
-    `replace_sources` stores a partition's whole `SourceSet` in order, `sources` reads it.
+  - `sources` (timer, bus, watch and webhook sources, with a timer's claimed run) and
+    `subscriptions`: `replace_sources` stores a partition's whole `SourceSet` in order, `sources`
+    reads it. A kind is stored as text in a column with no constraint, so the watch and webhook
+    kinds (`pa-runtime`'s sources) came with no migration; a build that does not know a kind
+    refuses only the partition that holds it.
   - `kv`: `put_value` and `value`, one value per key in a partition.
   - `crashes`: `append_crashes` adds records in order, `crashes` reads them; records are never
     rewritten.

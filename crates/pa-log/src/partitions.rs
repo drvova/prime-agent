@@ -1,6 +1,12 @@
-//! The agent's state besides transcripts (schema migration 3): timer and bus
-//! sources, bus subscriptions, key-value documents and crash records, each
-//! kept in a partition.
+//! The agent's state besides transcripts (schema migration 3): timer, bus,
+//! watch and webhook sources, bus subscriptions, key-value documents and
+//! crash records, each kept in a partition.
+//!
+//! A source's kind is stored as its text (`SourceKind::as_str`) in a column
+//! with no constraint, so a kind added later (`watch` and `webhook`, for
+//! `pa-runtime`'s sources) needs no migration. A build that does not know a
+//! kind refuses only the partition holding it, and an older build never
+//! reads the partitions those kinds are written to.
 //!
 //! A partition is named by a scope the caller chooses (pa-core names each one
 //! for the file it replaces, such as `cron:<path of scheduled-jobs.json>`).
@@ -52,6 +58,10 @@ pub enum SourceKind {
     Timer,
     /// A named event-bus source sessions publish to.
     Bus,
+    /// A folder watch (`pa-runtime`'s sources).
+    Watch,
+    /// An HTTP listener (`pa-runtime`'s sources).
+    Webhook,
 }
 
 impl SourceKind {
@@ -59,6 +69,8 @@ impl SourceKind {
         match self {
             SourceKind::Timer => "timer",
             SourceKind::Bus => "bus",
+            SourceKind::Watch => "watch",
+            SourceKind::Webhook => "webhook",
         }
     }
 
@@ -66,6 +78,8 @@ impl SourceKind {
         match text {
             "timer" => Some(SourceKind::Timer),
             "bus" => Some(SourceKind::Bus),
+            "watch" => Some(SourceKind::Watch),
+            "webhook" => Some(SourceKind::Webhook),
             _ => None,
         }
     }

@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pa_types::event_log::{Event, Scope, Subscription, TopicTrie};
+use pa_types::event_log::{Event, Scope, Subscription, TopicFilter, TopicTrie};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::lock;
@@ -96,14 +97,49 @@ struct Held {
     deadline: Instant,
 }
 
+/// A subscription that came onto the bus or left it, as the registry tells
+/// its observer (the runtime's sources, [`crate::sources`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SubscriptionChange {
+    Added { id: String, filter: TopicFilter },
+    Removed { id: String },
+}
+
 #[derive(Default)]
 pub(crate) struct Registry {
     trie: TopicTrie<String>,
     entries: HashMap<String, Entry>,
     next_serial: u64,
+    /// Told of every subscription added and removed, without blocking: the
+    /// registry's lock is held while it is told.
+    observer: Option<mpsc::UnboundedSender<SubscriptionChange>>,
 }
 
 impl Registry {
+    /// Tells `observer` of every subscription added and removed from now on,
+    /// after telling it of each one on the bus now.
+    pub(crate) fn observe(&mut self, observer: mpsc::UnboundedSender<SubscriptionChange>) {
+        self.observer = Some(observer);
+        let current: Vec<SubscriptionChange> = self
+            .entries
+            .values()
+            .map(|entry| SubscriptionChange::Added {
+                id: entry.subscription.id.clone(),
+                filter: entry.subscription.filter.clone(),
+            })
+            .collect();
+        for change in current {
+            self.tell(change);
+        }
+    }
+
+    fn tell(&self, change: SubscriptionChange) {
+        if let Some(observer) = &self.observer {
+            // The observer ends only with the runtime that owns this bus.
+            let _ = observer.send(change);
+        }
+    }
+
     pub(crate) fn add(&mut self, subscription: Subscription) -> Result<(), DuplicateSubscription> {
         if self.entries.contains_key(&subscription.id) {
             return Err(DuplicateSubscription(subscription.id));
@@ -111,6 +147,10 @@ impl Registry {
         self.trie
             .insert(&subscription.filter, subscription.id.clone());
         self.next_serial += 1;
+        let added = SubscriptionChange::Added {
+            id: subscription.id.clone(),
+            filter: subscription.filter.clone(),
+        };
         self.entries.insert(
             subscription.id.clone(),
             Entry {
@@ -120,6 +160,7 @@ impl Registry {
                 held: None,
             },
         );
+        self.tell(added);
         Ok(())
     }
 
@@ -127,6 +168,7 @@ impl Registry {
         let entry = self.entries.remove(id)?;
         self.trie
             .remove(&entry.subscription.filter, &entry.subscription.id);
+        self.tell(SubscriptionChange::Removed { id: id.to_string() });
         Some(Arc::unwrap_or_clone(entry.subscription))
     }
 

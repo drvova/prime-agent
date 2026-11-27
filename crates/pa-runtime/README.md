@@ -26,7 +26,7 @@ SQLite implementations over `pa-log`.
     route runs. They do not wait behind an append in progress.
   - **Intake**: a synchronous, non-blocking, unbounded way onto the bus for code that cannot
     await (an event source's callbacks); its task publishes in order. `pa_sources::Publisher`
-    is implemented on it.
+    is implemented on it (a gone bus is `PublisherClosed`).
 - **Subscriptions**: scope (`Local`: the subscription's session; `Agent`: it and its
   subagents, via `SessionTree`; `Global`: every event), then `when`, then throttle (at most one
   match per window; the rest dropped, not queued), then debounce (the route runs once, with the
@@ -207,13 +207,32 @@ SQLite implementations over `pa-log`.
   autonomous arms (both defer behind unsettled subagent work), the session slash commands,
   and the auto-retry events. Their json events go to the session's stream (a
   `TurnBoundary::new`, the tests' own, prints its events on stdout).
+- **Sources** (`sources.rs`, `Runtime::define_source(SourceDefinition)`): timer and
+  folder-watch sources (`pa-sources`), by name. A definition (kind, options, the session that
+  defined it) is a row of agent.db's `sources` table in the partition `runtime-sources`, which
+  meets neither pa-core's scheduled jobs (`cron:<path>`) nor the kernel's bus sources (the
+  `event-bus.json` partition). It is checked as it is defined (one topic level, the kind's
+  options); defining a name again the same way changes nothing, another way is refused, and a
+  webhook is refused ("webhook sources arrive with the daemon"). A source runs while a bus
+  subscription's filter (`TopicFilter::matches`) matches a topic it publishes on: `timer/<name>`
+  (Owner), or `source/<name>/changed` and `source/<name>/error` (the watch's `trust`, Owner by
+  default). The registry tells the sources' task of every subscription added or removed, by any
+  path (`Runtime::add_subscription`, the kernel's, the subagents'), without blocking; that task
+  starts a source at the first such subscription and stops it, waiting for its work to end, at
+  the last. Events reach the bus through an `Intake`. Each timer fire's `firedAt` is kept in the
+  row's claim (`{"lastFiredMs"}`), written through the database's writer without waiting, so a
+  timer started again, in the run or after a restart, catches up under pa-sources' rule (missed
+  fires collapse into one; the next counts from it). `running_sources` names those running.
+  `shutdown` stops every source and stores the last claims first; nothing else waits on a source,
+  so a run's settle does not. No kernel function defines one yet.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
 
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
 `TaskStore`). No engine assembly (the embedder's `SessionBuilder`). No model calls for `Call`
-routes yet (behind `ModelCaller`). No event sources (`pa-sources`, publishing through `Intake`).
+routes yet (behind `ModelCaller`). No source of its own: the sources are `pa-sources`', and
+webhooks wait for the daemon.
 No socket listener (the daemon accepts connections and hands each to `WireServer::serve`), and
 no query or call backend (behind `Handlers`). No model resolution for a subagent (its builder's, from its
 `SubagentSpec`). No persistence of other subscriptions yet (the kernel's event subscriptions are kept).
@@ -232,8 +251,9 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 - `MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`, `MemoryTaskStore`.
 - `LogEventStore`, `LogTaskStore`, `LogStateStore` (each `new(Arc<pa_log::Log>)`;
   `LogStateStore::get`).
-- `Runtime` (`open`, `publish`, `listen`, `create_session`, `cancel`, `idle`, `settle`, `finish`,
-  `shutdown`), `RuntimeOptions`, `SessionBuilder` (`build(id, spec, seams)`), `SessionSeams`
+- `Runtime` (`open`, `publish`, `listen`, `add_subscription`, `remove_subscription`,
+  `define_source`, `running_sources`, `create_session`, `cancel`, `idle`, `settle`, `finish`,
+  `shutdown`), `RuntimeOptions`, `SourceDefinition`, `SessionBuilder` (`build(id, spec, seams)`), `SessionSeams`
   (the session's trust gate, the host requests the runtime answers - its `event.*` and its
   family's `agent_message.*` - its `rlm.*` subagents, the late-receipt sink, the
   background-settle wake and the kernel-notice sink, all of which the engine must install),
@@ -241,6 +261,7 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `BuiltSession`, `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
   `TaskQueue::session_idle`.
 
-Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-core` (the session engine, the
+Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-sources` (the timer and watch
+sources it starts and stops), `pa-core` (the session engine, the
 kernel's spare pool, the turn driver's compaction, refinement, goal and autonomous seams) and
 `pa-agent` (the agent loop's steering, abort and events), among workspace crates.
