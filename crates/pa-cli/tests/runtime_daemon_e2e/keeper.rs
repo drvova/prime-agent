@@ -4,8 +4,8 @@
 //! - a kept runtime daemon killed outright (SIGKILL) is started again by its
 //!   keeper on the same socket, and the death is recorded under the runtime
 //!   daemon's socket, never the old daemon's;
-//! - a deliberate stop (the daemon's own drain on SIGTERM, or a kill after a
-//!   recorded stop intent) is not restarted;
+//! - a deliberate stop (a client's `daemon.shutdown`, the daemon's own drain
+//!   on SIGTERM, or a kill after a recorded stop intent) is not restarted;
 //! - a runtime daemon that dies at every start is given up on at the limit,
 //!   every death recorded;
 //! - a wedged (SIGSTOP'd) runtime daemon holding the agent dir's lock is
@@ -176,8 +176,17 @@ fn a_killed_kept_runtime_daemon_is_restarted_and_its_death_recorded() {
     );
 }
 
-#[test]
-fn a_deliberate_stop_of_a_kept_runtime_daemon_is_not_restarted() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deliberate_stop_of_a_kept_runtime_daemon_is_not_restarted() {
+    // A client's `daemon.shutdown`: answered, then the daemon exits cleanly
+    // and its keeper with it (the old daemon's `shutdown`).
+    let shut = Bed::new();
+    let mut shut_kept = shut.kept_runtime_daemon(&shut.old_socket());
+    serving_holder(&shut, None);
+    let (mut client, _) = super::Client::connect(&shut.runtime_socket()).await;
+    let shutdown = super::ok(client.call("daemon.shutdown", json!({})).await);
+    let shut_exit = exit_code(&mut shut_kept.keeper);
+
     // The daemon's own drain on SIGTERM: it exits cleanly and its keeper with it.
     let drained = Bed::new();
     let mut drained_kept = drained.kept_runtime_daemon(&drained.old_socket());
@@ -196,6 +205,9 @@ fn a_deliberate_stop_of_a_kept_runtime_daemon_is_not_restarted() {
 
     assert_eq!(
         (
+            (shutdown, shut_exit),
+            answers(&shut.runtime_socket()),
+            shut.deaths(&shut.runtime_socket()),
             drained_exit,
             killed_exit,
             answers(&drained.runtime_socket()),
@@ -204,6 +216,9 @@ fn a_deliberate_stop_of_a_kept_runtime_daemon_is_not_restarted() {
             killed.deaths(&killed.runtime_socket()),
         ),
         (
+            (Value::Null, Some(0)),
+            false,
+            Vec::<Value>::new(),
             Some(0),
             Some(0),
             false,

@@ -36,7 +36,7 @@
 //!   [`IN_FLIGHT`] at once per connection.
 //! - Any frame that is not a wire2 client frame, or a second `hello`, ends
 //!   the connection with `closing`. So does an outbound frame larger than the
-//!   frame limits.
+//!   frame limits, and the runtime's own end (`system/closing`, see `feed`).
 
 use std::future::Future;
 use std::num::NonZeroUsize;
@@ -375,27 +375,57 @@ pub(crate) fn accepted(published: &Published, session: &str) -> Option<AgentAcce
         .and_then(|caused| serde_json::from_value(caused.event.payload.clone()).ok())
 }
 
+/// What runs once a reply is queued ([`after_reply`]).
+type AfterReply = Box<dyn FnOnce() + Send>;
+
+tokio::task_local! {
+    /// What the query or call answered on this task asked to run once its
+    /// reply is queued.
+    static AFTER_REPLY: std::cell::RefCell<Vec<AfterReply>>;
+}
+
+/// Runs `hook` once the reply to the query or call being answered on this
+/// task is queued on its connection, so whatever `hook` causes reaches that
+/// client after the reply (the old daemon answered a `shutdown` before it
+/// said it was closing); at once when no reply is being answered here.
+pub(crate) fn after_reply(hook: impl FnOnce() + Send + 'static) {
+    let mut hook = Some(Box::new(hook) as AfterReply);
+    let _ = AFTER_REPLY.try_with(|hooks| hooks.borrow_mut().extend(hook.take()));
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Replies to request `id` with what `answer` comes to, holding `permit`
-/// until then.
+/// until then, then runs what the answer asked to run after its reply
+/// ([`after_reply`]).
 async fn answering(
     id: String,
     answer: impl Future<Output = anyhow::Result<serde_json::Value>>,
     out: mpsc::Sender<ServerFrame>,
     permit: OwnedSemaphorePermit,
 ) {
-    let outcome = match answer.await {
-        Ok(result) => Outcome::Ok { result },
-        Err(error) => Outcome::Error {
-            info: error
-                .chain()
-                .find_map(|cause| cause.downcast_ref::<ErrorWithInfo>())
-                .map(|answer| answer.info.clone()),
-            message: format!("{error:#}"),
-        },
-    };
+    let (outcome, hooks) = AFTER_REPLY
+        .scope(std::cell::RefCell::default(), async {
+            let outcome = match answer.await {
+                Ok(result) => Outcome::Ok { result },
+                Err(error) => Outcome::Error {
+                    info: error
+                        .chain()
+                        .find_map(|cause| cause.downcast_ref::<ErrorWithInfo>())
+                        .map(|answer| answer.info.clone()),
+                    message: format!("{error:#}"),
+                },
+            };
+            (outcome, AFTER_REPLY.with(std::cell::RefCell::take))
+        })
+        .await;
     drop(permit);
     // A client gone before its answer needs none.
     let _ = out.send(ServerFrame::Reply { id, outcome }).await;
+    for hook in hooks {
+        hook();
+    }
 }
 
 /// Writes `frame` straight to the transport, before the queue exists.

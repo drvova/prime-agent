@@ -27,6 +27,13 @@ const LIVE_ONLY_KINDS: &[&str] = &["stream", "tool", "side_question"];
 /// follows a stream.
 const LIVE_ONLY_FEEDS: &[&str] = &["roster", "traffic", "models"];
 
+/// The topic the runtime announces its own end on, to every connection
+/// before it closes them (the old daemon's `daemon_closing` push): live only,
+/// so a client that connects to the next daemon never replays the last one's
+/// end. Its payload is `{"reason": "shutdown" | "update", ...}`; the wire
+/// server ends each connection with `closing` once it has delivered it.
+pub const SYSTEM_CLOSING: &str = "system/closing";
+
 /// Most levels in a topic or filter.
 pub const MAX_TOPIC_LEVELS: usize = 16;
 /// Longest topic or filter, in bytes.
@@ -113,8 +120,9 @@ impl Topic {
 
     /// Whether events on this topic are live only, never stored: exactly
     /// `agent/<id>/stream`, `agent/<id>/tool`, `runtime/roster`,
-    /// `runtime/traffic`, `runtime/models` or `runtime/session_list/<request>`
-    /// (one saved-session list request's rows as it walks the store).
+    /// `runtime/traffic`, `runtime/models`, `runtime/session_list/<request>`
+    /// (one saved-session list request's rows as it walks the store) or
+    /// [`SYSTEM_CLOSING`].
     #[must_use]
     pub fn is_live_only(&self) -> bool {
         let mut levels = self.levels();
@@ -122,6 +130,7 @@ impl Topic {
             (Some("agent"), Some(_), Some(kind), None) => LIVE_ONLY_KINDS.contains(&kind),
             (Some("runtime"), Some(feed), None, None) => LIVE_ONLY_FEEDS.contains(&feed),
             (Some("runtime"), Some("session_list"), Some(_), None) => true,
+            (Some("system"), Some("closing"), None, None) => true,
             _ => false,
         }
     }

@@ -66,6 +66,10 @@
 //!   withdrawal of its queued fire), answered as the old daemon answers it
 //!   (phase 8d-4c): [`heartbeats`]; the saved catalog's passive subagents:
 //!   [`saved_list`].
+//! - The daemon's own end (`shutdown`, the stop signal, `restart` mid-turn
+//!   and the next daemon's continuation), as the old daemon ends (phase
+//!   8d-5a): [`lifecycle`]; a kept daemon's `shutdown` is not restarted:
+//!   [`keeper`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -80,6 +84,7 @@ mod heartbeats;
 mod info;
 mod keeper;
 mod kernel_activity;
+mod lifecycle;
 mod questions;
 mod queue_edit;
 mod reliability;

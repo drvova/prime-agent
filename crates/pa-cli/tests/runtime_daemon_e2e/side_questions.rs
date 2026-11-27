@@ -193,6 +193,11 @@ impl OldClient {
         }
     }
 
+    /// Every frame read so far, in arrival order.
+    pub(super) fn seen(&self) -> &[Value] {
+        &self.seen
+    }
+
     /// Sends `command` as request `id`; its response.
     pub(super) fn send(&mut self, id: &str, command: &Value) -> Value {
         let envelope = json!({

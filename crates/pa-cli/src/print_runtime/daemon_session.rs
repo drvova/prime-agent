@@ -165,7 +165,8 @@ impl SessionBuilder for DaemonSessions {
     }
 }
 
-/// Runs the runtime daemon on the agent dir until a stop signal: takes the
+/// Runs the runtime daemon on the agent dir until a stop signal or a
+/// client's `daemon.shutdown` / `daemon.restart`: takes the
 /// agent dir's runtime-daemon lock (reaping a wedged predecessor on the same
 /// socket), binds `daemon2.sock` beside
 /// `daemon_socket` (the old daemon's stale-socket cleanup first), serves,
@@ -220,6 +221,24 @@ pub(crate) fn run_runtime_daemon(
                     );
                     Arc::new(move || {
                         by_env || crate::daemon_mode::settings_select_runtime_daemon(&agent_dir)
+                    })
+                },
+                // A stop on purpose is not restarted by the restart owner,
+                // even one that ends in a kill: its intent is recorded first,
+                // as the old daemon records it.
+                stopping: {
+                    let (agent_dir, socket) = (agent_dir.clone(), socket.clone());
+                    Box::new(move || {
+                        if pa_daemon::keeper::keeper_pid().is_none() {
+                            return;
+                        }
+                        if let Err(error) =
+                            pa_daemon::keeper::record_stop_intent(&agent_dir, &socket)
+                        {
+                            eprintln!(
+                                "prime-agent: the stop intent for the restart owner could not be recorded: {error:#}"
+                            );
+                        }
                     })
                 },
                 agent_dir,

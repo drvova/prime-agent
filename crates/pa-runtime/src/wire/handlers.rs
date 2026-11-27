@@ -338,6 +338,14 @@ pub enum Call {
     /// `session.manage_heartbeat`: pauses, resumes or stops one heartbeat of
     /// a session, open or saved.
     SessionManageHeartbeat,
+    /// `daemon.shutdown`: stops the daemon on purpose, once the reply is
+    /// sent: every connection is told (`system/closing`), each session's
+    /// running turn is cut off for the next daemon to continue, and the
+    /// process exits cleanly, so its restart owner does not start it again.
+    DaemonShutdown,
+    /// `daemon.restart`: the old daemon's `restart`, which stops it exactly
+    /// as `daemon.shutdown` does; the client that asked starts the next one.
+    DaemonRestart,
 }
 
 impl FromStr for Call {
@@ -407,6 +415,8 @@ impl FromStr for Call {
             "session.set_heartbeat" => Call::SessionSetHeartbeat,
             "session.update_heartbeat" => Call::SessionUpdateHeartbeat,
             "session.manage_heartbeat" => Call::SessionManageHeartbeat,
+            "daemon.shutdown" => Call::DaemonShutdown,
+            "daemon.restart" => Call::DaemonRestart,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

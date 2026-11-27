@@ -25,8 +25,7 @@ use crate::supervisor::Supervisor;
 /// The client id the supervisor uses for roster-row creates.
 pub(crate) const UPDATE_RESTORE_CLIENT_ID: &str = "update-restore";
 
-/// TS `UPDATE_RESTART_CONTINUATION_PROMPT`, verbatim (spec §10.5).
-pub(crate) const UPDATE_RESTART_CONTINUATION_PROMPT: &str = "Prime Agent restarted after an update. Continue the interrupted task from the saved transcript and restored tool/kernel state. Inspect current state before retrying commands when needed.";
+pub(crate) use pa_core::session::revival::UPDATE_RESTART_CONTINUATION_PROMPT;
 
 /// How long a client attach queues behind an in-flight restore pass (spec §10.4).
 const RESTORE_ATTACH_WAIT_MS: u64 = 120_000;

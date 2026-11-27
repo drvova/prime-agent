@@ -225,7 +225,11 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 
     /// Publishes `input` on session `id`'s input as the owner, and answers
     /// how its task was admitted.
-    async fn publish_input(&self, id: &str, input: AgentInput) -> anyhow::Result<AgentAccepted> {
+    pub(super) async fn publish_input(
+        &self,
+        id: &str,
+        input: AgentInput,
+    ) -> anyhow::Result<AgentAccepted> {
         let published = self
             .runtime
             .publish(NewEvent {

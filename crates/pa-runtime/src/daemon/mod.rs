@@ -65,6 +65,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use pa_types::event_log::{NewEvent, Topic, Trust, SYSTEM_CLOSING};
 use pa_types::platform::transport::TransportListener;
 use tokio::task::JoinSet;
 
@@ -83,6 +84,10 @@ pub use boot_reap::take_lock;
 use handlers::RuntimeHandlers;
 use held::OpenSessions;
 pub(crate) use held::Revival;
+
+/// How long the drain waits for the connections to send what they hold
+/// (`system/closing` last) before it closes them.
+const CLOSE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The runtime daemon's socket's file name, beside the old daemon's.
 #[cfg(unix)]
@@ -159,12 +164,22 @@ pub struct DaemonOptions<B> {
     /// scheduled job runs, which is skipped while it is not, so a job never
     /// fires in both daemons.
     pub selected: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Called once when the daemon begins to stop on purpose (its stop
+    /// signal, `daemon.shutdown`, `daemon.restart`), before anything stops:
+    /// the embedder records the stop intent its restart owner reads, so a
+    /// stop that ends in a kill is not restarted either.
+    pub stopping: Box<dyn FnOnce() + Send>,
 }
 
-/// Runs the runtime daemon on `listener` until `shutdown` resolves: opens
-/// the runtime over the agent dir, serves each connection on its own task,
-/// then closes the connections, the sessions (and their leases) and the
-/// runtime.
+/// Runs the runtime daemon on `listener` until `shutdown` resolves or a
+/// client asks it to stop (`daemon.shutdown`, `daemon.restart`): opens the
+/// runtime over the agent dir and serves each connection on its own task.
+/// Then the drain, the old supervisor's: [`DaemonOptions::stopping`], every
+/// query and call refused, `system/closing` to every connection (which then
+/// closes), every session's running turn cut off with its continuation
+/// queued for the next daemon, the connections closed (each given
+/// [`CLOSE_BUDGET`] to send what it holds), then the sessions (and their
+/// leases) and the runtime.
 ///
 /// # Errors
 ///
@@ -308,12 +323,14 @@ pub async fn run<B: SessionBuilder>(
     };
     held::revive(&runtime, &open, &schedules, &options.agent_dir).await;
     let attached = Arc::new(Attached::default());
+    let stop = Arc::new(handlers::DaemonStop::default());
     let handlers = Arc::new(RuntimeHandlers::new(
         Arc::clone(&runtime),
         Arc::clone(&open),
         Arc::clone(&schedules),
         Arc::clone(&attached),
         feeds,
+        Arc::clone(&stop),
         options.agent_dir.clone(),
         options.session_dir,
         options.cwd,
@@ -338,9 +355,34 @@ pub async fn run<B: SessionBuilder>(
                 Err(error) => tracing::warn!("the runtime daemon's accept failed: {error}"),
             },
             () = &mut shutdown => break,
+            () = stop.requested() => break,
         }
     }
     drop(listener);
+    stop.begin();
+    (options.stopping)();
+    let closing = NewEvent {
+        topic: Topic::new(SYSTEM_CLOSING)?,
+        source: "runtime".to_string(),
+        session: None,
+        payload: serde_json::json!({ "reason": "shutdown" }),
+        trust: Trust::Owner,
+        cause: None,
+        reply: None,
+    };
+    if let Err(error) = runtime.publish(closing).await {
+        tracing::warn!("the runtime daemon's end was not announced: {error:#}");
+    }
+    handlers.cut_off_turns().await;
+    let closed = tokio::time::timeout(CLOSE_BUDGET, async {
+        while connections.join_next().await.is_some() {}
+    })
+    .await;
+    if closed.is_err() {
+        tracing::warn!(
+            "the runtime daemon closes connections that did not end in {CLOSE_BUDGET:?}"
+        );
+    }
     connections.shutdown().await;
     drop(server);
     for task in feed_tasks {

@@ -646,6 +646,18 @@ SQLite implementations over `pa-log`.
   as the same task behind `TURN_INTERRUPTED_NOTICE`, stored done when its answer was saved, or,
   on its second death in a row, stored failed with the crash's reason. A kept launch is kept by
   pa-daemon's restart owner (`keeper::KeptDaemon::Runtime`), its records under `daemon2.sock`.
+  **Its own end** (`daemon/handlers/lifecycle.rs`): `daemon.shutdown` and `daemon.restart` (the
+  old `shutdown` and `restart`, the same stop; `force` accepted and, as on the old supervisor,
+  unused) are answered without a result, then request the stop (`wire::after_reply`, so the
+  caller reads its reply first). The stop signal and the calls end the same way: every query and
+  call is refused (`Supervisor is shutting down`), `DaemonOptions::stopping` runs (the embedder
+  records the keeper's stop intent), `system/closing {reason: "shutdown"}` is published (live
+  only; each connection's feed delivers it to the subscriptions that follow it, then sends
+  `closing` and ends), every open session's lane is held and its running turn aborted with
+  `UPDATE_RESTART_CONTINUATION_PROMPT` queued as a steer for the next daemon (none for an
+  ephemeral one), the connections get 5 s to send what they hold, then the sessions close and the
+  process exits 0. The held sessions stay in the database, so the next daemon revives a session
+  with that queued continuation as one the daemon died between turns of (no crash recorded).
   **Scheduled jobs** (`daemon/schedules.rs`): a daemon session's kernel serves `schedule.*` and
   `rlm_heartbeat.*` on pa-core's job store (the session's `session-artifacts/<id>` partition,
   the old daemon's rows), bound through `SessionSeams::scheduled_jobs`. Each active job has a

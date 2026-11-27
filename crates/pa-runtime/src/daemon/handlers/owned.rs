@@ -29,7 +29,10 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     /// client connecting again.
     pub(super) async fn end_owned_sessions(&self, connection: ConnectionId) {
         let owner = self.attached.client_of(connection);
-        if self.open.owned_by(&owner).is_empty() || self.attached.others_of(&owner, connection) > 0
+        // A stopping daemon ends them with itself.
+        if self.stop.stopping()
+            || self.open.owned_by(&owner).is_empty()
+            || self.attached.others_of(&owner, connection) > 0
         {
             return;
         }

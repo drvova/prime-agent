@@ -17,6 +17,7 @@
 //! | `runtime/traffic` | today's `agent_traffic` frame's `entry` | `agent_traffic` |
 //! | `runtime/session_list/<request>` | today's `session_list_item` (a `session`) or `session_list_progress` frame without `type` | `session_list_item` / `session_list_progress` |
 //! | `runtime/models` | `{}` | `model_catalog_changed` |
+//! | `system/closing` | today's `daemon_closing` frame without `type` (`reason`, `update`) | `daemon_closing` |
 //!
 //! `<id>` is the session's active id, the one `DaemonCommand`s address. On the agent topics the
 //! event's metadata becomes the frame's `meta`: `id` is the event id, `emittedAt` its `ts`
@@ -123,6 +124,8 @@
 //! | `heartbeat_set` | `session.set_heartbeat` | `{heartbeat}` |
 //! | `heartbeat_update` | `session.update_heartbeat` | `{heartbeat}` (`null` for none) |
 //! | `heartbeat_manage` | `session.manage_heartbeat` (an open or saved session) | `{heartbeat}` |
+//! | `shutdown` | `daemon.shutdown` (`force`; no session) | none |
+//! | `restart` | `daemon.restart` (no session) | none |
 //!
 //! `attach` is the call `session.attach` with `session` (the command's `activeSessionId`),
 //! `clientId`, `capabilities` and `resumeCursor` (those it carries), whose reply's result is the
@@ -154,6 +157,10 @@
 //!
 //! `model_catalog_changed`, a broadcast on the old wire, is the live-only `runtime/models`: a
 //! transport follows it for the connection's life (subscription `compat:models`, `Since::Now`).
+//! So is `daemon_closing`, the live-only `system/closing` (subscription `compat:closing`,
+//! `Since::Now`): the runtime publishes it to every connection when it stops (its stop signal,
+//! `shutdown`, `restart`), after the reply to the call that stopped it, and then ends each
+//! connection with the wire's `closing`.
 //!
 //! Every other command stays on the old wire.
 //!
@@ -168,8 +175,7 @@
 //!   `fork` of the whole saved session, `label`, `export`, the auth
 //!   commands, `abort`/`abort_and_send_queued`, `compact`, a `detach` that names no session.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
-//! - Connection frames: `daemon_hello` from `welcome`, `daemon_closing` from `closing`, the
-//!   direct worker link (retired: wire2 has one connection), `history_import`,
+//! - Connection frames: `daemon_hello` from `welcome`, the direct worker link (retired: wire2 has one connection), `history_import`,
 //!   `session_binding` (a wire2 session keeps its id across rebuilds).
 
 use anyhow::{anyhow, Context, Result};
@@ -312,6 +318,14 @@ pub(crate) fn outbound_from_event(
                 .with_context(|| format!("{}: the payload", event.event.topic))?
         }
         ["runtime", "models"] => DaemonOutbound::ModelCatalogChanged { rest: Map::new() },
+        ["system", "closing"] => {
+            let mut frame = payload
+                .as_object()
+                .cloned()
+                .ok_or_else(|| anyhow!("system/closing: the payload is not an object"))?;
+            frame.insert("type".to_string(), Value::from("daemon_closing"));
+            serde_json::from_value(Value::Object(frame)).context("system/closing: the payload")?
+        }
         ["runtime", "traffic"] => DaemonOutbound::AgentTraffic {
             entry: serde_json::from_value(payload.clone())
                 .context("runtime/traffic: the payload")?,
@@ -922,6 +936,20 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 &command,
             )
         }
+        DaemonCommand::Shutdown { .. } => {
+            return Ok(Outgoing::Call(ClientFrame::Call {
+                id: request_id,
+                method: "daemon.shutdown".to_string(),
+                args: command_args(&command, None)?,
+            }));
+        }
+        DaemonCommand::Restart { .. } => {
+            return Ok(Outgoing::Call(ClientFrame::Call {
+                id: request_id,
+                method: "daemon.restart".to_string(),
+                args: command_args(&command, None)?,
+            }));
+        }
         DaemonCommand::RosterSubscribe { .. } => return follow(request_id, ROSTER_FEED),
         DaemonCommand::AgentTrafficSubscribe { .. } => return follow(request_id, TRAFFIC_FEED),
         DaemonCommand::RosterUnsubscribe { .. } => {
@@ -1016,7 +1044,7 @@ fn command_query(
 
 /// The commands the old daemon answered without `data`: their call's `null` result is left out
 /// of the response again.
-const ANSWERED_WITHOUT_DATA: [&str; 14] = [
+const ANSWERED_WITHOUT_DATA: [&str; 16] = [
     "detach",
     "answer_question",
     "set_scoped_models",
@@ -1031,6 +1059,8 @@ const ANSWERED_WITHOUT_DATA: [&str; 14] = [
     "abort_branch_summary",
     "start_side_question",
     "record_better_outcome",
+    "shutdown",
+    "restart",
 ];
 
 /// Following `feed` (its subscription id, topic and query): live from now, then its state.

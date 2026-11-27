@@ -256,7 +256,13 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   unix, for interactive, ACP and post-update launches) restarts the daemon with the same
   backoff and give-up limit and records every death; a deliberate stop is not restarted. It
   keeps whichever daemon the launch selects: the runtime daemon's keeper keeps its records
-  under `daemon2.sock`, apart from the supervisor's. At
+  under `daemon2.sock`, apart from the supervisor's. A deliberate stop of either daemon (its
+  stop signal, a client's `shutdown`/`restart`; on the runtime daemon `daemon.shutdown` and
+  `daemon.restart`) records the stop intent, answers first, tells every client
+  (`daemon_closing`; on wire2 the live-only `system/closing`, after which each connection is
+  closed), cuts each session's running turn off with the continuation prompt
+  (`pa_core::session::revival::UPDATE_RESTART_CONTINUATION_PROMPT`) queued at the front of its
+  queue, and exits 0; the next daemon revives the session for it. At
   boot a session that was mid-turn is revived, its interrupted turn continued or settled by
   what the transcript shows was saved, a command its kernel left running is reaped and
   reported to the model, and an idle session with an armed scheduled job is woken when the

@@ -1254,3 +1254,61 @@ fn the_heartbeat_commands_carry_their_members() {
         )
     );
 }
+
+/// The daemon's own end: `shutdown` and `restart` are calls on no session, answered without
+/// `data`, and the `system/closing` every connection hears comes back as `daemon_closing`.
+#[test]
+fn the_daemon_stops_are_calls_and_its_closing_comes_back() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "shutdown", "force": true }),
+        json!({ "type": "restart", "id": "x" }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let call = |method: &str, args: Value| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args,
+        })
+    };
+    let closing = Event {
+        id: EventId("live-9".to_string()),
+        seq: 0,
+        ts: 0,
+        event: NewEvent {
+            topic: Topic::new("system/closing").unwrap(),
+            source: "runtime".to_string(),
+            session: None,
+            payload: json!({ "reason": "shutdown" }),
+            trust: Trust::Owner,
+            cause: None,
+            reply: None,
+        },
+    };
+    let stopped = serde_json::to_value(response_from_reply(
+        "shutdown",
+        None,
+        Outcome::Ok {
+            result: Value::Null,
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        (
+            frames,
+            stopped,
+            serde_json::to_value(outbound_from_event(&closing, Delivery::Live).unwrap()).unwrap(),
+        ),
+        (
+            vec![
+                call("daemon.shutdown", json!({ "force": true })),
+                call("daemon.restart", json!({})),
+            ],
+            json!({ "type": "response", "command": "shutdown", "success": true }),
+            json!({ "type": "daemon_closing", "reason": "shutdown" }),
+        )
+    );
+}

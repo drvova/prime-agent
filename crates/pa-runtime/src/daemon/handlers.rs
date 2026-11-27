@@ -31,6 +31,7 @@ use crate::session::{SessionBuilder, SessionSpec};
 use crate::wire::{Attached, Call, ConnectionId, Handlers, Query};
 pub(super) use bash::UserBashes;
 pub(super) use feeds::Feeds;
+pub(super) use lifecycle::DaemonStop;
 
 mod agent_controls;
 mod attach;
@@ -42,6 +43,7 @@ mod info;
 mod input;
 mod jobs;
 mod kernel_activity;
+mod lifecycle;
 mod mcp;
 mod messaging;
 mod model;
@@ -83,6 +85,10 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     branch_summaries: tree::BranchSummaries,
     /// The side runs (`/btw`, `/better`) of the open sessions.
     side_runs: side_runs::SessionSideRuns,
+    /// The daemon's own end (`daemon.shutdown`, `daemon.restart`, or the
+    /// embedder's stop signal): once it is begun, every query and call is
+    /// refused.
+    stop: Arc<DaemonStop>,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -99,6 +105,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         schedules: Arc<Schedules<B>>,
         attached: Arc<Attached>,
         feeds: Arc<Feeds>,
+        stop: Arc<DaemonStop>,
         agent_dir: PathBuf,
         session_dir: PathBuf,
         cwd: PathBuf,
@@ -113,6 +120,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             catalog: Arc::default(),
             branch_summaries: tree::BranchSummaries::default(),
             side_runs: side_runs::SessionSideRuns::default(),
+            stop,
             agent_dir,
             session_dir,
             cwd,
@@ -475,6 +483,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 
 impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
     async fn query(&self, query: Query, args: Value) -> anyhow::Result<Value> {
+        anyhow::ensure!(!self.stop.stopping(), "{}", lifecycle::SHUTTING_DOWN);
         match query {
             Query::SessionsList => match optional_string_arg(&args, "shape")?.as_deref() {
                 Some("saved") => self.saved_list(&args).await,
@@ -528,6 +537,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
         args: Value,
         connection: ConnectionId,
     ) -> anyhow::Result<Value> {
+        anyhow::ensure!(!self.stop.stopping(), "{}", lifecycle::SHUTTING_DOWN);
         match call {
             Call::SessionCreate => self.create(args, connection).await,
             Call::SessionStop => self.stop(&args).await,
@@ -597,6 +607,8 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionSetHeartbeat => self.set_heartbeat(&args).await,
             Call::SessionUpdateHeartbeat => self.update_heartbeat(&args).await,
             Call::SessionManageHeartbeat => self.manage_heartbeat(&args).await,
+            Call::DaemonShutdown => self.stop_daemon(&args, "shutdown", connection),
+            Call::DaemonRestart => self.stop_daemon(&args, "restart", connection),
         }
     }
 
