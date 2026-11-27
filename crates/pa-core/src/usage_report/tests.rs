@@ -34,7 +34,7 @@ fn local_noon(base: i64) -> i64 {
 fn local_date(epoch_ms: i64) -> String {
     pa_types::platform::local_civil(epoch_ms).map_or_else(
         || {
-            pa_core::session::manager::iso_from_unix_ms(u64::try_from(epoch_ms).unwrap())
+            crate::session::manager::iso_from_unix_ms(u64::try_from(epoch_ms).unwrap())
                 .chars()
                 .take(10)
                 .collect()
@@ -46,7 +46,7 @@ fn local_date(epoch_ms: i64) -> String {
 fn assistant(id: &str, at_ms: i64, model: &str, input: u64, output: u64, cost: f64) -> String {
     json!({
         "type": "message", "id": id, "parentId": null,
-        "timestamp": pa_core::session::manager::iso_from_unix_ms(at_ms as u64),
+        "timestamp": crate::session::manager::iso_from_unix_ms(at_ms as u64),
         "message": {
             "role": "assistant", "provider": "anthropic", "model": model,
             "stopReason": "stop", "timestamp": at_ms,
@@ -112,14 +112,14 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
         assistant("a1", noon - 2 * 3_600_000, "claude-opus", 120, 12, 0.5),
         json!({
             "type": "child_usage_attributed", "id": "c1", "targetId": "a1",
-            "timestamp": pa_core::session::manager::iso_from_unix_ms((noon - 3_600_000) as u64),
+            "timestamp": crate::session::manager::iso_from_unix_ms((noon - 3_600_000) as u64),
             "childUsage": {"input": 999, "output": 999, "cost": {"total": 9.0}},
             "aggregateUsage": {"input": 1119, "output": 1011, "cost": {"total": 9.5}},
         })
         .to_string(),
         json!({
             "type": "compaction", "id": "k1", "summary": "…", "firstKeptEntryId": "a1",
-            "timestamp": pa_core::session::manager::iso_from_unix_ms((noon - 10 * DAY_MS) as u64),
+            "timestamp": crate::session::manager::iso_from_unix_ms((noon - 10 * DAY_MS) as u64),
             "provider": "anthropic", "modelId": "claude-haiku",
             "usage": {"input": 50, "output": 5, "cost": {"total": 0.125}},
         })
@@ -127,7 +127,7 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
         assistant("a2", noon - 40 * DAY_MS, "claude-opus", 1000, 100, 2.0),
         json!({
             "type": "message", "id": "e1",
-            "timestamp": pa_core::session::manager::iso_from_unix_ms((noon - 3_600_000) as u64),
+            "timestamp": crate::session::manager::iso_from_unix_ms((noon - 3_600_000) as u64),
             "message": {
                 "role": "assistant", "provider": "openai-codex", "model": "gpt-5", "stopReason": "error",
                 "timestamp": noon - 3_600_000,
@@ -232,7 +232,7 @@ fn spend_history_splits_spend_by_billing_mode() {
     let row = |id: &str, provider: &str, model: &str, cost: f64, billing: serde_json::Value| {
         json!({
             "type": "message", "id": id,
-            "timestamp": pa_core::session::manager::iso_from_unix_ms(noon as u64),
+            "timestamp": crate::session::manager::iso_from_unix_ms(noon as u64),
             "message": {
                 "role": "assistant", "provider": provider, "model": model,
                 "stopReason": "stop", "timestamp": noon,
@@ -491,13 +491,13 @@ async fn the_kernel_quota_request_answers_the_page_cards_without_the_token() {
         timeout: Duration::from_millis(2_000),
         http: Arc::new(pa_ai::oauth::ReqwestProviderHttp::new()),
     };
-    let mut handlers = pa_core::kernel::shared::HostRequestHandlers::default();
-    super::register_quota_host_handler(&mut handlers, agent_dir.path().to_path_buf(), config);
+    let mut handlers = crate::kernel::shared::HostRequestHandlers::default();
+    super::register_quota_host_handler_with(&mut handlers, agent_dir.path().to_path_buf(), config);
     let handler = handlers
-        .get(pa_core::usage_host::USAGE_QUOTAS_REQUEST_TYPE)
+        .get(crate::usage_host::USAGE_QUOTAS_REQUEST_TYPE)
         .unwrap()
         .clone();
-    let reply = handler(pa_core::kernel::shared::HostRequestPayload {
+    let reply = handler(crate::kernel::shared::HostRequestPayload {
         data: json!({"refresh": true}),
     })
     .await
@@ -540,11 +540,11 @@ async fn each_named_credential_gets_its_own_quota_card() {
         json!({ "synthetic": {"type": "api_key", "key": "syn-default"} }).to_string(),
     )
     .unwrap();
-    pa_core::auth::AuthAccounts::create(agent_dir.path())
+    crate::auth::AuthAccounts::create(agent_dir.path())
         .add(
             "synthetic",
             "work",
-            pa_core::auth::AuthCredential::ApiKey {
+            crate::auth::AuthCredential::ApiKey {
                 key: "syn-work".into(),
                 prime_team: None,
             },

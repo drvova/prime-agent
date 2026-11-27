@@ -1146,34 +1146,7 @@ impl SessionEngine for AgentSessionEngine {
             let Some(engine) = guard.as_deref() else {
                 return Vec::new();
             };
-            // Order: prompt templates, then skills.
-            let mut commands = Vec::new();
-            for template in &engine.resource_reload.prompt_templates() {
-                let mut entry = json!({
-                    "name": template.name,
-                    "source": "prompt",
-                    "sourceInfo": template.source_info,
-                });
-                if let Some(hint) = &template.argument_hint {
-                    entry["argumentHint"] = json!(hint);
-                }
-                if !template.description.is_empty() {
-                    entry["description"] = json!(template.description);
-                }
-                commands.push(entry);
-            }
-            for skill in &engine.resource_reload.skills() {
-                let mut entry = json!({
-                    "name": format!("skill:{}", skill.name),
-                    "source": "skill",
-                    "sourceInfo": skill.source_info,
-                });
-                if !skill.description.is_empty() {
-                    entry["description"] = json!(skill.description);
-                }
-                commands.push(entry);
-            }
-            commands
+            engine.resource_reload.connection_commands()
         })
     }
 

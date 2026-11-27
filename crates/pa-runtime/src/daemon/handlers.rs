@@ -36,6 +36,7 @@ mod bash;
 mod bus;
 mod children;
 mod feeds;
+mod info;
 mod input;
 mod jobs;
 mod mcp;
@@ -67,6 +68,9 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     holds: input::InputHolds,
     /// The agents view's roster and traffic feeds.
     feeds: Arc<Feeds>,
+    /// The `/model` picker catalog's background refresh, coalesced across
+    /// the daemon's sessions.
+    catalog: Arc<pa_core::models::CatalogRefresh>,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -94,6 +98,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             attached,
             holds: input::InputHolds::default(),
             feeds,
+            catalog: Arc::default(),
             agent_dir,
             session_dir,
             cwd,
@@ -484,6 +489,10 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::SessionSystemPrompt => self.system_prompt(&args).await,
             Query::Roster => Ok(self.roster().await),
             Query::Traffic => Ok(self.traffic()),
+            Query::SessionCommands => self.commands(&args).await,
+            Query::SessionMcpConnections => self.mcp_connections(&args).await,
+            Query::SessionModelCatalog => self.model_catalog(&args).await,
+            Query::Usage => self.usage_page(&args).await,
         }
     }
 
@@ -533,6 +542,10 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             }
             Call::SessionSetAutoCompaction => self.set_auto_compaction(&args).await,
             Call::SessionSetAutoRetry => self.set_auto_retry(&args).await,
+            Call::SessionReload => self.reload(&args).await,
+            Call::SessionMarkAnthropicWarningShown => {
+                self.mark_anthropic_warning_shown(&args).await
+            }
         }
     }
 

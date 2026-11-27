@@ -706,3 +706,81 @@ fn the_setting_switches_call_and_their_replies_round_trip() {
         ]
     );
 }
+
+/// The reads beside a session's turns go out as their queries (`get_usage` on no session), the
+/// reload and the warning's marker as their calls, each with the command's own members; a
+/// `runtime/models` event comes back as `model_catalog_changed`.
+#[test]
+fn the_session_info_reads_query_and_the_catalog_change_comes_back() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "get_commands", "activeSessionId": "s1" }),
+        json!({ "type": "get_mcp_connections", "id": "x", "activeSessionId": "s1" }),
+        json!({ "type": "get_model_catalog", "activeSessionId": "s1" }),
+        json!({ "type": "get_usage", "section": "quotas", "forceRefresh": true }),
+        json!({ "type": "reload", "activeSessionId": "s1" }),
+        json!({ "type": "mark_anthropic_warning_shown", "activeSessionId": "s1" }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let query = |name: &str, args: Value| {
+        Outgoing::Query(ClientFrame::Query {
+            id: "i".to_string(),
+            name: name.to_string(),
+            args,
+        })
+    };
+    let call = |method: &str| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args: json!({ "session": "s1" }),
+        })
+    };
+    let changed = Event {
+        id: EventId("live-3".to_string()),
+        seq: 0,
+        ts: 0,
+        event: NewEvent {
+            topic: Topic::new("runtime/models").unwrap(),
+            source: "runtime".to_string(),
+            session: None,
+            payload: json!({}),
+            trust: Trust::Owner,
+            cause: None,
+            reply: None,
+        },
+    };
+    let marked = serde_json::to_value(response_from_reply(
+        "mark_anthropic_warning_shown",
+        None,
+        Outcome::Ok {
+            result: Value::Null,
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        (
+            frames,
+            serde_json::to_value(outbound_from_event(&changed, Delivery::Live).unwrap()).unwrap(),
+            marked
+        ),
+        (
+            vec![
+                query("session.commands", json!({ "session": "s1" })),
+                query("session.mcp_connections", json!({ "session": "s1" })),
+                query("session.model_catalog", json!({ "session": "s1" })),
+                query(
+                    "usage",
+                    json!({ "section": "quotas", "forceRefresh": true })
+                ),
+                call("session.reload"),
+                call("session.mark_anthropic_warning_shown"),
+            ],
+            json!({ "type": "model_catalog_changed" }),
+            json!({ "type": "response", "command": "mark_anthropic_warning_shown",
+                    "success": true }),
+        )
+    );
+}

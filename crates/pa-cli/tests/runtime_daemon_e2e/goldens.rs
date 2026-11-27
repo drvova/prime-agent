@@ -67,10 +67,18 @@
 //!   followed no traffic, and their sessions sent no agent message: a
 //!   traffic frame is a difference). A live event's id counts the feeds'
 //!   events too, so the first line compares it by its form.
+//! - **The scenario's reads.** A scenario's `reads` (`prompt_stream`'s:
+//!   `get_model_catalog` and `get_commands`, phase 8d-1b) are sent through
+//!   the layer after its steps, as the recording's TUI sent them after its
+//!   first prompt, and their replies compared as the session reads' are. A
+//!   model catalog's listing (`models`, `configuredProviders`, `billing`)
+//!   is the one the daemon's machine carries, so it compares by its form:
+//!   whether it lists anything (the recordings' listed nothing). The replay
+//!   runs offline (`PI_OFFLINE=1`), as the recordings did, so no catalog
+//!   is fetched.
 //! - **What this cannot replay.** The recordings' other replies
-//!   (`get_commands`, `get_model_catalog`, `get_session_stats`,
-//!   `heartbeats_list`, `list_kernel_bash`, `detach`) have no wire2 form
-//!   yet (phase 8d).
+//!   (`get_session_stats`, `heartbeats_list`, `list_kernel_bash`, `detach`)
+//!   have no wire2 form yet (phase 8d).
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
@@ -88,6 +96,11 @@ fn fixture_path(name: &str, extension: &str) -> std::path::PathBuf {
 /// The session reads whose replies the replay compares, in the order it
 /// sends them.
 const READS: [&str; 4] = ["attach", "roster_subscribe", "get_state", "get_messages"];
+
+/// The reads beside the session's turns a scenario's `reads` names (phase
+/// 8d-1b): sent after its steps, as the recording's TUI sent them after its
+/// first prompt, and compared as the session reads are.
+const SCENARIO_READS: [&str; 2] = ["get_model_catalog", "get_commands"];
 
 /// The topics the compat layer follows the agents view's feeds on.
 const FEED_TOPICS: [&str; 2] = ["runtime/roster", "runtime/traffic"];
@@ -137,12 +150,14 @@ fn recorded(name: &str, kinds: &[&str]) -> Vec<Value> {
         .collect()
 }
 
-/// The recording's first response to each of [`READS`], by command,
-/// without the request id the supervisor's link added.
+/// The recording's first response to each of [`READS`] and
+/// [`SCENARIO_READS`], by command, without the request id the supervisor's
+/// link added.
 fn recorded_replies(name: &str) -> Vec<(String, Value)> {
     let frames = recorded_frames(name);
     READS
         .iter()
+        .chain(&SCENARIO_READS)
         .filter_map(|command| {
             let mut frame = frames
                 .iter()
@@ -267,6 +282,8 @@ struct Replayed {
     roster: Vec<Value>,
     traffic: Vec<Value>,
     replies: Vec<(String, Value)>,
+    /// The scenario's own reads ([`SCENARIO_READS`]) it sent.
+    reads: Vec<String>,
 }
 
 /// Runs scenario `name` on the runtime daemon; the old frames its session's
@@ -297,7 +314,9 @@ async fn replay(name: &str) -> Replayed {
             .replace("{marker}", &marker.display().to_string()),
     )
     .unwrap();
-    let _daemon = bed.runtime_daemon(&script);
+    // Offline, as the recordings ran: the model catalog is the one the
+    // daemon carries, never a fetched one.
+    let _daemon = bed.runtime_daemon_with(&script, &[("PI_OFFLINE", "1")]);
     let steps = scenario["steps"].as_array().unwrap();
     let mut session = match scenario.get("seed") {
         Some(seed) => {
@@ -362,6 +381,24 @@ async fn replay(name: &str) -> Replayed {
             session.done(&accepted["task"]).await;
         }
     }
+    let reads: Vec<String> = scenario["reads"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|read| read.as_str().expect("a read's command").to_string())
+        .collect();
+    for command in &reads {
+        assert!(
+            SCENARIO_READS.contains(&command.as_str()),
+            "{name}: {command} is not a scenario read"
+        );
+        let reply = read(
+            &mut session,
+            &json!({ "type": command, "activeSessionId": id }),
+        )
+        .await;
+        replies.push((command.clone(), reply));
+    }
     roster_settled(&mut session, &roster).await;
     // A scrolled-up transcript pages back to its start, as the TUI's view
     // asked for it: the head before the window's first row, on the
@@ -418,6 +455,7 @@ async fn replay(name: &str) -> Replayed {
             .into_iter()
             .map(|(command, reply)| (command, normalized(reply)))
             .collect(),
+        reads,
     }
 }
 
@@ -874,16 +912,25 @@ fn aligned_frames(
     out
 }
 
-/// The differences between the recorded responses to the session reads and
-/// the replayed ones, under the mask: a read only one side answered is one
-/// line, and a pair that differs is one line per differing leaf.
-fn reply_differences(golden: &[(String, Value)], runtime: &[(String, Value)]) -> Vec<String> {
+/// The differences between the recorded responses to the session reads (and
+/// the scenario's own `reads`) and the replayed ones, under the mask: a read
+/// only one side answered is one line, and a pair that differs is one line
+/// per differing leaf.
+fn reply_differences(
+    golden: &[(String, Value)],
+    runtime: &[(String, Value)],
+    reads: &[String],
+) -> Vec<String> {
     let mut out = Vec::new();
-    for command in READS {
+    for command in READS
+        .iter()
+        .copied()
+        .chain(reads.iter().map(String::as_str))
+    {
         let find = |side: &[(String, Value)]| {
             side.iter()
                 .find(|(read, _)| read == command)
-                .map(|(_, reply)| masked(reply, None))
+                .map(|(_, reply)| masked(&catalog_by_form(command, reply), None))
         };
         match (find(golden), find(runtime)) {
             (Some(golden), Some(runtime)) => {
@@ -901,6 +948,26 @@ fn reply_differences(golden: &[(String, Value)], runtime: &[(String, Value)]) ->
         }
     }
     out
+}
+
+/// `reply` with a model catalog's listing (`models`, `configuredProviders`,
+/// `billing`) by its form, `"listed"` or `"none"`: what the catalog lists is
+/// the one the daemon's machine carries (the recordings' ran with none),
+/// not the daemon's to decide. Any other reply as it is.
+fn catalog_by_form(command: &str, reply: &Value) -> Value {
+    let mut reply = reply.clone();
+    if command == "get_model_catalog" {
+        for key in ["models", "configuredProviders", "billing"] {
+            let listing = &mut reply["data"][key];
+            let listed = match listing {
+                Value::Array(items) => !items.is_empty(),
+                Value::Object(items) => !items.is_empty(),
+                _ => continue,
+            };
+            *listing = json!(if listed { "listed" } else { "none" });
+        }
+    }
+    reply
 }
 
 /// Replays `name` and checks what differs from its recording is exactly the
@@ -936,7 +1003,11 @@ async fn verify(name: &str) {
         traffic_signature,
         |frame| frame,
     ));
-    found.extend(reply_differences(&golden_replies, &runtime.replies));
+    found.extend(reply_differences(
+        &golden_replies,
+        &runtime.replies,
+        &runtime.reads,
+    ));
     let path = fixture_path(name, "diff");
     let mut text = found.join("\n");
     text.push('\n');

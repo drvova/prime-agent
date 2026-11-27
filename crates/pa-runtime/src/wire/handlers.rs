@@ -66,6 +66,19 @@ pub enum Query {
     /// `runtime.traffic`: the agent traffic kept so far; new entries follow
     /// on `runtime/traffic`.
     Traffic,
+    /// `session.commands`: an open session's slash-command catalog (its
+    /// prompt templates and skills).
+    SessionCommands,
+    /// `session.mcp_connections`: an open session's `/mcp` page (its MCP
+    /// connections, service catalog and stored keys).
+    SessionMcpConnections,
+    /// `session.model_catalog`: the `/model` picker's catalog for an open
+    /// session; a change the background refresh finds follows on
+    /// `runtime/models`.
+    SessionModelCatalog,
+    /// `usage`: one half of the `/usage` page (the provider quotas or the
+    /// local spend history).
+    Usage,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -101,6 +114,10 @@ impl FromStr for Query {
             "schedules" => Query::Schedules,
             "runtime.roster" => Query::Roster,
             "runtime.traffic" => Query::Traffic,
+            "session.commands" => Query::SessionCommands,
+            "session.mcp_connections" => Query::SessionMcpConnections,
+            "session.model_catalog" => Query::SessionModelCatalog,
+            "usage" => Query::Usage,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",
@@ -206,6 +223,12 @@ pub enum Call {
     /// `session.set_auto_retry`: turns the automatic retry of failed model
     /// requests on or off.
     SessionSetAutoRetry,
+    /// `session.reload`: an open session reads its MCP inputs, skills,
+    /// prompt templates and context files again.
+    SessionReload,
+    /// `session.mark_anthropic_warning_shown`: records that a client drew an
+    /// open session's Anthropic subscription warning.
+    SessionMarkAnthropicWarningShown,
 }
 
 impl FromStr for Call {
@@ -248,6 +271,8 @@ impl FromStr for Call {
             "session.set_follow_up_mode" => Call::SessionSetFollowUpMode,
             "session.set_auto_compaction" => Call::SessionSetAutoCompaction,
             "session.set_auto_retry" => Call::SessionSetAutoRetry,
+            "session.reload" => Call::SessionReload,
+            "session.mark_anthropic_warning_shown" => Call::SessionMarkAnthropicWarningShown,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

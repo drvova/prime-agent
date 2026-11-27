@@ -926,7 +926,7 @@ impl WindowedSessionStore {
 /// marker (the once-per-lifecycle gate's persisted row,
 /// [`crate::session::ANTHROPIC_WARNING_SHOWN_CUSTOM_TYPE`] with
 /// `data.shown == true`).
-fn valid_warning_shown(entry: &FileEntry) -> bool {
+pub(crate) fn valid_warning_shown(entry: &FileEntry) -> bool {
     let FileEntry::Custom { payload, .. } = entry else {
         return false;
     };

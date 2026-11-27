@@ -33,7 +33,12 @@
 //!   `wire2_compat` as the old daemon streams it (phase 8c-3):
 //!   [`saved_list`].
 //! - A session's setting switches, answered and written as the old daemon
-//!   answers and writes them (phase 8d-1): [`switches`].
+//!   answers and writes them (phase 8d-1), and retargeting the session's
+//!   next request (8d-1b): [`switches`].
+//! - What the TUI reads beside a session's turns (its commands, MCP page,
+//!   model catalog, the `/usage` page), its reload and the Anthropic
+//!   warning's marker, answered as the old daemon answers them (phase
+//!   8d-1b): [`info`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -42,6 +47,7 @@ mod bash;
 mod client_surface;
 mod family;
 mod goldens;
+mod info;
 mod keeper;
 mod reliability;
 mod saved_list;

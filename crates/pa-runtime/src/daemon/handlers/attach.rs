@@ -411,13 +411,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 let persistence = engine.session.shared_persistence();
                 let manager = persistence.lock().await;
                 let context = manager.active_context();
-                let warning_shown = manager.get_branch(None).into_iter().any(|entry| {
-                    let row = serde_json::to_value(entry).unwrap_or_default();
-                    row["type"] == "custom"
-                        && row["customType"]
-                            == pa_core::session::ANTHROPIC_WARNING_SHOWN_CUSTOM_TYPE
-                        && row["data"]["shown"] == true
-                });
+                let warning_shown = manager.anthropic_warning_shown();
                 let context_usage = pa_core::session_engine::wire_events::settled_context_usage(
                     &agent_state.messages,
                     agent_state.model.context_window,

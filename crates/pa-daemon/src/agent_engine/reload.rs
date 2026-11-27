@@ -12,13 +12,10 @@ impl AgentSessionEngine {
     /// previous credentials) instead of answering a success the session
     /// did not apply.
     pub(crate) fn reload_live_inputs(&self) -> Result<(), String> {
-        let mut manager = self
-            .mcp
+        self.mcp
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let auth_reload = manager.reload_auth_storage();
-        manager.refresh();
-        auth_reload
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reload_live_inputs()
     }
 }
 

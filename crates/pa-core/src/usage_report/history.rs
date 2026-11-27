@@ -2,7 +2,7 @@
 //! local day and provider/model. A call bills where it ran: each assistant row's own usage block
 //! (the raw call, never the child-attributed aggregate, so a parent and its children's files never
 //! count one call twice) plus the [`billed_line`] rows (compactions, branch summaries,
-//! `model_usage`). The session-stats fold ([`pa_core::session::usage_scan::UsageScan`]) sums one
+//! `model_usage`). The session-stats fold ([`crate::session::usage_scan::UsageScan`]) sums one
 //! session's totals without timestamps or models, so it cannot serve a per-day history.
 //!
 //! Files are cached by length and modification time: a reopened page rescans only the sessions
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-use pa_core::session_engine::compaction_exec::add_assistant_usage;
+use crate::session_engine::compaction_exec::add_assistant_usage;
 use pa_types::ai::Usage;
 use pa_types::billing::{BillingMode, BillingSplit};
 use pa_types::provider_usage::{
@@ -24,7 +24,7 @@ use pa_types::provider_usage::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use pa_core::session::billed_row::{billed_line, ScanUsage};
+use crate::session::billed_row::{billed_line, ScanUsage};
 
 /// The history's day span (the spark and the `30 days` total).
 pub(crate) const HISTORY_DAYS: i64 = 30;
@@ -94,7 +94,7 @@ fn date_key(epoch_ms: i64) -> String {
     match pa_types::platform::local_civil(epoch_ms) {
         Some(civil) => format!("{:04}-{:02}-{:02}", civil.year, civil.month, civil.day),
         None => {
-            pa_core::session::manager::iso_from_unix_ms(u64::try_from(epoch_ms).unwrap_or_default())
+            crate::session::manager::iso_from_unix_ms(u64::try_from(epoch_ms).unwrap_or_default())
                 .chars()
                 .take(10)
                 .collect()
@@ -144,7 +144,7 @@ fn observed_rate_limit(message: &ScanMessage, at_ms: i64) -> Option<ObservedRate
 /// Fold one session file. Unreadable lines are skipped (a torn tail never fails the page).
 fn scan_file(path: &Path) -> FileSpend {
     let mut spend = FileSpend::default();
-    let Ok(file) = pa_core::session::store::store().open(path) else {
+    let Ok(file) = crate::session::store::store().open(path) else {
         return spend;
     };
     // A later write of one assistant row replaces the earlier one in place (the session fold's
@@ -159,7 +159,7 @@ fn scan_file(path: &Path) -> FileSpend {
         let entry_ms = entry
             .timestamp
             .as_deref()
-            .and_then(pa_core::session::manager::iso_to_unix_ms)
+            .and_then(crate::session::manager::iso_to_unix_ms)
             .and_then(|ms| i64::try_from(ms).ok());
         if let Some(row) = billed_line(&entry.type_, &line) {
             let (provider, model) = row
@@ -233,7 +233,7 @@ fn session_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut pending = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = pending.pop() {
-        let Ok(listing) = pa_core::session::store::store().list(&dir) else {
+        let Ok(listing) = crate::session::store::store().list(&dir) else {
             continue;
         };
         if depth < MAX_WALK_DEPTH {
@@ -267,7 +267,7 @@ pub(crate) fn spend_history(sessions_root: &Path, now_ms: i64) -> SpendHistory {
     let files = session_files(sessions_root);
     let mut folds: Vec<FileSpend> = Vec::with_capacity(files.len());
     for path in &files {
-        let stamp = pa_core::session::store::store().stat(path).map_or(
+        let stamp = crate::session::store::store().stat(path).map_or(
             FileStamp {
                 len: 0,
                 modified: None,

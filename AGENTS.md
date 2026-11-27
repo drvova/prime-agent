@@ -309,7 +309,22 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `session.set_steering_mode`, `session.set_follow_up_mode`, `session.set_auto_compaction` and
   `session.set_auto_retry` (`pa-runtime` `daemon/handlers/switches.rs`), which answer the old
   responses' `data` and publish the old `service_tier_changed` on the session's stream when the
-  active tier moves; `wire2_compat` maps the TUI's commands to them.
+  active tier moves; `wire2_compat` maps the TUI's commands to them. A switch of a runtime
+  session retargets its next request: the embedder hands the slot its engine streams from to
+  the runtime (`BuiltSession::provider_target`), and `session.set_model`, `session.cycle_model`
+  and `session.set_service_tier` write the model, its request auth (through the session's
+  credential pin; a model whose auth does not resolve is refused before anything moves) and the
+  active tier there, as the old worker and the RPC mode do.
+- One copy of what a client reads beside a session's turns: the command catalog
+  (`ResourceReload::connection_commands`), the `/mcp` page (`McpManager::connections_view`), the
+  reload's MCP half (`McpManager::reload_live_inputs`), the Anthropic warning's marker
+  (`SessionManager::mark_anthropic_warning_shown`), the `/model` picker's catalog and its
+  coalesced refresh (`pa_core::models::CatalogRefresh`) and the `/usage` page
+  (`pa_core::usage_report`) are pa-core's; the old worker and supervisor and the runtime
+  daemon's `session.commands`, `session.mcp_connections`, `session.model_catalog`, `usage`,
+  `session.reload` and `session.mark_anthropic_warning_shown` (`pa-runtime`
+  `daemon/handlers/info.rs`) serve them, and a changed catalog is the old
+  `model_catalog_changed` broadcast or the runtime's live-only `runtime/models`.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

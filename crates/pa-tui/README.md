@@ -238,8 +238,11 @@ and `list_saved_sessions` to a subscription on its request's live-only topic, th
 {shape: "saved"}` query whose result is the old response, and an unsubscribe at its reply
 (`Outgoing::Stream`), and the setting switches (`cycle_model`, `cycle_thinking_level`,
 `set_scoped_models`, `set_service_tier`, `set_transport`, the queue modes, auto-compaction and
-auto-retry) to one `session.*` call each whose result is the old response's `data`
-(`Outgoing::Call`);
+auto-retry, and `reload` and `mark_anthropic_warning_shown`) to one `session.*` call each whose
+result is the old response's `data` (`Outgoing::Call`), the reads beside a session's turns
+(`get_commands`, `get_mcp_connections`, `get_model_catalog`, and the global `get_usage`) to the
+`session.commands`, `session.mcp_connections`, `session.model_catalog` and `usage` queries, and the
+live-only `runtime/models` back to `model_catalog_changed`;
 its module docs state the contract the runtime honours (the stream is live
 only, so the session's event counter rides in the payload's `meta.sequence`) and list what is left
 to map. Every recorded frame round-trips through it. A session's stored fault topics

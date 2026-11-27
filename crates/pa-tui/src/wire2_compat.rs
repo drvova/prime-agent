@@ -16,6 +16,7 @@
 //! | `runtime/roster` | today's `roster_update` frame without `type` (`changed`, `removed`, `resync`) | `roster_update` |
 //! | `runtime/traffic` | today's `agent_traffic` frame's `entry` | `agent_traffic` |
 //! | `runtime/session_list/<request>` | today's `session_list_item` (a `session`) or `session_list_progress` frame without `type` | `session_list_item` / `session_list_progress` |
+//! | `runtime/models` | `{}` | `model_catalog_changed` |
 //!
 //! `<id>` is the session's active id, the one `DaemonCommand`s address. On the agent topics the
 //! event's metadata becomes the frame's `meta`: `id` is the event id, `emittedAt` its `ts`
@@ -96,6 +97,22 @@
 //! | `set_follow_up_mode` | `session.set_follow_up_mode` | none |
 //! | `set_auto_compaction` | `session.set_auto_compaction` | none |
 //! | `set_auto_retry` | `session.set_auto_retry` | none |
+//! | `reload` | `session.reload` | none |
+//! | `mark_anthropic_warning_shown` | `session.mark_anthropic_warning_shown` | none |
+//!
+//! What the TUI reads beside a session's turns becomes one query each, built the same way (the
+//! command's members, plus `session` for a session's), whose reply's result is the old response's
+//! `data`:
+//!
+//! | command | query | old response `data` |
+//! | --- | --- | --- |
+//! | `get_commands` | `session.commands` | `{commands}` |
+//! | `get_mcp_connections` | `session.mcp_connections` | `{connections, services, credentials, catalogDiagnostics}` |
+//! | `get_model_catalog` | `session.model_catalog` | `{models, configuredProviders, billing, accounts, accountChoices}` |
+//! | `get_usage` | `usage` (`section`, `forceRefresh`; no session) | the `QuotaReport` or `SpendHistory` |
+//!
+//! `model_catalog_changed`, a broadcast on the old wire, is the live-only `runtime/models`: a
+//! transport follows it for the connection's life (subscription `compat:models`, `Since::Now`).
 //!
 //! Every other command stays on the old wire.
 //!
@@ -103,14 +120,12 @@
 //!
 //! - Queries: `sessions.list` for `list`, the chunked `session_snapshot_*` frames (a TUI attach does
 //!   not ask for them), `session_attached`, `session_resynced`, `session_replaced`, `settings`
-//!   (`get_settings`), `models` (`get_model_catalog`, `get_available_models`,
-//!   `model_catalog_changed`), `subscriptions` and `tasks` (`heartbeats_list`,
-//!   `heartbeats_changed`, `list_kernel_bash`, `factory_activity`), `get_session_stats`,
-//!   `get_commands`, `get_rlm_children`, `get_mcp_connections`, `get_usage`.
+//!   (`get_settings`), `models` (`get_available_models`), `subscriptions` and `tasks`
+//!   (`heartbeats_list`, `heartbeats_changed`, `list_kernel_bash`, `factory_activity`),
+//!   `get_session_stats`, `get_rlm_children`.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
 //!   `fork`, `label`, `export`, the auth commands, `abort`/`abort_and_send_queued`,
-//!   `abort_compaction`, `compact`, the queue mutations, `detach`, `reload`,
-//!   `mark_anthropic_warning_shown`.
+//!   `abort_compaction`, `compact`, the queue mutations, `detach`.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
 //! - Connection frames: `daemon_hello` from `welcome`, `daemon_closing` from `closing`, the
 //!   direct worker link (retired: wire2 has one connection), `history_import`,
@@ -255,6 +270,7 @@ pub(crate) fn outbound_from_event(
             serde_json::from_value(Value::Object(frame))
                 .with_context(|| format!("{}: the payload", event.event.topic))?
         }
+        ["runtime", "models"] => DaemonOutbound::ModelCatalogChanged { rest: Map::new() },
         ["runtime", "traffic"] => DaemonOutbound::AgentTraffic {
             entry: serde_json::from_value(payload.clone())
                 .context("runtime/traffic: the payload")?,
@@ -502,6 +518,52 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 &command,
             )
         }
+        DaemonCommand::Reload {
+            active_session_id, ..
+        } => return session_call(request_id, "session.reload", active_session_id, &command),
+        DaemonCommand::MarkAnthropicWarningShown {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.mark_anthropic_warning_shown",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::GetCommands {
+            active_session_id, ..
+        } => {
+            return command_query(
+                request_id,
+                "session.commands",
+                Some(active_session_id),
+                &command,
+            )
+        }
+        DaemonCommand::GetMcpConnections {
+            active_session_id, ..
+        } => {
+            return command_query(
+                request_id,
+                "session.mcp_connections",
+                Some(active_session_id),
+                &command,
+            )
+        }
+        DaemonCommand::GetModelCatalog {
+            active_session_id, ..
+        } => {
+            return command_query(
+                request_id,
+                "session.model_catalog",
+                Some(active_session_id),
+                &command,
+            )
+        }
+        DaemonCommand::GetUsage { .. } => {
+            return command_query(request_id, "usage", None, &command);
+        }
         DaemonCommand::RosterSubscribe { .. } => return follow(request_id, ROSTER_FEED),
         DaemonCommand::AgentTrafficSubscribe { .. } => return follow(request_id, TRAFFIC_FEED),
         DaemonCommand::RosterUnsubscribe { .. } => {
@@ -534,32 +596,54 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
     }))
 }
 
-/// The call `method` on session `session` that `command` (a setting switch) becomes: its
-/// arguments are the command's own members without `type`, `id` and `activeSessionId`, plus
-/// `session`.
-fn session_call(
-    request_id: String,
-    method: &str,
-    session: &str,
-    command: &DaemonCommand,
-) -> Result<Outgoing> {
+/// The arguments `command` carries over wire2: its own members without `type`, `id` and
+/// `activeSessionId`, plus `session` when it addresses one.
+fn command_args(command: &DaemonCommand, session: Option<&str>) -> Result<Value> {
     let Value::Object(mut args) = serde_json::to_value(command)? else {
         return Err(anyhow!("a command serializes to an object"));
     };
     for key in ["type", "id", "activeSessionId"] {
         args.remove(key);
     }
-    args.insert("session".to_string(), Value::from(session));
+    if let Some(session) = session {
+        args.insert("session".to_string(), Value::from(session));
+    }
+    Ok(Value::Object(args))
+}
+
+/// The call `method` on session `session` that `command` (a setting switch) becomes, with the
+/// command's arguments ([`command_args`]).
+fn session_call(
+    request_id: String,
+    method: &str,
+    session: &str,
+    command: &DaemonCommand,
+) -> Result<Outgoing> {
     Ok(Outgoing::Call(ClientFrame::Call {
         id: request_id,
         method: method.to_string(),
-        args: Value::Object(args),
+        args: command_args(command, Some(session))?,
+    }))
+}
+
+/// The query `name` that `command` (a read beside the session's turns) becomes, with the
+/// command's arguments ([`command_args`]), on `session` when it addresses one.
+fn command_query(
+    request_id: String,
+    name: &str,
+    session: Option<&str>,
+    command: &DaemonCommand,
+) -> Result<Outgoing> {
+    Ok(Outgoing::Query(ClientFrame::Query {
+        id: request_id,
+        name: name.to_string(),
+        args: command_args(command, session)?,
     }))
 }
 
 /// The commands the old daemon answered without `data`: their call's `null` result is left out
 /// of the response again.
-const ANSWERED_WITHOUT_DATA: [&str; 7] = [
+const ANSWERED_WITHOUT_DATA: [&str; 9] = [
     "set_scoped_models",
     "set_service_tier",
     "set_transport",
@@ -567,6 +651,8 @@ const ANSWERED_WITHOUT_DATA: [&str; 7] = [
     "set_follow_up_mode",
     "set_auto_compaction",
     "set_auto_retry",
+    "reload",
+    "mark_anthropic_warning_shown",
 ];
 
 /// Following `feed` (its subscription id, topic and query): live from now, then its state.

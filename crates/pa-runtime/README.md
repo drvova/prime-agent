@@ -464,7 +464,21 @@ SQLite implementations over `pa-log`.
   stream; a cycled model or level reaches the roster feed. A cycled model retargets the next
   request as `session.set_model` does, and a set tier becomes the active tier the next request
   carries; a session's build starts it at its tier row's tier (else the settings' default)
-  clamped to its model, as the old worker's create. A root session stopped and opened again waits for its new engine's
+  clamped to its model, as the old worker's create. What the TUI reads beside a session's turns
+  (`daemon/handlers/info.rs`), the old worker's and supervisor's commands of the same names, each
+  answering the old response's `data`: `session.commands` (`get_commands`: `{commands}`, the
+  prompt templates then the skills, `ResourceReload::connection_commands`),
+  `session.mcp_connections` (`get_mcp_connections`: the `/mcp` page,
+  `McpManager::connections_view`), `session.model_catalog` (`get_model_catalog`: the picker's
+  catalog from the current snapshot with the session's accounts through its credential pin,
+  `pa_core::models::CatalogRefresh`, whose background refresh is coalesced across the daemon's
+  sessions; a refresh that changes the snapshot publishes `{}` on the live-only `runtime/models`,
+  the old `model_catalog_changed` broadcast), `usage` (`{section, forceRefresh?}`, no session: the
+  supervisor's `get_usage`, the quota cards with this process's request pacing or the spend
+  history of the daemon's sessions dir, `pa_core::usage_report`), `session.reload` (`reload`: the
+  MCP manager reads its auth store and settings again, a failed auth reload failing the call, then
+  the skills, prompt templates and context files) and `session.mark_anthropic_warning_shown`
+  (the marker row, written once, `SessionManager::mark_anthropic_warning_shown`). A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
@@ -630,15 +644,20 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   is the selected one, asked before each scheduled job). On the wire (strings, not Rust surface): the
   queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,
   `session.breakdown`, `session.model`, `session.system_prompt`, `session.children`,
-  `runtime.roster`, `runtime.traffic`, `sessions.list {shape: "saved"}`, the live-only topics
-  `runtime/roster`, `runtime/traffic` and `runtime/session_list/<request>`, and the calls
+  `runtime.roster`, `runtime.traffic`, `sessions.list {shape: "saved"}`, `session.commands`,
+  `session.mcp_connections`, `session.model_catalog`, `usage`, the live-only topics
+  `runtime/roster`, `runtime/traffic`, `runtime/models` and `runtime/session_list/<request>`,
+  and the calls
   `session.abort`,
   `session.abort_and_send_queued`, `session.resume_queue`, `session.withdraw`,
   `session.restore`, `session.compact`, `session.pause_input`, `session.release_input`,
   `session.cancel_task`, `session.cancel_child`, `session.cycle_model`,
   `session.set_scoped_models`, `session.cycle_effort`, `session.set_service_tier`,
   `session.set_transport`, `session.set_steering_mode`, `session.set_follow_up_mode`,
-  `session.set_auto_compaction`, `session.set_auto_retry`.
+  `session.set_auto_compaction`, `session.set_auto_retry`, `session.reload`,
+  `session.mark_anthropic_warning_shown`.
+- `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
+  engine streams from, which the runtime daemon's model and tier switches write.
 
 Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-sources` (the timer and watch
 sources it starts and stops), `pa-core` (the session engine, the

@@ -20,10 +20,11 @@ use serde::{Deserialize, Serialize};
 /// with is published on a stored topic (`agent/<id>/done`).
 const LIVE_ONLY_KINDS: &[&str] = &["stream", "tool"];
 
-/// The live-only feeds `runtime/<feed>` of the agents view: the roster's
-/// row changes and the agent traffic. A client reads their current state
-/// with a query and follows the feed from then on, as it follows a stream.
-const LIVE_ONLY_FEEDS: &[&str] = &["roster", "traffic"];
+/// The live-only feeds `runtime/<feed>`: the agents view's roster row
+/// changes and agent traffic, and the model catalog's changes. A client reads
+/// their current state with a query and follows the feed from then on, as it
+/// follows a stream.
+const LIVE_ONLY_FEEDS: &[&str] = &["roster", "traffic", "models"];
 
 /// Most levels in a topic or filter.
 pub const MAX_TOPIC_LEVELS: usize = 16;
@@ -111,8 +112,8 @@ impl Topic {
 
     /// Whether events on this topic are live only, never stored: exactly
     /// `agent/<id>/stream`, `agent/<id>/tool`, `runtime/roster`,
-    /// `runtime/traffic` or `runtime/session_list/<request>` (one saved-session
-    /// list request's rows as it walks the store).
+    /// `runtime/traffic`, `runtime/models` or `runtime/session_list/<request>`
+    /// (one saved-session list request's rows as it walks the store).
     #[must_use]
     pub fn is_live_only(&self) -> bool {
         let mut levels = self.levels();

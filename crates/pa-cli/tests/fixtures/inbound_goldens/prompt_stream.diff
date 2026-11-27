@@ -25,3 +25,6 @@ meta: golden numbers rising true, from 2, ids like H:2 | runtime numbers rising 
 ~ reply roster_subscribe: .data.roster[0].summary.workerInstanceId: golden "H" | runtime null
 ~ reply get_state: .data.model.api: golden "T" | runtime "faux-H"
 ~ reply get_state: .data.workerInstanceId: golden "H" | runtime null
+~ reply get_model_catalog: .data.billing: golden "none" | runtime "listed"
+~ reply get_model_catalog: .data.configuredProviders: golden "none" | runtime "listed"
+~ reply get_model_catalog: .data.models: golden "none" | runtime "listed"

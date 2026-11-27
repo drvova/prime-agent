@@ -19,7 +19,7 @@ use super::{ok, Bed, Client};
 /// Two signed-in providers: `battery` (a model that does not think and keeps
 /// only the default tier) and `openai` (`gpt-5.5`, which thinks and keeps the
 /// priority tier).
-fn models(agent_dir: &Path) {
+pub(super) fn models(agent_dir: &Path) {
     let model = |id: &str, api: &str, reasoning: bool| {
         json!({ "id": id, "name": id, "api": api, "reasoning": reasoning,
                 "contextWindow": 128_000, "maxTokens": 4096 })
@@ -65,7 +65,7 @@ fn switches() -> Vec<Value> {
 
 /// `frame` in the shape the TUI's client reads it in, without its request
 /// id (the compat layer's caller pairs it).
-fn read_as_the_tui_does(frame: &Value) -> Value {
+pub(super) fn read_as_the_tui_does(frame: &Value) -> Value {
     let typed: DaemonOutbound = serde_json::from_value(frame.clone())
         .unwrap_or_else(|error| panic!("{frame} is not an old frame: {error}"));
     let mut frame = serde_json::to_value(typed).unwrap();

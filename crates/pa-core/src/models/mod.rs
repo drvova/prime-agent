@@ -9,6 +9,8 @@ pub use registry::{
     SetModelSelectionError,
 };
 
+pub use catalog_view::CatalogRefresh;
+
 pub use catalog_chain::{
     catalog_for, install_catalog, prime_credentials_for_dir, spawn_hourly_refresh, startup_refresh,
 };
@@ -19,6 +21,7 @@ pub use pa_models::RefreshTrigger;
 
 pub mod allowlist;
 pub(crate) mod catalog_chain;
+pub(crate) mod catalog_view;
 pub(crate) mod custom;
 pub mod image_model_routing;
 pub(crate) mod prime_inference;

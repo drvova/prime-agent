@@ -8,13 +8,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use crate::auth::{AuthCredential, AuthStorage};
 use pa_ai::oauth::{ProviderHttp, ReqwestProviderHttp};
 use pa_ai::quota::{
     fetch_anthropic_quota, fetch_github_copilot_quota, fetch_openai_codex_quota,
     fetch_synthetic_quota, github_api_base_url, FetchedQuota, ANTHROPIC_USAGE_BASE_URL,
     OPENAI_CODEX_USAGE_BASE_URL, QUOTA_REQUEST_TIMEOUT_MS, SYNTHETIC_QUOTA_BASE_URL,
 };
-use pa_core::auth::{AuthCredential, AuthStorage};
 use pa_types::provider_usage::{ProviderQuota, QuotaReport, QuotaSource, QuotaState};
 
 /// A fresh card serves from the cache this long (the providers' own usage pages poll on the
@@ -125,7 +125,7 @@ fn quota_cache() -> &'static QuotaCache {
 fn quota_credentials(agent_dir: &Path, now_ms: i64) -> Vec<QuotaCredential> {
     let mut auth = AuthStorage::create(agent_dir);
     let stored = auth.get_all();
-    let named_store = pa_core::auth::AuthAccounts::create(agent_dir);
+    let named_store = crate::auth::AuthAccounts::create(agent_dir);
     let mut credentials = Vec::new();
     for provider in QuotaProvider::ALL {
         // An unreadable `auth-accounts.json` shows the default slot alone (`/logout` reports it).
