@@ -7,7 +7,7 @@
 mod common;
 
 use std::io::Write as _;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -77,10 +77,12 @@ fn spawn_worker_with_window(
     WorkerGuard { child }
 }
 
+/// Hold until the worker accepts a connection: the socket file appears at
+/// `bind`, before `listen`, so a connect in between is refused.
 fn wait_worker_socket(socket: &Path) {
     let deadline = Instant::now() + Duration::from_secs(15);
-    while !socket.exists() {
-        assert!(Instant::now() < deadline, "worker socket never appeared");
+    while UnixStream::connect(socket).is_err() {
+        assert!(Instant::now() < deadline, "worker socket never accepted");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
