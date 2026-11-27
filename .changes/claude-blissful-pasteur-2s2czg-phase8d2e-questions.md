@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now asks the user a session's kernel questions: an `ask` waits for an attached terminal UI to answer, its todo list and notifications reach that UI, and with no UI attached the question is answered `no_user` at once, as the default daemon does.

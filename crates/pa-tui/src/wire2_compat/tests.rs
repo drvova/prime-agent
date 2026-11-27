@@ -320,9 +320,10 @@ fn input_commands_publish_on_the_session_input_topic() {
             },
         )
         .collect();
+    // A detach that names no session stays on the old wire.
     let detach = DaemonCommand::Detach {
         id: None,
-        active_session_id: Some("s1".to_string()),
+        active_session_id: None,
         rest: Map::new(),
     };
     assert_eq!(
@@ -340,7 +341,7 @@ fn input_commands_publish_on_the_session_input_topic() {
     );
 }
 
-/// The session reads go out as their queries, each argument the command carries forwarded and
+/// The session reads go out as their queries (the attach as its call), each argument the command carries forwarded and
 /// none it lacks; every recorded reply to one comes back from its query's result as the response
 /// the TUI received, and an error reply as the old failure.
 #[test]
@@ -387,8 +388,8 @@ fn session_reads_query_and_their_replies_round_trip() {
         .into_iter()
         .map(
             |command| match outgoing("q".to_string(), command).unwrap() {
-                Outgoing::Query(frame) => frame,
-                other => panic!("not a query: {other:?}"),
+                Outgoing::Query(frame) | Outgoing::Call(frame) => frame,
+                other => panic!("not a query or call: {other:?}"),
             },
         )
         .collect();
@@ -400,11 +401,13 @@ fn session_reads_query_and_their_replies_round_trip() {
     assert_eq!(
         queries,
         [
-            query(
-                "session.snapshot",
-                json!({ "session": "s1", "shape": "attach", "clientId": "tui:1",
-                        "capabilities": ["windowed_snapshot"] })
-            ),
+            // The attach is a call: it attaches the connection's client.
+            ClientFrame::Call {
+                id: "q".to_string(),
+                method: "session.attach".to_string(),
+                args: json!({ "session": "s1", "clientId": "tui:1",
+                              "capabilities": ["windowed_snapshot"] }),
+            },
             query(
                 "session.snapshot",
                 json!({ "session": "s1", "shape": "state" })
@@ -934,6 +937,69 @@ fn the_queue_edit_and_the_aborts_call() {
             ],
             json!({ "type": "response", "command": "mutate_queued_message", "success": true,
                     "data": { "status": "applied" } }),
+        )
+    );
+}
+
+/// A session's detach and a question's answer are calls answered without `data`, as the old
+/// daemon answered them; an answer's refusal keeps its message.
+#[test]
+fn the_detach_and_the_answer_call_and_answer_without_data() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "detach", "activeSessionId": "s1" }),
+        json!({ "type": "answer_question", "activeSessionId": "s1", "questionId": "q1",
+                "reply": { "status": "answered", "answer": ["yes"] } }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let call = |method: &str, args: Value| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args,
+        })
+    };
+    let answered = |command: &str, outcome: Outcome| {
+        serde_json::to_value(response_from_reply(command, None, outcome)).unwrap()
+    };
+    assert_eq!(
+        (
+            frames,
+            answered(
+                "detach",
+                Outcome::Ok {
+                    result: Value::Null
+                }
+            ),
+            answered(
+                "answer_question",
+                Outcome::Ok {
+                    result: Value::Null
+                }
+            ),
+            answered(
+                "answer_question",
+                Outcome::Error {
+                    message: "question \"q1\" is not open".to_string(),
+                    info: None,
+                },
+            ),
+        ),
+        (
+            vec![
+                call("session.detach", json!({ "session": "s1" })),
+                call(
+                    "session.answer_question",
+                    json!({ "session": "s1", "questionId": "q1",
+                            "reply": { "status": "answered", "answer": ["yes"] } })
+                ),
+            ],
+            json!({ "type": "response", "command": "detach", "success": true }),
+            json!({ "type": "response", "command": "answer_question", "success": true }),
+            json!({ "type": "response", "command": "answer_question", "success": false,
+                    "error": "question \"q1\" is not open" }),
         )
     );
 }

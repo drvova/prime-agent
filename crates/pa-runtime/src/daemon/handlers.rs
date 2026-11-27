@@ -43,6 +43,7 @@ mod mcp;
 mod messaging;
 mod model;
 mod owned;
+mod questions;
 mod queue;
 mod queue_edit;
 mod replace;
@@ -562,11 +563,18 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionMutateQueuedMessage => self.mutate_queued_message(&args).await,
             Call::SessionAbortCompaction => self.abort_compaction(&args),
             Call::SessionAbortRetry => self.abort_retry(&args),
+            Call::SessionAttach => self.attach(&args, connection).await,
+            Call::SessionDetach => self.detach(&args, connection),
+            Call::SessionAnswerQuestion => self.answer_question(&args),
         }
     }
 
     async fn disconnected(&self, connection: ConnectionId) {
         self.release_connection_holds(connection);
+        // Its clients are no longer attached to answer questions.
+        for interaction in self.runtime.subagents().interactions() {
+            interaction.disconnected(connection);
+        }
         self.end_owned_sessions(connection).await;
     }
 }

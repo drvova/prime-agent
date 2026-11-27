@@ -511,6 +511,17 @@ SQLite implementations over `pa-log`.
   restored after a restart), `session.abort_compaction` (aborts the compaction the session runs
   under its own signal, `/compact` or automatic: `compaction_end` says `aborted`) and
   `session.abort_retry` (ends the auto-retry wait of the running prompt: `Retry cancelled`).
+  User questions (8d-2e, `session/interaction.rs`, the old worker's `user_interaction.rs`): each
+  runtime-daemon session's lifetime gets an interaction hub (`SessionSeams::interaction`) whose
+  events go out on `agent/<id>/stream`, numbered, as the old `todo_update`, `question_open`,
+  `question_closed` and `kernel_notification` session events (a first build's adopted list is
+  not sent: no client of it is attached yet). `session.attach` (`daemon/handlers/questions.rs`:
+  the old attach, recording the connection's client and answering the attach snapshot) makes a
+  kernel `ask` wait while a client whose attach declared `user_questions` is attached, until its
+  `session.detach` or its connection's end; with none, it settles as `no_user` at once.
+  `session.answer_question` delivers the reply (`null`, or the old refusals), the attach
+  snapshot's `state.pendingQuestion` names a waiting question, and a stopped session's waiting
+  question settles as `cancelled`.
   A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
@@ -666,7 +677,8 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   family's `agent_message.*` - its `rlm.*` subagents, the late-receipt sink, the
   background-settle wake and the kernel-notice sink, all of which the engine must install, and
   `scheduled_jobs`, the cron wiring a runtime-daemon session's kernel binds `schedule.*` and
-  `rlm_heartbeat.*` to, `None` elsewhere),
+  `rlm_heartbeat.*` to, `None` elsewhere, and `interaction`, a runtime-daemon session's
+  todo/question hub, `None` elsewhere),
   `SessionSpec` (`transcript`: the file a daemon session opens; `ephemeral`: a session kept in
   memory only), `SubagentSpec`,
   `BuiltSession` (`queue_modes`: `QueueModes`), `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
@@ -693,7 +705,8 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `session.abort_branch_summary` and `session.export_html`, and (8d-2b) the calls
   `session.fork_entry` and `session.import_jsonl`. pa-types `wire2::Outcome::Error` gains
   `info` (the old `errorInfo`). (8d-2c) the calls `session.mutate_queued_message`,
-  `session.abort_compaction` and `session.abort_retry`.
+  `session.abort_compaction` and `session.abort_retry`. (8d-2e) the calls `session.attach`,
+  `session.detach` and `session.answer_question`.
 - `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
   engine streams from, which the runtime daemon's model and tier switches write.
 

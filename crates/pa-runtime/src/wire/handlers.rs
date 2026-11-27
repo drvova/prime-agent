@@ -260,6 +260,17 @@ pub enum Call {
     /// `session.abort_retry`: stops the automatic retry an open session's
     /// turn waits on.
     SessionAbortRetry,
+    /// `session.attach`: attaches the calling connection's client to an open
+    /// session and answers the attach snapshot; a client that declares
+    /// `user_questions` can answer its kernel questions until it detaches
+    /// or its connection ends.
+    SessionAttach,
+    /// `session.detach`: the calling connection's client leaves an open
+    /// session it attached to.
+    SessionDetach,
+    /// `session.answer_question`: replies to an open session's waiting
+    /// kernel question.
+    SessionAnswerQuestion,
 }
 
 impl FromStr for Call {
@@ -312,6 +323,9 @@ impl FromStr for Call {
             "session.mutate_queued_message" => Call::SessionMutateQueuedMessage,
             "session.abort_compaction" => Call::SessionAbortCompaction,
             "session.abort_retry" => Call::SessionAbortRetry,
+            "session.attach" => Call::SessionAttach,
+            "session.detach" => Call::SessionDetach,
+            "session.answer_question" => Call::SessionAnswerQuestion,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

@@ -536,6 +536,10 @@ pub(crate) struct HeadlessEmbeddingFields {
     /// The scheduled jobs a runtime-daemon session's kernel binds to;
     /// `None` for a print run (its `schedule.*` refuses) and RPC.
     pub(crate) cron_store: Option<pa_core::session_engine::runtime_wiring::KernelCronWiring>,
+    /// A runtime-daemon session's todo/question hub, which reaches its
+    /// attached clients; `None` (headless: `ask` answers `no_user`) for a
+    /// print run and RPC.
+    pub(crate) interaction: Option<Arc<pa_core::interaction::InteractionHub>>,
 }
 
 /// The embedding-owned fields for one headless engine build: a print
@@ -577,6 +581,7 @@ pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> Headle
             .map(|seams| Arc::clone(&seams.on_late_sent_agent_message)),
         call_policy: seams.map(|seams| Arc::clone(&seams.call_policy)),
         cron_store: seams.and_then(|seams| seams.scheduled_jobs.clone()),
+        interaction: seams.and_then(|seams| seams.interaction.clone()),
     }
 }
 
@@ -803,6 +808,7 @@ pub(crate) async fn build_headless_engine_with(
         on_late_sent_agent_message,
         call_policy,
         cron_store,
+        interaction,
     } = headless_embedding_fields(embedding);
     let (semantic_edges, thinking_level) = match embedding {
         HeadlessEmbedding::Child { overrides, .. } => (
@@ -871,7 +877,7 @@ pub(crate) async fn build_headless_engine_with(
             rlm_subagent_host,
             rlm_usage_store: None,
             progress_note_emit: None,
-            interaction: None,
+            interaction,
             rlm_depth,
             factory_child,
             daemonless: true,

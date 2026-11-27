@@ -53,7 +53,6 @@
 //!
 //! | command | query | arguments |
 //! | --- | --- | --- |
-//! | `attach` | `session.snapshot` | `shape: "attach"`, `clientId`, `capabilities`, `resumeCursor` |
 //! | `get_state` | `session.snapshot` | `shape: "state"` |
 //! | `get_messages` | `transcript.page` | `shape: "messages"`, `page`, `historyLeafId`, `capabilities` |
 //!
@@ -108,6 +107,16 @@
 //! | `mutate_queued_message` | `session.mutate_queued_message` | `{status}` (`applied`, `rejected`) |
 //! | `abort_compaction` | `session.abort_compaction` | none |
 //! | `abort_retry` | `session.abort_retry` | none |
+//! | `detach` (of a session) | `session.detach` | none |
+//! | `answer_question` | `session.answer_question` | none |
+//!
+//! `attach` is the call `session.attach` with `session` (the command's `activeSessionId`),
+//! `clientId`, `capabilities` and `resumeCursor` (those it carries), whose reply's result is the
+//! old attach response's `data`: the connection's client is attached to the session until its
+//! `detach` or the connection's end, and one that names `user_questions` makes the session's
+//! kernel questions wait for its `answer_question`. The questions, the todo list and the kernel's
+//! notifications reach the client as the old `question_open`, `question_closed`, `todo_update`
+//! and `kernel_notification` session events on `agent/<id>/stream`.
 //!
 //! What the TUI reads beside a session's turns becomes one query each, built the same way (the
 //! command's members, plus `session` for a session's), whose reply's result is the old response's
@@ -136,7 +145,7 @@
 //!   `get_session_stats`, `get_rlm_children`.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
 //!   `fork` of the whole saved session, `label`, `export`, the auth
-//!   commands, `abort`/`abort_and_send_queued`, `compact`, `answer_question`, `detach`.
+//!   commands, `abort`/`abort_and_send_queued`, `compact`, a `detach` that names no session.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
 //! - Connection frames: `daemon_hello` from `welcome`, `daemon_closing` from `closing`, the
 //!   direct worker link (retired: wire2 has one connection), `history_import`,
@@ -358,18 +367,41 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
             resume_cursor,
             ..
         } => {
-            return query(
-                "session.snapshot",
+            let mut args = Map::new();
+            args.insert(
+                "session".to_string(),
+                Value::from(active_session_id.as_str()),
+            );
+            for (key, value) in [
+                (
+                    "clientId",
+                    client_id.as_ref().map(|id| Value::from(id.as_str())),
+                ),
+                ("capabilities", member(capabilities.as_ref())),
+                ("resumeCursor", member(resume_cursor.as_ref())),
+            ] {
+                if let Some(value) = value {
+                    args.insert(key.to_string(), value);
+                }
+            }
+            return Ok(Outgoing::Call(ClientFrame::Call {
+                id: request_id,
+                method: "session.attach".to_string(),
+                args: Value::Object(args),
+            }));
+        }
+        DaemonCommand::Detach {
+            active_session_id: Some(active_session_id),
+            ..
+        } => return session_call(request_id, "session.detach", active_session_id, &command),
+        DaemonCommand::AnswerQuestion {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.answer_question",
                 active_session_id,
-                "attach",
-                vec![
-                    (
-                        "clientId",
-                        client_id.as_ref().map(|id| Value::from(id.as_str())),
-                    ),
-                    ("capabilities", member(capabilities.as_ref())),
-                    ("resumeCursor", member(resume_cursor.as_ref())),
-                ],
+                &command,
             )
         }
         DaemonCommand::GetState {
@@ -754,7 +786,9 @@ fn command_query(
 
 /// The commands the old daemon answered without `data`: their call's `null` result is left out
 /// of the response again.
-const ANSWERED_WITHOUT_DATA: [&str; 10] = [
+const ANSWERED_WITHOUT_DATA: [&str; 12] = [
+    "detach",
+    "answer_question",
     "set_scoped_models",
     "set_service_tier",
     "set_transport",

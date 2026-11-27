@@ -172,6 +172,7 @@ pub(crate) async fn build_faux_engine_with(
         on_late_sent_agent_message,
         call_policy,
         cron_store,
+        interaction,
     } = super::headless_embedding_fields(embedding);
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {
@@ -213,7 +214,7 @@ pub(crate) async fn build_faux_engine_with(
             rlm_subagent_host,
             rlm_usage_store: None,
             progress_note_emit: None,
-            interaction: None,
+            interaction,
             rlm_depth,
             factory_child,
             daemonless: true,

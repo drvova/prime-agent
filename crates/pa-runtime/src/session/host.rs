@@ -1021,13 +1021,13 @@ impl<B: SessionBuilder> Lifetime<B> {
                 Arc::new(FamilyMessages(Arc::clone(&self.node))),
                 &mut host_handlers,
             );
-            // The runtime daemon's sessions observe their families.
-            if self
+            let in_daemon = self
                 .node
                 .tree
                 .upgrade()
-                .is_some_and(|tree| tree.daemon().is_some())
-            {
+                .is_some_and(|tree| tree.daemon().is_some());
+            // The runtime daemon's sessions observe their families.
+            if in_daemon {
                 register_agent_observe_host_handlers(
                     Arc::new(FamilyObserve(Arc::clone(&self.node))),
                     &mut host_handlers,
@@ -1047,6 +1047,8 @@ impl<B: SessionBuilder> Lifetime<B> {
                     .jobs
                     .get()
                     .and_then(|jobs| jobs.wiring(&self.id, &self.spec)),
+                // The runtime daemon's sessions ask their attached clients.
+                interaction: in_daemon.then(|| self.node.interaction.lifetime_hub()),
             };
             runtime.block_on(self.builder.build(&self.id, &self.spec, seams))
         }));

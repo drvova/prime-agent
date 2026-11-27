@@ -671,6 +671,16 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         state["compactionCount"] = json!(read.compactions);
         state["goal"] = read.goal;
         state["todos"] = serde_json::to_value(&read.todos)?;
+        // The kernel question waiting for a reply, for a client that
+        // attaches while it waits.
+        if let Some(question) = self
+            .runtime
+            .subagents()
+            .interaction(&id)
+            .and_then(|interaction| interaction.open_question())
+        {
+            state["pendingQuestion"] = serde_json::to_value(question)?;
+        }
         state["scopedModels"] = json!(self.open.scoped_models(&id));
         state["activeToolNames"] = json!([]);
         if let Some(usage) = read.context_usage {

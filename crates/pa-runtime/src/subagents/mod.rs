@@ -45,7 +45,7 @@ use serde_json::{json, Value};
 use tokio::sync::{watch, Notify};
 
 use crate::lock;
-use crate::session::{Outbox, SessionSpec, SessionStream};
+use crate::session::{Outbox, SessionInteraction, SessionSpec, SessionStream};
 use crate::subscriptions::{MemorySessionTree, Registry};
 use crate::trust::TaskTrust;
 use crate::turn::boundary::TurnBoundary;
@@ -203,6 +203,19 @@ impl Subagents {
     /// The stream of the open session `id`.
     pub(crate) fn stream(&self, id: &str) -> Option<Arc<SessionStream>> {
         self.node(id).map(|node| Arc::clone(&node.stream))
+    }
+
+    /// The interaction surface of the open session `id`.
+    pub(crate) fn interaction(&self, id: &str) -> Option<Arc<SessionInteraction>> {
+        self.node(id).map(|node| Arc::clone(&node.interaction))
+    }
+
+    /// Every open session's interaction surface.
+    pub(crate) fn interactions(&self) -> Vec<Arc<SessionInteraction>> {
+        lock(&self.nodes)
+            .values()
+            .map(|node| Arc::clone(&node.interaction))
+            .collect()
     }
 
     /// Waits until every subagent below open session `id` has settled and
@@ -572,6 +585,9 @@ pub(crate) struct Node {
     pub(crate) trust: TaskTrust,
     /// The session's stream: what it tells its clients, in one order.
     pub(crate) stream: Arc<SessionStream>,
+    /// The session's todo list, kernel questions and notifications, and
+    /// the clients attached to answer them.
+    pub(crate) interaction: Arc<SessionInteraction>,
     /// The wakes each sender has spent on this session.
     wakes: inbox::WakeBudget,
     /// The outcome of the session's first engine build; `None` until then.
@@ -612,12 +628,14 @@ impl Node {
         parent: Option<Weak<Node>>,
     ) -> Self {
         let trust = TaskTrust::default();
+        let stream = Arc::new(SessionStream::new(
+            tree.outbox.clone(),
+            &session_id,
+            trust.clone(),
+        ));
         Node {
-            stream: Arc::new(SessionStream::new(
-                tree.outbox.clone(),
-                &session_id,
-                trust.clone(),
-            )),
+            interaction: Arc::new(SessionInteraction::new(Arc::clone(&stream))),
+            stream,
             tree: Arc::downgrade(tree),
             session_id,
             rlm_child_id: spec

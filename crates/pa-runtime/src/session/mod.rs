@@ -36,12 +36,14 @@ use crate::subagents::Subagents;
 mod checkpoints;
 mod faults;
 mod host;
+mod interaction;
 mod runner;
 mod stream;
 
 pub(crate) use faults::{reap_orphans, Rebuild, SessionFaults, Supervision};
 use host::SessionHost;
 pub(crate) use host::{LiveEngine, Opening};
+pub(crate) use interaction::SessionInteraction;
 pub(crate) use runner::{RuntimeTaskSink, SessionRunner, SCHEDULE_PREFIX};
 pub(crate) use stream::{QueueLane, RowAt, SessionStream};
 
@@ -445,6 +447,12 @@ pub struct SessionSeams {
     /// `None` outside the runtime daemon: `schedule.*` then refuses and
     /// `rlm_heartbeat.*` is not registered.
     pub scheduled_jobs: Option<KernelCronWiring>,
+    /// The session's todo list and kernel questions: the hub whose events
+    /// reach the session's stream and whose questions wait for an attached
+    /// client that can answer them (`SessionEngineConfig::interaction`).
+    /// `None` outside the runtime daemon: the session runs headless, and
+    /// its `ask` settles as `no_user` at once.
+    pub interaction: Option<Arc<pa_core::interaction::InteractionHub>>,
 }
 
 /// The scheduled jobs of a runtime's sessions, which the runtime daemon

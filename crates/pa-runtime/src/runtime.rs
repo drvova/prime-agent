@@ -606,6 +606,11 @@ impl<B: SessionBuilder> Runtime<B> {
     /// The database failed to save a cancelled task; the session is closed
     /// all the same.
     pub(crate) async fn close_session(&self, session: &str) -> anyhow::Result<()> {
+        // A kernel question still waiting settles as cancelled: no client
+        // will answer a closing session (the old worker's close).
+        if let Some(interaction) = self.sessions.subagents().interaction(session) {
+            interaction.closing();
+        }
         let cancelled = self.cancel(session).await;
         self.sessions.close(session).await;
         self.sessions.subagents().forget_root(session).await;

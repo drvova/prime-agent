@@ -164,6 +164,17 @@ impl SessionStream {
         }
     }
 
+    /// Publishes one of the session's own session events (its todo list, a
+    /// kernel question, a notification), numbered, in the session-event
+    /// shapes only: the json stream's shapes carry none, and neither does a
+    /// stream whose first build has not chosen its shape yet.
+    pub(crate) fn publish_session_event(&self, payload: &Value) {
+        let mut state = lock(&self.state);
+        if state.sequenced {
+            self.direct(&mut state, vec![payload.clone()], self.trust.current());
+        }
+    }
+
     /// A session command's task (`/compact`, ...) starts: in the
     /// session-event shapes it is a run on the stream, as the old worker
     /// framed it (`agent_start`, `turn_start`).

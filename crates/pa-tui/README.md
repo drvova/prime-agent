@@ -229,9 +229,10 @@ the supervisor on the faux engine with a debug build's `PA_TUI_RECORD_INBOUND` t
 `src/wire2_compat.rs` maps wire2 events (`agent/<id>/stream`, `side_question`, `closed`,
 `runtime/roster`, `runtime/traffic`, `runtime/session_list/<request>`) to the `DaemonOutbound`
 frames they stand for, the input
-commands to a publish on `agent/<id>/input`, the session reads (`attach`, `get_state`,
-`get_messages`) to the `session.snapshot` and `transcript.page` queries whose results are the old
-responses' `data`, and the agents view's feeds (`roster_subscribe`, `agent_traffic_subscribe`)
+commands to a publish on `agent/<id>/input`, `attach` to the `session.attach` call (it attaches
+the connection's client, and one declaring `user_questions` makes the session's kernel questions
+wait for it) and the session reads (`get_state`, `get_messages`) to the `session.snapshot` and
+`transcript.page` queries, whose results are the old responses' `data`, and the agents view's feeds (`roster_subscribe`, `agent_traffic_subscribe`)
 to a subscription on their live-only topic and the `runtime.roster` / `runtime.traffic` query
 whose result is the old reply (their unsubscribes to an unsubscribe the layer answers itself),
 and `list_saved_sessions` to a subscription on its request's live-only topic, the `sessions.list
@@ -248,7 +249,9 @@ live-only `runtime/models` back to `model_catalog_changed`, and the tree moves a
 `import_jsonl` as the `session.fork_entry` and `session.import_jsonl` calls, an error reply's
 `info` becoming the response's `errorInfo`), and the queue edit and aborts
 (`mutate_queued_message`, `abort_compaction`, `abort_retry` as the
-`session.mutate_queued_message`, `session.abort_compaction` and `session.abort_retry` calls);
+`session.mutate_queued_message`, `session.abort_compaction` and `session.abort_retry` calls),
+and a session's `detach` and `answer_question` (the `session.detach` and
+`session.answer_question` calls);
 its module docs state the contract the runtime honours (the stream is live
 only, so the session's event counter rides in the payload's `meta.sequence`) and list what is left
 to map. Every recorded frame round-trips through it. A session's stored fault topics

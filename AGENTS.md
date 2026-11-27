@@ -365,6 +365,15 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   daemon's queue edits (`session.mutate_queued_message`, `pa-runtime` `runtime/queue_edit.rs`)
   change only the lane's tasks, addressed by the queue view's row and the text the client saw;
   a row waiting on the agent is the running turn's and is rejected.
+- One interaction hub per session lifetime (`pa_core::interaction::InteractionHub`: the todo
+  list, the single open kernel question, `notify`); the embedding's `InteractionSurface` sends its
+  events and says whether anyone can answer. The old worker's (`pa-daemon` `user_interaction.rs`)
+  and the runtime daemon's (`pa-runtime` `session/interaction.rs`) send the same `todo_update`,
+  `question_open`, `question_closed` and `kernel_notification` session events, and a question
+  waits only while a client whose attach declared `user_questions` is attached (the old attach;
+  the runtime's `session.attach` on a wire2 connection, until its `session.detach` or the
+  connection's end); otherwise `ask` settles as `no_user` at once. A surface never awaits a
+  client: it publishes fire-and-forget and answers from state it holds.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

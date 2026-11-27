@@ -48,6 +48,9 @@
 //!   8d-2c): [`queue_edit`].
 //! - A rewind's workspace checkpoints, restored as the old daemon restores
 //!   them (phase 8d-2d): [`checkpoints`].
+//! - A session's kernel questions, todo list and notifications, waiting for
+//!   an attached client that can answer and answered as on the old daemon
+//!   (phase 8d-2e): [`questions`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -59,6 +62,7 @@ mod family;
 mod goldens;
 mod info;
 mod keeper;
+mod questions;
 mod queue_edit;
 mod reliability;
 mod replace;
