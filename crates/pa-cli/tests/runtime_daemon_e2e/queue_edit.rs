@@ -22,7 +22,8 @@ use super::{ok, Bed, Client};
 /// Both daemons run offline.
 const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
 
-/// How long a queue view may take to show what was queued.
+/// How long a queue view may take to show what was queued, or the wedge
+/// cell to start.
 const VIEW_WAIT: Duration = Duration::from_secs(30);
 
 /// The replies: a first one whose cell runs until it is aborted, so
@@ -149,6 +150,10 @@ fn old_edits(bed: &Bed) -> (Vec<Value>, Vec<String>) {
     let state = || send("state", json!({ "type": "get_state" }))["data"].clone();
     let answer = send("p", json!({ "type": "prompt", "message": "first" }));
     assert_eq!(answer["success"], true, "{answer}");
+    // The wedge cell runs before anything queues behind it: an abort that
+    // lands while the first reply is still being asked for cancels that
+    // request, and the next turn gets the wedge cell instead.
+    wait_for(&json!(true), || state()["isRunningTools"].clone());
     for text in ["f1", "f2", "f3"] {
         let answer = send(text, json!({ "type": "follow_up", "message": text }));
         assert_eq!(answer["success"], true, "{answer}");
@@ -207,6 +212,7 @@ async fn the_queue_edits_answer_and_run_as_the_old_daemons_do() {
     let id = session.id.clone();
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
     session.publish("first", None).await;
+    session.until_streamed("tool_execution_start").await;
     for text in ["f1", "f2", "f3"] {
         session.publish(text, Some("follow_up")).await;
     }
