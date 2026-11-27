@@ -683,7 +683,7 @@ mod tests {
         assert_eq!(job.last_error.as_deref(), Some("model route gone"));
         assert_eq!(job.run_count, 1);
         assert_eq!(
-            crate::cron::parse_iso_millis(job.next_run_at.as_deref().unwrap()),
+            crate::cron::parse_instant(job.next_run_at.as_deref().unwrap()),
             Some(t1 + failure_backoff_ms(1))
         );
         // Failure 2 (clock advanced past the deferred run): the pause doubles.
@@ -696,7 +696,7 @@ mod tests {
             .find(|job| job.id == job_id)
             .expect("job kept");
         assert_eq!(
-            crate::cron::parse_iso_millis(job.next_run_at.as_deref().unwrap()),
+            crate::cron::parse_instant(job.next_run_at.as_deref().unwrap()),
             Some(t2 + failure_backoff_ms(2))
         );
         // A good run clears the streak: the next run goes back to the bare schedule.
@@ -711,7 +711,7 @@ mod tests {
             .expect("job kept");
         assert_eq!(job.last_error, None);
         assert_eq!(
-            crate::cron::parse_iso_millis(job.next_run_at.as_deref().unwrap()),
+            crate::cron::parse_instant(job.next_run_at.as_deref().unwrap()),
             Some(t3 + 60_000)
         );
         // The failure after it restarts at the base pause.
@@ -725,7 +725,7 @@ mod tests {
             .find(|job| job.id == job_id)
             .expect("job kept");
         assert_eq!(
-            crate::cron::parse_iso_millis(job.next_run_at.as_deref().unwrap()),
+            crate::cron::parse_instant(job.next_run_at.as_deref().unwrap()),
             Some(t4 + failure_backoff_ms(1))
         );
     }

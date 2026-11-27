@@ -13,8 +13,8 @@ use super::{
     CreateAgentCronJobInput, DispatchResultOptions, RecordRunOptions, SessionBinding,
 };
 use crate::cron::{
-    is_due_job, next_run_at_for_schedule, parse_agent_cron_schedule, parse_iso_millis,
-    AgentCronJob, JobStatus, ScheduleKind,
+    is_due_job, next_run_at_for_schedule, parse_agent_cron_schedule, parse_instant, AgentCronJob,
+    JobStatus, ScheduleKind,
 };
 
 impl AgentCronJobStore {
@@ -292,7 +292,7 @@ impl AgentCronJobStore {
                     if job.id != id || job.status != JobStatus::Active {
                         return job;
                     }
-                    if let Some(current) = job.next_run_at.as_deref().and_then(parse_iso_millis) {
+                    if let Some(current) = job.next_run_at.as_deref().and_then(parse_instant) {
                         if current >= until_ms {
                             return job;
                         }
@@ -451,7 +451,7 @@ impl AgentCronJobStore {
         self.read_jobs()
             .iter()
             .filter(|job| job.status == JobStatus::Active)
-            .filter_map(|job| job.next_run_at.as_deref().and_then(parse_iso_millis))
+            .filter_map(|job| job.next_run_at.as_deref().and_then(parse_instant))
             .min()
     }
 }
@@ -624,7 +624,7 @@ mod tests {
             .is_none());
         let current = store.list().pop().expect("job kept");
         assert_eq!(
-            crate::cron::parse_iso_millis(current.next_run_at.as_deref().unwrap()),
+            crate::cron::parse_instant(current.next_run_at.as_deref().unwrap()),
             Some(scheduled_next)
         );
         let deferred = now + 900_000;
@@ -633,7 +633,7 @@ mod tests {
             .unwrap()
             .expect("deferred");
         assert_eq!(
-            crate::cron::parse_iso_millis(updated.next_run_at.as_deref().unwrap()),
+            crate::cron::parse_instant(updated.next_run_at.as_deref().unwrap()),
             Some(deferred)
         );
         assert!(store
@@ -642,7 +642,7 @@ mod tests {
             .is_none());
         let current = store.list().pop().expect("job kept");
         assert_eq!(
-            crate::cron::parse_iso_millis(current.next_run_at.as_deref().unwrap()),
+            crate::cron::parse_instant(current.next_run_at.as_deref().unwrap()),
             Some(deferred)
         );
         // Cancelled jobs are never deferred. Fresh clock: the jobs file merges on

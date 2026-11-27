@@ -12,9 +12,7 @@ use super::{
     CronJobsState,
 };
 use crate::agent_state::StateFile;
-use crate::cron::{
-    is_due_job, next_run_at_for_schedule, parse_iso_millis, JobStatus, ScheduleKind,
-};
+use crate::cron::{is_due_job, next_run_at_for_schedule, parse_instant, JobStatus, ScheduleKind};
 
 const LOCK_STALE_MS: u64 = 30_000;
 
@@ -123,9 +121,9 @@ pub(crate) fn compare_optional_iso(left: Option<&str>, right: Option<&str>) -> s
         (left, right) if left == right => Ordering::Equal,
         (None, _) => Ordering::Greater,
         (_, None) => Ordering::Less,
-        (Some(left), Some(right)) => parse_iso_millis(left)
+        (Some(left), Some(right)) => parse_instant(left)
             .unwrap_or(0)
-            .cmp(&parse_iso_millis(right).unwrap_or(0)),
+            .cmp(&parse_instant(right).unwrap_or(0)),
     }
 }
 
@@ -154,10 +152,10 @@ pub(crate) fn merge_fresh_jobs(
 }
 
 fn is_at_least_as_fresh(candidate: &AgentCronJob, current: &AgentCronJob) -> bool {
-    let Some(current_time) = parse_iso_millis(&current.updated_at) else {
+    let Some(current_time) = parse_instant(&current.updated_at) else {
         return true;
     };
-    let Some(candidate_time) = parse_iso_millis(&candidate.updated_at) else {
+    let Some(candidate_time) = parse_instant(&candidate.updated_at) else {
         return false;
     };
     candidate_time >= current_time

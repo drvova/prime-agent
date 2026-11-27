@@ -9,6 +9,7 @@ members = [
     "crates/pa-agent",
     "crates/pa-shell",
     "crates/pa-runtime",
+    "crates/pa-sources",
     "crates/pa-core",
     "crates/pa-daemon",
     "crates/pa-tui",
@@ -80,6 +81,7 @@ pa-ai = { path = "crates/pa-ai" }
 pa-agent = { path = "crates/pa-agent" }
 pa-shell = { path = "crates/pa-shell" }
 pa-log = { path = "crates/pa-log" }
+pa-sources = { path = "crates/pa-sources" }
 thiserror = "2"
 futures = "0.3"
 toml = "0.9"

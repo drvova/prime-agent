@@ -1,0 +1,1 @@
+- Scheduled jobs accept intervals and delays of several parts (`every 1h30m`) and `@yearly`, find cron dates more than a year away (a Friday the 13th, 29 February) instead of stopping, and refuse impossible `at` dates such as 30 February instead of moving them into March.

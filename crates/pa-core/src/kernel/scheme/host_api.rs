@@ -839,7 +839,7 @@ mod tests {
         let (handlers, received) = answering(&[("schedule.add", json!({"job": {"id": "job-1"}}))]);
         let kernel = kernel_over(handlers).await;
         let now = || crate::session::manager::format_iso_now();
-        let before = crate::cron::parse_iso_millis(&now()).unwrap();
+        let before = crate::cron::parse_instant(&now()).unwrap();
         let returned = values(
             kernel.as_ref(),
             &[
@@ -849,10 +849,10 @@ mod tests {
             ],
         )
         .await;
-        let after = crate::cron::parse_iso_millis(&now()).unwrap();
+        let after = crate::cron::parse_instant(&now()).unwrap();
         let mut received = received.lock().unwrap().clone();
         let at = received[0]["at"].take();
-        let fires = crate::cron::parse_iso_millis(at.as_str().unwrap()).unwrap();
+        let fires = crate::cron::parse_instant(at.as_str().unwrap()).unwrap();
         assert_eq!(
             (
                 returned,

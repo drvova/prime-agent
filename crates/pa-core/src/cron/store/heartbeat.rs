@@ -9,7 +9,7 @@ use super::{
     HeartbeatManagementAction,
 };
 use crate::cron::{
-    is_heartbeat_cron_job, next_run_at_for_schedule, parse_agent_cron_schedule, parse_iso_millis,
+    is_heartbeat_cron_job, next_run_at_for_schedule, parse_agent_cron_schedule, parse_instant,
     AgentCronJob, JobStatus, ScheduleKind, DEFAULT_HEARTBEAT_DELIVERY_MODE,
 };
 
@@ -22,7 +22,7 @@ impl AgentCronJobStore {
                     && job.source.as_deref() == Some("heartbeat")
                     && matches!(job.status, JobStatus::Active | JobStatus::Paused)
             })
-            .max_by_key(|job| parse_iso_millis(&job.updated_at).unwrap_or(0))
+            .max_by_key(|job| parse_instant(&job.updated_at).unwrap_or(0))
     }
 
     pub fn get_latest_heartbeat(&self, active_session_id: &str) -> Option<AgentCronJob> {
@@ -32,7 +32,7 @@ impl AgentCronJobStore {
                 job.active_session_id == active_session_id
                     && job.source.as_deref() == Some("heartbeat")
             })
-            .max_by_key(|job| parse_iso_millis(&job.updated_at).unwrap_or(0))
+            .max_by_key(|job| parse_instant(&job.updated_at).unwrap_or(0))
     }
 
     /// Create the heartbeat job for a session, cancelling its existing active/paused
