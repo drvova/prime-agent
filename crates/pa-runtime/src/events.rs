@@ -58,7 +58,7 @@ use crate::subscriptions::Registry;
 use crate::trust::{TaskTrust, WorkingDir};
 
 /// The file whose database partition keeps the bus's state, in the agent dir.
-const EVENT_BUS_FILE_NAME: &str = "event-bus.json";
+pub(crate) const EVENT_BUS_FILE_NAME: &str = "event-bus.json";
 
 /// What names a kernel subscription's bus subscription: this, then its id.
 pub(crate) const SUBSCRIPTION_PREFIX: &str = "event-bus/";

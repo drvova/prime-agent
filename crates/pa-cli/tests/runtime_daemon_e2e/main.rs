@@ -75,6 +75,9 @@
 //!   8d-5b), and the next daemon's restore of the roster (8d-5b2):
 //!   [`update`]; a TS updater's restart handoff restored on the selected
 //!   daemon (8d-5b2): [`legacy_update`].
+//! - A distribution build's boot import of the official build's chats, its
+//!   pushes, and what a client that connects mid-import sees, as on the old
+//!   daemon (phase 8d-5c): [`history_import`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -86,6 +89,7 @@ mod client_surface;
 mod family;
 mod goldens;
 mod heartbeats;
+mod history_import;
 mod info;
 mod keeper;
 mod kernel_activity;
@@ -166,17 +170,26 @@ impl Drop for Daemon {
 /// The isolated agent dir and sockets of one test.
 struct Bed {
     dir: tempfile::TempDir,
+    /// The agent dir, under `dir`.
+    agent: PathBuf,
 }
 
 impl Bed {
     fn new() -> Self {
-        let bed = Bed { dir: fixture_dir() };
-        std::fs::create_dir_all(bed.agent_dir()).unwrap();
-        bed
+        Bed::with_agent_dir(Path::new("agent"))
+    }
+
+    /// A bed whose agent dir is `agent`, relative to its dir (the bed's
+    /// dir is the daemons' home).
+    fn with_agent_dir(agent: &Path) -> Self {
+        let dir = fixture_dir();
+        let agent = dir.path().join(agent);
+        std::fs::create_dir_all(&agent).unwrap();
+        Bed { dir, agent }
     }
 
     fn agent_dir(&self) -> PathBuf {
-        self.dir.path().join("agent")
+        self.agent.clone()
     }
 
     fn old_socket(&self) -> PathBuf {

@@ -117,6 +117,14 @@ Rules:
   independently, never copied (copies share interpreter state between
   sessions). `first-eval` and `warm-first-eval` in `crates/pa-perf`
   measure this.
+- A daemon's boot imports (`pa_core::session::boot_import`, one copy
+  for both daemons: a distribution build's history import, then the
+  transcript and agent-state imports) run on their own task and the
+  blocking pool once the daemon serves; no accept, hello or first frame
+  waits on a copy. `a_hanging_copy_never_blocks_the_boot` (a copy that
+  hangs on its first file) is the guard; the runtime daemon announces
+  the import on the live-only `system/history_import` and answers a
+  running one with `system.history_import`.
 
 Example (the #3288 regression this rule exists to prevent): the
 telemetry startup flush was awaited on the interactive launch path, so

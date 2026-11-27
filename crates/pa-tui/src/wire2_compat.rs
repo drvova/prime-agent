@@ -18,6 +18,7 @@
 //! | `runtime/session_list/<request>` | today's `session_list_item` (a `session`) or `session_list_progress` frame without `type` | `session_list_item` / `session_list_progress` |
 //! | `runtime/models` | `{}` | `model_catalog_changed` |
 //! | `system/closing` | today's `daemon_closing` frame without `type` (`reason`, `update`) | `daemon_closing` |
+//! | `system/history_import` | today's `history_import` frame without `type` (`phase`, `sessions`, `kept`, `config`, `error`) | `history_import` |
 //!
 //! `<id>` is the session's active id, the one `DaemonCommand`s address. On the agent topics the
 //! event's metadata becomes the frame's `meta`: `id` is the event id, `emittedAt` its `ts`
@@ -169,6 +170,13 @@
 //! the old one whole: `reason: "update"` and its `payload` (`updateId`, `resume`, `estSeconds`,
 //! `sessions`).
 //!
+//! `history_import`, a broadcast the old daemon also sends a client that connects mid-import
+//! after its hello, is the live-only `system/history_import`: a transport follows it for the
+//! connection's life (subscription `compat:history_import`, `Since::Now`), then asks the
+//! `system.history_import` query ([`history_import_request`]), whose reply is the running
+//! import's started frame without `type`, or `null` while none runs
+//! ([`history_import_reply_frame`]).
+//!
 //! Every other command stays on the old wire.
 //!
 //! # Not mapped yet (phase 7 types these queries and calls)
@@ -182,7 +190,7 @@
 //!   `fork` of the whole saved session, `label`, `export`, the auth
 //!   commands, `abort`/`abort_and_send_queued`, `compact`, a `detach` that names no session.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
-//! - Connection frames: `daemon_hello` from `welcome`, the direct worker link (retired: wire2 has one connection), `history_import`,
+//! - Connection frames: `daemon_hello` from `welcome`, the direct worker link (retired: wire2 has one connection),
 //!   `session_binding` (a wire2 session keeps its id across rebuilds).
 
 use anyhow::{anyhow, Context, Result};
@@ -333,6 +341,7 @@ pub(crate) fn outbound_from_event(
             frame.insert("type".to_string(), Value::from("daemon_closing"));
             serde_json::from_value(Value::Object(frame)).context("system/closing: the payload")?
         }
+        ["system", "history_import"] => history_import_from(payload)?,
         ["runtime", "traffic"] => DaemonOutbound::AgentTraffic {
             entry: serde_json::from_value(payload.clone())
                 .context("runtime/traffic: the payload")?,
@@ -362,6 +371,57 @@ pub fn live_frames(events: &[Event]) -> Result<Vec<Value>> {
         }
     }
     Ok(frames)
+}
+
+/// The old `history_import` frame a `system/history_import` payload, or the
+/// `system.history_import` query's result, stands for.
+fn history_import_from(payload: &Value) -> Result<DaemonOutbound> {
+    let mut frame = payload
+        .as_object()
+        .cloned()
+        .ok_or_else(|| anyhow!("system/history_import: the payload is not an object"))?;
+    frame.insert("type".to_string(), Value::from("history_import"));
+    serde_json::from_value(Value::Object(frame)).context("system/history_import: the payload")
+}
+
+/// The history import a transport follows for the connection's life: its subscription id, topic
+/// and the query for the one already running.
+const HISTORY_IMPORT_FEED: (&str, &str, &str) = (
+    "compat:history_import",
+    "system/history_import",
+    "system.history_import",
+);
+
+/// The frames a transport sends once connected (request `request_id`) so the TUI hears the boot's
+/// history import as on the old wire: the subscription to `system/history_import` from now, then
+/// the query for one already running, whose reply [`history_import_reply_frame`] reads.
+///
+/// # Errors
+///
+/// The topic does not parse (it always does).
+#[doc(hidden)]
+pub fn history_import_request(request_id: String) -> Result<Vec<ClientFrame>> {
+    Ok(match follow(request_id, HISTORY_IMPORT_FEED)? {
+        Outgoing::Follow { subscribe, query } => vec![subscribe, query],
+        other => return Err(anyhow!("a feed is followed, not {other:?}")),
+    })
+}
+
+/// The old `history_import` frame, as JSON, a client that connects mid-import receives after
+/// its hello, from the reply to [`history_import_request`]'s query; `None` while no import runs.
+///
+/// # Errors
+///
+/// The query failed, or its result is not a `history_import` frame without `type`.
+#[doc(hidden)]
+pub fn history_import_reply_frame(outcome: Outcome) -> Result<Option<Value>> {
+    match outcome {
+        Outcome::Ok {
+            result: Value::Null,
+        } => Ok(None),
+        Outcome::Ok { result } => Ok(Some(serde_json::to_value(history_import_from(&result)?)?)),
+        Outcome::Error { message, .. } => Err(anyhow!("system.history_import: {message}")),
+    }
 }
 
 /// The feeds the agents view follows: each one's subscription id, topic and query.

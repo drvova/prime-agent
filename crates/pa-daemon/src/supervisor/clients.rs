@@ -158,7 +158,7 @@ impl Supervisor {
         let mut events = self.events.subscribe();
         // A history import already running: this client hears its started frame now (the
         // finished one rides the broadcast it just subscribed to).
-        let running_import = self.history_import.lock().unwrap().clone();
+        let running_import = self.history_import.running();
         if let Some(frame) = running_import {
             write_line(&mut writer, &frame).await?;
         }

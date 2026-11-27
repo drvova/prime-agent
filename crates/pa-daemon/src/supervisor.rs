@@ -5,6 +5,7 @@
 
 mod accept_loop;
 mod adoption;
+mod boot_import;
 mod clients;
 mod crash;
 mod launch_budget;
@@ -245,9 +246,9 @@ pub struct Supervisor {
     /// for: each is relaunched when its earliest active job is due (see
     /// `supervisor/scheduled_wake.rs`), so the boot's dormant-jobs report leaves them out.
     pub(crate) scheduled_wakes: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// The running history import's started frame (`None` while none runs):
-    /// a client that connects mid-import hears it after its hello.
-    pub(crate) history_import: std::sync::Mutex<Option<Arc<Value>>>,
+    /// The boot's imports: a client that connects mid-import hears the
+    /// history import's started frame after its hello.
+    pub(crate) history_import: Arc<pa_core::session::boot_import::BootImport>,
     /// The daemon-wide provider request budget every worker takes permits from.
     pub(crate) admission: Arc<crate::provider_admission::AdmissionService>,
 }
@@ -341,7 +342,7 @@ impl Supervisor {
             boot_reaped: tokio::sync::watch::channel(true).0,
             boot_revived: tokio::sync::watch::channel(true).0,
             scheduled_wakes: std::sync::Mutex::new(std::collections::HashSet::new()),
-            history_import: std::sync::Mutex::new(None),
+            history_import: Arc::default(),
         })
     }
 

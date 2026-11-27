@@ -25,12 +25,13 @@ fn only_agent_stream_and_tool_topics_and_the_feeds_are_live_only() {
             "runtime/session_list/tui-7/more",
             "system/closing",
             "system/closing/more",
+            "system/history_import",
             "system/route_failed",
         ]
         .map(|topic| Topic::new(topic).unwrap().is_live_only()),
         [
             true, true, false, false, false, false, true, true, true, false, false, true, false,
-            false, true, false, false
+            false, true, false, true, false
         ]
     );
 }

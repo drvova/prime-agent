@@ -1401,3 +1401,59 @@ fn the_update_calls_map_and_the_update_closing_comes_back_whole() {
         )
     );
 }
+
+/// The boot's history import: a transport follows `system/history_import` from now and asks
+/// `system.history_import` for one already running; the query's started frame and the topic's
+/// frames come back as the old `history_import` frames, and no import running reads as none.
+#[test]
+fn the_history_import_is_followed_and_its_frames_come_back() {
+    let event = |payload: Value| Event {
+        id: EventId("live-3".to_string()),
+        seq: 0,
+        ts: 0,
+        event: NewEvent {
+            topic: Topic::new("system/history_import").unwrap(),
+            source: "runtime".to_string(),
+            session: None,
+            payload,
+            trust: Trust::Owner,
+            cause: None,
+            reply: None,
+        },
+    };
+    let started = json!({ "phase": "started", "sessions": 2, "config": ["auth.json"] });
+    let finished = json!({ "phase": "finished", "sessions": 2, "kept": 1 });
+    let live = super::live_frames(&[event(finished)]).unwrap();
+    let reply = |result: Value| super::history_import_reply_frame(Outcome::Ok { result }).unwrap();
+    assert_eq!(
+        (
+            super::history_import_request("c1".to_string()).unwrap(),
+            reply(started),
+            reply(Value::Null),
+            live,
+        ),
+        (
+            vec![
+                ClientFrame::Subscribe {
+                    sub_id: "compat:history_import".to_string(),
+                    filter: pa_types::event_log::TopicFilter::new("system/history_import").unwrap(),
+                    since: pa_types::wire2::Since::Now,
+                },
+                ClientFrame::Query {
+                    id: "c1".to_string(),
+                    name: "system.history_import".to_string(),
+                    args: json!({}),
+                },
+            ],
+            Some(
+                json!({ "type": "history_import", "phase": "started", "sessions": 2,
+                         "config": ["auth.json"] })
+            ),
+            None,
+            vec![
+                json!({ "type": "history_import", "phase": "finished", "sessions": 2,
+                         "kept": 1 })
+            ],
+        )
+    );
+}

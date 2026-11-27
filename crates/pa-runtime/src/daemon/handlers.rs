@@ -40,6 +40,7 @@ mod bash;
 mod bus;
 mod children;
 mod feeds;
+mod history_import;
 mod info;
 mod input;
 mod jobs;
@@ -100,6 +101,9 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     /// What the update boot was started with, and who keeps this daemon
     /// (`daemon.identity`).
     boot: super::UpdateBoot,
+    /// The boot's imports: the history import's started frame while it
+    /// copies (`system.history_import`).
+    boot_import: Arc<pa_core::session::boot_import::BootImport>,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -138,6 +142,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             update,
             restore,
             boot,
+            boot_import: Arc::default(),
             agent_dir,
             session_dir,
             cwd,
@@ -547,6 +552,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::SessionHeartbeat => self.heartbeat(&args).await,
             Query::DaemonUpdateRestoreStatus => Ok(self.restore.status_body()),
             Query::DaemonIdentity => Ok(self.identity()),
+            Query::HistoryImport => Ok(self.history_import()),
         }
     }
 

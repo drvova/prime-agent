@@ -1,5 +1,6 @@
 //! Session entry parsing, migration, context reconstruction, and tree.
 pub mod billed_row;
+pub mod boot_import;
 pub mod catalog;
 pub mod checkpoints;
 pub mod crash;

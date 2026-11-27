@@ -111,6 +111,10 @@ pub enum Query {
     /// process, its restart owner, the release), which an update coordinator
     /// checks the daemon it drives by.
     DaemonIdentity,
+    /// `system.history_import`: the boot's history import running now (its
+    /// started frame without `type`), `null` while none runs; its frames
+    /// follow on `system/history_import`.
+    HistoryImport,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -161,6 +165,7 @@ impl FromStr for Query {
             "session.heartbeat" => Query::SessionHeartbeat,
             "daemon.update_restore_status" => Query::DaemonUpdateRestoreStatus,
             "daemon.identity" => Query::DaemonIdentity,
+            "system.history_import" => Query::HistoryImport,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",
