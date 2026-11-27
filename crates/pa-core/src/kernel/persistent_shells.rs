@@ -1,22 +1,22 @@
-//! The kernel's persistent `bash()` shells (prime-agent-runtime `rlm/bash.py`,
-//! `bash(..., persistent=True)`): every session's shells live in one home,
-//! `<agent dir>/persistent-shells/`, as a `<id>.json` record assigned to the
-//! session that started it, plus the shell's `<id>.out` and `<id>.rc`. The
-//! daemon reads the records to list each saved session's live shells and every
-//! shell machine-wide, reads a shell's output, and kills one on request.
-//! Nothing in the session lifecycle kills them: a deleted session's shells keep
-//! running as orphans, still assigned to it.
+//! The kernel's persistent `bash` shells as the daemons read them
+//! (`(bash command (hash 'persistent #t))`, `kernel::scheme::native::bash_persistent`):
+//! every session's shells live in one home, `<agent dir>/persistent-shells/`, as a
+//! `<id>.json` record assigned to the session that started it, plus the shell's `<id>.out`
+//! and `<id>.rc`. Both daemons read the records to list each saved session's live shells
+//! ([`live_shell_rows_by_session`]) and every shell machine-wide ([`list`],
+//! `list_persistent_shells`), read a shell's output ([`tail`], `tail_persistent_shell`), and
+//! kill one on request ([`kill`], `kill_persistent_shell`), each answering the old
+//! response's `data` or its refusal text. Nothing in the session lifecycle kills them: a
+//! deleted session's shells keep running as orphans, still assigned to it.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use pa_core::platform::process::{process_group_exists, signal_process_group, Signal};
+use crate::platform::process::{process_group_exists, signal_process_group, Signal};
 use serde::Deserialize;
 use serde_json::{json, Value};
-
-use crate::protocol::{response_failure, response_line, response_success};
 
 const HOME_DIR: &str = "persistent-shells";
 /// How long a shell may exit on its own after SIGTERM before its group gets SIGKILL.
@@ -64,11 +64,9 @@ fn find_shell(agent_dir: &Path, id: &str) -> Option<Shell> {
 
 /// Whether the shell's pid still runs under the recorded start identity.
 fn runs_as_registered(shell: &Shell) -> bool {
-    matches!(
-        pa_core::session::lease::is_process_alive(shell.pid),
-        Ok(true)
-    ) && pa_core::session::lease::get_process_start_id(shell.pid).as_deref()
-        == Some(shell.start_id.as_str())
+    matches!(crate::session::lease::is_process_alive(shell.pid), Ok(true))
+        && crate::session::lease::get_process_start_id(shell.pid).as_deref()
+            == Some(shell.start_id.as_str())
 }
 
 /// An extant group with no verified leader is not safely attributable to this record.
@@ -90,7 +88,7 @@ fn activity_row(shell: &Shell, status: &str) -> Value {
 
 /// The live persistent shells by assigned session id: a recycled pid or an
 /// unreadable identity never counts as live.
-pub(crate) fn live_shell_rows_by_session(agent_dir: &Path) -> HashMap<String, Vec<Value>> {
+pub fn live_shell_rows_by_session(agent_dir: &Path) -> HashMap<String, Vec<Value>> {
     let mut rows: HashMap<String, Vec<Value>> = HashMap::new();
     for shell in registered_shells(agent_dir)
         .into_iter()
@@ -107,7 +105,7 @@ pub(crate) fn live_shell_rows_by_session(agent_dir: &Path) -> HashMap<String, Ve
 /// proof, otherwise finished with its recorded exit code (if any). Its
 /// `durationMs` runs from `startedAt` to now, or to the exit code's write
 /// once finished.
-pub(crate) fn shell_rows(agent_dir: &Path) -> Vec<Value> {
+fn shell_rows(agent_dir: &Path) -> Vec<Value> {
     registered_shells(agent_dir)
         .iter()
         .map(|shell| {
@@ -132,9 +130,12 @@ pub(crate) fn shell_rows(agent_dir: &Path) -> Vec<Value> {
                     .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
                     .and_then(|since| u64::try_from(since.as_millis()).ok())
             } else {
-                Some(crate::util::now_ms())
+                std::time::SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .and_then(|since| u64::try_from(since.as_millis()).ok())
             };
-            row["durationMs"] = json!(pa_core::session::manager::iso_to_unix_ms(&shell.started_at)
+            row["durationMs"] = json!(crate::session::manager::iso_to_unix_ms(&shell.started_at)
                 .zip(ended_ms)
                 .map(|(started, ended)| ended.saturating_sub(started)));
             row
@@ -145,11 +146,7 @@ pub(crate) fn shell_rows(agent_dir: &Path) -> Vec<Value> {
 /// The newest `lines` lines of the shell's output (read from its last
 /// [`TAIL_BYTES`]); `None` for an unknown shell. The kernel creates the `.out`
 /// before it writes the record, so a failed read is an error, never an empty tail.
-pub(crate) fn output_tail(
-    agent_dir: &Path,
-    id: &str,
-    lines: usize,
-) -> Result<Option<String>, String> {
+fn output_tail(agent_dir: &Path, id: &str, lines: usize) -> Result<Option<String>, String> {
     let Some(shell) = find_shell(agent_dir, id) else {
         return Ok(None);
     };
@@ -171,7 +168,7 @@ fn read_tail(path: &Path) -> std::io::Result<Vec<u8>> {
 
 /// Kill a shell only while the recorded leader identity still proves ownership.
 /// A durable leaderless group may belong to a reused PGID: refuse and retain it.
-pub(crate) fn kill_shell(agent_dir: &Path, id: &str) -> Result<bool, String> {
+fn kill_shell(agent_dir: &Path, id: &str) -> Result<bool, String> {
     let Some(shell) = find_shell(agent_dir, id) else {
         return Ok(false);
     };
@@ -203,7 +200,7 @@ pub(crate) fn kill_shell(agent_dir: &Path, id: &str) -> Result<bool, String> {
 /// that runs again under another start identity was recycled, so its group is refused.
 fn kill_group(shell: &Shell) -> Result<(), String> {
     let leader_exited = matches!(
-        pa_core::session::lease::is_process_alive(shell.pid),
+        crate::session::lease::is_process_alive(shell.pid),
         Ok(false)
     );
     if !runs_as_registered(shell) && !leader_exited {
@@ -225,25 +222,40 @@ fn kill_group(shell: &Shell) -> Result<(), String> {
     }
 }
 
-/// One persistent-shell supervisor arm, run off the runtime (file reads and
-/// the kill's grace block): `None` answers an unknown shell.
-pub(crate) async fn respond(
-    command_id: &str,
-    type_name: &str,
-    run: impl FnOnce() -> Result<Option<Value>, String> + Send + 'static,
-) -> Value {
-    let response = match tokio::task::spawn_blocking(run).await {
-        Ok(Ok(Some(data))) => response_success(Some(command_id), type_name, Some(data)),
-        Ok(Ok(None)) => response_failure(
-            Some(command_id),
-            type_name,
-            "Unknown persistent shell",
-            None,
-        ),
-        Ok(Err(error)) => response_failure(Some(command_id), type_name, &error, None),
-        Err(error) => response_failure(Some(command_id), type_name, &error.to_string(), None),
-    };
-    response_line(&response)
+/// The answer for an unknown shell.
+const UNKNOWN_SHELL: &str = "Unknown persistent shell";
+
+/// `list_persistent_shells`: `{activities}`, every registered shell ([`shell_rows`]). Blocks on
+/// file reads: call it off an async runtime.
+#[must_use]
+pub fn list(agent_dir: &Path) -> Value {
+    json!({ "activities": shell_rows(agent_dir) })
+}
+
+/// `tail_persistent_shell`: `{shellId, tail}`, the newest `lines` lines of the shell's output.
+/// Blocks on file reads: call it off an async runtime.
+///
+/// # Errors
+///
+/// The old refusal text: the shell is unknown, or its output cannot be read.
+pub fn tail(agent_dir: &Path, id: &str, lines: usize) -> Result<Value, String> {
+    output_tail(agent_dir, id, lines)?
+        .map(|tail| json!({ "shellId": id, "tail": tail }))
+        .ok_or_else(|| UNKNOWN_SHELL.to_string())
+}
+
+/// `kill_persistent_shell`: `{shellId}` once the shell is ended (or had ended). Blocks for the
+/// kill's grace: call it off an async runtime.
+///
+/// # Errors
+///
+/// The old refusal text: the shell is unknown, or its group cannot be verified or signalled.
+pub fn kill(agent_dir: &Path, id: &str) -> Result<Value, String> {
+    if kill_shell(agent_dir, id)? {
+        Ok(json!({ "shellId": id }))
+    } else {
+        Err(UNKNOWN_SHELL.to_string())
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -260,10 +272,10 @@ mod test_support {
     ) -> Child {
         let mut command = pa_types::session_scope::std_command("sleep");
         command.arg("60");
-        pa_core::platform::process::set_new_session(&mut command);
+        crate::platform::process::set_new_session(&mut command);
         let child = command.spawn().expect("spawn sleeper");
         let start_id = start_id.map_or_else(
-            || pa_core::session::lease::get_process_start_id(child.id()).expect("start id"),
+            || crate::session::lease::get_process_start_id(child.id()).expect("start id"),
             str::to_string,
         );
         register(agent_dir, child.id(), &start_id, session_id);
@@ -312,9 +324,9 @@ mod tests {
     fn registered_group(agent_dir: &std::path::Path) -> (Child, Child, String) {
         let mut leader_command = pa_types::session_scope::std_command("sleep");
         leader_command.arg("60");
-        pa_core::platform::process::set_new_process_group(&mut leader_command);
+        crate::platform::process::set_new_process_group(&mut leader_command);
         let leader = leader_command.spawn().unwrap();
-        let start_id = pa_core::session::lease::get_process_start_id(leader.id()).unwrap();
+        let start_id = crate::session::lease::get_process_start_id(leader.id()).unwrap();
         let id = register(agent_dir, leader.id(), &start_id, "s1");
         let member = pa_types::session_scope::std_command("sleep")
             .arg("60")

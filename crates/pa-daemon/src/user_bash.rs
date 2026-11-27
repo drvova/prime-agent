@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use pa_core::session_engine::kernel_activity::{KernelBashAction, KernelBashRequest};
 use pa_core::user_bash::{
     bash_identity, run_bash, start_event, AwaitedRun, BashResult, ChunkSink, RunBash,
 };
@@ -16,10 +17,12 @@ use crate::worker::Worker;
 
 impl Worker {
     /// Rust-native kernel bash activity commands. These inspect the kernel's
-    /// own shell commands, not the user-bash slot or a client-supplied PID.
+    /// own shell commands, not the user-bash slot or a client-supplied PID;
+    /// the checks and the reply are pa-core's (`session_engine::kernel_activity`).
     pub(crate) async fn handle_kernel_bash_activity(
         &self,
         command_type: &str,
+        action: KernelBashAction,
         payload: &Value,
     ) -> DaemonResponse {
         if let Err(response) = self.require_created(command_type) {
@@ -28,48 +31,19 @@ impl Worker {
         let Some(engine) = &self.agent_engine else {
             return response_failure(None, command_type, "Kernel is not running", None);
         };
-        let action = match command_type {
-            "list_kernel_bash" => "list",
-            "tail_kernel_bash" => "tail",
-            "kill_kernel_bash" => "kill",
-            _ => return response_failure(None, command_type, "Unknown kernel bash command", None),
+        let request = match KernelBashRequest::parse(action, payload) {
+            Ok(request) => request,
+            Err(refusal) => return response_failure(None, command_type, refusal, None),
         };
-        let activity_id = payload.get("activityId").and_then(Value::as_str);
-        if action != "list" && activity_id.is_none_or(str::is_empty) {
-            return response_failure(None, command_type, "activityId is required", None);
-        }
-        let lines = if action == "tail" {
-            match payload.get("lines") {
-                None => 50,
-                Some(value) => match value.as_u64() {
-                    Some(lines) if (1..=200).contains(&lines) => lines as usize,
-                    _ => {
-                        return response_failure(
-                            None,
-                            command_type,
-                            "lines must be between 1 and 200",
-                            None,
-                        )
-                    }
-                },
-            }
-        } else {
-            50
-        };
-        match engine.bash_activity(action, activity_id, lines).await {
-            Ok(mut fields) => {
-                if let Some(object) = fields.as_object_mut() {
-                    object.remove("event");
-                    object.remove("status");
-                    object.remove("reason");
-                    object.remove("id"); // kernel request id, not activity id
-                    object.remove("activityId");
-                    if let Some(activity_id) = activity_id {
-                        object.insert("id".to_string(), json!(activity_id));
-                    }
-                }
-                response_success(None, command_type, Some(fields))
-            }
+        match engine
+            .bash_activity(
+                action.kernel_action(),
+                request.activity_id.as_deref(),
+                request.lines,
+            )
+            .await
+        {
+            Ok(fields) => response_success(None, command_type, Some(request.reply(fields))),
             Err(error) => response_failure(None, command_type, &error.to_string(), None),
         }
     }

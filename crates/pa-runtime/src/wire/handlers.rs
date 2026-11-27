@@ -85,6 +85,17 @@ pub enum Query {
     /// `session.last_assistant_text`: the newest reply text on an open
     /// session's branch.
     SessionLastAssistantText,
+    /// `session.kernel_bash`: an open session's kernel shell commands.
+    SessionKernelBash,
+    /// `session.kernel_bash_tail`: the newest output lines of one of an open
+    /// session's kernel shell commands.
+    SessionKernelBashTail,
+    /// `persistent_shells`: every persistent kernel shell machine-wide, with
+    /// the session it is assigned to.
+    PersistentShells,
+    /// `persistent_shells.tail`: the newest output lines of one persistent
+    /// shell.
+    PersistentShellTail,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -126,6 +137,10 @@ impl FromStr for Query {
             "usage" => Query::Usage,
             "session.fork_messages" => Query::SessionForkMessages,
             "session.last_assistant_text" => Query::SessionLastAssistantText,
+            "session.kernel_bash" => Query::SessionKernelBash,
+            "session.kernel_bash_tail" => Query::SessionKernelBashTail,
+            "persistent_shells" => Query::PersistentShells,
+            "persistent_shells.tail" => Query::PersistentShellTail,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",
@@ -281,6 +296,15 @@ pub enum Call {
     /// `session.record_better_outcome`: counts what the user did with a
     /// `/better` rewrite.
     SessionRecordBetterOutcome,
+    /// `session.kill_kernel_bash`: stops one of an open session's kernel
+    /// shell commands.
+    SessionKillKernelBash,
+    /// `session.factory_activity`: one `/factory` action on an open
+    /// session's kernel factory executor.
+    SessionFactoryActivity,
+    /// `persistent_shells.kill`: ends one persistent kernel shell's process
+    /// group.
+    PersistentShellKill,
 }
 
 impl FromStr for Call {
@@ -339,6 +363,9 @@ impl FromStr for Call {
             "session.start_side_question" => Call::SessionStartSideQuestion,
             "session.abort_side_question" => Call::SessionAbortSideQuestion,
             "session.record_better_outcome" => Call::SessionRecordBetterOutcome,
+            "session.kill_kernel_bash" => Call::SessionKillKernelBash,
+            "session.factory_activity" => Call::SessionFactoryActivity,
+            "persistent_shells.kill" => Call::PersistentShellKill,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

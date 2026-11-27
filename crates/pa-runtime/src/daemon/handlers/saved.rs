@@ -27,15 +27,19 @@
 //! Events and the reply travel separately, so a client takes the reply as
 //! the catalog and can drop a row that reaches it after.
 //!
-//! Not served yet: the rows' live persistent shells and stored factory specs
-//! (the agents view's kernel activity, with the old worker's handlers), and
-//! subagents kept only in the spawn ledger (the old daemon's passive walk).
+//! Each row carries its session's live persistent shells (`persistentShells`)
+//! and, while the factory lane is on, its stored factory specs
+//! (`factorySpecs`), as the old rows do (8d-4).
+//!
+//! Not served yet: subagents kept only in the spawn ledger (the old daemon's
+//! passive walk).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
 use pa_core::session::catalog::{list_sessions_with, saved_session_row, SessionPage};
+use pa_core::session_engine::kernel_activity::{count_factory_specs, factory_lane_enabled};
 use pa_types::event_log::{NewEvent, Topic, Trust};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -111,19 +115,29 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         let scan_request = request.clone();
         // The fold runs on the blocking pool, so a grown store never holds
         // up a runtime worker; rows reach the topic while it walks.
+        let agent_dir = self.agent_dir.clone();
         let scan = tokio::task::spawn_blocking(move || {
-            let no_shells = HashMap::new();
-            let no_specs = HashMap::new();
+            // Each row lists its session's live persistent shells.
+            let persistent_shells =
+                pa_core::kernel::persistent_shells::live_shell_rows_by_session(&agent_dir);
+            // The factory is opt-in: while it stays off, no row counts stored specs.
+            let factory_lane = factory_lane_enabled(&agent_dir);
+            let mut factory_specs = HashMap::new();
             let mut file_total = 0usize;
             let page =
                 list_sessions_with(&scan_dir, cursor.as_deref(), limit, |index, total, info| {
                     file_total = total;
-                    if !streaming || (scope_current && info.cwd != scan_cwd) {
-                        // The row is out of scope (or nobody reads the stream),
-                        // but the scan itself goes on.
+                    if scope_current && info.cwd != scan_cwd {
+                        // The row is out of scope, but the scan itself goes on.
                         return true;
                     }
-                    let row = saved_session_row(info, &no_shells, &no_specs);
+                    if factory_lane {
+                        count_factory_specs(info, &mut factory_specs);
+                    }
+                    if !streaming {
+                        return true;
+                    }
+                    let row = saved_session_row(info, &persistent_shells, &factory_specs);
                     // A closed topic is the request's end: the scan stops. A
                     // FULL one skips the PROGRESS frame first, then the row.
                     let mut bundle = vec![
@@ -145,7 +159,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                         }
                     }
                 });
-            (page, file_total)
+            (page, file_total, persistent_shells, factory_specs)
         });
         let publish = async {
             while let Some(frames) = queued.recv().await {
@@ -157,7 +171,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             }
         };
         let (scanned, ()) = tokio::join!(scan, publish);
-        let (page, file_total) = scanned.context("the saved-session scan failed")?;
+        let (page, file_total, persistent_shells, factory_specs) =
+            scanned.context("the saved-session scan failed")?;
         // The scan's parse trees folded and freed inside the blocking task;
         // return their arena high-water to the OS at the phase boundary.
         pa_types::memory_release::trim_freed_heap();
@@ -199,10 +214,9 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                     .await;
             }
         }
-        let (no_shells, no_specs) = (HashMap::new(), HashMap::new());
         let sessions: Vec<Value> = infos
             .iter()
-            .map(|info| saved_session_row(info, &no_shells, &no_specs))
+            .map(|info| saved_session_row(info, &persistent_shells, &factory_specs))
             .collect();
         let mut data = json!({ "sessions": sessions, "remaining": remaining });
         if let Some(next_cursor) = next_cursor {

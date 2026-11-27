@@ -38,6 +38,7 @@ pub mod harness_digest;
 pub mod headless;
 pub mod host_requests;
 pub mod image_model_routing;
+pub mod kernel_activity;
 pub mod kernel_state_notice;
 pub mod late_sent_messages;
 pub mod messages;

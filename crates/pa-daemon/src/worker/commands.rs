@@ -6,6 +6,7 @@ use super::{
     Worker, PROMPT_ABORTED_BEFORE_DELIVERY,
 };
 
+use pa_core::session_engine::kernel_activity::KernelBashAction;
 use serde_json::Value;
 
 use crate::protocol::DaemonResponse;
@@ -141,8 +142,16 @@ impl Worker {
             "execute_bash" => self.handle_execute_bash(payload),
             "execute_bash_and_wait" => self.handle_execute_bash_and_wait(payload).await,
             "abort_bash" => self.handle_abort_bash(),
-            "list_kernel_bash" | "tail_kernel_bash" | "kill_kernel_bash" => {
-                self.handle_kernel_bash_activity(command_type, payload)
+            "list_kernel_bash" => {
+                self.handle_kernel_bash_activity(command_type, KernelBashAction::List, payload)
+                    .await
+            }
+            "tail_kernel_bash" => {
+                self.handle_kernel_bash_activity(command_type, KernelBashAction::Tail, payload)
+                    .await
+            }
+            "kill_kernel_bash" => {
+                self.handle_kernel_bash_activity(command_type, KernelBashAction::Kill, payload)
                     .await
             }
             "append_custom_message" => self.handle_append_custom_message(payload),

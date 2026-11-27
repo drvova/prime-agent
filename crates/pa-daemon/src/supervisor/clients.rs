@@ -886,10 +886,8 @@ impl Supervisor {
             DaemonCommand::ListPersistentShells { .. } => {
                 // The machine-wide persistent shells, each with its assigned session id.
                 let agent_dir = self.options.agent_dir.clone();
-                let line = crate::persistent_shells::respond(&command_id, &type_name, move || {
-                    Ok(Some(
-                        json!({ "activities": crate::persistent_shells::shell_rows(&agent_dir) }),
-                    ))
+                let line = persistent_shell_response(&command_id, &type_name, move || {
+                    Ok(pa_core::kernel::persistent_shells::list(&agent_dir))
                 })
                 .await;
                 (vec![line], false)
@@ -899,9 +897,8 @@ impl Supervisor {
             } => {
                 let agent_dir = self.options.agent_dir.clone();
                 let (shell_id, lines) = (shell_id.clone(), *lines as usize);
-                let line = crate::persistent_shells::respond(&command_id, &type_name, move || {
-                    crate::persistent_shells::output_tail(&agent_dir, &shell_id, lines)
-                        .map(|tail| tail.map(|tail| json!({ "shellId": shell_id, "tail": tail })))
+                let line = persistent_shell_response(&command_id, &type_name, move || {
+                    pa_core::kernel::persistent_shells::tail(&agent_dir, &shell_id, lines)
                 })
                 .await;
                 (vec![line], false)
@@ -909,9 +906,8 @@ impl Supervisor {
             DaemonCommand::KillPersistentShell { shell_id, .. } => {
                 let agent_dir = self.options.agent_dir.clone();
                 let shell_id = shell_id.clone();
-                let line = crate::persistent_shells::respond(&command_id, &type_name, move || {
-                    crate::persistent_shells::kill_shell(&agent_dir, &shell_id)
-                        .map(|known| known.then(|| json!({ "shellId": shell_id })))
+                let line = persistent_shell_response(&command_id, &type_name, move || {
+                    pa_core::kernel::persistent_shells::kill(&agent_dir, &shell_id)
                 })
                 .await;
                 (vec![line], false)
@@ -1790,4 +1786,19 @@ mod tests {
         );
         connection.abort();
     }
+}
+
+/// One persistent-shell arm's response line, its read or kill run off the runtime (file reads
+/// and the kill's grace block).
+async fn persistent_shell_response(
+    command_id: &str,
+    type_name: &str,
+    run: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) -> Value {
+    let response = match tokio::task::spawn_blocking(run).await {
+        Ok(Ok(data)) => response_success(Some(command_id), type_name, Some(data)),
+        Ok(Err(error)) => response_failure(Some(command_id), type_name, &error, None),
+        Err(error) => response_failure(Some(command_id), type_name, &error.to_string(), None),
+    };
+    response_line(&response)
 }

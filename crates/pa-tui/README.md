@@ -254,7 +254,12 @@ and a session's `detach` and `answer_question` (the `session.detach` and
 `session.answer_question` calls),
 and the side runs (`start_side_question`, `abort_side_question`, `record_better_outcome` as the
 `session.start_side_question`, `session.abort_side_question` and `session.record_better_outcome`
-calls, their events coming back from `agent/<id>/side_question` as `side_question_event`);
+calls, their events coming back from `agent/<id>/side_question` as `side_question_event`),
+and the agents view's kernel activity (`list_kernel_bash`, `tail_kernel_bash`,
+`list_persistent_shells` and `tail_persistent_shell` as the queries `session.kernel_bash`,
+`session.kernel_bash_tail`, `persistent_shells` and `persistent_shells.tail`;
+`kill_kernel_bash`, `factory_activity` and `kill_persistent_shell` as the calls
+`session.kill_kernel_bash`, `session.factory_activity` and `persistent_shells.kill`);
 its module docs state the contract the runtime honours (the stream is live
 only, so the session's event counter rides in the payload's `meta.sequence`) and list what is left
 to map. Every recorded frame round-trips through it. A session's stored fault topics

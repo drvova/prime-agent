@@ -77,8 +77,10 @@
 //!   runs offline (`PI_OFFLINE=1`), as the recordings did, so no catalog
 //!   is fetched.
 //! - **What this cannot replay.** The recordings' other replies
-//!   (`get_session_stats`, `heartbeats_list`, `list_kernel_bash`, `detach`)
-//!   have no wire2 form yet (phase 8d).
+//!   (`get_session_stats`, `heartbeats_list`, `detach`) have no wire2 form
+//!   yet (phase 8d). `list_kernel_bash` (phase 8d-4a) is sent after the
+//!   roster's, before the first turn, and its reply compared as the session
+//!   reads' are.
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
@@ -95,7 +97,13 @@ fn fixture_path(name: &str, extension: &str) -> std::path::PathBuf {
 
 /// The session reads whose replies the replay compares, in the order it
 /// sends them.
-const READS: [&str; 4] = ["attach", "roster_subscribe", "get_state", "get_messages"];
+const READS: [&str; 5] = [
+    "attach",
+    "roster_subscribe",
+    "list_kernel_bash",
+    "get_state",
+    "get_messages",
+];
 
 /// The reads beside the session's turns a scenario's `reads` names (phase
 /// 8d-1b): sent after its steps, as the recording's TUI sent them after its
@@ -348,6 +356,13 @@ async fn replay(name: &str) -> Replayed {
     let roster = read(&mut session, &json!({ "type": "roster_subscribe" })).await;
     replies.push(("roster_subscribe".to_string(), roster.clone()));
     read(&mut session, &json!({ "type": "agent_traffic_subscribe" })).await;
+    // The agents view's kernel activity poll, before the first turn (phase 8d-4a).
+    let kernel_bash = read(
+        &mut session,
+        &json!({ "type": "list_kernel_bash", "activeSessionId": id }),
+    )
+    .await;
+    replies.push(("list_kernel_bash".to_string(), kernel_bash));
     let state = read(
         &mut session,
         &json!({ "type": "get_state", "activeSessionId": id }),

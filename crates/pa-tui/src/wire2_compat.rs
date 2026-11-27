@@ -112,6 +112,9 @@
 //! | `start_side_question` | `session.start_side_question` | none (the run streams on `agent/<id>/side_question`) |
 //! | `abort_side_question` | `session.abort_side_question` | `{aborted}` |
 //! | `record_better_outcome` | `session.record_better_outcome` | none |
+//! | `kill_kernel_bash` | `session.kill_kernel_bash` | `{id, killed}` |
+//! | `factory_activity` | `session.factory_activity` | the kernel factory's reply (the unscoped graph with `factorySpecs`) |
+//! | `kill_persistent_shell` | `persistent_shells.kill` (no session) | `{shellId}` |
 //!
 //! `attach` is the call `session.attach` with `session` (the command's `activeSessionId`),
 //! `clientId`, `capabilities` and `resumeCursor` (those it carries), whose reply's result is the
@@ -133,6 +136,10 @@
 //! | `get_usage` | `usage` (`section`, `forceRefresh`; no session) | the `QuotaReport` or `SpendHistory` |
 //! | `get_user_messages_for_forking` | `session.fork_messages` | `{messages: [{entryId, text}]}` |
 //! | `get_last_assistant_text` | `session.last_assistant_text` | `{text}` |
+//! | `list_kernel_bash` | `session.kernel_bash` | `{activities}` |
+//! | `tail_kernel_bash` | `session.kernel_bash_tail` | `{id, tail}` |
+//! | `list_persistent_shells` | `persistent_shells` (no session) | `{activities}` |
+//! | `tail_persistent_shell` | `persistent_shells.tail` (no session) | `{shellId, tail}` |
 //!
 //! `model_catalog_changed`, a broadcast on the old wire, is the live-only `runtime/models`: a
 //! transport follows it for the connection's life (subscription `compat:models`, `Since::Now`).
@@ -144,11 +151,14 @@
 //! - Queries: `sessions.list` for `list`, the chunked `session_snapshot_*` frames (a TUI attach does
 //!   not ask for them), `session_attached`, `session_resynced`, `session_replaced`, `settings`
 //!   (`get_settings`), `models` (`get_available_models`), `subscriptions` and `tasks`
-//!   (`heartbeats_list`, `heartbeats_changed`, `list_kernel_bash`, `factory_activity`),
-//!   `get_session_stats`, `get_rlm_children`.
+//!   (`heartbeats_list`, `heartbeats_changed`),
+//!   `get_session_stats`, `get_rlm_children`, `get_rlm_max_depth_status`,
+//!   `agent_messages_status`, `heartbeat_get`.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
 //!   `fork` of the whole saved session, `label`, `export`, the auth
-//!   commands, `abort`/`abort_and_send_queued`, `compact`, a `detach` that names no session.
+//!   commands, `abort`/`abort_and_send_queued`, `compact`, a `detach` that names no session,
+//!   `delete_rlm_subagent`, `set_rlm_max_depth`, `agent_messages_pause`/`resume`/`clear`,
+//!   `heartbeat_manage`/`set`/`update`.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
 //! - Connection frames: `daemon_hello` from `welcome`, `daemon_closing` from `closing`, the
 //!   direct worker link (retired: wire2 has one connection), `history_import`,
@@ -739,6 +749,59 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
         }
         DaemonCommand::GetUsage { .. } => {
             return command_query(request_id, "usage", None, &command);
+        }
+        DaemonCommand::ListKernelBash {
+            active_session_id, ..
+        } => {
+            return command_query(
+                request_id,
+                "session.kernel_bash",
+                Some(active_session_id),
+                &command,
+            )
+        }
+        DaemonCommand::TailKernelBash {
+            active_session_id, ..
+        } => {
+            return command_query(
+                request_id,
+                "session.kernel_bash_tail",
+                Some(active_session_id),
+                &command,
+            )
+        }
+        DaemonCommand::KillKernelBash {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.kill_kernel_bash",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::FactoryActivity {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.factory_activity",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::ListPersistentShells { .. } => {
+            return command_query(request_id, "persistent_shells", None, &command);
+        }
+        DaemonCommand::TailPersistentShell { .. } => {
+            return command_query(request_id, "persistent_shells.tail", None, &command);
+        }
+        DaemonCommand::KillPersistentShell { .. } => {
+            return Ok(Outgoing::Call(ClientFrame::Call {
+                id: request_id,
+                method: "persistent_shells.kill".to_string(),
+                args: command_args(&command, None)?,
+            }));
         }
         DaemonCommand::RosterSubscribe { .. } => return follow(request_id, ROSTER_FEED),
         DaemonCommand::AgentTrafficSubscribe { .. } => return follow(request_id, TRAFFIC_FEED),

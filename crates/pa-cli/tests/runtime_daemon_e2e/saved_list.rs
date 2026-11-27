@@ -210,7 +210,7 @@ pub(super) fn old_list(socket: &Path, id: &str, command: &Value) -> Vec<Value> {
 /// is backfilled; the `streamed` frames the old daemon sent before its
 /// response (the rows travel apart from the reply, so they are waited for),
 /// then the response.
-async fn runtime_list(
+pub(super) async fn runtime_list(
     client: &mut Client,
     id: &str,
     command: &Value,

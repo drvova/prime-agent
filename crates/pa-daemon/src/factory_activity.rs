@@ -1,4 +1,5 @@
-//! The `factory_activity` worker arm: the `/factory` view's daemon lane.
+//! The `factory_activity` worker arm: the `/factory` view's daemon lane,
+//! its checks and replies pa-core's (`session_engine::kernel_activity`).
 
 //! One session-addressed command reaches this session's kernel factory
 //! executor (the bridge registered by the pa-core session engine): the
@@ -11,39 +12,19 @@
 
 use std::path::Path;
 
-use serde_json::{json, Value};
+use pa_core::session_engine::kernel_activity::{
+    factory_lane_enabled, stored_factory_spec_count, FactoryLaneRequest,
+};
+use serde_json::json;
 
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::worker::Worker;
 
-/// The `factory_activity` capability's advertisement gate: the factory is
-/// opt-in (`factory.enabled` in the shared settings file, default off),
-/// so a disabled factory never surfaces its lane — no capability, no
-/// dock group, no page. Both hello surfaces (the supervisor's and the
-/// worker's) advertise the lane only while the setting reads enabled.
-pub(crate) fn factory_lane_enabled(agent_dir: &Path) -> bool {
-    pa_core::settings::SettingsManager::create(
-        pa_types::session_scope::current_dir().unwrap_or_default(),
-        agent_dir,
-    )
-    .get_factory_enabled()
-}
-
-/// A session's own stored factory specs: the factory entries of its local harness store, read
-/// from disk without a kernel. The global store and the runtime's shared library machines are
-/// every session's, so they never count.
-pub(crate) fn stored_factory_spec_count(session_artifact_dir: &Path) -> usize {
-    pa_core::refinement::get_local_harness_state_dir(Some(session_artifact_dir)).map_or(0, |dir| {
-        pa_core::refinement::load_harness_state(&dir, pa_core::refinement::HarnessScope::Local)
-            .entries[&pa_core::refinement::RefinementKind::Factory]
-            .len()
-    })
-}
-
 /// The capabilities a hello advertises: the default set, minus the
 /// `factory_activity` lane while the factory stays disabled (the opt-in
-/// gate; the settings read is fresh per connection, so a `/factory on`
-/// toggle surfaces on the next client start).
+/// gate, `factory_lane_enabled`; the settings read is fresh per connection,
+/// so a `/factory on` toggle surfaces on the next client start). Both hello
+/// surfaces (the supervisor's and the worker's) advertise it.
 pub(crate) fn advertised_server_capabilities(agent_dir: &Path) -> Vec<String> {
     let mut capabilities = crate::protocol::default_server_capabilities();
     if !factory_lane_enabled(agent_dir) {
@@ -57,54 +38,36 @@ impl Worker {
     /// The arm mirrors `handle_kernel_bash_activity`: the engine owns the
     /// kernel scope, and a missing session answers with the same "Kernel
     /// is not running" refusal — except the unscoped graph, which still
-    /// answers the session's stored specs.
-    pub(crate) async fn handle_factory_activity(&self, payload: &Value) -> DaemonResponse {
+    /// answers the session's stored specs (pa-core's `FactoryLaneRequest`).
+    pub(crate) async fn handle_factory_activity(
+        &self,
+        payload: &serde_json::Value,
+    ) -> DaemonResponse {
         if let Err(response) = self.require_created("factory_activity") {
             return response;
         }
-        let action = payload
-            .get("action")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        if action.is_empty() {
-            return response_failure(None, "factory_activity", "action is required", None);
-        }
-        let run_id = payload
-            .get("runId")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let spec_id = payload
-            .get("specId")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let timeout_ms = payload.get("timeoutMs").and_then(Value::as_u64);
+        let request = match FactoryLaneRequest::parse(payload) {
+            Ok(request) => request,
+            Err(refusal) => return response_failure(None, "factory_activity", refusal, None),
+        };
         let reply = match &self.agent_engine {
             Some(engine) => {
                 engine
-                    .factory_activity(&action, run_id.as_deref(), spec_id.as_deref(), timeout_ms)
+                    .factory_activity(
+                        &request.action,
+                        request.run_id.as_deref(),
+                        request.spec_id.as_deref(),
+                        request.timeout_ms,
+                    )
                     .await
             }
             None => Err(anyhow::anyhow!(
                 pa_types::daemon::KERNEL_NOT_RUNNING_MESSAGE
             )),
         };
-        // The unscoped graph (the dock's and the agents view's poll) also carries the session's
-        // stored specs: durable harness entries, so a live session without a kernel (not booted
-        // yet, or passivated) answers them with no runs instead of the refusal.
-        let lists_runs = action == "graph" && run_id.is_none() && spec_id.is_none();
-        let reply = match reply {
-            Err(error)
-                if lists_runs
-                    && error.to_string() == pa_types::daemon::KERNEL_NOT_RUNNING_MESSAGE =>
-            {
-                Ok(json!({ "runs": [] }))
-            }
-            reply => reply,
-        };
-        match reply {
+        match request.settle(reply) {
             Ok(mut result) => {
-                if lists_runs {
+                if request.lists_runs() {
                     match self.stored_factory_specs().await {
                         Ok(count) => result["factorySpecs"] = json!(count),
                         Err(error) => {

@@ -1056,3 +1056,74 @@ fn the_side_runs_call_and_answer_as_the_old_daemon() {
         )
     );
 }
+
+/// The agents view's kernel activity: a session's kernel shell commands and factory lane are
+/// queries and calls on the session, the persistent shells machine-wide ones without one, each
+/// answered with the old response's `data`.
+#[test]
+fn the_kernel_activity_queries_and_calls_carry_their_commands() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "list_kernel_bash", "activeSessionId": "s1" }),
+        json!({ "type": "tail_kernel_bash", "activeSessionId": "s1", "activityId": "a1",
+                "lines": 20 }),
+        json!({ "type": "kill_kernel_bash", "activeSessionId": "s1", "activityId": "a1" }),
+        json!({ "type": "factory_activity", "activeSessionId": "s1", "action": "graph" }),
+        json!({ "type": "list_persistent_shells" }),
+        json!({ "type": "tail_persistent_shell", "shellId": "p1", "lines": 50 }),
+        json!({ "type": "kill_persistent_shell", "shellId": "p1" }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let query = |name: &str, args: Value| {
+        Outgoing::Query(ClientFrame::Query {
+            id: "i".to_string(),
+            name: name.to_string(),
+            args,
+        })
+    };
+    let call = |method: &str, args: Value| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args,
+        })
+    };
+    let killed = serde_json::to_value(response_from_reply(
+        "kill_persistent_shell",
+        None,
+        Outcome::Ok {
+            result: json!({ "shellId": "p1" }),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        (frames, killed),
+        (
+            vec![
+                query("session.kernel_bash", json!({ "session": "s1" })),
+                query(
+                    "session.kernel_bash_tail",
+                    json!({ "session": "s1", "activityId": "a1", "lines": 20 })
+                ),
+                call(
+                    "session.kill_kernel_bash",
+                    json!({ "session": "s1", "activityId": "a1" })
+                ),
+                call(
+                    "session.factory_activity",
+                    json!({ "session": "s1", "action": "graph" })
+                ),
+                query("persistent_shells", json!({})),
+                query(
+                    "persistent_shells.tail",
+                    json!({ "shellId": "p1", "lines": 50 })
+                ),
+                call("persistent_shells.kill", json!({ "shellId": "p1" })),
+            ],
+            json!({ "type": "response", "command": "kill_persistent_shell", "success": true,
+                    "data": { "shellId": "p1" } }),
+        )
+    );
+}

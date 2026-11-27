@@ -367,9 +367,9 @@ SQLite implementations over `pa-log`.
   then the row), and the reply is the old response's `data` (`sessions`, each with its deleted
   subagents' spend, `remaining`, `nextCursor`), the catalog. A summary's `usage` is the
   catalog's own-usage fold of the transcript with its billing split, and its `modified` is the
-  session's creation before its transcript has a row, as the old worker's were. Not yet: a
-  saved row's live persistent shells and stored factory specs, and subagents only the spawn
-  ledger keeps (the old daemon's passive walk);
+  session's creation before its transcript has a row, as the old worker's were. A row carries
+  its live persistent shells and, with the factory lane on, its stored factory specs (8d-4a).
+  Not yet: subagents only the spawn ledger keeps (the old daemon's passive walk);
   `session.create` (`{session?}` to open or create by id, or `{path}` to
   open a transcript by its file, and `cwd`) takes the session's `SessionLease` and holds it until
   `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
@@ -532,6 +532,18 @@ SQLite implementations over `pa-log`.
   connection's run only) and `session.record_better_outcome` (the composer's verdict on a
   rewrite, counted and learned on the session's runtime). A connection's runs are aborted when it
   ends, and a stopping session's first, its stop waiting (up to 3 s) for their cancelled events.
+  The agents view's kernel activity (8d-4a, `daemon/handlers/kernel_activity.rs`, over pa-core's
+  `session_engine::kernel_activity` and `kernel::persistent_shells`): `session.kernel_bash`
+  (`list_kernel_bash`: `{activities}`), `session.kernel_bash_tail` (`tail_kernel_bash`: `{id,
+  tail}`) and `session.kill_kernel_bash` (`kill_kernel_bash`: `{id, killed}`) on the open
+  session's kernel shell commands, never starting a kernel that is not running;
+  `session.factory_activity` (`factory_activity`: the kernel factory executor's reply, the
+  unscoped graph with the session's stored `factorySpecs`, and `{runs: []}` while the kernel is
+  not running); and, machine-wide, `persistent_shells` (`list_persistent_shells`),
+  `persistent_shells.tail` (`tail_persistent_shell`) and `persistent_shells.kill`
+  (`kill_persistent_shell`), off the runtime on a blocking thread. Each answers the old
+  response's `data` or refusal text. `sessions.list {shape: "saved"}` rows carry their live
+  persistent shells and, with the factory lane on, their stored factory specs.
   A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
@@ -716,10 +728,12 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `session.fork_entry` and `session.import_jsonl`. pa-types `wire2::Outcome::Error` gains
   `info` (the old `errorInfo`). (8d-2c) the calls `session.mutate_queued_message`,
   `session.abort_compaction` and `session.abort_retry`. (8d-2e) the calls `session.attach`,
-  `session.detach` and `session.answer_question`.
-  `session.abort_compaction` and `session.abort_retry`. (8d-3) the calls
+  `session.detach` and `session.answer_question`. (8d-3) the calls
   `session.start_side_question`, `session.abort_side_question` and
-  `session.record_better_outcome`, and the live-only topic `agent/<id>/side_question`.
+  `session.record_better_outcome`, and the live-only topic `agent/<id>/side_question`. (8d-4a)
+  the queries `session.kernel_bash`, `session.kernel_bash_tail`, `persistent_shells` and
+  `persistent_shells.tail`, and the calls `session.kill_kernel_bash`,
+  `session.factory_activity` and `persistent_shells.kill`.
 - `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
   engine streams from, which the runtime daemon's model and tier switches write.
 

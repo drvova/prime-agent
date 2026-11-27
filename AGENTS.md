@@ -354,6 +354,16 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `daemon/handlers/side_runs.rs`) apply them; on the runtime a connection is the client, its
   runs end with it, a stopping session's end first, and their events go out in order on the
   live-only `agent/<id>/side_question`.
+- One set of kernel activity rules (`pa_core::session_engine::kernel_activity`,
+  `pa_core::kernel::persistent_shells`): the kernel shell commands' and the factory lane's
+  checks with their refusal texts and reply shapes, the unscoped graph's `{runs: []}` while no
+  kernel runs and its stored `factorySpecs`, the factory lane's opt-in gate, and the persistent
+  shells' records with the rule that a shell is signalled only while its recorded leader
+  identity proves it. The old worker and supervisor and the runtime daemon's
+  `session.kernel_bash`, `session.kernel_bash_tail`, `session.kill_kernel_bash`,
+  `session.factory_activity`, `persistent_shells`, `persistent_shells.tail` and
+  `persistent_shells.kill` (`pa-runtime` `daemon/handlers/kernel_activity.rs`) apply them; none
+  starts a kernel, and the shell reads and kills run on a blocking thread.
 - One set of whole-session replacement rules: where a `fork {entryId, position}` starts and the
   text it hands back, where an `import_jsonl` copies its file, and the working directory a
   replaced session runs in with its refusals and their `errorInfo`

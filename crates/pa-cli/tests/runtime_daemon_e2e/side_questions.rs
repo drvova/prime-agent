@@ -154,14 +154,14 @@ struct Recorded {
 }
 
 /// An old-wire connection that keeps every frame it reads.
-struct OldClient {
+pub(super) struct OldClient {
     writer: UnixStream,
     frames: mpsc::Receiver<Value>,
     seen: Vec<Value>,
 }
 
 impl OldClient {
-    fn connect(socket: &Path) -> Self {
+    pub(super) fn connect(socket: &Path) -> Self {
         let writer = UnixStream::connect(socket).expect("connect to the old daemon");
         let reader = BufReader::new(writer.try_clone().unwrap());
         let (sender, frames) = mpsc::channel();
@@ -194,7 +194,7 @@ impl OldClient {
     }
 
     /// Sends `command` as request `id`; its response.
-    fn send(&mut self, id: &str, command: &Value) -> Value {
+    pub(super) fn send(&mut self, id: &str, command: &Value) -> Value {
         let envelope = json!({
             "type": "command",
             "id": id,

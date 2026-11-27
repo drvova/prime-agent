@@ -20,6 +20,7 @@ use anyhow::Context as _;
 use pa_core::session::lease::acquire_runtime_session_lease;
 use pa_core::session::manager::{get_session_file_path, load_entries_from_file, SessionManager};
 use pa_core::session::store::store;
+use pa_core::session_engine::kernel_activity::KernelBashAction;
 use pa_types::session::FileEntry;
 use serde_json::{json, Value};
 
@@ -39,6 +40,7 @@ mod feeds;
 mod info;
 mod input;
 mod jobs;
+mod kernel_activity;
 mod mcp;
 mod messaging;
 mod model;
@@ -509,6 +511,10 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::Usage => self.usage_page(&args).await,
             Query::SessionForkMessages => self.fork_messages(&args).await,
             Query::SessionLastAssistantText => self.last_assistant_text(&args).await,
+            Query::SessionKernelBash => self.kernel_bash(&args, KernelBashAction::List).await,
+            Query::SessionKernelBashTail => self.kernel_bash(&args, KernelBashAction::Tail).await,
+            Query::PersistentShells => self.persistent_shells().await,
+            Query::PersistentShellTail => self.persistent_shell_tail(&args).await,
         }
     }
 
@@ -576,6 +582,9 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionStartSideQuestion => self.start_side_question(&args, connection).await,
             Call::SessionAbortSideQuestion => self.abort_side_question(&args, connection),
             Call::SessionRecordBetterOutcome => self.record_better_outcome(&args).await,
+            Call::SessionKillKernelBash => self.kernel_bash(&args, KernelBashAction::Kill).await,
+            Call::SessionFactoryActivity => self.factory_activity(&args).await,
+            Call::PersistentShellKill => self.kill_persistent_shell(&args).await,
         }
     }
 

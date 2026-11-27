@@ -218,9 +218,10 @@ impl Supervisor {
         let limit = limit.map(|limit| limit as usize);
         let scan = tokio::task::spawn_blocking(move || {
             let persistent_shells =
-                crate::persistent_shells::live_shell_rows_by_session(&agent_dir);
+                pa_core::kernel::persistent_shells::live_shell_rows_by_session(&agent_dir);
             // The factory is opt-in: while it stays off, no row counts stored specs.
-            let factory_lane = crate::factory_activity::factory_lane_enabled(&agent_dir);
+            let factory_lane =
+                pa_core::session_engine::kernel_activity::factory_lane_enabled(&agent_dir);
             let mut factory_specs = std::collections::HashMap::new();
             let mut file_total = 0usize;
             let page = list_sessions_with(&dir, cursor.as_deref(), limit, |index, total, info| {
@@ -230,7 +231,10 @@ impl Supervisor {
                     return true;
                 }
                 if factory_lane {
-                    count_factory_specs(info, &mut factory_specs);
+                    pa_core::session_engine::kernel_activity::count_factory_specs(
+                        info,
+                        &mut factory_specs,
+                    );
                 }
                 let row = saved_session_row(info, &persistent_shells, &factory_specs);
                 let mut item = json!({
@@ -892,21 +896,6 @@ fn offline_summary(worker_id: &str) -> Value {
     })
 }
 
-/// Read one session's stored factory specs (its local harness store's factory entries) into a
-/// listing's map: a listing reads each store once, and only sessions holding specs get an entry.
-fn count_factory_specs(
-    info: &pa_core::session::catalog::SessionInfo,
-    factory_specs: &mut std::collections::HashMap<String, usize>,
-) {
-    let specs = crate::scheduled_jobs::session_artifact_dir(&info.path, &info.id)
-        .map_or(0, |dir| {
-            crate::factory_activity::stored_factory_spec_count(&dir)
-        });
-    if specs > 0 {
-        factory_specs.insert(info.id.clone(), specs);
-    }
-}
-
 /// The sessions' stored factory specs, read off the async executor.
 pub(super) async fn stored_factory_specs(
     infos: Vec<pa_core::session::catalog::SessionInfo>,
@@ -914,7 +903,7 @@ pub(super) async fn stored_factory_specs(
     tokio::task::spawn_blocking(move || {
         let mut factory_specs = std::collections::HashMap::new();
         for info in &infos {
-            count_factory_specs(info, &mut factory_specs);
+            pa_core::session_engine::kernel_activity::count_factory_specs(info, &mut factory_specs);
         }
         factory_specs
     })

@@ -313,7 +313,10 @@ the host's load; the spawn handle and `rlm.collect` results carry the boot's `qu
 The user's `!` commands (`user_bash.rs`): the worker's `execute_bash`, `execute_bash_and_wait` and
 `abort_bash` arms, with their shutdown-gate admission and the `bashExecution` row in the worker's
 session store, over pa-core's `pa_core::user_bash` (the slot, the run and its event shapes), which
-the runtime daemon shares.
+the runtime daemon shares. The agents view's kernel activity: the worker's `list_kernel_bash`,
+`tail_kernel_bash`, `kill_kernel_bash` (`user_bash.rs`) and `factory_activity`
+(`factory_activity.rs`) arms and the supervisor's persistent-shell commands, over pa-core's
+`session_engine::kernel_activity` and `kernel::persistent_shells`, which the runtime daemon shares.
 
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.

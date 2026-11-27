@@ -54,6 +54,10 @@
 //! - A session's side runs (`/btw`, `/better` and its outcome), answered
 //!   and streamed as the old daemon answers and streams them (phase 8d-3):
 //!   [`side_questions`].
+//! - The agents view's kernel activity (a session's kernel shell commands,
+//!   its factory lane, the persistent shells and their catalog rows),
+//!   answered as the old daemon answers it (phase 8d-4a):
+//!   [`kernel_activity`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -65,6 +69,7 @@ mod family;
 mod goldens;
 mod info;
 mod keeper;
+mod kernel_activity;
 mod questions;
 mod queue_edit;
 mod reliability;
