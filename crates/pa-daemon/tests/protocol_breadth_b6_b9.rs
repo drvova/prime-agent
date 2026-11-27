@@ -63,10 +63,6 @@ struct Client {
     writer: UnixStream,
 }
 
-#[expect(
-    dead_code,
-    reason = "this suite calls only some of the client's request helpers"
-)]
 impl Client {
     fn connect(socket: &std::path::Path) -> (Self, serde_json::Value) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -710,14 +706,18 @@ fn wave_b9_session_navigation_wire_shapes() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the admission ladder and its readiness waits read top to bottom"
+)]
 fn wave_b9_prompt_admission_wire_shapes() {
     let _serial = serial_lock();
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
 
-    // A slow scripted session: the first turn stays busy so an admitted prompt queues behind it
-    // (the deterministic cancel window).
+    // A slow scripted session: the first turn stays busy for longer than any wait below, so an
+    // admitted prompt queues behind it and stays queued (the deterministic cancel window).
     let socket = dir.path().join("adm.sock");
     let _daemon = spawn_daemon(&socket, &agent_dir);
     let (mut client, _hello) = Client::connect(&socket);
@@ -725,7 +725,7 @@ fn wave_b9_prompt_admission_wire_shapes() {
     std::fs::write(
         &script_path,
         json!({ "responses": [
-            { "text": "slow", "delayMs": 400 },
+            { "text": "slow", "delayMs": 60_000 },
             { "text": "second", "delayMs": 10 },
         ] })
         .to_string(),
@@ -766,20 +766,38 @@ fn wave_b9_prompt_admission_wire_shapes() {
     assert_eq!(response["command"], "parse");
     assert_eq!(response["error"], "admissionId must not be empty");
 
+    // Attached, the client sees the turn start and the queue projection waited on below.
+    client.send_command(
+        "at-1",
+        &json!({ "type": "attach", "activeSessionId": session_id }),
+    );
+    assert_eq!(
+        client.read_response("at-1")["success"],
+        true,
+        "attach failed"
+    );
     client.send_command(
         "p-1",
         &json!({ "type": "prompt", "activeSessionId": session_id, "message": "go" }),
     );
-    let _ = client.read_response("p-1");
+    let (_, mut lines) = client.read_response_and_lines("p-1");
+    // The slow turn left the lane: the admitted prompt queues behind it, not in its batch.
+    client.take_session_event(&mut lines, "agent_start");
     // `prompt_and_wait` keeps its admission open for the whole turn (the route deletes
     // it when the turn settles), so the queued admitted prompt is in its cancel window.
     client.send_command(
         "p-2",
         &json!({ "type": "prompt_and_wait", "activeSessionId": session_id, "message": "queued behind", "admissionId": "adm-1" }),
     );
-    // Give the admitted prompt's route its start: TS registers an admission at parse
-    // time; this port registers in the dispatch task, so the cancel must not race it.
-    std::thread::sleep(Duration::from_millis(100));
+    // Supervisor and worker each register the admission on their own dispatch task, so a
+    // cancel sent before the worker commits it answers `unknown`: wait for the projection
+    // the worker emits once the prompt is committed and queued.
+    loop {
+        let event = client.take_session_event(&mut lines, "session_action_update");
+        if event["actions"]["followUps"] == json!(["queued behind"]) {
+            break;
+        }
+    }
 
     // The queued prompt committed at admission: cancelOwned withdraws
     // that item without aborting the unrelated slow turn.
@@ -803,7 +821,6 @@ fn wave_b9_prompt_admission_wire_shapes() {
     };
     assert_eq!(response["success"], false, "{response}");
 
-    std::thread::sleep(Duration::from_millis(700));
     client.send_command(
         "q-1",
         &json!({ "type": "get_queue", "activeSessionId": session_id }),

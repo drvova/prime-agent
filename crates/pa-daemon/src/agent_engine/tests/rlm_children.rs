@@ -248,9 +248,7 @@ fn persisted_rlm_max_depth_scan_matches_reference_across_classes() {
 /// defers it.
 #[test]
 fn release_settled_child_kernel_defers_to_scheduled_jobs_and_fires_the_release_probe() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let (_dir, engine) = faux_engine_with_settings(&serde_json::json!({ "responses": [] }), 1);
     let engine = std::sync::Arc::new(engine);
     engine
@@ -289,9 +287,7 @@ fn release_settled_child_kernel_defers_to_scheduled_jobs_and_fires_the_release_p
 /// a kernel keeps the worker and its registry resident.
 #[test]
 fn can_passivate_worker_mirrors_the_release_gates_and_adds_the_registry_rule() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let engine = std::sync::Arc::new(
         AgentSessionEngine::new(AgentEngineConfig {
