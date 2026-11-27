@@ -197,8 +197,11 @@ impl Subagents {
             let traffic = self.traffic_entry(&receiver, &message, queued);
             deliver_row(&receiver, message.row.clone(), delivery)?;
             // The receiving side of the receiver's waits hears every
-            // delivery it took.
-            receiver.waits.deliver(arrival);
+            // delivery it took. A wait it ends withdraws its `waitingOn`
+            // and the change hook wakes the parent's collect; there is
+            // nothing more to publish, because this daemon's roster reads
+            // `waitingOn` live.
+            let _withdrawn = receiver.waits.deliver(arrival);
             wake_on_delivery(&receiver, event.event.trust).await;
             // Reported once it landed, never on the delivery's own path.
             if let Some(entry) = traffic {

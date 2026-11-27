@@ -150,35 +150,28 @@ fn expand_tilde(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use crate::session_scope::{self, SessionScope};
 
-    /// Environment mutations are process-global: tests take this lock and
-    /// restore previous values on exit.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Run `body` with the named variables set (`None` removes them),
-    /// restoring the previous state afterwards.
+    /// Run `body` in a session scope that sets the named variables (`None`
+    /// hides them). The resolvers read through `session_scope`, so the
+    /// process environment stays untouched and the tests run in parallel.
     fn with_env(names: &[(&str, Option<&str>)], body: impl FnOnce()) {
-        let _guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous: Vec<(&str, Option<std::ffi::OsString>)> = names
+        let env = names
             .iter()
-            .map(|(name, _)| (*name, crate::session_scope::var_os(name)))
+            .filter_map(|(name, value)| value.map(|value| ((*name).to_string(), value.to_string())))
             .collect();
-        for (name, value) in names {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
+        let hidden = names
+            .iter()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        let _scope = session_scope::enter(Some(SessionScope::new(
+            "dirs-test".to_string(),
+            PathBuf::new(),
+            env,
+            hidden,
+        )));
         body();
-        for (name, value) in previous {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
     }
 
     #[test]
