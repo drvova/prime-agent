@@ -31,7 +31,8 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   replaces `events`): `Event`/`NewEvent` with `Trust` (owner or untrusted, only ever lowered
   along a chain of causes) and a cause chain bounded by `MAX_HOPS`; `Topic` and `TopicFilter`
   (MQTT `+`/`#` wildcards) and `TopicTrie`, which matches a topic against every filter in time
-  proportional to its depth; `Topic::is_live_only` (`agent/<id>/stream`, `agent/<id>/tool`, and the
+  proportional to its depth; `Topic::is_live_only` (`agent/<id>/stream`, `agent/<id>/tool`, a session's side runs on
+  `agent/<id>/side_question`, and the
   agents view's feeds `runtime/roster` and `runtime/traffic`, and a saved-session list request's
   rows on `runtime/session_list/<request>`): events the runtime fans out but
   never stores, with `seq` 0; `Subscription` (scope, filter, `when` predicate by JSON Pointer,

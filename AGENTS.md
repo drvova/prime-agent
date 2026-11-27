@@ -344,6 +344,16 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `session/checkpoints.rs`; none for a subagent or a session in memory), and every git call runs
   on a blocking thread; a navigation restores the files after its move commits, before its lane
   hold ends.
+- One side-run registry and run (`pa_core::session_engine::side_runs`): the `/btw` and `/better`
+  admission rules with their refusal texts (one run per client and session, each id once, none
+  once the session closes), the owner-only abort, the event order (`running`, the partials, the
+  terminal event sent under the registry hold that drops the run, so a same-id restart reading
+  it finds the id free) and the run on a built engine (`run_side_run`, outside the session's
+  history, billed to it). The old worker and the runtime daemon's `session.start_side_question`,
+  `session.abort_side_question` and `session.record_better_outcome` (`pa-runtime`
+  `daemon/handlers/side_runs.rs`) apply them; on the runtime a connection is the client, its
+  runs end with it, a stopping session's end first, and their events go out in order on the
+  live-only `agent/<id>/side_question`.
 - One set of whole-session replacement rules: where a `fork {entryId, position}` starts and the
   text it hands back, where an `import_jsonl` copies its file, and the working directory a
   replaced session runs in with its refusals and their `errorInfo`

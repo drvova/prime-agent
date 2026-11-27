@@ -1,9 +1,8 @@
 //! Queued input: the item model, the lanes, admission, delivery batching,
 //! and queue recovery.
 use super::{
-    emit_worker_event_with, json, oneshot, Arc, Duration, EventPump, Mutex, Notify, Result,
-    SessionCore, Value, VecDeque, WorkerRecoveryJournal, AGENT_MESSAGE_SOURCE,
-    AUTONOMOUS_QUEUE_KEY,
+    emit_worker_event_with, json, oneshot, Arc, EventPump, Mutex, Notify, Result, SessionCore,
+    Value, VecDeque, WorkerRecoveryJournal, AGENT_MESSAGE_SOURCE, AUTONOMOUS_QUEUE_KEY,
 };
 use crate::journal::PickedUpTurn;
 use pa_core::session_engine::bash_notices::NoticeAdmission;
@@ -22,10 +21,6 @@ impl Lane {
         }
     }
 }
-
-/// How long the close paths (`shutdown`, `kill`) wait for aborted side
-/// question runs to queue their terminal cancelled events: headroom, not a gate.
-pub(crate) const SIDE_QUESTION_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(crate) const QUEUED_INPUT_SUSPENDED: &str =
     "Cannot admit a session action while queued session input is suspended.";

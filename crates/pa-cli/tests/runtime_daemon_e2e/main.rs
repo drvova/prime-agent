@@ -51,6 +51,9 @@
 //! - A session's kernel questions, todo list and notifications, waiting for
 //!   an attached client that can answer and answered as on the old daemon
 //!   (phase 8d-2e): [`questions`].
+//! - A session's side runs (`/btw`, `/better` and its outcome), answered
+//!   and streamed as the old daemon answers and streams them (phase 8d-3):
+//!   [`side_questions`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -68,6 +71,7 @@ mod reliability;
 mod replace;
 mod saved_list;
 mod schedules;
+mod side_questions;
 mod stream;
 #[path = "../support/mod.rs"]
 mod support;

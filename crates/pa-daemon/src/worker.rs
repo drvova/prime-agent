@@ -29,7 +29,7 @@ pub(crate) use queue::{
     queued_background_completion_notices, restore_queue_snapshot, restored_turn_policy,
     withdraw_background_completion_notice, QueueCheckpoint, QueueLanes, QueuedItem, TurnPolicy,
     TurnSettle, ABORTED_TURN_SETTLE_ERROR, PROMPT_ABORTED_BEFORE_DELIVERY, QUEUED_INPUT_SUSPENDED,
-    QUEUED_PROMPT_DELETED, SIDE_QUESTION_SETTLE_TIMEOUT,
+    QUEUED_PROMPT_DELETED,
 };
 
 mod create;
@@ -65,7 +65,6 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use pa_core::session_engine::agent_messaging::{

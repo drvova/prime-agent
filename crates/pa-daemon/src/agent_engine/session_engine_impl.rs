@@ -974,81 +974,32 @@ impl SessionEngine for AgentSessionEngine {
         signal: &pa_agent::abort::AbortSignal,
         sink: &pa_core::session_engine::side_question::SideQuestionSink,
     ) -> SideQuestionOutcome {
-        if request.kind == pa_types::better::SideRunKind::Better {
-            return self.run_better(&request.question, signal, sink);
-        }
-        let model = match self.session_model() {
-            Ok(model) => model,
-            Err(error) => {
-                return SideQuestionOutcome::Failed {
-                    answer: String::new(),
-                    error: error.to_string(),
-                }
-            }
+        let failed = |error: String| SideQuestionOutcome::Failed {
+            answer: String::new(),
+            error,
         };
-        let agent = match self.session_agent(&model) {
-            Ok(agent) => agent,
-            Err(error) => {
-                return SideQuestionOutcome::Failed {
-                    answer: String::new(),
-                    error: error.to_string(),
-                }
-            }
-        };
-        let question = request.question.clone();
-        let previous_turns = request.previous_turns;
-        let retry_policy = pa_core::session_engine::provider_retry::DEFAULT_PROVIDER_RETRY_POLICY;
-        // TS `unwrapSemanticEdgeStreamFn`: the side call runs on the
-        // session's pre-semantic stream fn, so it carries no request id
-        // and the ledger records nothing. The engine build always wires
-        // it; no fallback to the agent's own fn, which would leak the
-        // id-carrying wrapper into the side call.
-        // The run bills the engine it started on: a replace during the run must
-        // not move the bill to the replacement.
-        let built = self.session.blocking_lock().clone();
-        let side_stream_fn = built
-            .as_deref()
-            .and_then(|engine| engine.session.side_question_stream_fn());
-        let (Some(built), Some(side_stream_fn)) = (built, side_stream_fn) else {
-            return SideQuestionOutcome::Failed {
-                answer: String::new(),
-                error: "Select a model before asking a side question".to_string(),
+        // A `/better` rewrite runs on the session as built; a question builds it first.
+        let select = if request.kind == pa_types::better::SideRunKind::Better {
+            "Select a model before using /better"
+        } else {
+            let model = match self.session_model() {
+                Ok(model) => model,
+                Err(error) => return failed(error.to_string()),
             };
+            if let Err(error) = self.session_agent(&model) {
+                return failed(error.to_string());
+            }
+            "Select a model before asking a side question"
         };
-        let result =
-            self.runtime
-                .block_on(pa_core::session_engine::side_question::run_side_question(
-                    &agent,
-                    side_stream_fn,
-                    &question,
-                    &previous_turns,
-                    &retry_policy,
-                    signal,
-                    sink,
-                ));
-        // The answer never enters the history, but the run's model calls bill the session.
+        // The run bills the engine it started on: a replace during the run must not move the
+        // bill to the replacement.
+        let Some(built) = self.session.blocking_lock().clone() else {
+            return failed(select.to_string());
+        };
         self.runtime
-            .block_on(built.session.record_model_usage(result.usage.clone()));
-        match result.status {
-            pa_core::session_engine::side_question::SideQuestionStatus::Complete => {
-                SideQuestionOutcome::Complete {
-                    answer: result.answer,
-                }
-            }
-            pa_core::session_engine::side_question::SideQuestionStatus::Cancelled => {
-                SideQuestionOutcome::Aborted {
-                    answer: result.answer,
-                }
-            }
-            pa_core::session_engine::side_question::SideQuestionStatus::Error => {
-                SideQuestionOutcome::Failed {
-                    answer: result.answer,
-                    error: result
-                        .error_message
-                        .unwrap_or_else(|| "Side question failed".to_string()),
-                }
-            }
-        }
+            .block_on(pa_core::session_engine::side_runs::run_side_run(
+                &built, request, signal, sink,
+            ))
     }
 
     fn note_better_outcome(&self, outcome: pa_types::better::ComposerOutcome) {

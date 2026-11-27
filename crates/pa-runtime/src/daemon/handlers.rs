@@ -48,6 +48,7 @@ mod queue;
 mod queue_edit;
 mod replace;
 mod saved;
+mod side_runs;
 mod state;
 mod summary;
 mod switches;
@@ -77,6 +78,8 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     catalog: Arc<pa_core::models::CatalogRefresh>,
     /// The branch summaries the sessions' navigations run.
     branch_summaries: tree::BranchSummaries,
+    /// The side runs (`/btw`, `/better`) of the open sessions.
+    side_runs: side_runs::SessionSideRuns,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -106,6 +109,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             feeds,
             catalog: Arc::default(),
             branch_summaries: tree::BranchSummaries::default(),
+            side_runs: side_runs::SessionSideRuns::default(),
             agent_dir,
             session_dir,
             cwd,
@@ -313,7 +317,10 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         self.schedules.disarm(&id);
         // Its `!` command is killed first, and none starts while it stops.
         let _closing = self.open.bashes.close(&id).await;
+        // Its side runs end first, their cancelled events sent.
+        self.settle_side_runs(&id).await;
         self.runtime.close_session(&id).await?;
+        crate::lock(&self.side_runs).remove(&id);
         // Its input holds end with it: opened again, it starts unheld.
         self.release_session_holds(&id);
         // Closed: its lease goes, and it leaves the roster.
@@ -566,6 +573,9 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionAttach => self.attach(&args, connection).await,
             Call::SessionDetach => self.detach(&args, connection),
             Call::SessionAnswerQuestion => self.answer_question(&args),
+            Call::SessionStartSideQuestion => self.start_side_question(&args, connection).await,
+            Call::SessionAbortSideQuestion => self.abort_side_question(&args, connection),
+            Call::SessionRecordBetterOutcome => self.record_better_outcome(&args).await,
         }
     }
 
@@ -575,6 +585,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
         for interaction in self.runtime.subagents().interactions() {
             interaction.disconnected(connection);
         }
+        self.abort_connection_side_runs(connection);
         self.end_owned_sessions(connection).await;
     }
 }

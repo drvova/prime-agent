@@ -522,6 +522,16 @@ SQLite implementations over `pa-log`.
   `session.answer_question` delivers the reply (`null`, or the old refusals), the attach
   snapshot's `state.pendingQuestion` names a waiting question, and a stopped session's waiting
   question settles as `cancelled`.
+  The side runs (8d-3, `daemon/handlers/side_runs.rs`, over pa-core's
+  `session_engine::side_runs`): `session.start_side_question` (`start_side_question`: a `/btw`
+  question or, with `kind: "better"`, a `/better` rewrite, admitted for the calling connection,
+  one per connection and session and each id once, with the old refusal texts; answered `null`
+  before the run answers, which runs on the session's own runtime and streams the old
+  `side_question_event` payloads on the live-only `agent/<id>/side_question`, its terminal event
+  sent as it leaves the registry), `session.abort_side_question` (`{aborted}`: the calling
+  connection's run only) and `session.record_better_outcome` (the composer's verdict on a
+  rewrite, counted and learned on the session's runtime). A connection's runs are aborted when it
+  ends, and a stopping session's first, its stop waiting (up to 3 s) for their cancelled events.
   A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
@@ -707,6 +717,9 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `info` (the old `errorInfo`). (8d-2c) the calls `session.mutate_queued_message`,
   `session.abort_compaction` and `session.abort_retry`. (8d-2e) the calls `session.attach`,
   `session.detach` and `session.answer_question`.
+  `session.abort_compaction` and `session.abort_retry`. (8d-3) the calls
+  `session.start_side_question`, `session.abort_side_question` and
+  `session.record_better_outcome`, and the live-only topic `agent/<id>/side_question`.
 - `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
   engine streams from, which the runtime daemon's model and tier switches write.
 

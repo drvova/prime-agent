@@ -1003,3 +1003,56 @@ fn the_detach_and_the_answer_call_and_answer_without_data() {
         )
     );
 }
+
+#[test]
+fn the_side_runs_call_and_answer_as_the_old_daemon() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "start_side_question", "activeSessionId": "s1", "sideQuestionId": "q1",
+                "question": "why?", "previousTurns": [], "kind": "better" }),
+        json!({ "type": "abort_side_question", "activeSessionId": "s1", "sideQuestionId": "q1" }),
+        json!({ "type": "record_better_outcome", "activeSessionId": "s1", "outcome": "edited" }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let call = |method: &str, args: Value| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args,
+        })
+    };
+    let answered = |command: &str, result: Value| {
+        serde_json::to_value(response_from_reply(command, None, Outcome::Ok { result })).unwrap()
+    };
+    assert_eq!(
+        (
+            frames,
+            answered("start_side_question", Value::Null),
+            answered("abort_side_question", json!({ "aborted": true })),
+            answered("record_better_outcome", Value::Null),
+        ),
+        (
+            vec![
+                call(
+                    "session.start_side_question",
+                    json!({ "session": "s1", "sideQuestionId": "q1", "question": "why?",
+                            "previousTurns": [], "kind": "better" })
+                ),
+                call(
+                    "session.abort_side_question",
+                    json!({ "session": "s1", "sideQuestionId": "q1" })
+                ),
+                call(
+                    "session.record_better_outcome",
+                    json!({ "session": "s1", "outcome": "edited" })
+                ),
+            ],
+            json!({ "type": "response", "command": "start_side_question", "success": true }),
+            json!({ "type": "response", "command": "abort_side_question", "success": true,
+                    "data": { "aborted": true } }),
+            json!({ "type": "response", "command": "record_better_outcome", "success": true }),
+        )
+    );
+}

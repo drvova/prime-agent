@@ -271,6 +271,16 @@ pub enum Call {
     /// `session.answer_question`: replies to an open session's waiting
     /// kernel question.
     SessionAnswerQuestion,
+    /// `session.start_side_question`: starts a `/btw` question or a
+    /// `/better` rewrite beside an open session's turns, streamed on
+    /// `agent/<id>/side_question`.
+    SessionStartSideQuestion,
+    /// `session.abort_side_question`: aborts the calling connection's side
+    /// run of an open session.
+    SessionAbortSideQuestion,
+    /// `session.record_better_outcome`: counts what the user did with a
+    /// `/better` rewrite.
+    SessionRecordBetterOutcome,
 }
 
 impl FromStr for Call {
@@ -326,6 +336,9 @@ impl FromStr for Call {
             "session.attach" => Call::SessionAttach,
             "session.detach" => Call::SessionDetach,
             "session.answer_question" => Call::SessionAnswerQuestion,
+            "session.start_side_question" => Call::SessionStartSideQuestion,
+            "session.abort_side_question" => Call::SessionAbortSideQuestion,
+            "session.record_better_outcome" => Call::SessionRecordBetterOutcome,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

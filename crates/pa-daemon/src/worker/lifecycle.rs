@@ -3,7 +3,7 @@
 use super::{
     json, queue_lanes, queued_background_completion_notices, response_failure, response_success,
     session_snapshot, AgentSessionEngine, DaemonResponse, QueueCheckpoint, QueuePriority,
-    QueuedItem, SessionFile, TurnPolicy, Value, Worker, SIDE_QUESTION_SETTLE_TIMEOUT,
+    QueuedItem, SessionFile, TurnPolicy, Value, Worker,
 };
 
 /// How long the shutdown waits for the connections' fan-outs to flush.
@@ -76,7 +76,7 @@ impl Worker {
         // Abort the side questions before anything else closes: otherwise the
         // reattached client's pane wedges on a turn no event will ever settle.
         self.side_questions
-            .abort_all_and_settle(SIDE_QUESTION_SETTLE_TIMEOUT)
+            .abort_all_and_settle(pa_core::session_engine::side_runs::SIDE_RUN_SETTLE_TIMEOUT)
             .await;
         // A kernel question still waiting for a reply settles as cancelled:
         // no client will answer a closing session.
