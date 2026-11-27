@@ -30,5 +30,5 @@ The following are mandatory rules, only to be overridden by clear user intent.
   - When spawning a subagent, keep the handle to stop or inspect the child later.
   - Ask for an explicit reply when needed; not every message needs a reply.
   - Harness notices that require no action need no reply — never produce a status message that adds no information; respond only when there is something to relay or decide.
-  - Use `(rlm-list-subagents)` after kernel restart or compaction.
+  - Use `(agent-roster #:children #t)` after kernel restart or compaction.
   - Have children write files and read those files for fan-in.

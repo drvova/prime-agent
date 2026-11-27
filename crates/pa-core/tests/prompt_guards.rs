@@ -367,7 +367,7 @@ const NON_MANIFEST_INTERNAL_HOST_REQUESTS: &[&str] = &[
 /// model cannot reach, and fails the guard.
 const HOST_REQUESTS_THE_SCHEME_KERNEL_DOES_NOT_ISSUE: &[&str] = &[
     // A tombstone: its handler only answers that the request was removed in favour of
-    // `agent_observe.list`, which `agent-observe-list` issues.
+    // `agent_observe.list`, which `agent-roster` issues.
     "agent_message.list_agents",
 ];
 
@@ -512,7 +512,7 @@ fn generic_mcp_skill_renders_in_the_prompt_inventory() {
     assert!(inventory.contains("<type>markdown</type>"));
     options.generic_mcp_servers = vec!["notion".into()];
     let second = system_prompt_breakdown(&options);
-    assert!(second.assembled.contains("(mcp-list-tools \"notion\")"));
+    assert!(second.assembled.contains("(mcp-tools \"notion\")"));
 }
 
 // Turn discipline

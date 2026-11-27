@@ -17,30 +17,23 @@
 ;; Spawn a child on `prompt` and return its handle once the task is admitted:
 ;; {rlm_child_id, name, session_dir, model, queued_ms}. #:name is required
 ;; and unique among siblings; #:model is a "provider/model" selector;
-;; #:better #t first checks the prompt as a brief (see `better`).
+;; #:better #t first checks the prompt as a brief (see `better`). With
+;; #:root #t it creates and prompts a resident top-level daemon session
+;; instead: {active_session_id, session_id, name, session_file, model}.
 (define (rlm-spawn prompt
                    #:name [name #f]
                    #:model [model #f]
                    #:thinking [thinking #f]
                    #:cwd [cwd #f]
-                   #:better [check-brief #f])
-  (unless (string? name)
-    (error "rlm-spawn: #:name is required and must be a string"))
-  ;; The wire type stays "rlm.run": hosts of every version answer it.
-  (%host-call "rlm.run"
-              (hash 'prompt (if check-brief (better prompt #:cwd cwd #:mode "brief") prompt)
-                    'kwargs (%options (hash 'name name) 'model model 'thinking thinking 'cwd cwd))))
-
-;; Create and prompt a resident top-level daemon session:
-;; {active_session_id, session_id, name, session_file, model}.
-(define (rlm-create-session prompt
-                            #:name [name #f]
-                            #:model [model #f]
-                            #:thinking [thinking #f]
-                            #:cwd [cwd #f])
-  (%host-call "rlm.create_session"
-              (hash 'prompt prompt
-                    'kwargs (%options (hash) 'name name 'model model 'thinking thinking 'cwd cwd))))
+                   #:better [check-brief #f]
+                   #:root [root #f])
+  (let ([kwargs (%options (hash) 'name name 'model model 'thinking thinking 'cwd cwd)]
+        [prompt (if check-brief (better prompt #:cwd cwd #:mode "brief") prompt)])
+    (cond
+      [root (%host-call "rlm.create_session" (hash 'prompt prompt 'kwargs kwargs))]
+      [(not (string? name)) (error "rlm-spawn: #:name is required and must be a string")]
+      ;; The wire type stays "rlm.run": hosts of every version answer it.
+      [else (%host-call "rlm.run" (hash 'prompt prompt 'kwargs kwargs))])))
 
 ;; Models backed by the user's credentials that match `query`:
 ;; a list of {provider, id, name, selector, image_input}.
@@ -48,10 +41,6 @@
   (hash-ref (%host-call "rlm.find_models"
                         (hash 'query query 'limit (%integer "rlm-find-models" "#:limit" limit)))
             'models))
-
-;; This session's direct children, one row each.
-(define (rlm-list-subagents)
-  (hash-ref (%host-call "rlm.list_subagents" (hash)) 'subagents))
 
 ;; Results of direct children: one target or a list of them (names, ids,
 ;; spawn handles, subagent rows); none selects every child. #:timeout-ms
@@ -65,9 +54,8 @@
             'results))
 
 ;; Delete one running or retained direct child; its last row.
-(define (rlm-delete-subagent target)
-  (hash-ref (%host-call "rlm.delete_subagent"
-                        (hash 'target (%child-selector "rlm-delete-subagent" target)))
+(define (rlm-delete target)
+  (hash-ref (%host-call "rlm.delete_subagent" (hash 'target (%child-selector "rlm-delete" target)))
             'subagent))
 
 ;; Stop one direct child's current turn without deleting it:
@@ -89,7 +77,7 @@
   (%host-call "rlm.progress.note" (hash 'message message)))
 
 ;; End the turn once this cell's batch settles. Raises where the host cannot.
-(define (rlm-end-turn)
+(define (end-turn)
   (%host-call "rlm.end_turn" (hash)))
 
 ;; Re-read the skills, prompt templates, and `AGENTS.md` context files like

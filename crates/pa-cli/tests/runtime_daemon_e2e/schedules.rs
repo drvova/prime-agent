@@ -1,8 +1,8 @@
 //! Scheduled jobs and heartbeats on the runtime daemon (phase 7d), ported
 //! from the old daemon's `readoption_wake_e2e`, `startup_no_auto_resume_e2e`
 //! and `session_stop_lifecycle_e2e` onto wire2, with their expectations.
-//! The jobs are made by the session's own kernel (`rlm-heartbeat-create`,
-//! `schedule-add`), as the runtime daemon registers them:
+//! The jobs are made by the session's own kernel (`event-define` of a heartbeat
+//! and of a scheduled job), as the runtime daemon registers them:
 //!
 //! - a heartbeat fires as `heartbeat_prompt` rows, and keeps firing after
 //!   the daemon is killed and started again, with nobody opening its idle
@@ -29,7 +29,7 @@ use super::{ok, run_turn, Bed, Client, Daemon};
 const FIRE_WAIT: Duration = Duration::from_secs(60);
 
 /// The heartbeat every test arms: every 10 s, the store's shortest.
-const HEARTBEAT: &str = r#"(rlm-heartbeat-create "liveness ping" #:interval "every 10s")"#;
+const HEARTBEAT: &str = r#"(event-define "liveness" #f #:kind "heartbeat" #:prompt "liveness ping" #:timer (hash 'every "every 10s"))"#;
 
 /// A session's first turn runs `code`, every later one answers plainly.
 fn script(code: &str) -> Value {
@@ -330,7 +330,7 @@ async fn a_session_stopped_on_purpose_is_never_woken_by_its_due_job() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_scheduled_job_runs_its_prompt_as_a_turn() {
     let bed = Bed::new();
-    let _daemon = bed.runtime_daemon(&script(r#"(schedule-add "the scheduled check" #:at 1)"#));
+    let _daemon = bed.runtime_daemon(&script(r#"(event-define "check" #f #:kind "schedule" #:prompt "the scheduled check" #:timer (hash 'at 1))"#));
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
     let session = Session::create(&mut client).await;
     until(FIRE_WAIT, "the scheduled turn", async || {

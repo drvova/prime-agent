@@ -190,25 +190,23 @@ fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
     let body = format!("the contract is ready: {}", "x".repeat(300));
 
     let alpha_wait = record(
-        r#"(agent-message-wait #:sender "beta" #:timeout-ms 60000)"#,
+        r#"(event-wait #:sender "beta" #:timeout-ms 60000)"#,
         "alpha-wait",
         &records,
     );
     let beta_code = [
         record(
-            r#"(agent-message-wait #:sender "alpha" #:timeout-ms 60000)"#,
+            r#"(event-wait #:sender "alpha" #:timeout-ms 60000)"#,
             "beta-cycle",
             &records,
         ),
         record(
-            &format!(
-                r#"(agent-message-send {body:?} #:receiver-role "sibling" #:receiver-name "alpha")"#
-            ),
+            &format!(r#"(agent-send {body:?} #:to "alpha")"#),
             "beta-send",
             &records,
         ),
         record(
-            r#"(agent-message-wait #:sender "alpha" #:timeout-ms 300)"#,
+            r#"(event-wait #:sender "alpha" #:timeout-ms 300)"#,
             "beta-timeout",
             &records,
         ),

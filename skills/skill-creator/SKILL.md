@@ -10,7 +10,7 @@ A skill is a directory with a `SKILL.md` file (YAML frontmatter + markdown instr
 | Kind | What it is | When to use |
 |---|---|---|
 | markdown | `SKILL.md` plus optional scripts, references, and assets | Workflows, CLI recipes, domain knowledge, multi-step instructions |
-| scheme | A markdown skill that also carries Scheme source (`skill.scm`, `scheme/*.scm`) the agent's kernel loads | Capabilities that are naturally one call from a cell: wrappers around `bash`, `web-read`, or `mcp-call-tool`, parsers, small computations |
+| scheme | A markdown skill that also carries Scheme source (`skill.scm`, `scheme/*.scm`) the agent's kernel loads | Capabilities that are naturally one call from a cell: wrappers around `bash`, `web-read`, or `mcp-call`, parsers, small computations |
 
 Before writing Scheme source for a skill, read [references/scheme-skills.md](references/scheme-skills.md) for the contract.
 

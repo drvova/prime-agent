@@ -1,5 +1,5 @@
 ;; The session's own state: context, harness refinement, the goal, the
-;; model, settings, usage, paged-out output, checkpoints, and schedules.
+;; model, paged-out output, and checkpoints.
 
 ;; Schedule context compaction for when the turn ends: {scheduled: #t}, or
 ;; {scheduled: #f, reason}. `instructions` focus the summary. With
@@ -119,66 +119,3 @@
     (if (equal? (hash-ref reply 'status) "disabled")
         (error (hash-ref reply 'message))
         reply)))
-
-;; Schedule `prompt` to run in this session later; the job. Pass exactly one
-;; of #:at (an ISO-8601 time, "in 30m", or a delay in seconds), #:every
-;; ("30m", "2h", or seconds), or #:cron (five fields, UTC). #:label names it
-;; in the list.
-(define (schedule-add prompt #:at [at #f] #:every [every #f] #:cron [cron #f] #:label [label #f])
-  (hash-ref (%host-call "schedule.add"
-                        (%options (hash 'prompt prompt)
-                                  'at (cond
-                                        [(not (number? at)) at]
-                                        [(> at 0) (%utc-after (exact->inexact at))]
-                                        [else (error "schedule-add: a numeric #:at is a delay in seconds and must be positive")])
-                                  'every (if (number? every)
-                                             (string-append (number->string (exact (round every))) "s")
-                                             every)
-                                  'cron cron
-                                  'label label))
-            'job))
-
-;; This session's scheduled jobs, soonest first; #:include-inactive #t adds
-;; finished and cancelled ones.
-(define (schedule-list #:include-inactive [include-inactive #f])
-  (hash-ref (%host-call "schedule.list" (hash 'include_inactive include-inactive)) 'jobs))
-
-;; Cancel one of this session's jobs by id; the cancelled job.
-(define (schedule-cancel id)
-  (hash-ref (%host-call "schedule.cancel" (hash 'id id)) 'job))
-
-;; This session's internal recurring heartbeats.
-(define (rlm-heartbeat-list #:include-inactive [include-inactive #f])
-  (%host-call "rlm_heartbeat.list" (hash 'include_inactive include-inactive)))
-
-;; Create a recurring heartbeat that prompts this session with
-;; `instruction`. #:delivery-mode is "steer" (interrupt a busy turn, the
-;; default) or "follow_up" (wait for it).
-(define (rlm-heartbeat-create instruction
-                              #:interval [interval #f]
-                              #:label [label #f]
-                              #:delivery-mode [delivery-mode #f])
-  (%host-call "rlm_heartbeat.create"
-              (%options (hash 'instruction instruction)
-                        'interval interval
-                        'label label
-                        'delivery_mode delivery-mode)))
-
-;; Update one heartbeat; #:status is "pause" or "resume".
-(define (rlm-heartbeat-update id
-                              #:instruction [instruction #f]
-                              #:interval [interval #f]
-                              #:label [label #f]
-                              #:status [status #f]
-                              #:delivery-mode [delivery-mode #f])
-  (%host-call "rlm_heartbeat.update"
-              (%options (hash 'id id)
-                        'instruction instruction
-                        'interval interval
-                        'label label
-                        'status status
-                        'delivery_mode delivery-mode)))
-
-;; Cancel one heartbeat.
-(define (rlm-heartbeat-delete id)
-  (%host-call "rlm_heartbeat.delete" (hash 'id id)))

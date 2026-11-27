@@ -2,7 +2,7 @@
 //! the request to the bus, and route a publication's deliveries.
 //!
 //! A delivery is an agent message to the subscriber (`worker_deliver_message`
-//! with `messageKind` `broadcast`, so it never ends an `agent-message-wait`),
+//! with `messageKind` `broadcast`, so it never ends an `event-wait`),
 //! from a sender named `event:<source>` that carries the publishing session's
 //! id: the receiver's wake budget then holds a publisher that wakes the same
 //! subscriber in a loop. A saved subscriber that is not resident is woken from

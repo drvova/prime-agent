@@ -124,7 +124,7 @@ async fn windowed_kernel(
 }
 
 /// Everything a cell's host calls show lands on its result as the Python
-/// kernel's display events did, and `rlm-end-turn` marks the cell.
+/// kernel's display events did, and `end-turn` marks the cell.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cells_host_calls_show_on_its_result_and_end_turn_marks_it() {
@@ -171,12 +171,12 @@ async fn a_cells_host_calls_show_on_its_result_and_end_turn_marks_it() {
         kernel.as_ref(),
         r#"(todo-set (list "write the tests"))
            (ask "Which store?" (list "sqlite" "postgres") #:default "sqlite")
-           (agent-message-send "status?" #:receiver-role "child" #:receiver-name "worker")
-           (agent-message-broadcast "status?")
+           (agent-send "status?" #:to (hash 'relationship "child" 'sessionName "worker"))
+           (agent-send "status?" #:all #t)
            (history-read #:limit 1 #:role "user")
            (fs-edit "notes.txt" (hash 'old "two" 'new "three"))
            (bash "true")
-           (hash-ref (rlm-end-turn) 'endedTurn)"#,
+           (hash-ref (end-turn) 'endedTurn)"#,
     )
     .await;
     let sent = |id: &str, receiver_role| KernelSentAgentMessage {
@@ -518,7 +518,7 @@ async fn a_background_cells_agent_message_reaches_the_late_handler() {
     let (late, mut arrived) = tokio::sync::mpsc::unbounded_channel();
     let result = kernel
         .execute(
-            r#"(%host-request "gate.wait" (hash)) (agent-message-send "done" #:receiver-role "parent")"#,
+            r#"(%host-request "gate.wait" (hash)) (agent-send "done" #:to "parent")"#,
             KernelExecuteOptions {
                 signal: None,
                 timeout_ms: None,

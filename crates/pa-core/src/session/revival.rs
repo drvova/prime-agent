@@ -190,7 +190,7 @@ enum Effect {
     Program,
     /// `fs-write`, `fs-edit`, `edit`.
     File,
-    /// `rlm-spawn`, `rlm-create-session`.
+    /// `rlm-spawn` (`rlm-create-session` in older cells).
     Subagent,
     /// `mcp-call-tool`, `web-read`, `web-search`.
     Network,
@@ -263,7 +263,9 @@ pub fn interrupted_call_results<'a>(
                         "bash" => Some(Effect::Program),
                         "fs-write" | "fs-edit" | "edit" => Some(Effect::File),
                         "rlm-spawn" | "rlm-create-session" => Some(Effect::Subagent),
-                        "mcp-call-tool" | "web-read" | "web-search" => Some(Effect::Network),
+                        "mcp-call" | "mcp-call-tool" | "web-read" | "web-search" => {
+                            Some(Effect::Network)
+                        }
                         _ => None,
                     })
                     .collect(),

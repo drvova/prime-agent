@@ -1,5 +1,5 @@
 //! The model-facing host API of the Scheme kernel: thin Scheme wrappers over
-//! the session's typed host requests (`rlm-spawn`, `agent-message-send`,
+//! the session's typed host requests (`rlm-spawn`, `agent-send`,
 //! `todo-set`, `ask`, ...), loaded into every session engine after the host
 //! bridge.
 //!
@@ -38,7 +38,7 @@ const SOURCES: [(&str, &str); 10] = [
 pub(super) fn load(engine: &mut Engine) -> anyhow::Result<()> {
     // Names an open question, so an interrupt can withdraw exactly it.
     engine.register_fn("%fresh-id", || uuid::Uuid::new_v4().simple().to_string());
-    // The UTC time `seconds` from now, as `schedule-add` sends a delay.
+    // The UTC time `seconds` from now, as a scheduled job's `'at` sends a delay.
     engine.register_fn("%utc-after", |seconds: f64| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -176,16 +176,16 @@ mod tests {
             kernel.as_ref(),
             &[
                 r#"(rlm-spawn "fix the parser" #:name "worker" #:model "p/m" #:thinking "high" #:cwd "sub" #:better #t)"#,
-                r#"(rlm-create-session "watch CI" #:name "ci")"#,
+                r#"(rlm-spawn "watch CI" #:name "ci" #:root #t)"#,
                 r#"(rlm-find-models "claude" #:limit 5.0)"#,
-                "(rlm-list-subagents)",
+                "(agent-roster #:children #t)",
                 r#"(rlm-collect (list " reviewer " (hash 'rlm_child_id "c1")) #:timeout-ms 500)"#,
                 "(rlm-collect)",
-                r#"(rlm-delete-subagent " worker ")"#,
+                r#"(rlm-delete " worker ")"#,
                 r#"(rlm-abort (hash 'rlm_child_id "c1"))"#,
                 r#"(rlm-rename "renamed" #:session-id "s1")"#,
                 r#"(rlm-progress-note "half done")"#,
-                "(rlm-end-turn)",
+                "(end-turn)",
                 "(rlm-reload)",
             ],
         )
@@ -378,13 +378,13 @@ mod tests {
         let returned = values(
             kernel.as_ref(),
             &[
-                r#"(agent-message-send "status?" #:receiver-role "child" #:receiver-name "worker")"#,
-                r#"(agent-message-send "done" #:receiver-role "parent")"#,
-                r#"(agent-message-broadcast "stop")"#,
-                r#"(agent-message-wait #:timeout-ms 1000 #:sender-role "child")"#,
-                "(agent-observe-list)",
-                r#"(agent-observe-get "worker")"#,
-                r#"(agent-observe-recent "worker" #:limit 3)"#,
+                r#"(agent-send "status?" #:to (hash 'relationship "child" 'sessionName "worker"))"#,
+                r#"(agent-send "done" #:to "parent")"#,
+                r#"(agent-send "stop" #:all #t)"#,
+                r#"(event-wait #:timeout-ms 1000 #:sender-role "child")"#,
+                "(agent-roster)",
+                r#"(agent-roster "worker")"#,
+                r#"(agent-roster "worker" #:recent #t #:limit 3)"#,
             ],
         )
         .await;
@@ -532,6 +532,8 @@ mod tests {
             json!({"id": "cp-1", "label": "before refactor", "created_at": "2026-11-21T10:00:00Z"});
         let job = json!({"id": "job-1", "prompt": "check CI", "label": "ci", "kind": "interval", "status": "active"});
         let heartbeat = json!({"heartbeat": {"id": "hb-1", "status": "active"}});
+        let heartbeats =
+            json!({"heartbeats": [{"id": "hb-1", "label": "queue", "status": "active"}]});
         let checks = json!({"status": "pending", "checks": 2, "rounds": 1, "max_rounds": 3, "running": false, "last": null});
         let evidence =
             json!({"handle": "out:0123456789", "round": 1, "passed": 1, "failed": 1, "checks": []});
@@ -552,7 +554,7 @@ mod tests {
             ("schedule.add", json!({"job": job})),
             ("schedule.list", json!({"jobs": [job]})),
             ("schedule.cancel", json!({"job": job})),
-            ("rlm_heartbeat.list", json!({"heartbeats": []})),
+            ("rlm_heartbeat.list", heartbeats.clone()),
             ("rlm_heartbeat.create", heartbeat.clone()),
             ("rlm_heartbeat.update", heartbeat.clone()),
             ("rlm_heartbeat.delete", heartbeat.clone()),
@@ -572,13 +574,13 @@ mod tests {
                 r#"(checkpoint-create "before refactor")"#,
                 "(checkpoint-list)",
                 r#"(checkpoint-restore "cp-1")"#,
-                r#"(schedule-add "check CI" #:every 1800 #:label "ci")"#,
-                "(schedule-list #:include-inactive #t)",
-                r#"(schedule-cancel "job-1")"#,
-                "(rlm-heartbeat-list)",
-                r#"(rlm-heartbeat-create "review the queue" #:interval "30m" #:delivery-mode "follow_up")"#,
-                r#"(rlm-heartbeat-update "hb-1" #:status "pause")"#,
-                r#"(rlm-heartbeat-delete "hb-1")"#,
+                r#"(event-define "ci" #f #:kind "schedule" #:prompt "check CI" #:timer (hash 'every 1800))"#,
+                r#"(event-list #:kind "schedule" #:include-inactive #t)"#,
+                r#"(event-remove "job-1" #:kind "schedule")"#,
+                r#"(event-list #:kind "heartbeat")"#,
+                r#"(event-define "fresh" #f #:kind "heartbeat" #:prompt "review the queue" #:timer (hash 'every "30m") #:delivery-mode "follow_up" #:status "pause")"#,
+                r#"(event-define "queue" #f #:kind "heartbeat" #:prompt "review it again")"#,
+                r#"(event-remove "queue" #:kind "heartbeat")"#,
                 r#"(better "fix the parser" #:cwd "sub")"#,
                 "(better-checks)",
                 r#"(better-evidence "out:0123456789")"#,
@@ -609,7 +611,7 @@ mod tests {
                     Ok(job.clone()),
                     Ok(json!([job])),
                     Ok(job),
-                    Ok(json!({"heartbeats": []})),
+                    Ok(heartbeats),
                     Ok(heartbeat.clone()),
                     Ok(heartbeat.clone()),
                     Ok(heartbeat),
@@ -624,17 +626,28 @@ mod tests {
                     json!({"type": "usage.quotas", "refresh": true}),
                     json!({"type": "checkpoint.create", "label": "before refactor"}),
                     json!({"type": "checkpoint.list"}),
+                    // A job of the same name is cancelled before the new one is added.
+                    json!({"type": "schedule.list", "include_inactive": false}),
+                    json!({"type": "schedule.cancel", "id": "job-1"}),
                     json!({"type": "schedule.add", "prompt": "check CI", "every": "1800s", "label": "ci"}),
                     json!({"type": "schedule.list", "include_inactive": true}),
+                    json!({"type": "schedule.list", "include_inactive": false}),
                     json!({"type": "schedule.cancel", "id": "job-1"}),
+                    json!({"type": "rlm_heartbeat.list", "include_inactive": false}),
+                    // A new heartbeat is created, and paused when asked.
                     json!({"type": "rlm_heartbeat.list", "include_inactive": false}),
                     json!({
                         "type": "rlm_heartbeat.create",
                         "instruction": "review the queue",
+                        "label": "fresh",
                         "interval": "30m",
                         "delivery_mode": "follow_up",
                     }),
                     json!({"type": "rlm_heartbeat.update", "id": "hb-1", "status": "pause"}),
+                    // One of that name is updated in place.
+                    json!({"type": "rlm_heartbeat.list", "include_inactive": false}),
+                    json!({"type": "rlm_heartbeat.update", "id": "hb-1", "instruction": "review it again"}),
+                    json!({"type": "rlm_heartbeat.list", "include_inactive": false}),
                     json!({"type": "rlm_heartbeat.delete", "id": "hb-1"}),
                     json!({"type": "better.run", "task": "fix the parser", "mode": "deepen", "cwd": "sub"}),
                     json!({"type": "better.checks"}),
@@ -666,7 +679,7 @@ mod tests {
                 r#"(ask "Which stores?" (list "sqlite" "postgres") #:multi #t #:default (list "sqlite" "postgres"))"#,
                 r#"(ask "What should it be called?")"#,
                 r#"(todo-set (list "write the tests" (hash 'text "ship" 'status "in_progress" 'note "after review")))"#,
-                r#"(todo-update "1" #:status "done" #:note "green")"#,
+                r#"(todo-set (hash 'id "1" 'status "done" 'note "green") #:merge #t)"#,
                 "(todo-get)",
                 r#"(notify "tests pass" #:level "success")"#,
             ],
@@ -757,7 +770,7 @@ mod tests {
                 r#"(rlm-spawn "fix the parser")"#,
                 "(rlm-collect #:timeout-ms 1.5)",
                 r#"(ask "Which?" #:multi #t)"#,
-                r#"(todo-update "1")"#,
+                r#"(todo-set (hash 'id "1") #:merge #t)"#,
             ],
         )
         .await;
@@ -768,7 +781,7 @@ mod tests {
                     Err("Error: Generic:  rlm-spawn: #:name is required and must be a string".to_string()),
                     Err("Error: Generic:  rlm-collect: #:timeout-ms must be an integer".to_string()),
                     Err("Error: Generic:  ask: #:multi needs choices".to_string()),
-                    Err("Error: Generic:  todo-update: pass at least one of #:status, #:text, #:note".to_string()),
+                    Err("Error: Generic:  todo-set: a #:merge item changes at least one of 'status, 'text, 'note".to_string()),
                 ],
                 Vec::new()
             )
@@ -858,26 +871,29 @@ mod tests {
         );
     }
 
-    /// A numeric `#:at` is a delay: the host is sent the UTC time that many
+    /// A numeric `'at` is a delay: the host is sent the UTC time that many
     /// seconds from now.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_numeric_schedule_time_is_sent_as_the_utc_time_that_delay_from_now() {
-        let (handlers, received) = answering(&[("schedule.add", json!({"job": {"id": "job-1"}}))]);
+        let (handlers, received) = answering(&[
+            ("schedule.add", json!({"job": {"id": "job-1"}})),
+            ("schedule.list", json!({"jobs": []})),
+        ]);
         let kernel = kernel_over(handlers).await;
         let now = || crate::session::manager::format_iso_now();
         let before = crate::cron::parse_instant(&now()).unwrap();
         let returned = values(
             kernel.as_ref(),
             &[
-                r#"(schedule-add "check CI" #:at 90)"#,
-                r#"(schedule-add "check CI" #:at "in 30m")"#,
-                r#"(schedule-add "check CI" #:at -5)"#,
+                r#"(event-define "ci" #f #:kind "schedule" #:prompt "check CI" #:timer (hash 'at 90))"#,
+                r#"(event-define "ci" #f #:kind "schedule" #:prompt "check CI" #:timer (hash 'at "in 30m"))"#,
+                r#"(event-define "ci" #f #:kind "schedule" #:prompt "check CI" #:timer (hash 'at -5))"#,
             ],
         )
         .await;
         let after = crate::cron::parse_instant(&now()).unwrap();
         let mut received = received.lock().unwrap().clone();
-        let at = received[0]["at"].take();
+        let at = received[1]["at"].take();
         let fires = crate::cron::parse_instant(at.as_str().unwrap()).unwrap();
         assert_eq!(
             (
@@ -889,11 +905,14 @@ mod tests {
                 vec![
                     Ok(json!({"id": "job-1"})),
                     Ok(json!({"id": "job-1"})),
-                    Err("Error: Generic:  schedule-add: a numeric #:at is a delay in seconds and must be positive".to_string()),
+                    Err("Error: Generic:  event-define: a numeric 'at is a delay in seconds and must be positive".to_string()),
                 ],
                 vec![
-                    json!({"type": "schedule.add", "prompt": "check CI", "at": null}),
-                    json!({"type": "schedule.add", "prompt": "check CI", "at": "in 30m"}),
+                    json!({"type": "schedule.list", "include_inactive": false}),
+                    json!({"type": "schedule.add", "prompt": "check CI", "label": "ci", "at": null}),
+                    json!({"type": "schedule.list", "include_inactive": false}),
+                    json!({"type": "schedule.add", "prompt": "check CI", "label": "ci", "at": "in 30m"}),
+                    json!({"type": "schedule.list", "include_inactive": false}),
                 ],
                 true,
             )

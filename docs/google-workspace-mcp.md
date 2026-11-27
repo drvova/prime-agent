@@ -104,7 +104,7 @@ unformatted typed values, read the effective values through `get_spreadsheet`:
 
 ```scheme
 (define grid
-  (mcp-call-tool "google-sheets" "get_spreadsheet"
+  (mcp-call "google-sheets" "get_spreadsheet"
                  (hash 'spreadsheetId spreadsheet-id
                        'ranges (list "Ledger!A1:F2000")
                        'includeGridData #t

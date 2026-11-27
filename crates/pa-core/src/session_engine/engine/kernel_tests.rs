@@ -400,12 +400,7 @@ async fn the_users_mcp_servers_open_at_session_start_and_end_with_the_session() 
     })
     .await
     .expect("no cell ran, and the server was never opened");
-    run_cell(
-        &engine,
-        &provider,
-        "(display (mcp-call-tool \"files\" \"pid\"))",
-    )
-    .await;
+    run_cell(&engine, &provider, "(display (mcp-call \"files\" \"pid\"))").await;
     let pid: u32 = cell_results(&provider)
         .last()
         .and_then(|pid| pid.trim().parse().ok())

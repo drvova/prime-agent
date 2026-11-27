@@ -214,8 +214,8 @@ async fn a_call_its_function_does_not_declare_is_refused_before_the_function_run
             CallRefusal::UnknownOption,
         ),
         (
-            r#"(agent-observe-recent "worker" #:limit 1 #:limit 2)"#,
-            "agent-observe-recent: option #:limit is given twice: pass it once",
+            r#"(agent-roster "worker" #:recent #t #:limit 1 #:limit 2)"#,
+            "agent-roster: option #:limit is given twice: pass it once",
             CallRefusal::RepeatedOption,
         ),
         (

@@ -37,7 +37,7 @@ word-count/
 
 ## What the source can use
 
-- Everything a cell can: the kernel API (`bash`, `fs-read`, `web-read`, `mcp-call-tool`, `rlm-spawn`, ...; `(api-help)` prints its reference) and Steel's standard library. Optional arguments are keywords with defaults, `#:top [top 5]`.
+- Everything a cell can: the kernel API (`bash`, `fs-read`, `web-read`, `mcp-call`, `rlm-spawn`, ...; `(api-help)` prints its reference) and Steel's standard library. Optional arguments are keywords with defaults, `#:top [top 5]`.
 - There are no packages to depend on and no `import`. For work that needs another language, ship a script in the skill's `scripts/` directory and run it with `bash`, giving its absolute path.
 - A skill function runs inside the agent's kernel, so it can itself spawn sub-agents with `(rlm-spawn "subtask" #:name "worker")`.
 - Code runs when the file loads, so keep the top level to definitions: no network, no commands, nothing slow.

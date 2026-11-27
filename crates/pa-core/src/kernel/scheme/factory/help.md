@@ -383,7 +383,7 @@ for the next) where a child agent would only spend budget.
   session.
 - Runs live in kernel memory: a kernel restart loses `factory-status` for
   old runs, but the children keep running under the supervisor
-  (`rlm-list-subagents` sees them). Stop runs before restarting, or delete
+  (`agent-roster #:children` sees them). Stop runs before restarting, or delete
   the children by hand afterwards.
 - Residents outlive their run; stop the run (or tear down the session) to
   retire them. Prefer `(factory-stop run-id)` over deleting a factory child

@@ -433,7 +433,7 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_kernel: bool) ->
             );
         } else if has_kernel {
             lines.push(
-                "When a task calls for an answer, reply explicitly with `(agent-message-send message #:receiver-role \"parent\")`. Not every message or task needs a reply; continue cleanup after sending and go idle normally.".to_string(),
+                "When a task calls for an answer, reply explicitly with `(agent-send message #:to \"parent\")`. Not every message or task needs a reply; continue cleanup after sending and go idle normally.".to_string(),
             );
         }
         if has_kernel {
@@ -491,7 +491,7 @@ fn format_generic_mcp_guidance(servers: &[String]) -> String {
     ];
     for server in &enabled {
         lines.push(format!(
-            "For `{server}`, first discover its tools with `(mcp-list-tools \"{server}\")`, then call one with `(mcp-call-tool \"{server}\" \"<tool>\" arguments)`."
+            "For `{server}`, first discover its tools with `(mcp-tools \"{server}\")`, then call one with `(mcp-call \"{server}\" \"<tool>\" arguments)`."
         ));
     }
     lines.join("\n")
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn factory_child_gets_the_factory_line_instead_of_the_reply_line() {
-        const REPLY: &str = "reply explicitly with `(agent-message-send message";
+        const REPLY: &str = "reply explicitly with `(agent-send message";
         const FACTORY: &str = "Your final message is this state's output";
         let mut child = base_options();
         child.rlm_depth = Some(1);

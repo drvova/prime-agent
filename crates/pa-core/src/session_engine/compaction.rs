@@ -460,7 +460,7 @@ pub fn find_cut_point(
     }
 }
 
-const SUMMARIZATION_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Outstanding Work\n- [Running subagents: name / task / status (recovery pointer: (rlm-list-subagents))]\n- [Background bash handles: command / status (recovery: the [bash-done] notification; a lost handle cannot be re-awaited)]\n- [Active heartbeats and the goal: schedule / objective (recovery pointers: (rlm-heartbeat-list) and (goal-get))]\n- [Or \"(none)\" if nothing is in flight]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Interfaces\n- [File paths, function signatures, commands that worked, and data shapes the work relies on, exact]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
+const SUMMARIZATION_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Outstanding Work\n- [Running subagents: name / task / status (recovery pointer: (agent-roster #:children #t))]\n- [Background bash handles: command / status (recovery: the [bash-done] notification; a lost handle cannot be re-awaited)]\n- [Active heartbeats and the goal: schedule / objective (recovery pointers: (event-list #:kind \"heartbeat\") and (goal-get))]\n- [Or \"(none)\" if nothing is in flight]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Interfaces\n- [File paths, function signatures, commands that worked, and data shapes the work relies on, exact]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
 
 /// Both summary templates end in it: a summary is judged by what the next
 /// model can reuse, so it asks for structure and forbids transcript copies.
@@ -887,9 +887,9 @@ mod tests {
             _ => panic!("expected a user message"),
         };
         assert!(text.contains("## Outstanding Work"));
-        assert!(text.contains("(rlm-list-subagents)"));
+        assert!(text.contains("(agent-roster #:children #t)"));
         assert!(text.contains("the [bash-done] notification"));
-        assert!(text.contains("(rlm-heartbeat-list)"));
+        assert!(text.contains("(event-list #:kind \"heartbeat\")"));
 
         let update = crate::session_engine::compaction_exec::build_summarization_request(
             &messages,

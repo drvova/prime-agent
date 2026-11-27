@@ -270,7 +270,7 @@ fn create_session_cell(receipt: &Path, error_receipt: &Path) -> String {
                 (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
-    (let ([handle (rlm-create-session "root session task" #:name "rootkid")])
+    (let ([handle (rlm-spawn "root session task" #:name "rootkid" #:root #t)])
       (record {receipt:?} (value->jsexpr-string handle))
       (displayln (hash-ref handle 'name)))))
 "#,

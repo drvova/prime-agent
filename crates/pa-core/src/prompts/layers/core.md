@@ -73,15 +73,9 @@ In goal mode prime-agent helps an agent stay on track until a task is fully fini
 
 {{calls:goal}}
 
-## Schedules and heartbeats
+## Events, schedules and heartbeats
 
-Agents can schedule a prompt to run in their session later, and create heartbeats to wake themselves up recurrently with remembered instructions.
-
-{{calls:schedule}}
-
-## Events
-
-Sessions react to events instead of polling. An event source is a service with a schema: a session defines one, publishes its events, and every session subscribed to it gets a turn for each matching event.
+Sessions react to events instead of polling. An event source is a service with a schema: a session defines one, publishes its events, and every session subscribed to it gets a turn for each matching event. With `event-define` an agent also schedules a prompt to run in its session later (`#:kind "schedule"`), or creates a heartbeat that wakes it recurrently with remembered instructions (`#:kind "heartbeat"`).
 
 {{calls:events}}
 

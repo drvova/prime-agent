@@ -60,23 +60,23 @@ class ObserveClient(Client):
 
 
 PRINT = '(displayln (string-append "OBSERVE_SELECTORS_PARITY=" (value->jsexpr-string %s)))\n'
-CHILDREN = "(hash 'children (rlm-list-subagents))"
+CHILDREN = "(hash 'children (agent-roster #:children #t))"
 
 
 def cell(selectors):
-    """One cell: the roster, then `agent-observe-get` and `agent-observe-recent` per selector."""
+    """One cell: the roster, then `agent-roster` and `agent-roster #:recent` per selector."""
     pairs = ' '.join("(list %s %s)" % (json.dumps(label), json.dumps(target))
                      for label, target in selectors.items())
     return """(define (observed read)
   (with-handler (lambda (e) (hash 'error (to-string e))) (hash 'value (read))))
 (define (selector-row target)
-  (hash 'get (observed (lambda () (hash 'agent (agent-observe-get target))))
-        'recent (observed (lambda () (agent-observe-recent target #:limit 8 #:max-chars 800)))))
+  (hash 'get (observed (lambda () (hash 'agent (agent-roster target))))
+        'recent (observed (lambda () (agent-roster target #:recent #t #:limit 8 #:max-chars 800)))))
 (define selector-rows
   (foldl (lambda (pair rows) (hash-insert rows (string->symbol (car pair)) (selector-row (cadr pair))))
          (hash)
          (list """ + pairs + """)))
-""" + PRINT % "(hash 'roster (agent-observe-list) 'selectors selector-rows)"
+""" + PRINT % "(hash 'roster (agent-roster) 'selectors selector-rows)"
 
 
 class Provider(http.server.ThreadingHTTPServer):
@@ -360,7 +360,7 @@ def run_case(binary, root, observation):
         foreign = {'active': foreign_row['active_session_id'], 'durable': foreign_row['session_id'], 'raw': foreign_row}
         created['observe-foreign-child'] = foreign
         provider.phase = 'foreign_topology'
-        provider.code = PRINT % "(hash 'agent (agent-observe-get \"observe-foreign-child\"))"
+        provider.code = PRINT % "(hash 'agent (agent-roster \"observe-foreign-child\"))"
         client.call('prompt_and_wait', timeout_seconds=90, activeSessionId=other_parent['active'],
                     message='Observe the actual foreign child parent edges.')
         foreign_agent = current_probe(provider.requests['foreign_topology'], 'foreign_topology')['agent']

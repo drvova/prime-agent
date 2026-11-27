@@ -134,8 +134,8 @@ pub(crate) fn is_kernel_function(head: &str) -> bool {
         "bash-",
         "fs-",
         "rlm-",
-        "agent-message-",
-        "agent-observe-",
+        "agent-",
+        "event-",
         "web-",
         "mcp-",
         "worktree-",
@@ -156,7 +156,16 @@ pub(crate) fn is_kernel_function(head: &str) -> bool {
     ];
     matches!(
         head,
-        "bash" | "edit" | "ask" | "better" | "notify" | "api-help" | "attach-image" | "compact"
+        "bash"
+            | "edit"
+            | "ask"
+            | "better"
+            | "notify"
+            | "api-help"
+            | "attach-image"
+            | "compact"
+            | "end-turn"
+            | "session-info"
     ) || FAMILIES.iter().any(|family| head.starts_with(family))
 }
 

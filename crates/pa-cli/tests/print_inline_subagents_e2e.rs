@@ -122,9 +122,7 @@ fn spawn_cell() -> String {
 /// One child's reply cell: the kernel sends the parent a message
 /// (the reply that must survive the print run staying open).
 fn reply_cell(child: &str) -> String {
-    format!(
-        "(agent-message-send \"{child}-RESULT\" #:receiver-role \"parent\")\n(displayln \"{child} REPLIED\")"
-    )
+    format!("(agent-send \"{child}-RESULT\" #:to \"parent\")\n(displayln \"{child} REPLIED\")")
 }
 
 /// The parent script whose every later turn answers with the combined
@@ -368,7 +366,7 @@ fn print_inline_subagents_wait_for_a_retasked_child() {
     let follow_up_cell = r#"(define (report label row)
   (displayln label (hash-ref row 'status) (hash-ref row 'settled) (hash-ref row 'answer_text)))
 (report "FIRST-TASK" (car (rlm-collect (list "kid") #:timeout-ms 60000)))
-(agent-message-send "SECOND-RESULT" #:receiver-role "child" #:receiver-name "kid")
+(agent-send "SECOND-RESULT" #:to "kid")
 (report "SECOND-TASK" (car (rlm-collect (list "kid") #:timeout-ms 60000)))"#
         .to_string();
     let script = serde_json::json!({
@@ -453,7 +451,7 @@ fn print_inline_subagents_report_a_failed_child_then_a_clean_retry() {
     let retask_cell = r#"(define (report label row)
   (displayln label (hash-ref row 'status) (or (hash-try-get row 'error) "no-error")))
 (report "FIRST-COLLECT" (car (rlm-collect (list "flaky") #:timeout-ms 60000)))
-(agent-message-send "retry the task" #:receiver-role "child" #:receiver-name "flaky")"#
+(agent-send "retry the task" #:to "flaky")"#
         .to_string();
     // The turn over the second reply: collect the clean retry.
     let second_collect_cell =
@@ -893,7 +891,7 @@ fn print_inline_rename_rejects_sibling_collisions_and_preserves_routing() {
                 (begin (rlm-rename "alpha" #:session-id beta) "accepted a duplicate sibling name")))
 (check (string-contains? refusal "unavailable") refusal)
 (define (named row) (string-append (hash-ref row 'rlm_child_id) "=" (hash-ref row 'session_name)))
-(check (equal? (sort (map named (rlm-list-subagents)) string<?)
+(check (equal? (sort (map named (agent-roster #:children #t)) string<?)
                (sort (list (string-append (hash-ref alpha 'rlm_child_id) "=alpha")
                            (string-append (hash-ref beta 'rlm_child_id) "=beta"))
                      string<?))
@@ -963,9 +961,9 @@ fn print_inline_delete_cancels_an_executing_child_and_removes_it() {
     [(= 0 (hash-ref (bash "test -e cancel-child-ready") 'exit-code)) void]
     [(> tries 0) (bash "sleep 0.05") (loop (- tries 1))]
     [else (error "the child never started its command")]))
-(define deleted (rlm-delete-subagent child))
+(define deleted (rlm-delete child))
 (unless (equal? (hash-ref deleted 'status) "cancelled") (error (to-string deleted)))
-(unless (null? (rlm-list-subagents)) (error "the deleted child is still listed"))
+(unless (null? (agent-roster #:children #t)) (error "the deleted child is still listed"))
 (define refusal
   (with-handler (lambda (e) (to-string e))
                 (begin (rlm-collect (list child) #:timeout-ms 0) "the deleted child remained collectable")))
@@ -1100,7 +1098,7 @@ fn print_inline_child_wakes_on_a_background_bash_completion() {
                 "kid waiting",
                 { "content": [
                     { "type": "toolCall", "name": "eval",
-                      "arguments": { "code": "(agent-message-send \"KID-BG-RESULT\" #:receiver-role \"parent\")\n(displayln \"KID WOKEN\" (bash-output job))" } },
+                      "arguments": { "code": "(agent-send \"KID-BG-RESULT\" #:to \"parent\")\n(displayln \"KID WOKEN\" (bash-output job))" } },
                 ] },
                 "kid finished",
             ] },

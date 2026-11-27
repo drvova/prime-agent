@@ -8,27 +8,24 @@
 //! `mcp.refresh` and `mcp.begin_login` requests, the same handlers the Python
 //! kernel's `mcp` module asked.
 //!
-//! - `(mcp-list-tools server)`: the server's tools, each a hash of `'name`,
+//! - `(mcp-tools server)`: the server's tools, each a hash of `'name`,
 //!   `'description`, `'inputSchema`; complete or an error, never partial.
-//! - `(mcp-describe-tool server tool)`: one such hash.
-//! - `(mcp-call-tool server tool [arguments])`: the tool's structured content
+//!   `#:tool name` is one such hash; `#:search query` (in `server`, or the
+//!   connected ones without it) returns `'tools` (each `'connectionId`,
+//!   `'name`, `'description`), `'searched`, `'unavailable`, `'truncated`.
+//! - `(mcp-call server tool [arguments])`: the tool's structured content
 //!   when it has any, else its text, else its content blocks. A result the
 //!   server flags as an error raises.
-//! - `(mcp-search-tools query #:connection-id id #:limit n)`: `'tools` (each
-//!   `'connectionId`, `'name`, `'description`), `'searched`, `'unavailable`,
-//!   `'truncated`.
-//! - `(mcp-list-connections)`, `(mcp-list-plugins #:connection-status s
-//!   #:limit n #:cursor c)`, `(mcp-search-plugins query #:limit n)`: the
-//!   host's inventory, with secret-looking keys dropped.
+//! - `(mcp-status)` and `(mcp-plugins #:search #:connection-status #:limit
+//!   #:cursor)`: the host's inventory, with secret-looking keys dropped.
 //! - `(mcp-status servers #:timeout-ms n)`: per server `'server`, `'tools`
 //!   (each `'name`, `'description`) or `'error`.
 //! - `(mcp-login server)`: `'server`, `'status` (`"logged_in"`,
 //!   `"unavailable"`, `"failed"`), `'message`.
 //! - `(mcp-reload [server])`: close one server's connection, or all of them;
 //!   the next call opens it again.
-//! - `(mcp-list-resources server)`, `(mcp-list-resource-templates server)`,
-//!   `(mcp-read-resource server uri)`, `(mcp-list-prompts server)`,
-//!   `(mcp-get-prompt server name [arguments])`: the server's replies.
+//! - `(mcp-resources server #:uri #:templates)` and `(mcp-prompts server
+//!   #:name #:arguments)`: the server's replies.
 //!
 //! Keys of a reply are the server's own (`'inputSchema`, not
 //! `'input-schema`), a JSON null is void, and whole numbers are exact

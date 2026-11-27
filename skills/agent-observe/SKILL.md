@@ -6,10 +6,10 @@ description: Read-only roster and observation of an agent's parent, siblings, an
 # Agent Observe
 
 Observe the current agent's nuclear family through the local daemon: parent,
-siblings, direct children, and self. `agent-observe-list` is the one family
-roster and covers every member `agent-message-send` can reach.
-`agent-observe-get` also returns an inactive child's roster row.
-`agent-observe-recent` also reads a member no worker holds (a passivated or
+siblings, direct children, and self. `(agent-roster)` is the one family
+roster and covers every member `agent-send` can reach.
+`(agent-roster target)` also returns an inactive child's roster row.
+`(agent-roster target #:recent #t)` also reads a member no worker holds (a passivated or
 finished child) from its session file, read-only, without waking it. They
 cannot read a root sibling that has no live session in this worker.
 These functions are read-only: they can list family sessions, inspect one
@@ -19,19 +19,19 @@ clear, kill, rename, or otherwise mutate another session.
 Call them from the kernel:
 
 ```scheme
-(define children (rlm-list-subagents))
+(define children (agent-roster #:children #t))
 (define live (filter (lambda (child) (hash-try-get child 'active_session_id)) children))
 (unless (null? live)
   (let ([name (hash-ref (car live) 'session_name)])
-    (displayln (agent-observe-get name))
-    (displayln (agent-observe-recent name #:limit 6))
+    (displayln (agent-roster name))
+    (displayln (agent-roster name #:recent #t #:limit 6))
     ;; Deletion is a parent-owned RLM operation, not an observe mutation:
-    (rlm-delete-subagent (car live))))
+    (rlm-delete (car live))))
 ```
 
 ## API
 
-- `(agent-observe-list)` returns `current` (the calling agent's own row) and
+- `(agent-roster)` returns `current` (the calling agent's own row) and
   `agents` (the family: parent, siblings, and direct children, active or not;
   the caller is excluded from `agents`). Each row carries `sessionId`,
   optional `sessionName`, `relationship` (`parent`/`sibling`/`child`),
@@ -42,14 +42,14 @@ Call them from the kernel:
   (`parentActiveSessionId`, `parentSessionId`) and `rlmChildId` for subagents,
   and `firstMessage` (capped at 240 chars) for an inactive child. A member
   with no live session has no `activeSessionId` and no live detail; address it
-  with `agent-message-send` using its `relationship` plus its `sessionName`,
-  or its `sessionId` when the member has no name. For direct children,
-  `(rlm-list-subagents)` also exposes parent-owned lifecycle rows.
-- `(agent-observe-get target)` returns one agent summary (the same shape as
+  by passing its row as `agent-send`'s `#:to`, or its `sessionName`, or its
+  `sessionId` when the member has no name. For direct children,
+  `(agent-roster #:children #t)` also exposes parent-owned lifecycle rows.
+- `(agent-roster target)` returns one agent summary (the same shape as
   the roster rows, including a passive child's row). `target` is resolved like
   other live-session selectors: active id, session id or name, or an
   unambiguous id suffix.
-- `(agent-observe-recent target #:limit #:max-chars)` returns `agent` (the
+- `(agent-roster target #:recent #t #:limit #:max-chars)` returns `agent` (the
   target's summary), `messages` (up to `#:limit` recent bounded previews,
   default 8), the clamped `limit` and `maxChars`, and `truncated` (true when
   older messages exist beyond the returned window). `#:limit` must be 1-50,

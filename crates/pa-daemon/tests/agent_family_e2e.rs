@@ -227,7 +227,7 @@ fn record_cell(call: &str, name: &str, receipts_dir: &Path) -> String {
 /// The child's reply turn; no receiver name: the parent is the only Parent member.
 fn child_cell(receipts_dir: &Path) -> String {
     record_cell(
-        r#"(agent-message-send "kid reply" #:receiver-role "parent")"#,
+        r#"(agent-send "kid reply" #:to "parent")"#,
         "child-reply",
         receipts_dir,
     )
@@ -596,9 +596,9 @@ async fn family_edges_never_cross_families_end_to_end() {
     // Parent-a's one kernel turn records its roster and broadcast receipts.
     let parent_a_cell = format!(
         "{}\n{}",
-        record_cell("(agent-observe-list)", "parent-observe", &receipts_dir),
+        record_cell("(agent-roster)", "parent-observe", &receipts_dir),
         record_cell(
-            r#"(agent-message-broadcast "parent broadcast")"#,
+            r#"(agent-send "parent broadcast" #:all #t)"#,
             "parent-broadcast",
             &receipts_dir
         )
@@ -622,21 +622,21 @@ async fn family_edges_never_cross_families_end_to_end() {
     );
     let kid_cells = [
         record_cell(
-            r#"(agent-message-send "hello sibling" #:receiver-role "sibling" #:receiver-name "kid-b")"#,
+            r#"(agent-send "hello sibling" #:to "kid-b")"#,
             "kid-sibling-cross",
             &receipts_dir,
         ),
         record_cell(
-            r#"(agent-message-send "parent update" #:receiver-role "parent")"#,
+            r#"(agent-send "parent update" #:to "parent")"#,
             "kid-parent-reply",
             &receipts_dir,
         ),
         record_cell(
-            r#"(agent-message-broadcast "kid broadcast")"#,
+            r#"(agent-send "kid broadcast" #:all #t)"#,
             "kid-broadcast",
             &receipts_dir,
         ),
-        record_cell("(agent-observe-list)", "kid-observe", &receipts_dir),
+        record_cell("(agent-roster)", "kid-observe", &receipts_dir),
     ];
     // One scripted turn per cell: the tool-call entry, then the text entry that closes it (a nested
     // array is not a valid script).
@@ -913,7 +913,7 @@ async fn family_edges_never_cross_families_end_to_end() {
         );
     };
     assert!(
-        crossed.contains("No sibling matches"),
+        crossed.contains("No sibling or child matches"),
         "a cross-family sibling send must fail closed: {crossed}"
     );
     if let Ok(error) = std::fs::read_to_string(receipts_dir.join("kid-parent-reply.error")) {

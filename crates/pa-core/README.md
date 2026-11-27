@@ -311,7 +311,7 @@ a keyword given twice or without a value, too few or too many arguments, and a s
 optional argument is given (Steel passes over it). The contract is read from each
 `(define (name ...) ...)` when its source is loaded through `contracts::load`, which is how every
 kernel source and every skill's Scheme source reaches an engine; the options-hash tools (`bash`,
-`fs-*`) refuse an unknown key against the table they read from, and `mcp-call-tool` refuses an
+`fs-*`) refuse an unknown key against the table they read from, and `mcp-call` refuses an
 argument outside a tool schema that lists its properties and opens no other door. Each refusal is
 reported through the fire-and-forget `call.refused` host request (`kernel::call_refusals`) by its
 class and rides the `agent kernel call refusals` event. Non-goals: checking or coercing argument
@@ -437,7 +437,7 @@ the `event-*` kernel functions, each parsed into a typed `pa_types::events::Even
 sent through an `EventBusController`; the bus itself lives in the daemon's supervisor or in a
 headless run's runtime (pa-runtime). A run with neither registers `NoEventBus`, which refuses
 every call with the reason; a daemon worker replaces it with its link-backed controller, a
-runtime session with the runtime's. `event-source-define`'s `#:timer` and `#:watch` make a
+runtime session with the runtime's. `event-define`'s `#:timer` and `#:watch` make a
 timer or folder-watch source; `agent_state::EventBusState::apply` takes them only from a bus
 that runs them (`SourceKinds::Accepted`, a headless runtime's) and refuses them on the daemon's
 (`SourceKinds::BusOnly`), and never stores them. Public surface: `EventBusController`,

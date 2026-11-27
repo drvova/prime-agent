@@ -12,25 +12,26 @@ read, replace, pause, resume, or clear that user-level heartbeat.
 Call them from the kernel:
 
 ```scheme
-(rlm-heartbeat-create "check test progress" #:interval "5m" #:label "tests")
-(rlm-heartbeat-create "watch build" #:delivery-mode "follow_up")
-(rlm-heartbeat-list)
-(rlm-heartbeat-update "job-id" #:status "pause")
-(rlm-heartbeat-delete "job-id")
+(event-define "tests" #f #:kind "heartbeat" #:prompt "check test progress" #:timer (hash 'every "5m"))
+(event-define "build" #f #:kind "heartbeat" #:prompt "watch build" #:delivery-mode "follow_up")
+(event-list #:kind "heartbeat")
+(event-define "tests" #f #:kind "heartbeat" #:prompt "check test progress" #:status "pause")
+(event-remove "tests" #:kind "heartbeat")
 ```
 
 ## API
 
-- `(rlm-heartbeat-list #:include-inactive)` — list this session's internal RLM
-  heartbeats. By default this includes active and paused entries.
-- `(rlm-heartbeat-create instruction #:interval #:label #:delivery-mode)` —
-  create a recurring heartbeat for this session. The default interval is every
-  5 minutes. Multiple RLM heartbeats may run at once; use labels to
-  distinguish them. `#:delivery-mode` is `"steer"` (default) or `"follow_up"`.
-- `(rlm-heartbeat-update id #:instruction #:interval #:label #:status
-  #:delivery-mode)` — update one RLM heartbeat by id. `#:status` may be
-  `"pause"` or `"resume"`; `#:delivery-mode` may be `"steer"` or `"follow_up"`.
-- `(rlm-heartbeat-delete id)` — cancel one RLM heartbeat by id.
+- `(event-list #:kind "heartbeat" #:include-inactive)` — list this session's
+  internal RLM heartbeats. By default this includes active and paused entries.
+- `(event-define name #f #:kind "heartbeat" #:prompt instruction #:timer
+  #:delivery-mode #:status)` — create the recurring heartbeat `name` for this
+  session, or update the one of that name (by label or id). The default
+  interval is every 5 minutes; `#:timer (hash 'every "10m")` sets another.
+  Multiple RLM heartbeats may run at once; their names distinguish them.
+  `#:delivery-mode` is `"steer"` (default) or `"follow_up"`; `#:status` may be
+  `"pause"` or `"resume"`.
+- `(event-remove name #:kind "heartbeat")` — cancel one RLM heartbeat by name
+  or id.
 
 ## Delivery mode
 
