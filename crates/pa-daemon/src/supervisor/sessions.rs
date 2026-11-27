@@ -311,9 +311,9 @@ impl Supervisor {
         // The saved catalog scan never visits session-artifacts, where RLM children
         // persist: merge the passive ledger walk so a passivated descendant stays
         // catalog-visible.
-        let mut roots: Vec<crate::rlm_roster::RosterWalkRoot> = infos
+        let mut roots: Vec<pa_core::session_engine::rlm_roster::RosterWalkRoot> = infos
             .iter()
-            .map(|info| crate::rlm_roster::RosterWalkRoot {
+            .map(|info| pa_core::session_engine::rlm_roster::RosterWalkRoot {
                 session_file: info.path.clone(),
                 active_session_id: None,
             })
@@ -321,7 +321,7 @@ impl Supervisor {
         for resident in self.registry.list().await {
             let descriptor = resident.descriptor.lock().await;
             if let Some(session_file) = &descriptor.session_file {
-                roots.push(crate::rlm_roster::RosterWalkRoot {
+                roots.push(pa_core::session_engine::rlm_roster::RosterWalkRoot {
                     session_file: pa_core::session::lease::canonical_session_path(Path::new(
                         session_file,
                     )),
@@ -340,20 +340,21 @@ impl Supervisor {
                 ))];
             }
         };
-        let passive = match crate::rlm_roster::walk_passive_rlm_children(&ledger, &roots) {
-            Ok(children) => children,
-            Err(error) => {
-                self.log_line(&format!(
-                    "Could not merge passive RLM descendants: {error:#}"
-                ));
-                Vec::new()
-            }
-        };
+        let passive =
+            match pa_core::session_engine::rlm_roster::walk_passive_rlm_children(&ledger, &roots) {
+                Ok(children) => children,
+                Err(error) => {
+                    self.log_line(&format!(
+                        "Could not merge passive RLM descendants: {error:#}"
+                    ));
+                    Vec::new()
+                }
+            };
         // The passive ledger children stream too (items only, no progress - the
         // saved phase above owns the progress counts).
         let mut merged: Vec<_> = passive
             .iter()
-            .map(crate::rlm_roster::passive_child_info)
+            .map(pa_core::session_engine::rlm_roster::passive_child_info)
             .filter(|info| !scope_current || info.cwd == cwd)
             .collect();
         if factory_lane {
@@ -504,9 +505,10 @@ impl Supervisor {
                     });
                 }
                 let mut summaries = Vec::new();
-                let mut roots: Vec<crate::rlm_roster::RosterWalkRoot> = Vec::new();
+                let mut roots: Vec<pa_core::session_engine::rlm_roster::RosterWalkRoot> =
+                    Vec::new();
                 for info in &infos {
-                    roots.push(crate::rlm_roster::RosterWalkRoot {
+                    roots.push(pa_core::session_engine::rlm_roster::RosterWalkRoot {
                         session_file: info.path.clone(),
                         active_session_id: None,
                     });
@@ -526,16 +528,20 @@ impl Supervisor {
                 }
                 let mut resident_only = Vec::new();
                 for root in resident_by_file {
-                    roots.push(crate::rlm_roster::RosterWalkRoot {
+                    roots.push(pa_core::session_engine::rlm_roster::RosterWalkRoot {
                         session_file: root.session_file,
                         active_session_id: root.active_session_id,
                     });
                     resident_only.push(root.summary);
                 }
-                match crate::rlm_roster::walk_passive_rlm_children(&ledger, &roots) {
+                match pa_core::session_engine::rlm_roster::walk_passive_rlm_children(
+                    &ledger, &roots,
+                ) {
                     Ok(children) => {
                         for child in &children {
-                            summaries.push(crate::rlm_roster::passive_child_summary(child));
+                            summaries.push(
+                                pa_core::session_engine::rlm_roster::passive_child_summary(child),
+                            );
                         }
                     }
                     Err(error) => {

@@ -369,7 +369,8 @@ SQLite implementations over `pa-log`.
   catalog's own-usage fold of the transcript with its billing split, and its `modified` is the
   session's creation before its transcript has a row, as the old worker's were. A row carries
   its live persistent shells and, with the factory lane on, its stored factory specs (8d-4a).
-  Not yet: subagents only the spawn ledger keeps (the old daemon's passive walk);
+  Subagents only the spawn ledger keeps join it after the scan's rows (8d-4c, pa-core's
+  `rlm_roster`, walked from the rows and the sessions the runtime runs);
   `session.create` (`{session?}` to open or create by id, or `{path}` to
   open a transcript by its file, and `cwd`) takes the session's `SessionLease` and holds it until
   `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
@@ -559,7 +560,13 @@ SQLite implementations over `pa-log`.
   (`delete_rlm_subagent`: a settled subagent deleted as `rlm.delete_subagent` deletes it,
   `{deleted: false, reason: "running"}` for one with live work, deleted again for a handle
   deleted before, `{deleted: false}` for an unknown one). Each answers the old response's
-  `data` or refusal text.
+  `data` or refusal text. A session's heartbeat (8d-4c, `daemon/handlers/jobs.rs` and
+  `daemon/schedules.rs`, over pa-core's `cron::heartbeat_commands`): `session.heartbeat`
+  (`heartbeat_get`), `session.set_heartbeat` (`heartbeat_set`), `session.update_heartbeat`
+  (`heartbeat_update`) on an open session's store, and `session.manage_heartbeat`
+  (`heartbeat_manage`) on an open or saved one's (a saved session that resumes one is armed);
+  each answers `{heartbeat}`, and every change but a resume (a kernel mutation's too) withdraws
+  the heartbeat's fire waiting on the session's agent, the old `heartbeat:<id>` queue key.
   A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
@@ -752,7 +759,8 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `session.factory_activity` and `persistent_shells.kill`. (8d-4b) the queries
   `agent_messages` and `session.rlm_max_depth`, and the calls `agent_messages.pause`,
   `agent_messages.resume`, `agent_messages.clear`, `session.set_rlm_max_depth` and
-  `session.delete_child`.
+  `session.delete_child`. (8d-4c) the query `session.heartbeat` and the calls
+  `session.set_heartbeat`, `session.update_heartbeat` and `session.manage_heartbeat`.
 - `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
   engine streams from, which the runtime daemon's model and tier switches write.
 

@@ -13,13 +13,11 @@ use pa_core::cron::scheduler::{
     AgentCronScheduler, AgentCronSchedulerHooks, FIRE_SETTLE_TIMEOUT_MS,
 };
 use pa_core::cron::store::{
-    AgentCronJobStore, CancelJobsFilter, CreateAgentCronJobInput, HeartbeatManagementAction,
-    SessionBinding,
+    AgentCronJobStore, CancelJobsFilter, CreateAgentCronJobInput, SessionBinding,
 };
 use pa_core::cron::{
-    is_heartbeat_cron_job, normalize_heartbeat_delivery_mode, normalize_heartbeat_schedule,
-    should_defer_heartbeat_cron_job, AgentCronJob, DeliveryMode, HeartbeatSessionActivity,
-    JobStatus,
+    is_heartbeat_cron_job, should_defer_heartbeat_cron_job, AgentCronJob, DeliveryMode,
+    HeartbeatSessionActivity, JobStatus,
 };
 
 use crate::protocol::{response_failure, response_success, DaemonResponse};

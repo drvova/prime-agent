@@ -10,6 +10,9 @@
 //!   runs over nothing and ends.
 //! - **The depth bound.** Its status reads the node's bound and where it
 //!   comes from; a chat override fixes it.
+//! - **A heartbeat's queued fire.** A change to a heartbeat (all but a
+//!   resume) withdraws its `heartbeat_prompt` row waiting on the session's
+//!   agent, as the old daemon dropped its `heartbeat:<id>` queue item.
 //! - **The delete.** Only a settled child is deleted (with the kernel's
 //!   `rlm.delete_subagent` teardown); one with live work answers `running`,
 //!   and a handle deleted before answers deleted again.
@@ -22,6 +25,7 @@ use pa_core::session_engine::agent_controls::{
     SubagentDeleteOutcome,
 };
 use pa_core::session_engine::agent_messaging::AGENT_MESSAGE_CUSTOM_TYPE;
+use pa_core::session_engine::messages::HEARTBEAT_PROMPT_CUSTOM_TYPE;
 use pa_core::session_engine::rlm_host::RlmSubagentHost as _;
 use serde_json::Value;
 
@@ -82,6 +86,28 @@ impl Subagents {
         let node = self.controlled(id)?;
         let (steering, follow_up) = take_agent_messages(&node);
         Ok(cleared_agent_messages(&steering, &follow_up))
+    }
+
+    /// Withdraws heartbeat `job`'s fire waiting on session `id`'s agent (its
+    /// `heartbeat_prompt` row): the old daemon's `heartbeat:<id>` queue key.
+    /// The empty input queued to run it then runs over nothing. Nothing to
+    /// withdraw for a session the runtime does not run.
+    pub(crate) fn withdraw_heartbeat_fire(&self, id: &str, job: &str) {
+        let Some(node) = self.node(id) else {
+            return;
+        };
+        let _ = take_rows(&node, |message| match message {
+            AgentMessage::Custom(custom) => {
+                custom.payload.get("customType").and_then(Value::as_str)
+                    == Some(HEARTBEAT_PROMPT_CUSTOM_TYPE)
+                    && custom
+                        .payload
+                        .pointer("/details/jobId")
+                        .and_then(Value::as_str)
+                        == Some(job)
+            }
+            AgentMessage::Standard(_) => false,
+        });
     }
 
     /// `get_rlm_max_depth_status` of session `id`.
@@ -148,26 +174,6 @@ impl Subagents {
 /// Takes the agent messages waiting on `node`'s agent out of both lanes:
 /// each one's prompt, by lane, in queue order.
 fn take_agent_messages(node: &Node) -> (Vec<String>, Vec<String>) {
-    let Some(engine) = node.engine() else {
-        return (Vec::new(), Vec::new());
-    };
-    let agent = engine.session.agent();
-    let taken = {
-        let _delivery_guard = lock(&node.delivery_gate);
-        let steering: Vec<AgentMessage> = agent.steering_batches().into_iter().flatten().collect();
-        let taken = agent.remove_queued_messages(is_agent_message);
-        // A row the turn read meanwhile is in neither: each taken row was in
-        // one lane, and the delivery gate kept new rows out.
-        taken
-            .into_iter()
-            .map(|message| (steering.contains(&message), message))
-            .collect::<Vec<_>>()
-    };
-    if taken.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-    node.stream.queue_changed();
-    node.activity.notify_waiters();
     let prompt = |message: &AgentMessage| match message {
         AgentMessage::Custom(custom) => custom.payload["content"]
             .as_str()
@@ -175,17 +181,44 @@ fn take_agent_messages(node: &Node) -> (Vec<String>, Vec<String>) {
             .to_string(),
         AgentMessage::Standard(_) => String::new(),
     };
-    let (steering, follow_up): (Vec<_>, Vec<_>) =
-        taken.iter().partition(|(in_steering, _)| *in_steering);
+    let (steering, follow_up) = take_rows(node, is_agent_message);
     (
-        steering
-            .iter()
-            .map(|(_, message)| prompt(message))
-            .collect(),
-        follow_up
-            .iter()
-            .map(|(_, message)| prompt(message))
-            .collect(),
+        steering.iter().map(prompt).collect(),
+        follow_up.iter().map(prompt).collect(),
+    )
+}
+
+/// Takes the rows `taken` picks out of both lanes of `node`'s agent, under
+/// its delivery gate (no row lands between the read and the take): the
+/// steering lane's, then the follow-up lane's, each in queue order.
+fn take_rows(
+    node: &Node,
+    taken: impl Fn(&AgentMessage) -> bool,
+) -> (Vec<AgentMessage>, Vec<AgentMessage>) {
+    let Some(engine) = node.engine() else {
+        return (Vec::new(), Vec::new());
+    };
+    let agent = engine.session.agent();
+    let rows = {
+        let _delivery_guard = lock(&node.delivery_gate);
+        let steering: Vec<AgentMessage> = agent.steering_batches().into_iter().flatten().collect();
+        // A row the turn read meanwhile is in neither: each taken row was in
+        // one lane, and the delivery gate kept new rows out.
+        agent
+            .remove_queued_messages(taken)
+            .into_iter()
+            .map(|message| (steering.contains(&message), message))
+            .collect::<Vec<_>>()
+    };
+    if !rows.is_empty() {
+        node.stream.queue_changed();
+        node.activity.notify_waiters();
+    }
+    let (steering, follow_up): (Vec<_>, Vec<_>) =
+        rows.into_iter().partition(|(in_steering, _)| *in_steering);
+    (
+        steering.into_iter().map(|(_, message)| message).collect(),
+        follow_up.into_iter().map(|(_, message)| message).collect(),
     )
 }
 

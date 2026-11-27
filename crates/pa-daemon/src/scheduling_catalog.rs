@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
-use pa_core::cron::store::{AgentCronJobStore, HeartbeatManagementAction};
+use pa_core::cron::store::AgentCronJobStore;
 use pa_core::cron::{is_heartbeat_cron_job, AgentCronJob, JobStatus};
 use pa_types::daemon::DaemonCommand;
 
@@ -57,15 +57,6 @@ fn sort_cron_jobs(jobs: &mut [AgentCronJob]) {
             (None, None) => std::cmp::Ordering::Equal,
         },
     );
-}
-
-/// The TS vocabulary: pause/stop are explicit, anything else resumes.
-fn heartbeat_manage_action(action: &Value) -> HeartbeatManagementAction {
-    match action.as_str() {
-        Some("pause") => HeartbeatManagementAction::Pause,
-        Some("stop") => HeartbeatManagementAction::Stop,
-        _ => HeartbeatManagementAction::Resume,
-    }
 }
 
 impl Supervisor {
@@ -616,7 +607,7 @@ impl Supervisor {
                 if let Ok(Some(heartbeat)) = store.manage_heartbeat(
                     active_session_id,
                     job_id,
-                    heartbeat_manage_action(action),
+                    pa_core::cron::heartbeat_commands::heartbeat_manage_action(action.as_str()),
                     crate::util::now_ms(),
                 ) {
                     self.broadcast_heartbeats_changed();

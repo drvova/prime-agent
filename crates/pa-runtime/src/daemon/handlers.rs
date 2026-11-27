@@ -518,6 +518,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::PersistentShellTail => self.persistent_shell_tail(&args).await,
             Query::AgentMessages => self.agent_messages(&args),
             Query::SessionRlmMaxDepth => self.rlm_max_depth(&args).await,
+            Query::SessionHeartbeat => self.heartbeat(&args).await,
         }
     }
 
@@ -593,6 +594,9 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::AgentMessagesClear => self.clear_agent_messages(&args),
             Call::SessionSetRlmMaxDepth => self.set_rlm_max_depth(&args).await,
             Call::SessionDeleteChild => self.delete_child(&args).await,
+            Call::SessionSetHeartbeat => self.set_heartbeat(&args).await,
+            Call::SessionUpdateHeartbeat => self.update_heartbeat(&args).await,
+            Call::SessionManageHeartbeat => self.manage_heartbeat(&args).await,
         }
     }
 

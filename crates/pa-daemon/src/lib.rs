@@ -101,7 +101,6 @@ pub(crate) mod revived_turn;
 pub mod rlm_child_model;
 pub mod rlm_child_usage;
 pub mod rlm_children;
-pub(crate) mod rlm_roster;
 pub mod rlm_surface;
 pub(crate) mod roster_activity;
 pub(crate) mod saved_session_commands;

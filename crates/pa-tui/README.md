@@ -265,7 +265,9 @@ as the queries `agent_messages` and `session.rlm_max_depth`; `agent_messages_pau
 `agent_messages_resume`, `agent_messages_clear`, `set_rlm_max_depth` and `delete_rlm_subagent`
 as the calls `agent_messages.pause`, `agent_messages.resume`, `agent_messages.clear`,
 `session.set_rlm_max_depth` and `session.delete_child`, a pause, resume or status that names no
-session reaching every running one);
+session reaching every running one), and a session's heartbeat (`heartbeat_get` as the query
+`session.heartbeat`; `heartbeat_set`, `heartbeat_update` and `heartbeat_manage` as the calls
+`session.set_heartbeat`, `session.update_heartbeat` and `session.manage_heartbeat`);
 its module docs state the contract the runtime honours (the stream is live
 only, so the session's event counter rides in the payload's `meta.sequence`) and list what is left
 to map. Every recorded frame round-trips through it. A session's stored fault topics

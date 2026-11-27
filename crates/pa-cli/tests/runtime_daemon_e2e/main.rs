@@ -62,6 +62,10 @@
 //!   pause, resume and clear, the RLM depth bound, the subagent delete),
 //!   answered as the old daemon answers them (phase 8d-4b):
 //!   [`agent_controls`].
+//! - A session's heartbeat (its read, set, update and manage, and the
+//!   withdrawal of its queued fire), answered as the old daemon answers it
+//!   (phase 8d-4c): [`heartbeats`]; the saved catalog's passive subagents:
+//!   [`saved_list`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -72,6 +76,7 @@ mod checkpoints;
 mod client_surface;
 mod family;
 mod goldens;
+mod heartbeats;
 mod info;
 mod keeper;
 mod kernel_activity;

@@ -4,7 +4,9 @@
 //! `session_list_item` and `session_list_progress` frames and ends with the
 //! same response as the old daemon (the `pa-daemon` supervisor) sends for it
 //! over one store: the pages a `limit` and its `nextCursor` walk, the
-//! current-cwd scope, and the refusal of a list without a cwd.
+//! current-cwd scope, and the refusal of a list without a cwd. A subagent
+//! only the spawn ledger keeps joins the catalog after the scan's rows, as
+//! the old daemon's passive walk merges it (phase 8d-4c).
 //!
 //! Both sides' frames are read through `pa_types::daemon::DaemonOutbound`,
 //! the shape the TUI's client takes them in; the request ids are the test's
@@ -304,6 +306,141 @@ async fn the_saved_session_list_streams_the_old_daemons_rows() {
     assert_eq!(
         old.iter().map(Vec::len).collect::<Vec<_>>(),
         [4, 6, 6, 1],
+        "the old daemon's frames: {old:#?}"
+    );
+    assert_eq!(read(&runtime), read(&old));
+}
+
+/// A saved parent and its subagent, whose transcript only the spawn ledger
+/// leads to (under `session-artifacts`, which the catalog scan never
+/// visits), and the subagent's own subagent below it.
+fn passive_family(agent_dir: &Path) {
+    let sessions = agent_dir.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let user = |text: &str, at: u64| {
+        json!({ "type": "message", "message": { "role": "user", "content": text,
+            "timestamp": at } })
+    };
+    transcript(
+        &sessions,
+        "parent",
+        "/work/a",
+        &json!({}),
+        &[user("delegate the audit", 1_790_110_000_000)],
+        300,
+    );
+    let parent = sessions.join("parent.jsonl");
+    let kid_dir = agent_dir.join("session-artifacts/parent/sub-kid");
+    std::fs::create_dir_all(&kid_dir).unwrap();
+    transcript(
+        &kid_dir,
+        "kid",
+        "/work/a",
+        &json!({ "parentSession": parent }),
+        &[user("audit the tests", 1_790_120_000_000)],
+        200,
+    );
+    let kid = kid_dir.join("kid.jsonl");
+    let grandkid_dir = agent_dir.join("session-artifacts/kid/sub-grandkid");
+    std::fs::create_dir_all(&grandkid_dir).unwrap();
+    transcript(
+        &grandkid_dir,
+        "grandkid",
+        "/work/b",
+        &json!({ "parentSession": kid }),
+        &[user("audit one test", 1_790_130_000_000)],
+        100,
+    );
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(agent_dir, &sessions, |_| {});
+    for (child_id, parent, child, depth, name) in [
+        ("sub-kid", &parent, &kid, 1, "kid"),
+        (
+            "sub-grandkid",
+            &kid,
+            &grandkid_dir.join("grandkid.jsonl"),
+            2,
+            "grandkid",
+        ),
+    ] {
+        ledger
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
+                child_id: child_id.to_string(),
+                parent: parent.display().to_string(),
+                child: child.display().to_string(),
+                depth,
+                name: name.to_string(),
+                factory: None,
+            })
+            .unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn passive_subagents_join_the_saved_catalog_as_on_the_old_daemon() {
+    let bed = Bed::new();
+    passive_family(&bed.agent_dir());
+    let all = json!({ "type": "list_saved_sessions", "cwd": "/work/a" });
+    let scoped = json!({ "type": "list_saved_sessions", "cwd": "/work/a", "scope": "current" });
+    let old = {
+        let _daemon = bed.old_daemon();
+        let socket = bed.old_socket();
+        [
+            old_list(&socket, "l1", &all),
+            old_list(&socket, "l2", &scoped),
+        ]
+    };
+    let _daemon = bed.runtime_daemon(&json!([]));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let streamed = |frames: &[Value]| frames.len() - 1;
+    let runtime = [
+        runtime_list(&mut client, "l1", &all, streamed(&old[0])).await,
+        runtime_list(&mut client, "l2", &scoped, streamed(&old[1])).await,
+    ];
+    let read = |lists: &[Vec<Value>; 2]| {
+        lists
+            .iter()
+            .map(|frames| frames.iter().map(read_as_the_tui_does).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    };
+    let rows = |frames: &[Value]| -> Vec<(Value, Value, Value)> {
+        frames.last().unwrap()["data"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["id"].clone(),
+                    row["parentSessionPath"].clone(),
+                    row["rlmDepth"].clone(),
+                )
+            })
+            .collect()
+    };
+    let parent = bed.agent_dir().join("sessions/parent.jsonl");
+    let kid = bed
+        .agent_dir()
+        .join("session-artifacts/parent/sub-kid/kid.jsonl");
+    // The old daemon merges both descendants after the scanned parent, the
+    // ledger edge their topology, and the current-cwd scope keeps the kid's
+    // cwd only.
+    assert_eq!(
+        (rows(&old[0]), rows(&old[1])),
+        (
+            vec![
+                (json!("parent"), Value::Null, json!(0)),
+                (json!("kid"), json!(parent.display().to_string()), json!(1)),
+                (
+                    json!("grandkid"),
+                    json!(kid.display().to_string()),
+                    json!(2)
+                ),
+            ],
+            vec![
+                (json!("parent"), Value::Null, json!(0)),
+                (json!("kid"), json!(parent.display().to_string()), json!(1)),
+            ],
+        ),
         "the old daemon's frames: {old:#?}"
     );
     assert_eq!(read(&runtime), read(&old));

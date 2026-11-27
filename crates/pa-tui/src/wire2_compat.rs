@@ -120,6 +120,9 @@
 //! | `agent_messages_clear` | `agent_messages.clear` | `{steering, followUp}` |
 //! | `set_rlm_max_depth` | `session.set_rlm_max_depth` | `{maxDepth, source, globalSaved, globalError?}` |
 //! | `delete_rlm_subagent` | `session.delete_child` (`childId` as `child`) | `{deleted, reason?}` |
+//! | `heartbeat_set` | `session.set_heartbeat` | `{heartbeat}` |
+//! | `heartbeat_update` | `session.update_heartbeat` | `{heartbeat}` (`null` for none) |
+//! | `heartbeat_manage` | `session.manage_heartbeat` (an open or saved session) | `{heartbeat}` |
 //!
 //! `attach` is the call `session.attach` with `session` (the command's `activeSessionId`),
 //! `clientId`, `capabilities` and `resumeCursor` (those it carries), whose reply's result is the
@@ -147,6 +150,7 @@
 //! | `tail_persistent_shell` | `persistent_shells.tail` (no session) | `{shellId, tail}` |
 //! | `agent_messages_status` | `agent_messages` (the first running session's without one) | the safety status |
 //! | `get_rlm_max_depth_status` | `session.rlm_max_depth` | `{maxDepth, source}` |
+//! | `heartbeat_get` | `session.heartbeat` | `{heartbeat}` (`null` for none) |
 //!
 //! `model_catalog_changed`, a broadcast on the old wire, is the live-only `runtime/models`: a
 //! transport follows it for the connection's life (subscription `compat:models`, `Since::Now`).
@@ -159,11 +163,10 @@
 //!   not ask for them), `session_attached`, `session_resynced`, `session_replaced`, `settings`
 //!   (`get_settings`), `models` (`get_available_models`), `subscriptions` and `tasks`
 //!   (`heartbeats_list`, `heartbeats_changed`),
-//!   `get_session_stats`, `get_rlm_children`, `heartbeat_get`.
+//!   `get_session_stats`, `get_rlm_children`.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
 //!   `fork` of the whole saved session, `label`, `export`, the auth
-//!   commands, `abort`/`abort_and_send_queued`, `compact`, a `detach` that names no session,
-//!   `heartbeat_manage`/`set`/`update`.
+//!   commands, `abort`/`abort_and_send_queued`, `compact`, a `detach` that names no session.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
 //! - Connection frames: `daemon_hello` from `welcome`, `daemon_closing` from `closing`, the
 //!   direct worker link (retired: wire2 has one connection), `history_import`,
@@ -878,6 +881,46 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 method: "session.delete_child".to_string(),
                 args: serde_json::json!({ "session": active_session_id, "child": child_id }),
             }));
+        }
+        DaemonCommand::HeartbeatGet {
+            active_session_id, ..
+        } => {
+            return command_query(
+                request_id,
+                "session.heartbeat",
+                Some(active_session_id),
+                &command,
+            )
+        }
+        DaemonCommand::HeartbeatSet {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.set_heartbeat",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::HeartbeatUpdate {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.update_heartbeat",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::HeartbeatManage {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.manage_heartbeat",
+                active_session_id,
+                &command,
+            )
         }
         DaemonCommand::RosterSubscribe { .. } => return follow(request_id, ROSTER_FEED),
         DaemonCommand::AgentTrafficSubscribe { .. } => return follow(request_id, TRAFFIC_FEED),

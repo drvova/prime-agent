@@ -375,6 +375,16 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `daemon/handlers/agent_controls.rs`, `subagents/controls.rs`) apply them; on the runtime the
   pause gates every inbox delivery to the session, the clear takes the rows under the
   session's delivery gate, and only a settled subagent is deleted.
+- One set of heartbeat command rules (`pa_core::cron::heartbeat_commands`): the set's parse
+  and its kept delivery mode, the update's and the manage's actions with their defaults, the
+  refusals, the `{heartbeat}` reply, and the rule that every change but a resume withdraws the
+  heartbeat's queued fire. The old worker and supervisor and the runtime daemon's
+  `session.heartbeat`, `session.set_heartbeat`, `session.update_heartbeat` and
+  `session.manage_heartbeat` (`pa-runtime` `daemon/schedules.rs`) apply them; on the runtime
+  the withdrawal takes the `heartbeat_prompt` row waiting on the session's agent, a kernel
+  mutation that asks for it included. One passive roster walk
+  (`pa_core::session_engine::rlm_roster`): both daemons' saved catalogs merge the subagents only
+  the spawn ledger keeps.
 - One set of whole-session replacement rules: where a `fork {entryId, position}` starts and the
   text it hands back, where an `import_jsonl` copies its file, and the working directory a
   replaced session runs in with its refusals and their `errorInfo`

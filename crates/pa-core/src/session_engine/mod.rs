@@ -55,6 +55,7 @@ pub mod rlm_depth;
 pub mod rlm_host;
 pub mod rlm_ledger;
 pub mod rlm_notices;
+pub mod rlm_roster;
 pub mod rlm_usage;
 pub mod run_metrics;
 pub mod runtime;

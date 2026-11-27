@@ -75,7 +75,8 @@ one append-only JSONL per sessions dir (spawn/rename/delete admissions with
 the TS `rlm-ledger.ts` record grammar, bounds, stat-guarded replay, and
 legacy-registry seeding) plus the per-child display files; family topology
 is read from the ledger, never re-derived from session files. Passive-RLM
-roster walk (`rlm_roster.rs`): `list --all` and the saved-session catalog
+roster walk (pa-core's `session_engine::rlm_roster`, moved from here and shared
+with the runtime daemon's saved catalog): `list --all` and the saved-session catalog
 merge non-resident ledger children (walk roots = saved + resident session
 files), so passivated children stay roster-visible (TS
 `walkPassiveRlmSubagents` / `withPassiveRlmDescendantInfos`). The saved
@@ -309,6 +310,11 @@ holds the session-boot budget (`AdmissionKey::session_boot`): `rlm.spawn` / `rlm
 child worker spawns (subagent class), every worker's kernel starts, and the supervisor's
 crash-recovery adoption (background class) take a boot permit from it, so a fan-out paces with
 the host's load; the spawn handle and `rlm.collect` results carry the boot's `queued_ms`.
+
+The heartbeat commands (`scheduled_jobs/arms.rs`, the supervisor's passive `heartbeat_manage`
+in `scheduling_catalog.rs`): `heartbeat_get`, `heartbeat_set`, `heartbeat_update` and
+`heartbeat_manage` over pa-core's `cron::heartbeat_commands` (the parse, the actions, the queued
+fire's withdrawal rule, the replies), which the runtime daemon shares.
 
 The user's `!` commands (`user_bash.rs`): the worker's `execute_bash`, `execute_bash_and_wait` and
 `abort_bash` arms, with their shutdown-gate admission and the `bashExecution` row in the worker's

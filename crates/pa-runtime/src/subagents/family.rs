@@ -14,6 +14,9 @@
 //! - **Rename**: a `rename` record for the renamed child.
 //! - **Delete**: the edge tombstoned (`user`) and the display entry
 //!   `deleted`.
+//! - **Passive children**: the saved catalog walks the ledger from its rows
+//!   and the sessions the runtime runs for the children no root it runs or
+//!   lists keeps (pa-core's `rlm_roster`, the old supervisor's walk).
 //!
 //! The ledger's own writes are durable, single `O_APPEND` records, and run
 //! on the blocking pool. A family with no transcripts (a parent kept in
@@ -27,6 +30,9 @@ use pa_core::session_engine::rlm_host::RlmFactoryTag;
 use pa_core::session_engine::rlm_ledger::{
     read_rlm_subagent_display, write_rlm_subagent_display, RlmLedgerDeleteReason, RlmLedgerEdge,
     RlmSpawnInput, RlmSpawnLedger, RlmSubagentDisplayEntry,
+};
+use pa_core::session_engine::rlm_roster::{
+    walk_passive_rlm_children, PassiveRlmChild, RosterWalkRoot,
 };
 
 /// One spawn the ledger records.
@@ -171,6 +177,20 @@ impl DaemonFamily {
             tracing::warn!("the RLM ledger delete was not written: {error:#}");
         }
         self.display_status(child_dir, child_id, "deleted").await;
+    }
+
+    /// The children reachable in the ledger from `roots` that are not among
+    /// them (pa-core's `walk_passive_rlm_children`), in walk order.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read.
+    pub(crate) async fn passive_children(
+        &self,
+        roots: Vec<RosterWalkRoot>,
+    ) -> anyhow::Result<Vec<PassiveRlmChild>> {
+        self.on_ledger(move |ledger| walk_passive_rlm_children(ledger, &roots))
+            .await
     }
 
     /// The live children the ledger records under the parent transcript

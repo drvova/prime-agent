@@ -33,6 +33,14 @@
 //!   pa-core's (`should_defer_heartbeat_cron_job`). One fire waits for its
 //!   task's `done` before the lane's next, so a job never has two fires
 //!   queued: the old daemon's `heartbeat:<id>` queue key.
+//! - **Heartbeat commands** (8d-4c, pa-core's `cron::heartbeat_commands`):
+//!   `heartbeat_get`, `heartbeat_set`, `heartbeat_update` and
+//!   `heartbeat_manage` work on the session's store as the old worker's
+//!   arms do; a manage of a saved session's job works on its partition's
+//!   store (the old supervisor's passive path), and arms the session when it
+//!   resumes one. Every change but a resume, and a kernel mutation that asks
+//!   for it, withdraws the heartbeat's fire waiting on the session's agent
+//!   (the old `heartbeat:<id>` queue key).
 //! - **Waking.** A job due in a dormant session opens it under its lease
 //!   first: the old daemon's scheduled wake. A session stopped on purpose is
 //!   disarmed and not held, so nothing wakes it.
@@ -51,11 +59,16 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use anyhow::Context as _;
+use pa_core::cron::heartbeat_commands::{
+    no_active_heartbeat, withdraws_queued_fire, HeartbeatSet, HeartbeatUpdate,
+    HEARTBEATS_NEED_A_SESSION_FILE,
+};
 use pa_core::cron::scheduler::{
     AgentCronScheduler, AgentCronSchedulerHooks, FIRE_SETTLE_TIMEOUT_MS,
 };
 use pa_core::cron::store::{
-    AgentCronJobStore, CancelJobsFilter, CreateAgentCronJobInput, SessionBinding,
+    AgentCronJobStore, CancelJobsFilter, CreateAgentCronJobInput, HeartbeatManagementAction,
+    SessionBinding,
 };
 use pa_core::cron::{
     is_heartbeat_cron_job, should_defer_heartbeat_cron_job, AgentCronJob, HeartbeatSessionActivity,
@@ -203,12 +216,7 @@ impl<B: SessionBuilder> Schedules<B> {
             }
             return Ok(Arc::clone(session));
         }
-        // The old daemon's partition: `<sessions>/../session-artifacts/<id>`.
-        let partition = path
-            .parent()
-            .and_then(Path::parent)
-            .map(|root| root.join("session-artifacts").join(id))
-            .with_context(|| format!("{} is in no sessions dir", path.display()))?;
+        let partition = partition(path, id)?;
         std::fs::create_dir_all(&partition)?;
         let store = AgentCronJobStore::for_session_artifacts();
         store.register_session_artifact(id, &partition);
@@ -353,11 +361,7 @@ impl<B: SessionBuilder> Schedules<B> {
             .get(id)
             .cloned()
             .with_context(|| format!("session {id} is not open in the runtime daemon"))?;
-        let runtime_kind = if lock(&self.subagents).contains(id) {
-            "subagent"
-        } else {
-            "top-level"
-        };
+        let runtime_kind = self.runtime_kind(id);
         let binding = armed.binding();
         let job = armed.store.create(&CreateAgentCronJobInput {
             active_session_id: binding.active_session_id,
@@ -392,6 +396,133 @@ impl<B: SessionBuilder> Schedules<B> {
             }
         }
         anyhow::bail!("No cron job found: {job}")
+    }
+
+    /// Session `id`'s armed jobs.
+    fn armed(&self, id: &str) -> Option<Arc<Armed>> {
+        lock(&self.armed).get(id).cloned()
+    }
+
+    /// A change to `armed`'s jobs: the lane's next pass moves their timers
+    /// and tells the session's clients.
+    fn changed(armed: &Armed) {
+        armed.changed.store(true, Ordering::Release);
+        armed.pass.notify_one();
+    }
+
+    /// Withdraws heartbeat `job`'s queued fire on session `id` when a change
+    /// by `action` does (pa-core's `withdraws_queued_fire`).
+    fn withdraw_fire(&self, id: &str, job: &AgentCronJob, action: HeartbeatManagementAction) {
+        if !(withdraws_queued_fire(action) && is_heartbeat_cron_job(job)) {
+            return;
+        }
+        if let Some(runtime) = self.runtime.upgrade() {
+            runtime.subagents().withdraw_heartbeat_fire(id, &job.id);
+        }
+    }
+
+    /// `heartbeat_get`: open session `id`'s live or paused heartbeat (none
+    /// for one that keeps no jobs).
+    pub(super) fn heartbeat(&self, id: &str) -> Option<AgentCronJob> {
+        self.armed(id)?.store.get_heartbeat(id)
+    }
+
+    /// `heartbeat_set`: replaces open session `id`'s heartbeat; the previous
+    /// one's queued fire is withdrawn.
+    ///
+    /// # Errors
+    ///
+    /// The session keeps no transcript (`Heartbeats require a persisted
+    /// session file`), or the store refused the heartbeat.
+    pub(super) fn set_heartbeat(
+        &self,
+        id: &str,
+        set: &HeartbeatSet,
+    ) -> anyhow::Result<AgentCronJob> {
+        let armed = self.armed(id).context(HEARTBEATS_NEED_A_SESSION_FILE)?;
+        let previous = armed.store.get_heartbeat(id);
+        let job = armed.store.create_heartbeat(&set.input(
+            armed.binding(),
+            self.runtime_kind(id),
+            previous.as_ref(),
+        ))?;
+        if let Some(previous) = &previous {
+            self.withdraw_fire(id, previous, HeartbeatManagementAction::Stop);
+        }
+        Self::changed(&armed);
+        Ok(job)
+    }
+
+    /// `heartbeat_update`: pauses, resumes or clears open session `id`'s
+    /// heartbeat; the job it changed (none for a session without one).
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    pub(super) fn update_heartbeat(
+        &self,
+        id: &str,
+        update: HeartbeatUpdate,
+    ) -> anyhow::Result<Option<AgentCronJob>> {
+        let Some(armed) = self.armed(id) else {
+            return Ok(None);
+        };
+        let job = update.apply(&armed.store, id, pa_core::autonomous::now_millis())?;
+        if let Some(job) = &job {
+            self.withdraw_fire(id, job, update.as_management());
+        }
+        Self::changed(&armed);
+        Ok(job)
+    }
+
+    /// `heartbeat_manage`: pauses, resumes or stops heartbeat `job` of
+    /// session `id`, open or saved at `path` (its partition's store, as the
+    /// old supervisor managed a passive job; one resumed is armed so it
+    /// fires).
+    ///
+    /// # Errors
+    ///
+    /// The session has no live heartbeat `job` (`No active heartbeat found:
+    /// <job>`), or the store could not be written.
+    pub(super) fn manage_heartbeat(
+        &self,
+        id: &str,
+        path: &Path,
+        job: &str,
+        action: HeartbeatManagementAction,
+    ) -> anyhow::Result<AgentCronJob> {
+        let now = pa_core::autonomous::now_millis();
+        let managed = if let Some(armed) = self.armed(id) {
+            let managed = armed.store.manage_heartbeat(id, job, action, now);
+            if matches!(managed, Ok(Some(_))) {
+                Self::changed(&armed);
+            }
+            managed
+        } else {
+            let store = AgentCronJobStore::for_session_artifacts();
+            store.register_session_artifact(id, &partition(path, id)?);
+            let managed = store.manage_heartbeat(id, job, action, now);
+            if let Ok(Some(job)) = &managed {
+                if job.status == JobStatus::Active {
+                    if let Some(header) = pa_core::session::manager::read_session_header(path) {
+                        self.arm_dormant(id, path, Path::new(&header.cwd));
+                    }
+                }
+            }
+            managed
+        };
+        let managed = managed?.with_context(|| no_active_heartbeat(job))?;
+        self.withdraw_fire(id, &managed, action);
+        Ok(managed)
+    }
+
+    /// The kind a job of session `id` records (`subagent` or `top-level`).
+    fn runtime_kind(&self, id: &str) -> &'static str {
+        if lock(&self.subagents).contains(id) {
+            "subagent"
+        } else {
+            "top-level"
+        }
     }
 
     /// Stops every session's lane, for the daemon's shutdown; the jobs and
@@ -644,6 +775,7 @@ impl<B: SessionBuilder> SessionJobs for Schedules<B> {
             }
         };
         let (pass, changed) = (Arc::clone(&armed.pass), Arc::clone(&armed.changed));
+        let (runtime, session) = (self.runtime.clone(), id.to_string());
         let binding = armed.binding();
         Some(KernelCronWiring {
             store: Arc::clone(&armed.store),
@@ -654,8 +786,15 @@ impl<B: SessionBuilder> SessionJobs for Schedules<B> {
                 cwd: binding.cwd,
             }),
             // A job made, changed or cancelled: the lane's next pass moves
-            // its timer.
-            mutation_hook: Some(Arc::new(move |_mutation| {
+            // its timer, and a heartbeat's change withdraws its queued fire.
+            mutation_hook: Some(Arc::new(move |mutation| {
+                if mutation.drop_queued && is_heartbeat_cron_job(&mutation.job) {
+                    if let Some(runtime) = runtime.upgrade() {
+                        runtime
+                            .subagents()
+                            .withdraw_heartbeat_fire(&session, &mutation.job.id);
+                    }
+                }
                 changed.store(true, Ordering::Release);
                 pass.notify_one();
                 Box::pin(std::future::ready(()))
@@ -668,6 +807,15 @@ impl<B: SessionBuilder> SessionJobs for Schedules<B> {
             armed.pass.notify_one();
         }
     }
+}
+
+/// The scheduled-jobs partition of session `id` (transcript `path`): the old
+/// daemon's `<sessions>/../session-artifacts/<id>`.
+fn partition(path: &Path, id: &str) -> anyhow::Result<PathBuf> {
+    path.parent()
+        .and_then(Path::parent)
+        .map(|root| root.join("session-artifacts").join(id))
+        .with_context(|| format!("{} is in no sessions dir", path.display()))
 }
 
 /// Defines job `job`'s timer at `at` for session `session`, with the

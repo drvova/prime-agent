@@ -31,15 +31,22 @@
 //! and, while the factory lane is on, its stored factory specs
 //! (`factorySpecs`), as the old rows do (8d-4).
 //!
-//! Not served yet: subagents kept only in the spawn ledger (the old daemon's
-//! passive walk).
+//! The catalog scan never visits `session-artifacts`, where subagents
+//! persist: the spawn ledger's children reachable from the rows and from the
+//! sessions the runtime runs, and not run by it, are merged in after the
+//! scan (pa-core's `rlm_roster`, the old supervisor's passive walk), each as
+//! its session's row with the ledger edge's parent and depth, streamed as an
+//! item without a progress frame (8d-4c). A ledger that cannot be read
+//! merges nothing.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
-use pa_core::session::catalog::{list_sessions_with, saved_session_row, SessionPage};
+use pa_core::session::catalog::{list_sessions_with, saved_session_row, SessionInfo, SessionPage};
+use pa_core::session::lease::canonical_session_path;
 use pa_core::session_engine::kernel_activity::{count_factory_specs, factory_lane_enabled};
+use pa_core::session_engine::rlm_roster::{passive_child_info, RosterWalkRoot};
 use pa_types::event_log::{NewEvent, Topic, Trust};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -186,6 +193,30 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         if scope_current {
             infos.retain(|info| info.cwd == cwd);
         }
+        // The scan never visits session-artifacts, where subagents persist:
+        // merge the passive ledger walk so a subagent stays catalog-visible.
+        let mut merged = self.passive_rows(&infos).await;
+        merged.retain(|info| !scope_current || info.cwd == cwd);
+        let mut factory_specs = factory_specs;
+        if factory_lane_enabled(&self.agent_dir) {
+            let counted = merged.clone();
+            factory_specs = tokio::task::spawn_blocking(move || {
+                for info in &counted {
+                    count_factory_specs(info, &mut factory_specs);
+                }
+                factory_specs
+            })
+            .await
+            .context("the factory spec reader failed")?;
+        }
+        if let Some(topic) = &stream {
+            for info in &merged {
+                let row = saved_session_row(info, &persistent_shells, &factory_specs);
+                self.publish_list_frame(topic, request.frame(json!({ "session": row })))
+                    .await;
+            }
+        }
+        infos.append(&mut merged);
         // Every row carries its tombstoned descendants' spend, attached by
         // canonical parent path so the rollup bills deleted subagents to the
         // parent that spent them.
@@ -223,6 +254,39 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             data["nextCursor"] = json!(next_cursor);
         }
         Ok(data)
+    }
+
+    /// The passive subagents below the catalog rows `infos` and the sessions
+    /// the runtime runs, as catalog rows: none when the runtime keeps no
+    /// family records or the ledger cannot be read.
+    async fn passive_rows(&self, infos: &[SessionInfo]) -> Vec<SessionInfo> {
+        let subagents = self.runtime.subagents();
+        let Some(family) = subagents.daemon() else {
+            return Vec::new();
+        };
+        let mut roots: Vec<RosterWalkRoot> = infos
+            .iter()
+            .map(|info| RosterWalkRoot {
+                session_file: info.path.clone(),
+                active_session_id: None,
+            })
+            .collect();
+        roots.extend(
+            subagents
+                .resident_transcripts()
+                .into_iter()
+                .map(|(file, root)| RosterWalkRoot {
+                    session_file: canonical_session_path(&file),
+                    active_session_id: Some(root),
+                }),
+        );
+        match family.passive_children(roots).await {
+            Ok(children) => children.iter().map(passive_child_info).collect(),
+            Err(error) => {
+                tracing::warn!("could not merge passive subagents: {error:#}");
+                Vec::new()
+            }
+        }
     }
 
     /// Publishes one of a saved-session list's frames on its `topic`.

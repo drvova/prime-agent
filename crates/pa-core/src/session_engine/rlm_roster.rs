@@ -1,16 +1,19 @@
 //! Passive (non-resident) RLM children for the roster surfaces: the
-//! ledger walk that keeps historical children visible in `list --all`
-//! after their parent (or the daemon) passivates. Topology always comes
-//! from the ledger edge; the session file is display-grade.
+//! ledger walk that keeps historical children visible in `list --all` and
+//! the saved catalog after their parent (or the daemon) passivates.
+//! Topology always comes from the ledger edge; the session file is
+//! display-grade. Moved from pa-daemon (8d-4c): the old supervisor's lists
+//! and the runtime daemon's saved catalog (`pa-runtime`
+//! `daemon/handlers/saved.rs`) walk it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use pa_core::session::catalog::{read_session_info, SessionInfo};
-use pa_core::session::lease::canonical_session_path;
-use pa_core::session_engine::rlm_ledger::{
+use crate::session::catalog::{read_session_info, SessionInfo};
+use crate::session::lease::canonical_session_path;
+use crate::session_engine::rlm_ledger::{
     read_legacy_registry, read_rlm_subagent_display, LegacyRlmSubagentEntry, RlmLedgerEdge,
     RlmSpawnLedger,
 };
@@ -46,6 +49,10 @@ pub struct PassiveRlmChild {
 /// Walk every non-resident child reachable from the roots. A ledger read
 /// error propagates (the caller decides between failing the command and
 /// degrading); unreadable child files are skipped row-less, never fatal.
+///
+/// # Errors
+///
+/// The ledger's edges could not be read.
 pub fn walk_passive_rlm_children(
     ledger: &RlmSpawnLedger,
     roots: &[RosterWalkRoot],
@@ -125,7 +132,7 @@ fn inactive_lifecycle(info: &SessionInfo) -> &'static str {
 
 /// Hydration metadata for one live ledger edge: the child's display file first, then the parent's
 /// legacy registry for pre-ledger children (one registry read per parent, cached).
-pub(crate) fn rlm_child_metadata(
+fn rlm_child_metadata(
     edge: &RlmLedgerEdge,
     registry_cache: &mut HashMap<PathBuf, Vec<LegacyRlmSubagentEntry>>,
 ) -> RlmChildMetadata {
@@ -160,6 +167,11 @@ pub(crate) fn rlm_child_metadata(
 
 /// One passive child as a daemon list summary row (the inactive-session
 /// summary with the subagent identity fields merged in).
+///
+/// # Panics
+///
+/// Never: the row is built as an object.
+#[must_use]
 pub fn passive_child_summary(child: &PassiveRlmChild) -> Value {
     let PassiveRlmChild {
         edge,
@@ -221,6 +233,7 @@ pub fn passive_child_summary(child: &PassiveRlmChild) -> Value {
 
 /// The passive child as a saved-session catalog row: the ordinary session
 /// info with the ledger edge as the topology authority.
+#[must_use]
 pub fn passive_child_info(child: &PassiveRlmChild) -> SessionInfo {
     let mut info = child.info.clone();
     info.parent_session_path = Some(child.edge.parent.clone());
@@ -231,7 +244,7 @@ pub fn passive_child_info(child: &PassiveRlmChild) -> SessionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pa_core::session_engine::rlm_ledger::{RlmLedgerDeleteReason, RlmSpawnInput};
+    use crate::session_engine::rlm_ledger::{RlmLedgerDeleteReason, RlmSpawnInput};
     use serde_json::json;
     use std::fs;
 
@@ -367,7 +380,7 @@ mod tests {
         let dead = dir.join("dead.jsonl");
 
         let ledger = RlmSpawnLedger::new(&dir, &sessions, |_| {})
-            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
+            .with_legacy_usage(Box::new(crate::session::catalog::legacy_ledger_usage));
         ledger
             .append_spawn(&RlmSpawnInput {
                 child_id: "sub-1".into(),
@@ -462,7 +475,7 @@ mod tests {
         let child = dir.join("c.jsonl");
         write_session(&child, "c", 2);
         let ledger = RlmSpawnLedger::new(&dir, &sessions, |_| {})
-            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
+            .with_legacy_usage(Box::new(crate::session::catalog::legacy_ledger_usage));
         ledger
             .append_spawn(&RlmSpawnInput {
                 child_id: "sub-7".into(),

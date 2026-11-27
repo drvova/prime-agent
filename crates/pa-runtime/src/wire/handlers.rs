@@ -102,6 +102,8 @@ pub enum Query {
     /// `session.rlm_max_depth`: a session's delegation depth bound and its
     /// source.
     SessionRlmMaxDepth,
+    /// `session.heartbeat`: a session's live or paused heartbeat.
+    SessionHeartbeat,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -149,6 +151,7 @@ impl FromStr for Query {
             "persistent_shells.tail" => Query::PersistentShellTail,
             "agent_messages" => Query::AgentMessages,
             "session.rlm_max_depth" => Query::SessionRlmMaxDepth,
+            "session.heartbeat" => Query::SessionHeartbeat,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",
@@ -327,6 +330,14 @@ pub enum Call {
     SessionSetRlmMaxDepth,
     /// `session.delete_child`: deletes one of a session's settled subagents.
     SessionDeleteChild,
+    /// `session.set_heartbeat`: replaces a session's heartbeat.
+    SessionSetHeartbeat,
+    /// `session.update_heartbeat`: pauses, resumes or clears a session's
+    /// heartbeat.
+    SessionUpdateHeartbeat,
+    /// `session.manage_heartbeat`: pauses, resumes or stops one heartbeat of
+    /// a session, open or saved.
+    SessionManageHeartbeat,
 }
 
 impl FromStr for Call {
@@ -393,6 +404,9 @@ impl FromStr for Call {
             "agent_messages.clear" => Call::AgentMessagesClear,
             "session.set_rlm_max_depth" => Call::SessionSetRlmMaxDepth,
             "session.delete_child" => Call::SessionDeleteChild,
+            "session.set_heartbeat" => Call::SessionSetHeartbeat,
+            "session.update_heartbeat" => Call::SessionUpdateHeartbeat,
+            "session.manage_heartbeat" => Call::SessionManageHeartbeat,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

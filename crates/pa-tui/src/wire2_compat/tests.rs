@@ -1194,3 +1194,63 @@ fn the_agent_controls_queries_and_calls_carry_their_commands() {
         )
     );
 }
+
+/// A session's heartbeat: its read is a query and its changes are calls on the session, each
+/// answered with the old response's `{heartbeat}`.
+#[test]
+fn the_heartbeat_commands_carry_their_members() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "heartbeat_get", "activeSessionId": "s1" }),
+        json!({ "type": "heartbeat_set", "activeSessionId": "s1", "schedule": "5m",
+                "prompt": "check", "deliveryMode": "steer" }),
+        json!({ "type": "heartbeat_update", "activeSessionId": "s1", "action": "pause" }),
+        json!({ "type": "heartbeat_manage", "activeSessionId": "s1", "jobId": "j1",
+                "action": "stop" }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let call = |method: &str, args: Value| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args,
+        })
+    };
+    let cleared = serde_json::to_value(response_from_reply(
+        "heartbeat_update",
+        None,
+        Outcome::Ok {
+            result: json!({ "heartbeat": null }),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        (frames, cleared),
+        (
+            vec![
+                Outgoing::Query(ClientFrame::Query {
+                    id: "i".to_string(),
+                    name: "session.heartbeat".to_string(),
+                    args: json!({ "session": "s1" }),
+                }),
+                call(
+                    "session.set_heartbeat",
+                    json!({ "session": "s1", "schedule": "5m", "prompt": "check",
+                            "deliveryMode": "steer" })
+                ),
+                call(
+                    "session.update_heartbeat",
+                    json!({ "session": "s1", "action": "pause" })
+                ),
+                call(
+                    "session.manage_heartbeat",
+                    json!({ "session": "s1", "jobId": "j1", "action": "stop" })
+                ),
+            ],
+            json!({ "type": "response", "command": "heartbeat_update", "success": true,
+                    "data": { "heartbeat": null } }),
+        )
+    );
+}

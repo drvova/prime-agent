@@ -212,6 +212,20 @@ impl Subagents {
         self.node(id).map(|node| Arc::clone(&node.interaction))
     }
 
+    /// The transcript of every session the runtime runs, a subagent's
+    /// included, with its family's root: the roots the passive walk starts
+    /// from as residents (pa-core's `RosterWalkRoot`).
+    pub(crate) fn resident_transcripts(&self) -> Vec<(PathBuf, String)> {
+        lock(&self.nodes)
+            .values()
+            .filter(|node| !node.is_disposed())
+            .filter_map(|node| {
+                let file = lock(&node.adopted).session_file.clone()?;
+                Some((PathBuf::from(file), node.root_id()))
+            })
+            .collect()
+    }
+
     /// Every open session's interaction surface.
     pub(crate) fn interactions(&self) -> Vec<Arc<SessionInteraction>> {
         lock(&self.nodes)
