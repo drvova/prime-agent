@@ -71,6 +71,12 @@ impl TurnBoundary {
     /// consumes the check (the start event carries the pending instructions
     /// before the summarizer runs), else the threshold arm compacts when the
     /// live context crossed the reserve headroom. The boundaries share the body.
+    /// Each arm arms `abort_compaction` before its start goes out, so an
+    /// abort sent on seeing the start stops a run that has not begun yet.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the requested and threshold arms share one body, each arming its abort before its start"
+    )]
     pub(super) async fn requested_and_threshold_arms(
         &mut self,
         engine: &SessionEngine,
@@ -78,12 +84,14 @@ impl TurnBoundary {
         api_key: Option<String>,
     ) -> Result<(), String> {
         let scheduled = engine.turn_boundary.scheduled_compaction().await;
-        if let Some(pending) = &scheduled {
+        let _abort_armed = scheduled.as_ref().map(|pending| {
+            let armed = engine.session.arm_compaction_abort();
             self.emit_json(&compaction_start_event(
                 CompactionOutcomeReason::Requested.wire(),
                 pending.instructions.as_deref(),
             ));
-        }
+            armed
+        });
         match engine
             .consume_pending_compaction(model, api_key.clone(), None)
             .await
@@ -138,6 +146,7 @@ impl TurnBoundary {
                 // The threshold arm: the live context crossing the reserve headroom
                 // compacts before the next prompt; the pair streams in json mode.
                 if engine.session.auto_compaction_due(model).await {
+                    let _abort_armed = engine.session.arm_compaction_abort();
                     self.emit_json(&compaction_start_event(
                         CompactionOutcomeReason::Threshold.wire(),
                         None,
@@ -263,6 +272,7 @@ impl TurnBoundary {
             .take_compaction()
             .await
             .and_then(|pending| pending.instructions);
+        let _abort_armed = engine.session.arm_compaction_abort();
         self.emit_json(&compaction_start_event(
             CompactionOutcomeReason::Overflow.wire(),
             custom_instructions.as_deref(),

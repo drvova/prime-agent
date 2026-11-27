@@ -5,6 +5,33 @@ use super::{
     SessionAgentMessage, TrailingAssistantFilter,
 };
 
+/// `abort_compaction`'s hold on a compaction run under the session's own
+/// signal ([`AgentSession::compact`] with no caller signal), from before its
+/// start is announced until it ends: an abort that lands in between (after a
+/// client saw `compaction_start`, before the run began) still stops the run,
+/// which adopts the armed controller. Dropping the arm disarms it, so an
+/// abort never reaches a later compaction.
+pub struct CompactionAbortArm<'session> {
+    session: &'session AgentSession,
+    controller: std::sync::Arc<pa_agent::abort::AbortController>,
+}
+
+impl Drop for CompactionAbortArm<'_> {
+    fn drop(&mut self) {
+        let mut slot = self
+            .session
+            .compaction_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot
+            .as_ref()
+            .is_some_and(|current| std::sync::Arc::ptr_eq(current, &self.controller))
+        {
+            *slot = None;
+        }
+    }
+}
+
 impl AgentSession {
     pub(crate) fn refinement_signal(&self) -> pa_agent::abort::AbortSignal {
         self.refinement_cancel
@@ -173,14 +200,17 @@ impl AgentSession {
     ) -> anyhow::Result<CompactOutcome> {
         // A run whose caller brings no signal runs under the session's own,
         // which `abort_compaction` aborts: the summarizer request in flight
-        // is dropped and nothing commits.
+        // is dropped and nothing commits. A caller that announced the run
+        // armed it first ([`Self::arm_compaction_abort`]): the run adopts
+        // that controller, so an abort sent after the announcement holds.
         let own = abort.is_none().then(|| {
-            let controller = std::sync::Arc::new(pa_agent::abort::AbortController::new());
-            *self.compaction_abort.lock().expect("compaction abort lock") =
-                Some(std::sync::Arc::clone(&controller));
-            controller
+            let mut slot = self.compaction_abort.lock().expect("compaction abort lock");
+            CompactionAbortArm {
+                session: self,
+                controller: std::sync::Arc::clone(slot.get_or_insert_with(Default::default)),
+            }
         });
-        let own_signal = own.as_ref().map(|controller| controller.signal());
+        let own_signal = own.as_ref().map(|arm| arm.controller.signal());
         let abort = abort.or(own_signal.as_ref());
         // Boxed: the run is raced or awaited from one place, and the session
         // command and turn futures that await `compact` stay small.
@@ -279,16 +309,27 @@ impl AgentSession {
                 .and_then(|outcome| outcome),
             None => run.await,
         };
-        if let Some(own) = own {
-            let mut slot = self.compaction_abort.lock().expect("compaction abort lock");
-            if slot
-                .as_ref()
-                .is_some_and(|current| std::sync::Arc::ptr_eq(current, &own))
-            {
-                *slot = None;
-            }
-        }
+        // Disarmed as the run ends.
+        drop(own);
         outcome
+    }
+
+    /// Arms [`Self::abort_compaction`] for the compaction the caller is about
+    /// to announce and run with no signal of its own ([`Self::compact`]):
+    /// call it before emitting `compaction_start` and hold the arm until the
+    /// run returns. An abort in between stops the run as it starts.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the compaction abort slot's mutex is poisoned.
+    pub fn arm_compaction_abort(&self) -> CompactionAbortArm<'_> {
+        let controller = std::sync::Arc::new(pa_agent::abort::AbortController::new());
+        *self.compaction_abort.lock().expect("compaction abort lock") =
+            Some(std::sync::Arc::clone(&controller));
+        CompactionAbortArm {
+            session: self,
+            controller,
+        }
     }
 
     /// Aborts the compaction the session runs under its own signal (one
