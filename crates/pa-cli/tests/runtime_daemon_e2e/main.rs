@@ -133,7 +133,23 @@ impl Bed {
     }
 
     /// The runtime daemon with `env` over the bed's, listening.
+    ///
+    /// A daemon the test killed can still accept on its socket for a moment
+    /// after it was reaped: under load the kernel's last close of the killed
+    /// process's listener lags the reap, so a connect succeeds there and the
+    /// connection is then reset (or the next connect refused) while the next
+    /// daemon is still preparing the socket. The next daemon therefore starts
+    /// once the socket refuses; a connect that succeeds after that is its.
     fn runtime_daemon_with(&self, script: &Value, env: &[(&str, &str)]) -> Daemon {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while std::os::unix::net::UnixStream::connect(self.runtime_socket()).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a killed runtime daemon still listens on {}",
+                self.runtime_socket().display()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let mut command = self.runtime_daemon_command(script, &self.old_socket());
         command.envs(env.iter().copied());
         let mut child = command.spawn().expect("spawn the runtime daemon");
