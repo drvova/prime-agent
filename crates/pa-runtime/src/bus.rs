@@ -68,7 +68,9 @@ struct Inner<E, K, G, M, T> {
     sessions: G,
     model: M,
     tasks: T,
-    registry: Mutex<Registry>,
+    /// Shared with the kernel's event bus ([`crate::events`]), which adds
+    /// and removes its subscriptions as sessions make and cancel them.
+    registry: Arc<Mutex<Registry>>,
     /// Held across an append and its fan-out, so listeners see sequence
     /// order.
     appending: tokio::sync::Mutex<()>,
@@ -168,7 +170,7 @@ where
                 sessions: parts.sessions,
                 model: parts.model,
                 tasks: parts.tasks,
-                registry: Mutex::new(Registry::default()),
+                registry: Arc::new(Mutex::new(Registry::default())),
                 appending: tokio::sync::Mutex::new(()),
                 fan_out,
                 live: AtomicU64::new(0),
@@ -192,6 +194,12 @@ where
     #[must_use]
     pub fn remove_subscription(&self, id: &str) -> Option<Subscription> {
         lock(&self.inner.registry).remove(id)
+    }
+
+    /// The bus's subscriptions, for the kernel's event bus to add and remove
+    /// its own on any thread.
+    pub(crate) fn registry(&self) -> Arc<Mutex<Registry>> {
+        Arc::clone(&self.inner.registry)
     }
 
     /// The event log this bus appends to.

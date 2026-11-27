@@ -6,6 +6,8 @@
 //! `<id>`. A task's turn streams its agent events on `agent/<id>/stream`
 //! (live only, each event in the session-event wire shape the headless json
 //! mode prints) and ends with `agent/<id>/done` (stored, an `AgentDone`).
+//! The kernel's `event-*` functions of its sessions reach its bus
+//! ([`crate::events`]).
 
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -18,6 +20,7 @@ use pa_types::event_log::{
 use tokio::sync::mpsc;
 
 use crate::bus::{Bus, BusParts, Listener, Published};
+use crate::events::BusEvents;
 use crate::log_stores::{LogEventStore, LogStateStore, LogTaskStore};
 use crate::routes::{ModelCall, ModelCaller};
 use crate::session::{
@@ -105,7 +108,8 @@ impl<B: SessionBuilder> Runtime<B> {
         pa_core::kernel::keep_spare_scheme_kernels(options.spare_kernels);
         // The sessions' events wait in the outbox until the bus is up.
         let (outbox, outgoing) = Outbox::channel();
-        let sessions = Arc::new(Sessions::new(options.builder, outbox));
+        let events = Arc::new(BusEvents::new(agent_dir, outbox.clone()));
+        let sessions = Arc::new(Sessions::new(options.builder, outbox, Arc::clone(&events)));
         let runner = SessionRunner::new(Arc::clone(&sessions));
         let restored = async {
             let mut opened = Vec::with_capacity(options.sessions.len());
@@ -137,13 +141,14 @@ impl<B: SessionBuilder> Runtime<B> {
         let tree = MemorySessionTree::default();
         let bus = Bus::new(BusParts {
             events: LogEventStore::new(Arc::clone(&log)),
-            state: LogStateStore::new(log),
+            state: LogStateStore::new(Arc::clone(&log)),
             sessions: tree.clone(),
             model: NoModelCalls,
             tasks: RuntimeTaskSink {
                 queue: queue.clone(),
                 sessions: Arc::clone(&sessions),
                 tree,
+                events: Arc::clone(&events),
                 cwd: options.cwd,
             },
             listener_capacity: options.listener_capacity,
@@ -162,6 +167,7 @@ impl<B: SessionBuilder> Runtime<B> {
             },
             trust: Trust::Owner,
         })?;
+        events.attach(log, bus.registry()).await;
         let publisher = tokio::spawn(publish_outgoing(bus.clone(), outgoing));
         Ok(Runtime {
             bus,
@@ -293,7 +299,7 @@ async fn publish_outgoing<B: SessionBuilder>(
             }
         };
         let topic = event.topic.clone();
-        let result = bus.publish(event).await.map(|_| ());
+        let result = bus.publish(event).await;
         match published {
             Some(published) => {
                 let _ = published.send(result);

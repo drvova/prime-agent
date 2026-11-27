@@ -1547,7 +1547,7 @@ mod tests {
             "print",
             &HeadlessEmbedding::Root {
                 node: Arc::clone(&node),
-                call_policy: None,
+                seams: None,
             },
         )
         .await
@@ -1620,7 +1620,7 @@ mod tests {
             "print",
             &HeadlessEmbedding::Root {
                 node: Arc::clone(&node),
-                call_policy: None,
+                seams: None,
             },
         )
         .await

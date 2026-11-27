@@ -43,7 +43,7 @@ impl SessionBuilder for PrintSession {
         &self,
         _id: &str,
         _spec: &SessionSpec,
-        call_policy: Arc<dyn pa_core::kernel::CallPolicy>,
+        seams: pa_runtime::SessionSeams,
     ) -> impl Future<Output = anyhow::Result<BuiltSession>> + Send {
         let first = self
             .first
@@ -62,7 +62,7 @@ impl SessionBuilder for PrintSession {
                     self.options.app_mode.as_str(),
                     &super::HeadlessEmbedding::Root {
                         node: Arc::clone(&self.root),
-                        call_policy: Some(call_policy),
+                        seams: Some(seams),
                     },
                 )
                 .await?;

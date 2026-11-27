@@ -27,10 +27,14 @@ use pa_types::session_scope::{self, SessionScope};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
+use pa_core::agent_state::EventRequester;
+use pa_core::session_engine::event_bus_host::register_event_bus_host_handlers;
+
 use super::{
-    done_event, BuiltSession, DriverEvents, Finished, Outbox, SessionBuilder, SessionSpec,
-    SessionTopics, SettleAfter, Settled,
+    done_event, BuiltSession, DriverEvents, Finished, Outbox, SessionBuilder, SessionSeams,
+    SessionSpec, SessionTopics, SettleAfter, Settled,
 };
+use crate::events::{BusEvents, SessionEvents};
 use crate::lock;
 use crate::tasks::{Steered, TaskOutcome};
 use crate::trust::{TaskTrust, TrustGate};
@@ -140,6 +144,7 @@ impl SessionHost {
         topics: SessionTopics,
         builder: Arc<B>,
         outbox: Outbox,
+        events: Arc<BusEvents>,
     ) -> std::io::Result<Self> {
         let (work, queued) = mpsc::unbounded_channel();
         let control = Arc::new(TurnControl::default());
@@ -159,6 +164,7 @@ impl SessionHost {
                             builder,
                             outbox,
                             control,
+                            events,
                         },
                         queued,
                     );
@@ -324,6 +330,8 @@ struct Lifetime<B> {
     builder: Arc<B>,
     outbox: Outbox,
     control: Arc<TurnControl>,
+    /// The runtime's event bus, which the kernel's `event.*` reach.
+    events: Arc<BusEvents>,
 }
 
 /// A panic in a lifetime's work: the lifetime ends.
@@ -569,7 +577,23 @@ impl<B: SessionBuilder> Lifetime<B> {
     fn build(&self, runtime: &tokio::runtime::Runtime) -> Result<Hosted, String> {
         let built = session_scope::catching_panics(AssertUnwindSafe(|| {
             let gate = TrustGate::new(self.control.trust.clone(), &self.spec.cwd);
-            runtime.block_on(self.builder.build(&self.id, &self.spec, Arc::new(gate)))
+            let mut host_handlers = pa_core::kernel::HostRequestHandlers::new();
+            register_event_bus_host_handlers(
+                &Arc::new(SessionEvents {
+                    events: Arc::clone(&self.events),
+                    requester: EventRequester {
+                        session_id: self.id.clone(),
+                        name: self.spec.name.clone().unwrap_or_else(|| self.id.clone()),
+                        cwd: self.spec.cwd.to_string_lossy().into_owned(),
+                    },
+                }),
+                &mut host_handlers,
+            );
+            let seams = SessionSeams {
+                call_policy: Arc::new(gate),
+                host_handlers,
+            };
+            runtime.block_on(self.builder.build(&self.id, &self.spec, seams))
         }));
         let built = match built {
             Ok(Ok(built)) => built,

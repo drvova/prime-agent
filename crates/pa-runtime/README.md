@@ -142,6 +142,20 @@ SQLite implementations over `pa-log`.
   settings, observing other sessions, questions) and any request the table does not list is
   refused: "refused for an untrusted turn: <call>". The table's guard fails while pa-core
   registers a request it does not list (the scan is pa-core's `tests/common/host_requests.rs`).
+- **Kernel events** (`events.rs`, `BusEvents`): every session's `event.*` host requests
+  (pa-core's `EventBusController`, registered through `register_event_bus_host_handlers` into
+  the handlers the builder gets) reach one bus per runtime, under pa-core's rules
+  (`EventBusState::apply`: the daemon's names, limits, schema checks, ownership and refusals),
+  its state kept in the agent dir's database as the daemon's is (the `event-bus.json` partition
+  of the agent dir; no file). A publication is a stored event on `source/<name>/published`
+  (the checked payload, `source` the owner's name, `session` its id, `Owner` trust); its answer
+  `{eventId, matched}` names that event. A subscription is a bus subscription
+  `event-bus/<id>` on `source/<name>/#`, or on the topic filter it names (any text with `/`),
+  its filter the `when` (each key's value equal), routed to its session at `FollowUp` or
+  `Steer` priority; the task starts from the message the daemon delivers
+  (`[agent-message from event <source>]`, then pa-core's `event_delivery_message`) and counts as
+  delivered. A session never gets its own events, and a session the runtime does not run gets
+  none (a subscription restored from an earlier run waits for its session).
 - **Turn driver** (`turn/`, moved from pa-cli's print runtime, run by the sessions above):
   `TurnBoundary` (the overflow compact-and-retry, the requested and threshold compaction arms,
   the auto-refine reviews and the disposal drain; public, so an embedder's `InlineSubagents`
@@ -160,7 +174,7 @@ No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStor
 routes yet (behind `ModelCaller`). No event sources (`pa-sources`, publishing through `Intake`).
 No socket listener (the daemon accepts connections and hands each to `WireServer::serve`), and
 no query or call backend (behind `Handlers`). No inline-subagent host (the embedder's
-`InlineSubagents`; the print modes' lives in pa-cli). No subscription persistence yet; a
+`InlineSubagents`; the print modes' lives in pa-cli). No persistence of other subscriptions yet (the kernel's event subscriptions are kept); a
 task's `done` carries no cause chain yet. Nothing bounds how wide a cascade grows within the hop
 limit, or how many events an `Intake` or the sessions' outbox buffers.
 
@@ -176,8 +190,9 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 - `LogEventStore`, `LogTaskStore`, `LogStateStore` (each `new(Arc<pa_log::Log>)`;
   `LogStateStore::get`).
 - `Runtime` (`open`, `publish`, `listen`, `create_session`, `cancel`, `idle`, `settle`, `finish`,
-  `shutdown`), `RuntimeOptions`, `SessionBuilder` (`build(id, spec, call_policy)`: the session's
-  trust gate, which the engine must install), `SessionSpec`, `BuiltSession`, `DriverEvents`,
+  `shutdown`), `RuntimeOptions`, `SessionBuilder` (`build(id, spec, seams)`), `SessionSeams`
+  (the session's trust gate and the host requests the runtime answers, its `event.*`, both of
+  which the engine must install), `SessionSpec`, `BuiltSession`, `DriverEvents`,
   `InlineSubagents`, `SettleAfter`, `Settled`, `Finished`; `TaskQueue::session_idle`.
 - The turn driver's `TurnBoundary`.
 

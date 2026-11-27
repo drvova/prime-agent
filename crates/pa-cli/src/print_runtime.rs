@@ -446,8 +446,9 @@ pub type ProviderTargetSlot = std::sync::Arc<std::sync::RwLock<Option<ProviderTa
 pub(crate) enum HeadlessEmbedding {
     Root {
         node: std::sync::Arc<crate::print_rlm::InlineSessionNode>,
-        /// The runtime session's trust gate (`pa_runtime::SessionBuilder`).
-        call_policy: Option<Arc<dyn pa_core::kernel::CallPolicy>>,
+        /// What the runtime gives the session's engine (`pa_runtime::SessionBuilder`):
+        /// its trust gate and its `event.*` on the run's bus.
+        seams: Option<pa_runtime::SessionSeams>,
     },
     Child(Box<ChildEngineOverrides>),
     Rpc,
@@ -505,9 +506,16 @@ pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> Headle
         HeadlessEmbedding::Child(overrides) => Some(Arc::clone(&overrides.node)),
         HeadlessEmbedding::Rpc => None,
     };
+    let seams = match embedding {
+        HeadlessEmbedding::Root { seams, .. } => seams.as_ref(),
+        HeadlessEmbedding::Child(_) | HeadlessEmbedding::Rpc => None,
+    };
     let (rlm_subagent_host, extra_host_handlers) = match &node {
         Some(node) => {
-            let (host, handlers) = crate::print_rlm::inline_subagent_wiring(node);
+            let (host, mut handlers) = crate::print_rlm::inline_subagent_wiring(node);
+            if let Some(seams) = seams {
+                handlers.merge(seams.host_handlers.clone());
+            }
             (Some(host), Some(handlers))
         }
         None => (None, None),
@@ -545,10 +553,7 @@ pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> Headle
         bash_wake,
         rpc_bash_wake,
         on_late_sent_agent_message,
-        call_policy: match embedding {
-            HeadlessEmbedding::Root { call_policy, .. } => call_policy.clone(),
-            HeadlessEmbedding::Child(_) | HeadlessEmbedding::Rpc => None,
-        },
+        call_policy: seams.map(|seams| Arc::clone(&seams.call_policy)),
     }
 }
 

@@ -10,6 +10,7 @@ use pa_types::event_log::{AgentInput, AgentTarget, Task, TaskFailure, TaskState,
 
 use super::host::{Ran, TaskEnd};
 use super::{done_event, SessionBuilder, SessionSpec, SessionTopics, Sessions};
+use crate::events::BusEvents;
 use crate::log_stores::LogTaskStore;
 use crate::routes::{TaskRequest, TaskSink};
 use crate::subscriptions::MemorySessionTree;
@@ -95,13 +96,18 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
 /// (`AgentTarget::Spawn`, in its `cwd` or else the runtime's, recorded as a
 /// subagent of the event's session). It starts from the route's prompt at
 /// the route's priority; an empty prompt takes the event's [`AgentInput`]:
-/// its text and images, and its priority when it names one. Its trust is
+/// its text and images, and its priority when it names one. A kernel event
+/// subscription's task starts from the message its event delivers
+/// ([`BusEvents::deliver`]), and none is queued for the subscriber's own
+/// event. Its trust is
 /// the request's; an untrusted task's prompt is wrapped as
 /// `<untrusted-event source="<the event's source>">…</untrusted-event>`.
 pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
     pub(crate) queue: TaskQueue<SessionRunner<B>, LogTaskStore>,
     pub(crate) sessions: Arc<Sessions<B>>,
     pub(crate) tree: MemorySessionTree,
+    /// The kernel's event bus: what its subscriptions' events deliver.
+    pub(crate) events: Arc<BusEvents>,
     /// Where a spawned session without a `cwd` of its own runs.
     pub(crate) cwd: PathBuf,
 }
@@ -128,7 +134,18 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                 id
             }
         };
-        let (prompt, priority, images) = if request.prompt.is_empty() {
+        let (prompt, priority, images) = if let Some(subscription) = request
+            .subscription
+            .strip_prefix(crate::events::SUBSCRIPTION_PREFIX)
+        {
+            // A kernel event subscription: the message its event delivers, or
+            // nothing (the subscriber's own event, or a session this runtime
+            // does not run).
+            let Some(message) = self.events.deliver(subscription, &request.event).await? else {
+                return Ok(());
+            };
+            (message, request.priority, Vec::new())
+        } else if request.prompt.is_empty() {
             let input = serde_json::from_value::<AgentInput>(event.payload.clone())
                 .context("the event carries no input text")?;
             (
