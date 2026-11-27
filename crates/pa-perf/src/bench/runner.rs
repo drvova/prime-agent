@@ -1548,6 +1548,8 @@ mod tests {
             .expect("make the mock executable");
         ctx.binary = binary;
         ctx.liveness = Duration::from_secs(10);
+        // The mock speaks the supervisor's wire on the run's socket.
+        ctx.daemon = Daemon::Supervisor;
         let (sample, launched) = launch(&ctx, Scenario::WarmStart, 0)
             .expect("the daemon must drain its measured UI connection before exit");
         assert!(sample.settled[0] >= 0.0);
