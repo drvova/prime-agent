@@ -19,7 +19,11 @@ import time
 from lifecycle_lib import digest, env_for, stop
 
 
-def launch_daemon(command, expected, root, env):
+def launch_daemon(command, pin, root, env):
+    """Start the selected (default) daemon through the launcher and wait for it on
+    its socket: the runtime daemon serves `daemon2.sock` beside the pinned
+    `daemon.sock`, and accepting a connection there is the bind this proves."""
+    expected = pin.with_name('daemon2.sock')
     log_path = root / 'daemon.log'
     with log_path.open('wb') as log:
         process = subprocess.Popen(command + ['--mode', 'daemon'], cwd=root, env=env,
@@ -33,10 +37,7 @@ def launch_daemon(command, expected, root, env):
                     with socket.socket(socket.AF_UNIX) as sock:
                         sock.settimeout(2)
                         sock.connect(str(expected))
-                        with sock.makefile('rb') as stream:
-                            hello = json.loads(stream.readline())
-                    assert hello.get('type') == 'daemon_hello' and hello.get('schemaId'), hello
-                    return {'bound_socket': str(expected), 'hello': hello,
+                    return {'pin': str(pin), 'bound_socket': str(expected),
                             'log': log_path.read_text(errors='replace')}
                 except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
                     threading.Event().wait(0.05)
@@ -84,6 +85,8 @@ def main():
             owned = Path(temp) / 'rust'
             owned.mkdir()
             env = env_for(owned)
+            # The launcher's pin is checked with the daemon a launch selects by default.
+            del env['PRIME_AGENT_RUNTIME_DAEMON']
             tmp = owned / 'tmp'
             legacy = tmp / f'prime-agent-{os.getuid()}/daemon.sock'
             command = install_launcher(binary, owned, env)
