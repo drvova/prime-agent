@@ -154,8 +154,11 @@ impl Subagents {
             };
             deliver_row(&receiver, message.row)?;
             // The receiving side of the receiver's waits hears every
-            // delivery it took.
-            receiver.waits.deliver(arrival);
+            // delivery it took. A wait it ends withdraws its `waitingOn`
+            // and the change hook wakes the parent's collect; there is
+            // nothing more to publish, because this daemon's roster reads
+            // `waitingOn` live.
+            let _withdrawn = receiver.waits.deliver(arrival);
             retask_if_settled(&receiver, event.event.trust).await;
             anyhow::Ok(if queued {
                 AgentMessageDeliveryStatus::Queued
