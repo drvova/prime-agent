@@ -76,6 +76,7 @@ def is_guaranteed_metadata(path: str) -> bool:
 WORKSPACE_DEPS = {
     "pa-types": set(),
     "pa-telemetry": set(),
+    "pa-log": {"pa-types"},
     "pa-ai": {"pa-types"},
     "pa-models": {"pa-ai", "pa-types"},
     "pa-agent": {"pa-ai", "pa-types"},
