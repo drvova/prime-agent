@@ -66,10 +66,10 @@ pub struct OpenAICodexResponsesOptions {
 impl OpenAICodexResponsesOptions {
     pub fn from_base(base: StreamOptions) -> Self {
         Self {
+            service_tier: base.service_tier,
             base,
             reasoning_effort: None,
             reasoning_summary: None,
-            service_tier: None,
             text_verbosity: None,
         }
     }
@@ -759,6 +759,7 @@ pub fn stream_simple_openai_codex_responses(
         .filter(|level| *level != ModelThinkingLevel::Off);
 
     let stream_options = OpenAICodexResponsesOptions {
+        service_tier: base.service_tier,
         base,
         reasoning_effort,
         ..Default::default()
@@ -1661,6 +1662,62 @@ mod tests {
             bodies[2].get("previous_response_id"),
             Some(&json!("resp_3")),
             "the turn after the abort continues the chain"
+        );
+    }
+
+    /// A requested service tier reaches the request body from both entries: the simple stream
+    /// the session engine calls, and the provider's own stream over plain stream options. The
+    /// body is captured by `on_payload`, which also cancels the request before it is sent.
+    #[tokio::test]
+    async fn the_requested_service_tier_is_sent() {
+        let model = Model {
+            base_url: "http://127.0.0.1:1".into(),
+            ..codex_wire_model()
+        };
+        let context = codex_test_context("Say hello");
+        let sent_tier = |stream: &dyn Fn(StreamOptions) -> AssistantMessageEventStream| {
+            let signal = tokio_util::sync::CancellationToken::new();
+            let sent = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let base = StreamOptions {
+                api_key: Some(mock_codex_token()),
+                service_tier: Some(ServiceTier::Priority),
+                signal: Some(signal.clone()),
+                on_payload: Some(std::sync::Arc::new({
+                    let sent = std::sync::Arc::clone(&sent);
+                    move |body: Value, _: &Model| {
+                        *sent.lock().expect("sent body") = Some(body);
+                        signal.cancel();
+                        None
+                    }
+                })),
+                ..Default::default()
+            };
+            let reply = stream(base);
+            async move {
+                reply.result().await;
+                let body = sent
+                    .lock()
+                    .expect("sent body")
+                    .take()
+                    .expect("a request body");
+                body.get("service_tier").cloned()
+            }
+        };
+        let simple = sent_tier(&|base| {
+            let options = SimpleStreamOptions {
+                base,
+                reasoning: None,
+                thinking_budgets: None,
+            };
+            stream_simple_openai_codex_responses(&model, &context, Some(&options))
+        })
+        .await;
+        let direct =
+            sent_tier(&|base| OpenAICodexResponsesProvider.stream(&model, &context, Some(&base)))
+                .await;
+        assert_eq!(
+            (simple, direct),
+            (Some(json!("priority")), Some(json!("priority")))
         );
     }
 }
