@@ -90,6 +90,17 @@ const SCRUB_ENV: [&str; 6] = [
     "PI_PACKAGE_DIR",
 ];
 
+/// Whether env var `key` can sign a provider in (pa-ai's env keys and its
+/// cloud credential variables).
+fn credential_env(key: &str) -> bool {
+    key.ends_with("_API_KEY")
+        || key.ends_with("_TOKEN")
+        || key.ends_with("_SECRET_KEY")
+        || ["AWS_", "GOOGLE_CLOUD_", "GCLOUD_"]
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
+
 /// A temp dir short enough for every socket under it (macOS's `$TMPDIR` is
 /// not), canonical so the paths the daemons report compare equal.
 fn fixture_dir() -> tempfile::TempDir {
@@ -148,6 +159,13 @@ impl Bed {
             .stderr(Stdio::from(log));
         for key in SCRUB_ENV {
             command.env_remove(key);
+        }
+        // Provider credentials the machine carries (a CI runner has none) would
+        // make the daemons' signed-in providers depend on where the test runs.
+        for (key, _) in std::env::vars_os() {
+            if key.to_str().is_some_and(credential_env) {
+                command.env_remove(key);
+            }
         }
     }
 
