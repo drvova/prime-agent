@@ -1,0 +1,1 @@
+- Fixed a command its `eval` call was waiting for being announced again as lost, with an extra turn, when the daemon stopped just as the command started.

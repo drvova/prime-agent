@@ -14,19 +14,6 @@ use tokio_rustls::rustls::{crypto::CryptoProvider, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
 
-struct FixtureEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
-
-impl Drop for FixtureEnvironment {
-    fn drop(&mut self) {
-        for (name, previous) in self.0.drain(..) {
-            match previous {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
-    }
-}
-
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -115,36 +102,36 @@ async fn the_first_codex_websocket_trusts_node_extra_ca_certs() {
         ca_cert.pem()
     );
     std::fs::write(bundle.path(), pem).expect("write CA");
-    let _environment = FixtureEnvironment(
+    // The session sees the bundle and no proxy (even an unexpected HTTP fallback must remain
+    // local to this fixture). The TLS and proxy settings are read through the session's scope,
+    // so the process environment stays untouched; the test runs on a current-thread runtime, so
+    // the provider's tasks run on this thread, in this scope.
+    let _scope = pa_types::session_scope::enter(Some(pa_types::session_scope::SessionScope::new(
+        "codex-extra-ca".to_string(),
+        std::path::PathBuf::new(),
         [
-            "NODE_EXTRA_CA_CERTS",
+            (
+                "NODE_EXTRA_CA_CERTS",
+                bundle.path().to_str().expect("UTF-8 bundle path"),
+            ),
+            ("NO_PROXY", "127.0.0.1,localhost"),
+            ("no_proxy", "127.0.0.1,localhost"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect(),
+        [
             "HTTP_PROXY",
             "http_proxy",
             "HTTPS_PROXY",
             "https_proxy",
             "ALL_PROXY",
             "all_proxy",
-            "NO_PROXY",
-            "no_proxy",
         ]
         .into_iter()
-        .map(|name| (name, std::env::var_os(name)))
+        .map(str::to_string)
         .collect(),
-    );
-    std::env::set_var("NODE_EXTRA_CA_CERTS", bundle.path());
-    // Even an unexpected HTTP fallback must remain local to this fixture.
-    for name in [
-        "HTTP_PROXY",
-        "http_proxy",
-        "HTTPS_PROXY",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ] {
-        std::env::remove_var(name);
-    }
-    std::env::set_var("NO_PROXY", "127.0.0.1,localhost");
-    std::env::set_var("no_proxy", "127.0.0.1,localhost");
+    )));
     assert!(
         CryptoProvider::get_default().is_none(),
         "fixture must not initialize the default TLS provider"

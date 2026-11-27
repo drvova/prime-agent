@@ -1,0 +1,1 @@
+- Fixed OpenAI Responses and ChatGPT (Codex) requests ignoring the service tier picked for the session, so Priority and Flex now reach the provider.
