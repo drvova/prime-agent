@@ -3531,11 +3531,13 @@ version = "0.10.3"
 dependencies = [
  "anyhow",
  "libc",
+ "proptest",
  "regex",
  "serde",
  "serde_json",
  "socket2",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
 ]
 

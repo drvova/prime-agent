@@ -14,6 +14,7 @@ pub mod compaction;
 pub mod context_breakdown;
 pub mod control;
 pub mod daemon;
+pub mod event_log;
 pub mod events;
 pub mod goal;
 pub mod incident;
@@ -29,6 +30,7 @@ pub mod slash_commands;
 pub mod themes;
 pub mod todo;
 pub mod usage;
+pub mod wire2;
 
 use serde::{Deserialize, Serialize};
 
