@@ -892,3 +892,48 @@ fn the_replacements_call_and_their_refusal_keeps_its_error_info() {
         )
     );
 }
+
+#[test]
+fn the_queue_edit_and_the_aborts_call() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "mutate_queued_message", "activeSessionId": "s1", "lane": "followUp",
+                "index": 1, "expectedText": "two", "mutation": { "type": "delete" } }),
+        json!({ "type": "abort_compaction", "activeSessionId": "s1" }),
+        json!({ "type": "abort_retry", "activeSessionId": "s1" }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let call = |method: &str, args: Value| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args,
+        })
+    };
+    let edited = serde_json::to_value(response_from_reply(
+        "mutate_queued_message",
+        None,
+        Outcome::Ok {
+            result: json!({ "status": "applied" }),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        (frames, edited),
+        (
+            vec![
+                call(
+                    "session.mutate_queued_message",
+                    json!({ "session": "s1", "lane": "followUp", "index": 1,
+                            "expectedText": "two", "mutation": { "type": "delete" } })
+                ),
+                call("session.abort_compaction", json!({ "session": "s1" })),
+                call("session.abort_retry", json!({ "session": "s1" })),
+            ],
+            json!({ "type": "response", "command": "mutate_queued_message", "success": true,
+                    "data": { "status": "applied" } }),
+        )
+    );
+}

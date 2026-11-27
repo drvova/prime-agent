@@ -44,6 +44,7 @@ mod messaging;
 mod model;
 mod owned;
 mod queue;
+mod queue_edit;
 mod replace;
 mod saved;
 mod state;
@@ -558,6 +559,9 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionExportHtml => self.export_html(&args).await,
             Call::SessionForkEntry => self.fork_entry(&args).await,
             Call::SessionImportJsonl => self.import_jsonl(&args).await,
+            Call::SessionMutateQueuedMessage => self.mutate_queued_message(&args).await,
+            Call::SessionAbortCompaction => self.abort_compaction(&args),
+            Call::SessionAbortRetry => self.abort_retry(&args),
         }
     }
 

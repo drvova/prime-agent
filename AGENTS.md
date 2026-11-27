@@ -345,7 +345,17 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   session's host ends its lifetime and builds the engine and a fresh kernel from the new
   transcript as a crash's rebuild does, without the crash (`Runtime::replace_session`), so its
   topics' subscribers, its stream and its tasks are kept. A wire2 error reply carries the
-  refusal's `errorInfo` as its `info` (`ErrorWithInfo` in the chain).
+  refusal's `errorInfo` as its `info` (`ErrorWithInfo` in the chain). A replaced session's
+  scheduled jobs are rebound onto its new transcript in place, as its rebuilt engine arms them:
+  a disarm and re-arm would let the old arming's timer removal race the new timers.
+- A compaction whose caller brings no abort signal runs under the session's own
+  (`AgentSession::abort_compaction`), and a prompt's auto-retry wait under the session's retry
+  abort (`AgentSession::abort_retry`, reset as each prompt starts); the runtime daemon's
+  `session.abort_compaction` and `session.abort_retry` reach them. An aborted compaction is
+  recorded as cancelled (`compaction_end` with `aborted: true`), never as failed. The runtime
+  daemon's queue edits (`session.mutate_queued_message`, `pa-runtime` `runtime/queue_edit.rs`)
+  change only the lane's tasks, addressed by the queue view's row and the text the client saw;
+  a row waiting on the agent is the running turn's and is rejected.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

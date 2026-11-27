@@ -35,6 +35,10 @@ use crate::subscriptions::MemorySessionTree;
 use crate::tasks::TaskQueue;
 use crate::wire::{Handlers, WireConfig, WireServer};
 
+mod queue_edit;
+
+pub(crate) use queue_edit::QueueEdit;
+
 /// The id of the subscription that turns every session's input into its
 /// tasks.
 const INPUT_SUBSCRIPTION: &str = "runtime/input";

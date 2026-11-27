@@ -105,6 +105,9 @@
 //! | `export_html` | `session.export_html` | `{path}` |
 //! | `fork` | `session.fork_entry` | `{cancelled, selectedText?}` |
 //! | `import_jsonl` | `session.import_jsonl` | `{cancelled}` |
+//! | `mutate_queued_message` | `session.mutate_queued_message` | `{status}` (`applied`, `rejected`) |
+//! | `abort_compaction` | `session.abort_compaction` | none |
+//! | `abort_retry` | `session.abort_retry` | none |
 //!
 //! What the TUI reads beside a session's turns becomes one query each, built the same way (the
 //! command's members, plus `session` for a session's), whose reply's result is the old response's
@@ -133,8 +136,7 @@
 //!   `get_session_stats`, `get_rlm_children`.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
 //!   `fork` of the whole saved session, `label`, `export`, the auth
-//!   commands, `abort`/`abort_and_send_queued`, `abort_compaction`, `abort_retry`, `compact`,
-//!   the queue mutations (`mutate_queued_message`), `answer_question`, `detach`.
+//!   commands, `abort`/`abort_and_send_queued`, `compact`, `answer_question`, `detach`.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
 //! - Connection frames: `daemon_hello` from `welcome`, `daemon_closing` from `closing`, the
 //!   direct worker link (retired: wire2 has one connection), `history_import`,
@@ -636,6 +638,36 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
             return session_call(
                 request_id,
                 "session.import_jsonl",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::MutateQueuedMessage {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.mutate_queued_message",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::AbortCompaction {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.abort_compaction",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::AbortRetry {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.abort_retry",
                 active_session_id,
                 &command,
             )

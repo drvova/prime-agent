@@ -374,6 +374,116 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
         Ok(Some(task))
     }
 
+    /// Changes queued task `id` of `session`'s lane in place: `edit` gets it
+    /// and the queue saves the result, keeping its place in the lane (and
+    /// its priority, whatever `edit` sets). Whether the lane queued it.
+    ///
+    /// # Errors
+    ///
+    /// The store failed to save the edited task.
+    pub(crate) async fn edit_queued(
+        &self,
+        session: &str,
+        id: &str,
+        edit: impl FnOnce(&mut Task),
+    ) -> anyhow::Result<bool> {
+        let edited = {
+            let mut lanes = lock(&self.inner.lanes);
+            let edited = lanes.by_session.get_mut(session).and_then(|lane| {
+                let ((priority, _), task) =
+                    lane.queued.iter_mut().find(|(_, task)| task.id == id)?;
+                edit(task);
+                task.priority = *priority;
+                Some(task.clone())
+            });
+            if edited.is_some() {
+                self.inner
+                    .runner
+                    .lane_changed(session, &lanes.state(session));
+            }
+            edited
+        };
+        let Some(task) = edited else {
+            return Ok(false);
+        };
+        self.inner.store.save(task).await?;
+        Ok(true)
+    }
+
+    /// Swaps the places of queued tasks `a` and `b` of `session`'s lane:
+    /// each runs where the other would have. Whether the lane queued both.
+    /// The places are the lane's own: a lane restored from the store runs
+    /// its tasks in the order they were queued.
+    pub(crate) fn swap_queued(&self, session: &str, a: &str, b: &str) -> bool {
+        let mut lanes = lock(&self.inner.lanes);
+        let Some(lane) = lanes.by_session.get_mut(session) else {
+            return false;
+        };
+        let key = |id: &str| {
+            lane.queued
+                .iter()
+                .find(|(_, task)| task.id == id)
+                .map(|(key, _)| *key)
+        };
+        let (Some(at_a), Some(at_b)) = (key(a), key(b)) else {
+            return false;
+        };
+        if at_a == at_b {
+            return true;
+        }
+        // Each task keeps its own priority; the key only places it.
+        let (Some(task_a), Some(task_b)) = (lane.queued.remove(&at_a), lane.queued.remove(&at_b))
+        else {
+            return false;
+        };
+        lane.queued.insert(at_a, task_b);
+        lane.queued.insert(at_b, task_a);
+        self.inner
+            .runner
+            .lane_changed(session, &lanes.state(session));
+        true
+    }
+
+    /// Queues task `id` of `session`'s lane again as `edit` changes it (its
+    /// priority included): it leaves its place and arrives anew, as
+    /// [`TaskQueue::push`] admits it (a `Steer` is offered to the running
+    /// task). The admission, or `None` when the lane does not queue it.
+    ///
+    /// # Errors
+    ///
+    /// The store failed to save it.
+    pub(crate) async fn requeue(
+        &self,
+        session: &str,
+        id: &str,
+        edit: impl FnOnce(&mut Task),
+    ) -> anyhow::Result<Option<Admission>> {
+        // The busy count is left as it is: the task is counted again as it
+        // is pushed, so no wait reads the session idle in between.
+        let taken = {
+            let mut lanes = lock(&self.inner.lanes);
+            let taken = lanes.by_session.get_mut(session).and_then(|lane| {
+                let key = lane
+                    .queued
+                    .iter()
+                    .find(|(_, task)| task.id == id)
+                    .map(|(key, _)| *key)?;
+                lane.queued.remove(&key)
+            });
+            if taken.is_some() {
+                self.inner
+                    .runner
+                    .lane_changed(session, &lanes.state(session));
+            }
+            taken
+        };
+        let Some(mut task) = taken else {
+            return Ok(None);
+        };
+        edit(&mut task);
+        self.push(task).await.map(Some)
+    }
+
     /// Marks `session`'s running task `task` as ended, ahead of its `done`
     /// being published: whoever hears the `done` and then reads the lane no
     /// longer finds it running.

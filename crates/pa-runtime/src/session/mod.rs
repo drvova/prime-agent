@@ -42,7 +42,7 @@ pub(crate) use faults::{reap_orphans, Rebuild, SessionFaults, Supervision};
 use host::SessionHost;
 pub(crate) use host::{LiveEngine, Opening};
 pub(crate) use runner::{RuntimeTaskSink, SessionRunner, SCHEDULE_PREFIX};
-pub(crate) use stream::SessionStream;
+pub(crate) use stream::{QueueLane, RowAt, SessionStream};
 
 /// A session to open.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -665,6 +665,21 @@ impl<B: SessionBuilder> Sessions<B> {
     /// Keeps `queued` for the task `task` until it runs.
     pub(crate) fn attach(&self, task: &str, queued: Queued) {
         lock(&self.queued).insert(task.to_string(), queued);
+    }
+
+    /// Queued task `task` runs with `images` instead of the ones it was
+    /// queued with.
+    pub(crate) fn set_images(&self, task: &Task, images: Vec<ImageContent>) {
+        let mut queued = lock(&self.queued);
+        let entry = queued.entry(task.id.clone()).or_insert_with(|| Queued {
+            images: Vec::new(),
+            cause: Cause {
+                id: task.trigger.clone(),
+                trust: task.trust,
+                hops: 0,
+            },
+        });
+        entry.images = images;
     }
 
     /// What `task` was queued with: its images, and its trigger as a cause

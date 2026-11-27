@@ -231,3 +231,66 @@ async fn the_replacements_answer_and_fork_as_the_old_daemons_do() {
         )
     );
 }
+
+/// The old worker's rebind after a fork (pa-daemon's
+/// `fork_rebinds_the_scheduled_jobs_onto_the_forked_session`): the
+/// session's scheduled jobs move onto the fork's transcript, and their
+/// timers stay defined.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fork_rebinds_the_sessions_scheduled_jobs_onto_its_transcript() {
+    let bed = Bed::new();
+    let path = seed(
+        &bed.agent_dir(),
+        bed.dir.path(),
+        "0199a000-0000-7000-8000-000000000010",
+    );
+    let _daemon = bed.runtime_daemon_with(&json!({ "responses": ["after the fork"] }), OFFLINE);
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = ok(client.call("session.create", json!({ "path": path })).await);
+    let id = created["session"].as_str().unwrap().to_string();
+    let job = ok(client
+        .call(
+            "schedule.add",
+            json!({ "session": id, "schedule": "every 1h", "prompt": "check in" }),
+        )
+        .await)["job"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let forked = runtime_answers(
+        &mut client,
+        &id,
+        vec![json!({ "type": "fork", "entryId": "a1", "position": "at" })],
+    )
+    .await;
+    let snapshot = ok(client
+        .query("session.snapshot", json!({ "session": id }))
+        .await);
+    let jobs = ok(client.query("schedules", json!({ "session": id })).await);
+    let sources = ok(client.query("sources", json!({})).await);
+    let timed = sources["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| source["name"] == format!("schedule-{job}"));
+    assert_ne!(snapshot["path"], json!(path));
+    assert_eq!(
+        (
+            forked,
+            jobs["jobs"][0]["id"].clone(),
+            jobs["jobs"][0]["sessionFile"].clone(),
+            jobs["jobs"][0]["cwd"].clone(),
+            timed,
+        ),
+        (
+            vec![
+                json!({ "type": "response", "command": "fork", "success": true,
+                         "data": { "cancelled": false } })
+            ],
+            json!(job),
+            snapshot["path"].clone(),
+            json!(bed.dir.path()),
+            true,
+        )
+    );
+}

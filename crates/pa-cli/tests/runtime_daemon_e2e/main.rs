@@ -43,6 +43,9 @@
 //!   copy text, `navigate_tree` with its branch summary, the HTML export),
 //!   answered and recorded as the old daemon answers and records them
 //!   (phase 8d-2): [`tree`].
+//! - A session's queue edits, and the aborts of its compaction and its
+//!   retry, answered and run as the old daemon answers and runs them (phase
+//!   8d-2c): [`queue_edit`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -53,6 +56,7 @@ mod family;
 mod goldens;
 mod info;
 mod keeper;
+mod queue_edit;
 mod reliability;
 mod replace;
 mod saved_list;

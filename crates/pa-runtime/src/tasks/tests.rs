@@ -351,3 +351,51 @@ async fn cancel_task_cancels_one_queued_task() {
         )
     );
 }
+
+/// A queue edit keeps the lane's order but for what it moves: a swap
+/// trades two places, an edit keeps its place, and a requeue as a `Steer`
+/// arrives anew and is offered to the running task.
+#[tokio::test(start_paused = true)]
+async fn queued_tasks_are_swapped_edited_and_requeued_in_place() {
+    let mut harness = harness(1);
+    harness.push("run", "a", Priority::Prompt).await;
+    let (_, finish) = harness.next_start().await;
+    for id in ["f1", "f2", "f3"] {
+        harness.push(id, "a", Priority::FollowUp).await;
+    }
+    let swapped = harness.queue.swap_queued("a", "f1", "f3");
+    let edited = harness
+        .queue
+        .edit_queued("a", "f2", |task| {
+            task.prompt = "edited".to_string();
+            task.priority = Priority::Steer;
+        })
+        .await
+        .expect("saved");
+    let requeued = harness
+        .queue
+        .requeue("a", "f1", |task| task.priority = Priority::Steer)
+        .await
+        .expect("saved");
+    let lane = harness.queue.lane("a");
+    let queued: Vec<(String, String, Priority)> = lane
+        .queued
+        .iter()
+        .map(|task| (task.id.clone(), task.prompt.clone(), task.priority))
+        .collect();
+    let steered = harness.steered.try_recv().expect("the steer was offered");
+    finish.send(TaskOutcome::Done).expect("the run waits");
+    assert_eq!(
+        (swapped, edited, requeued, queued, steered),
+        (
+            true,
+            true,
+            Some(Admission::Steered),
+            vec![
+                ("f3".to_string(), "do f3".to_string(), Priority::FollowUp),
+                ("f2".to_string(), "edited".to_string(), Priority::FollowUp),
+            ],
+            ("run".to_string(), "f1".to_string()),
+        )
+    );
+}

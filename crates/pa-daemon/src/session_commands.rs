@@ -49,6 +49,7 @@ pub(crate) fn run_session_command(
                 messages: vec![session_command_failure_row(command, &error)],
                 compaction: None,
                 compaction_skipped: None,
+                compaction_aborted: false,
                 continuation_message: None,
                 error: Some(error),
                 pending_refinement: None,

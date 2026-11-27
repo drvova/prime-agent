@@ -495,7 +495,17 @@ SQLite implementations over `pa-log`.
   aborted first, the new transcript's lease is taken before the old one goes, and the session
   goes on under the same id (`Runtime::replace_session`: its host ends the lifetime and builds
   the next from the new transcript, as a crash's rebuild does, keeping its subscribers, stream
-  and tasks). A root session stopped and opened again waits for its new engine's
+  and tasks); the session's scheduled jobs are rebound onto the new transcript in place as the
+  rebuilt engine arms them (their lane and timers stay). The queue edits and aborts
+  (8d-2c): `session.mutate_queued_message` (`mutate_queued_message`, `runtime/queue_edit.rs`:
+  a delete, move or rewrite of the task a queue view's row shows, addressed by lane, index and
+  the text the client saw, `{status: "applied" | "rejected"}`; a row waiting on the agent, a
+  steer the running turn took among them, is rejected, as the runtime's turn reads a steer at
+  once; an applied edit resumes a parked lane; a moved task's place is the lane's own and is not
+  restored after a restart), `session.abort_compaction` (aborts the compaction the session runs
+  under its own signal, `/compact` or automatic: `compaction_end` says `aborted`) and
+  `session.abort_retry` (ends the auto-retry wait of the running prompt: `Retry cancelled`).
+  A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
@@ -676,7 +686,8 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `session.last_assistant_text` and the calls `session.navigate_tree`,
   `session.abort_branch_summary` and `session.export_html`, and (8d-2b) the calls
   `session.fork_entry` and `session.import_jsonl`. pa-types `wire2::Outcome::Error` gains
-  `info` (the old `errorInfo`).
+  `info` (the old `errorInfo`). (8d-2c) the calls `session.mutate_queued_message`,
+  `session.abort_compaction` and `session.abort_retry`.
 - `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
   engine streams from, which the runtime daemon's model and tier switches write.
 

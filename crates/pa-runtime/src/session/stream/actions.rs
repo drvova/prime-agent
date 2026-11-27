@@ -156,6 +156,12 @@ impl SessionStream {
         self.send_view(state);
     }
 
+    /// The queue view's rows as it stands, each with what it shows.
+    pub(crate) fn queue_rows(&self) -> QueueRows {
+        let state = lock(&self.state);
+        rows(&state.view, state.agent.upgrade().as_deref())
+    }
+
     /// The queue view as it stands (the old summary's `sessionActions`).
     pub(crate) fn actions(&self) -> Value {
         let state = lock(&self.state);
@@ -185,36 +191,91 @@ impl SessionStream {
     }
 }
 
-/// The old frame's `actions` object.
-fn render(view: &QueueView, agent: Option<&Agent>) -> Value {
-    let mut steering = Vec::new();
-    let mut follow_ups = Vec::new();
+/// One row of the queue view, and what it shows.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct QueueRow {
+    /// The row's text, as the view lists it.
+    pub(crate) text: String,
+    pub(crate) at: RowAt,
+    /// Whether it is a child's status notice.
+    notice: bool,
+}
+
+/// What a queue view's row shows.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RowAt {
+    /// A task the lane queues.
+    Task(Task),
+    /// A batch waiting on the agent.
+    Waiting,
+}
+
+/// The queue view's rows by lane, in the order it lists them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct QueueRows {
+    pub(crate) steering: Vec<QueueRow>,
+    pub(crate) follow_ups: Vec<QueueRow>,
+}
+
+impl QueueRows {
+    /// The rows of `lane`.
+    pub(crate) fn lane(&self, lane: QueueLane) -> &[QueueRow] {
+        match lane {
+            QueueLane::Steering => &self.steering,
+            QueueLane::FollowUp => &self.follow_ups,
+        }
+    }
+}
+
+/// The view's rows: the listed tasks, then the batches waiting on `agent`.
+fn rows(view: &QueueView, agent: Option<&Agent>) -> QueueRows {
+    let mut rows = QueueRows::default();
     for task in &view.queued {
         if task.prompt.is_empty() || !view.behind_work.contains(&task.id) {
             continue;
         }
+        let row = QueueRow {
+            text: task.prompt.clone(),
+            at: RowAt::Task(task.clone()),
+            notice: false,
+        };
         match task.priority {
-            Priority::Steer => steering.push(task.prompt.clone()),
+            Priority::Steer => rows.steering.push(row),
             Priority::Prompt | Priority::FollowUp | Priority::Event | Priority::Background => {
-                follow_ups.push(task.prompt.clone());
+                rows.follow_ups.push(row);
             }
         }
     }
-    let mut notices = (Vec::new(), Vec::new());
     for (preview, lane, notice) in waiting_rows(agent) {
-        let (rows, marks) = match lane {
-            WaitingLane::Steering => (&mut steering, &mut notices.0),
-            WaitingLane::FollowUp => (&mut follow_ups, &mut notices.1),
+        let lane_rows = match lane {
+            QueueLane::Steering => &mut rows.steering,
+            QueueLane::FollowUp => &mut rows.follow_ups,
         };
-        if notice {
-            marks.push(rows.len());
-        }
-        rows.push(preview);
+        lane_rows.push(QueueRow {
+            text: preview,
+            at: RowAt::Waiting,
+            notice,
+        });
     }
+    rows
+}
+
+/// The old frame's `actions` object.
+fn render(view: &QueueView, agent: Option<&Agent>) -> Value {
+    let rows = rows(view, agent);
+    let texts = |lane: &[QueueRow]| lane.iter().map(|row| row.text.clone()).collect::<Vec<_>>();
+    let notices = |lane: &[QueueRow]| {
+        lane.iter()
+            .enumerate()
+            .filter(|(_, row)| row.notice)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>()
+    };
+    let notices = (notices(&rows.steering), notices(&rows.follow_ups));
     let mut actions = json!({
-        "queuedCount": steering.len() + follow_ups.len(),
-        "steering": steering,
-        "followUps": follow_ups,
+        "queuedCount": rows.steering.len() + rows.follow_ups.len(),
+        "steering": texts(&rows.steering),
+        "followUps": texts(&rows.follow_ups),
     });
     if !notices.0.is_empty() || !notices.1.is_empty() {
         let mut marks = serde_json::Map::new();
@@ -236,19 +297,20 @@ fn render(view: &QueueView, agent: Option<&Agent>) -> Value {
     actions
 }
 
+/// A lane of the queue view: its steers, or the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WaitingLane {
+pub(crate) enum QueueLane {
     Steering,
     FollowUp,
 }
 
 /// The rows waiting on `agent`, one per queued batch: its preview, its
 /// lane, and whether it is a child's status notice.
-fn waiting_rows(agent: Option<&Agent>) -> Vec<(String, WaitingLane, bool)> {
+fn waiting_rows(agent: Option<&Agent>) -> Vec<(String, QueueLane, bool)> {
     let Some(agent) = agent else {
         return Vec::new();
     };
-    let lane = |batches: Vec<Vec<AgentMessage>>, lane: WaitingLane| {
+    let lane = |batches: Vec<Vec<AgentMessage>>, lane: QueueLane| {
         batches.into_iter().map(move |batch| {
             let preview = batch
                 .iter()
@@ -264,8 +326,8 @@ fn waiting_rows(agent: Option<&Agent>) -> Vec<(String, WaitingLane, bool)> {
             (preview, lane, notice)
         })
     };
-    lane(agent.steering_batches(), WaitingLane::Steering)
-        .chain(lane(agent.follow_up_batches(), WaitingLane::FollowUp))
+    lane(agent.steering_batches(), QueueLane::Steering)
+        .chain(lane(agent.follow_up_batches(), QueueLane::FollowUp))
         .collect()
 }
 

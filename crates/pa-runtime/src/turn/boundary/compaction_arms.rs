@@ -12,6 +12,22 @@ use super::{
 /// the turn.
 pub(super) const OVERFLOW_RECOVERY_FAILED_MESSAGE: &str = "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
 
+/// How a compaction that ended in `error` is recorded: cancelled when it
+/// was aborted (`session.abort_compaction`), else failed with `context`.
+fn failure(error: &anyhow::Error, context: &str) -> (CompactionOutcomeKind, String) {
+    if pa_agent::abort::is_abort_error(error) {
+        (
+            CompactionOutcomeKind::Cancelled,
+            "Compaction cancelled".to_string(),
+        )
+    } else {
+        (
+            CompactionOutcomeKind::Failed,
+            format!("{context}: {error:#}"),
+        )
+    }
+}
+
 /// One recovery attempt per overflow: "attempted" marks a compact-and-retry
 /// in flight; "reported" dedups the notice when the retry overflows too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -106,11 +122,12 @@ impl TurnBoundary {
                 .await;
             }
             Some(Err(error)) => {
+                let (kind, message) = failure(&error, "Requested compaction failed");
                 self.end_unsuccessfully(
                     engine,
                     CompactionOutcomeReason::Requested,
-                    CompactionOutcomeKind::Failed,
-                    &format!("Requested compaction failed: {error:#}"),
+                    kind,
+                    &message,
                     scheduled
                         .as_ref()
                         .and_then(|pending| pending.instructions.as_deref()),
@@ -150,11 +167,12 @@ impl TurnBoundary {
                             .await;
                         }
                         Err(error) => {
+                            let (kind, message) = failure(&error, "Auto-compaction failed");
                             self.end_unsuccessfully(
                                 engine,
                                 CompactionOutcomeReason::Threshold,
-                                CompactionOutcomeKind::Failed,
-                                &format!("Auto-compaction failed: {error:#}"),
+                                kind,
+                                &message,
                                 None,
                             )
                             .await;
@@ -303,11 +321,12 @@ impl TurnBoundary {
                 Ok(OverflowOutcome::Finished)
             }
             Err(error) => {
+                let (kind, message) = failure(&error, "Context overflow recovery failed");
                 self.end_unsuccessfully(
                     engine,
                     CompactionOutcomeReason::Overflow,
-                    CompactionOutcomeKind::Failed,
-                    &format!("Context overflow recovery failed: {error:#}"),
+                    kind,
+                    &message,
                     custom_instructions.as_deref(),
                 )
                 .await;

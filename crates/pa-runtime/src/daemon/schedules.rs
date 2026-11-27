@@ -121,7 +121,9 @@ pub(super) struct Schedules<B: SessionBuilder> {
 /// One session's armed jobs.
 struct Armed {
     store: Arc<AgentCronJobStore>,
-    binding: SessionBinding,
+    /// The session's transcript and working directory its jobs are bound
+    /// to: the ones its engine was last built on.
+    binding: Mutex<SessionBinding>,
     /// Runs one pass of the session's lane.
     pass: Arc<Notify>,
     /// The timer each job has, by job id: the next run it fires at.
@@ -130,6 +132,13 @@ struct Armed {
     /// pass publishes `agent/<id>/schedules`.
     changed: Arc<AtomicBool>,
     lane: tokio::task::JoinHandle<()>,
+}
+
+impl Armed {
+    /// What the session's jobs are bound to now.
+    fn binding(&self) -> SessionBinding {
+        lock(&self.binding).clone()
+    }
 }
 
 /// How the session's lane runs a claimed job.
@@ -173,6 +182,25 @@ impl<B: SessionBuilder> Schedules<B> {
     fn arm(&self, id: &str, path: &Path, cwd: &Path) -> anyhow::Result<Arc<Armed>> {
         let mut armed = lock(&self.armed);
         if let Some(session) = armed.get(id) {
+            // A session that goes on from another transcript (a fork, an
+            // import) is armed again as its engine is rebuilt: its jobs move
+            // onto that transcript in place. Its lane and timers stay, so no
+            // removal of a timer of its past arming can race the timers its
+            // lane defines next.
+            let bound = session.binding();
+            let (file, cwd) = (
+                path.to_string_lossy().into_owned(),
+                cwd.to_string_lossy().into_owned(),
+            );
+            if bound.session_file != file || bound.cwd != cwd {
+                let binding = SessionBinding {
+                    session_file: file,
+                    cwd,
+                    ..bound
+                };
+                session.store.rebind_session_jobs(&binding)?;
+                *lock(&session.binding) = binding;
+            }
             return Ok(Arc::clone(session));
         }
         // The old daemon's partition: `<sessions>/../session-artifacts/<id>`.
@@ -237,7 +265,7 @@ impl<B: SessionBuilder> Schedules<B> {
         });
         let session = Arc::new(Armed {
             store,
-            binding,
+            binding: Mutex::new(binding),
             pass,
             timers: tokio::sync::Mutex::new(HashMap::new()),
             changed: Arc::new(AtomicBool::new(false)),
@@ -330,11 +358,12 @@ impl<B: SessionBuilder> Schedules<B> {
         } else {
             "top-level"
         };
+        let binding = armed.binding();
         let job = armed.store.create(&CreateAgentCronJobInput {
-            active_session_id: armed.binding.active_session_id.clone(),
-            session_id: armed.binding.session_id.clone(),
-            session_file: armed.binding.session_file.clone(),
-            cwd: armed.binding.cwd.clone(),
+            active_session_id: binding.active_session_id,
+            session_id: binding.session_id,
+            session_file: binding.session_file,
+            cwd: binding.cwd,
             runtime_kind: Some(runtime_kind.to_string()),
             prompt: prompt.to_string(),
             schedule_text: schedule.to_string(),
@@ -452,13 +481,14 @@ impl<B: SessionBuilder> Schedules<B> {
         };
         // A job of a session that no longer exists cancels the session's
         // jobs: a fire never brings a deleted session back.
-        let path = PathBuf::from(&armed.binding.session_file);
+        let binding = armed.binding();
+        let path = PathBuf::from(&binding.session_file);
         if !pa_core::session::store::store().exists(&path) {
             armed.store.cancel_jobs_for_session(
                 &CancelJobsFilter {
                     active_session_id: None,
                     session_id: None,
-                    session_file: Some(armed.binding.session_file.clone()),
+                    session_file: Some(binding.session_file.clone()),
                 },
                 pa_core::autonomous::now_millis(),
             )?;
@@ -470,7 +500,7 @@ impl<B: SessionBuilder> Schedules<B> {
             if lock(&self.subagents).contains(session) {
                 return Ok(Some(SKIPPED));
             }
-            self.wake(&runtime, session, &path, Path::new(&armed.binding.cwd))
+            self.wake(&runtime, session, &path, Path::new(&binding.cwd))
                 .await?;
         }
         let lane = runtime.lane(session);
@@ -614,13 +644,14 @@ impl<B: SessionBuilder> SessionJobs for Schedules<B> {
             }
         };
         let (pass, changed) = (Arc::clone(&armed.pass), Arc::clone(&armed.changed));
+        let binding = armed.binding();
         Some(KernelCronWiring {
             store: Arc::clone(&armed.store),
             binding: Some(KernelCronBinding {
-                active_session_id: armed.binding.active_session_id.clone(),
-                session_id: armed.binding.session_id.clone(),
-                session_file: armed.binding.session_file.clone(),
-                cwd: armed.binding.cwd.clone(),
+                active_session_id: binding.active_session_id,
+                session_id: binding.session_id,
+                session_file: binding.session_file,
+                cwd: binding.cwd,
             }),
             // A job made, changed or cancelled: the lane's next pass moves
             // its timer.

@@ -199,6 +199,12 @@ pub struct AgentSession {
     /// `in_flight`): every run holds its flight guard for its whole body.
     refinements_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     refinement_cancel: std::sync::Mutex<pa_agent::abort::AbortController>,
+    /// The controller of the compaction running under the session's own
+    /// signal ([`AgentSession::abort_compaction`]).
+    compaction_abort: std::sync::Mutex<Option<Arc<pa_agent::abort::AbortController>>>,
+    /// The retry abort of the prompt running under the auto-retry
+    /// ([`AgentSession::abort_retry`]); each prompt starts a fresh one.
+    retry_abort: std::sync::Mutex<pa_agent::abort::AbortController>,
     /// The session's semantic-edge recorder (TS
     /// `AgentSession._semanticEdges`): `None` in sessions the engine
     /// built without a semantic identity (verification harnesses
@@ -299,6 +305,8 @@ impl AgentSession {
             compaction_flight: Arc::new(tokio::sync::Mutex::new(())),
             refinements_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             refinement_cancel: std::sync::Mutex::default(),
+            compaction_abort: std::sync::Mutex::new(None),
+            retry_abort: std::sync::Mutex::default(),
             usage_store,
             billing,
         };

@@ -56,6 +56,7 @@ use crate::trust::TaskTrust;
 
 mod actions;
 
+pub(crate) use actions::{QueueLane, RowAt};
 use actions::{QueueView, TurnPoint};
 
 /// One session's stream.

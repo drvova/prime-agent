@@ -251,6 +251,15 @@ pub enum Call {
     /// `session.import_jsonl`: an open session goes on from a copy of a
     /// transcript file, under the same id.
     SessionImportJsonl,
+    /// `session.mutate_queued_message`: deletes, moves or rewrites one row
+    /// of an open session's queue view.
+    SessionMutateQueuedMessage,
+    /// `session.abort_compaction`: aborts the compaction an open session
+    /// runs, manual or automatic.
+    SessionAbortCompaction,
+    /// `session.abort_retry`: stops the automatic retry an open session's
+    /// turn waits on.
+    SessionAbortRetry,
 }
 
 impl FromStr for Call {
@@ -300,6 +309,9 @@ impl FromStr for Call {
             "session.export_html" => Call::SessionExportHtml,
             "session.fork_entry" => Call::SessionForkEntry,
             "session.import_jsonl" => Call::SessionImportJsonl,
+            "session.mutate_queued_message" => Call::SessionMutateQueuedMessage,
+            "session.abort_compaction" => Call::SessionAbortCompaction,
+            "session.abort_retry" => Call::SessionAbortRetry,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

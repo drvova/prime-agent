@@ -131,6 +131,18 @@ pub async fn execute_prompt_session_command(
         }
         let end = if execution.compaction.is_some() {
             manual_compaction_end_success(&execution, custom_instructions.as_deref())
+        } else if execution.compaction_aborted {
+            let mut event = json!({
+                "type": "compaction_end",
+                "reason": "manual",
+                "aborted": true,
+                "willRetry": false,
+                "errorSeverity": "error",
+            });
+            if let Some(instructions) = &custom_instructions {
+                event["customInstructions"] = json!(instructions);
+            }
+            event
         } else if let Some(skipped) = execution.compaction_skipped {
             manual_compaction_end_unsuccessful(skipped, "warning", custom_instructions.as_deref())
         } else {

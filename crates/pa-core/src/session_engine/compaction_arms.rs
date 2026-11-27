@@ -171,93 +171,141 @@ impl AgentSession {
         api_key: Option<String>,
         abort: Option<&pa_agent::abort::AbortSignal>,
     ) -> anyhow::Result<CompactOutcome> {
-        compaction_trace::trace(
-            "compact.enter",
-            &serde_json::json!({
-                "customInstructions": custom_instructions.is_some(),
-            }),
-        );
-        let started_at = std::time::Instant::now();
-        let summary_delta = self
-            .compaction_summary_sink
-            .lock()
-            .expect("compaction summary sink lock")
-            .clone();
-        let options = crate::session_engine::compact_session::CompactOptions {
-            model: model.clone(),
-            api_key,
-            custom_instructions,
-            settings: self.compaction_settings(),
-            abort,
-            // Captured per attempt inside `compaction_attempts`: a
-            // conflict retry summarizes a new branch, and inputs captured
-            // here would rank the abandoned branch's terms.
-            harness_digest: None,
-            auxiliary: self.auxiliary_model.as_ref(),
-            summary_delta,
-            semantic_edges: self.semantic_edges(),
-        };
-        // The flight spans the attempts, the rebuilt-context replace, and
-        // the kernel-state notice: every path here REPLACES the live loop
-        // context, and the other replacers — `commit_refinement`'s
-        // outcome push and `record_compaction_outcome`'s failure row —
-        // take the same flight. A row pushed onto the context must not
-        // interleave with the replace: it would duplicate in the rebuilt
-        // view or vanish under it while staying durable either way.
-        let _flight = self.compaction_flight.lock().await;
-        let mut outcome = self.compaction_attempts(&options, started_at).await?;
-        if matches!(outcome, CompactOutcome::Skipped(_)) {
-            compaction_trace::trace("compact.skipped", &serde_json::Value::Null);
-            return Ok(outcome);
-        }
-        let rebuilt = {
-            let session = self.session.lock().await;
-            crate::session_engine::compact_session::rebuilt_context_after_compaction(&session)
-        };
-        let loop_messages: Vec<AgentMessage> = rebuilt_loop_messages(rebuilt);
-        let rebuilt_message_count = loop_messages.len();
-        self.agent.set_messages(loop_messages).await;
-        compaction_trace::trace(
-            "compact.rebuilt_context",
-            &serde_json::json!({ "messages": rebuilt_message_count }),
-        );
-        // A kernel that survived the compaction gets its persistence notice —
-        // a durable `ipython_state` row that also keeps a back-to-back second
-        // `/compact` preparing (update mode) instead of skipping.
-        let kernel_state = match self.kernel_state.as_ref() {
-            Some(probe) => {
-                kernel_state_notice::sync_after_compaction(
-                    probe.as_ref(),
+        // A run whose caller brings no signal runs under the session's own,
+        // which `abort_compaction` aborts: the summarizer request in flight
+        // is dropped and nothing commits.
+        let own = abort.is_none().then(|| {
+            let controller = std::sync::Arc::new(pa_agent::abort::AbortController::new());
+            *self.compaction_abort.lock().expect("compaction abort lock") =
+                Some(std::sync::Arc::clone(&controller));
+            controller
+        });
+        let own_signal = own.as_ref().map(|controller| controller.signal());
+        let abort = abort.or(own_signal.as_ref());
+        // Boxed: the run is raced or awaited from one place, and the session
+        // command and turn futures that await `compact` stay small.
+        let run = Box::pin(async {
+            compaction_trace::trace(
+                "compact.enter",
+                &serde_json::json!({
+                    "customInstructions": custom_instructions.is_some(),
+                }),
+            );
+            let started_at = std::time::Instant::now();
+            let summary_delta = self
+                .compaction_summary_sink
+                .lock()
+                .expect("compaction summary sink lock")
+                .clone();
+            let options = crate::session_engine::compact_session::CompactOptions {
+                model: model.clone(),
+                api_key,
+                custom_instructions,
+                settings: self.compaction_settings(),
+                abort,
+                // Captured per attempt inside `compaction_attempts`: a
+                // conflict retry summarizes a new branch, and inputs captured
+                // here would rank the abandoned branch's terms.
+                harness_digest: None,
+                auxiliary: self.auxiliary_model.as_ref(),
+                summary_delta,
+                semantic_edges: self.semantic_edges(),
+            };
+            // The flight spans the attempts, the rebuilt-context replace, and
+            // the kernel-state notice: every path here REPLACES the live loop
+            // context, and the other replacers — `commit_refinement`'s
+            // outcome push and `record_compaction_outcome`'s failure row —
+            // take the same flight. A row pushed onto the context must not
+            // interleave with the replace: it would duplicate in the rebuilt
+            // view or vanish under it while staying durable either way.
+            let _flight = self.compaction_flight.lock().await;
+            let mut outcome = self.compaction_attempts(&options, started_at).await?;
+            if matches!(outcome, CompactOutcome::Skipped(_)) {
+                compaction_trace::trace("compact.skipped", &serde_json::Value::Null);
+                return Ok(outcome);
+            }
+            let rebuilt = {
+                let session = self.session.lock().await;
+                crate::session_engine::compact_session::rebuilt_context_after_compaction(&session)
+            };
+            let loop_messages: Vec<AgentMessage> = rebuilt_loop_messages(rebuilt);
+            let rebuilt_message_count = loop_messages.len();
+            self.agent.set_messages(loop_messages).await;
+            compaction_trace::trace(
+                "compact.rebuilt_context",
+                &serde_json::json!({ "messages": rebuilt_message_count }),
+            );
+            // A kernel that survived the compaction gets its persistence notice —
+            // a durable `ipython_state` row that also keeps a back-to-back second
+            // `/compact` preparing (update mode) instead of skipping.
+            let kernel_state = match self.kernel_state.as_ref() {
+                Some(probe) => {
+                    kernel_state_notice::sync_after_compaction(
+                        probe.as_ref(),
+                        &self.session,
+                        &self.agent,
+                    )
+                    .await?
+                }
+                None => None,
+            };
+            let notice_landed = kernel_state.is_some();
+            let mut recent_files = false;
+            if let CompactOutcome::Ran(run) = &mut outcome {
+                run.kernel_state = kernel_state;
+                // After the kernel notice, in the order the built context
+                // shows the two rows.
+                recent_files = super::compaction_files::sync_after_compaction(
                     &self.session,
                     &self.agent,
+                    &run.entry.first_kept_entry_id,
+                    model.context_window,
                 )
                 .await?
+                .is_some();
             }
-            None => None,
+            compaction_trace::trace(
+                "compact.returned",
+                &serde_json::json!({
+                    "notice": notice_landed,
+                    "recentFiles": recent_files,
+                }),
+            );
+            Ok(outcome)
+        });
+        let outcome = match &own_signal {
+            Some(signal) => pa_agent::abort::race_with_abort(run, signal)
+                .await
+                .and_then(|outcome| outcome),
+            None => run.await,
         };
-        let notice_landed = kernel_state.is_some();
-        let mut recent_files = false;
-        if let CompactOutcome::Ran(run) = &mut outcome {
-            run.kernel_state = kernel_state;
-            // After the kernel notice, in the order the built context
-            // shows the two rows.
-            recent_files = super::compaction_files::sync_after_compaction(
-                &self.session,
-                &self.agent,
-                &run.entry.first_kept_entry_id,
-                model.context_window,
-            )
-            .await?
-            .is_some();
+        if let Some(own) = own {
+            let mut slot = self.compaction_abort.lock().expect("compaction abort lock");
+            if slot
+                .as_ref()
+                .is_some_and(|current| std::sync::Arc::ptr_eq(current, &own))
+            {
+                *slot = None;
+            }
         }
-        compaction_trace::trace(
-            "compact.returned",
-            &serde_json::json!({
-                "notice": notice_landed,
-                "recentFiles": recent_files,
-            }),
-        );
-        Ok(outcome)
+        outcome
+    }
+
+    /// Aborts the compaction the session runs under its own signal (one
+    /// whose caller brought none, [`Self::compact`]); nothing when none runs.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the compaction abort slot's mutex is poisoned.
+    pub fn abort_compaction(&self) {
+        let running = self
+            .compaction_abort
+            .lock()
+            .expect("compaction abort lock")
+            .clone();
+        if let Some(controller) = running {
+            controller.abort();
+        }
     }
 
     /// The PREPARE -> SUMMARIZE -> COMMIT loop: prepare under the session

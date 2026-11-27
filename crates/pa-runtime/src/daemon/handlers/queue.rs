@@ -1,7 +1,8 @@
 //! A running session's turns and queue, as the daemon's calls change them:
 //! `session.abort`, `session.abort_and_send_queued`, `session.resume_queue`,
-//! `session.withdraw`, `session.restore` and `session.compact`, and the
-//! `tasks` query.
+//! `session.withdraw`, `session.restore`, `session.compact`,
+//! `session.abort_compaction` and `session.abort_retry`, and the `tasks`
+//! query.
 //!
 //! - **Abort.** The running turn is aborted (its task ends `Cancelled`) and
 //!   the steers it took but had not read go back to the front of the lane.
@@ -19,6 +20,13 @@
 //!   runs on. `session.restore` puts messages back as steers at the front of
 //!   the lane: delivered together as the session's next turn (or read by
 //!   the running turn at its next step).
+//! - **Abort a compaction or a retry.** `session.abort_compaction` aborts the
+//!   compaction the session runs, `/compact` or automatic (the summary
+//!   request in flight is dropped, nothing commits, and its `compaction_end`
+//!   says it was aborted); `session.abort_retry` ends the wait of the
+//!   automatic retry its turn is in (the turn settles with the failure it
+//!   retried, its retry cancelled). Each answers `null` whether or not one
+//!   runs, as the old daemon's `abort_compaction` and `abort_retry` do.
 //! - **Compact.** `session.compact` queues `/compact [instructions]` as a
 //!   prompt in the session's lane (it runs at the next turn boundary, after
 //!   the running turn) and answers once its task is done, with the
@@ -86,6 +94,22 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             "autonomous": autonomous,
             "outstandingBackgroundJobs": outstanding_background_jobs,
         }))
+    }
+
+    pub(super) fn abort_compaction(&self, args: &Value) -> anyhow::Result<Value> {
+        let id = self.open_session(args)?;
+        if let Some(live) = self.runtime.session_engine(&id) {
+            live.engine.session.abort_compaction();
+        }
+        Ok(Value::Null)
+    }
+
+    pub(super) fn abort_retry(&self, args: &Value) -> anyhow::Result<Value> {
+        let id = self.open_session(args)?;
+        if let Some(live) = self.runtime.session_engine(&id) {
+            live.engine.session.abort_retry();
+        }
+        Ok(Value::Null)
     }
 
     pub(super) fn resume_queue(&self, args: &Value) -> anyhow::Result<Value> {
