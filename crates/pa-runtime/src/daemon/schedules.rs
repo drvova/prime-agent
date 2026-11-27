@@ -19,7 +19,8 @@
 //!   recovery), under its catch-up rule: a job whose time passed while
 //!   nothing ran fires once, and its next run counts from that fire. A
 //!   timer's own claim (`lastFiredMs`) is cleared whenever it is defined,
-//!   so it never holds back a run the store owes.
+//!   so it never holds back a run the store owes. A pass the store refuses
+//!   (its lock held) runs again shortly.
 //! - **Routing**, as the old daemon's: a plain job is a `follow_up` task
 //!   over its prompt; a heartbeat steers its `heartbeat_prompt` row onto the
 //!   session's agent (a running turn reads it at its next step) and queues
@@ -69,6 +70,9 @@ const SKIPPED: &str = "skipped";
 
 /// The prefix of a job's timer source's name.
 const TIMER_PREFIX: &str = "schedule-";
+
+/// How long a lane waits to run a pass the store refused again.
+const PASS_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Whether this daemon is the selected one now.
 pub(super) type Selected = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -170,13 +174,22 @@ impl<B: SessionBuilder> Schedules<B> {
             async move {
                 loop {
                     pass.notified().await;
-                    if let Err(error) = scheduler.run_due().await {
+                    let ran = scheduler.run_due().await;
+                    if let Err(error) = &ran {
                         tracing::warn!("session {id}'s scheduled jobs did not run: {error:#}");
                     }
                     let Some(jobs) = jobs.upgrade() else {
                         return;
                     };
                     jobs.follow_store(&id).await;
+                    // A pass the store refused (its lock held, as a daemon
+                    // killed under it leaves it until it goes stale) runs
+                    // again: the timer that asked for it has fired, and
+                    // nothing else would.
+                    if ran.is_err() {
+                        tokio::time::sleep(PASS_RETRY).await;
+                        pass.notify_one();
+                    }
                 }
             }
         });
