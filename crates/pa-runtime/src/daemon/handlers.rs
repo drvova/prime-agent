@@ -8,6 +8,8 @@
 //! open session goes through its engine's session manager, on the session's
 //! own runtime; a change to a saved one takes the session's lease for the
 //! change, so a session another process holds is refused, never written.
+//! `session.create` of a session the daemon holds open already answers it
+//! (`"reused": true`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -157,10 +159,13 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 (id, path)
             }
         };
-        anyhow::ensure!(
-            !self.open.contains(&id),
-            "session {id} is open in the runtime daemon already"
-        );
+        // Open already (the boot revived it, or another client opened it):
+        // answered as it runs, the old daemon's create-open reuse.
+        if let Some(path) = self.open.path(&id) {
+            let cwd =
+                pa_core::session::manager::read_session_header(&path).map(|header| header.cwd);
+            return Ok(json!({ "session": id, "path": path, "cwd": cwd, "reused": true }));
+        }
         let cwd = match given_cwd {
             Some(cwd) => cwd,
             None => pa_core::session::manager::read_session_header(&path)
@@ -192,7 +197,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 },
             )
             .await;
-        Ok(json!({ "session": id, "path": path, "cwd": cwd }))
+        Ok(json!({ "session": id, "path": path, "cwd": cwd, "reused": false }))
     }
 
     async fn stop(&self, args: &Value) -> anyhow::Result<Value> {
