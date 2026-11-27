@@ -1,0 +1,1 @@
+- Fixed the runtime daemon's restart owner starting the daemon again after a deliberate stop: a stop recorded just after launch, or a SIGTERM while the daemon was still starting, was read as a crash.
