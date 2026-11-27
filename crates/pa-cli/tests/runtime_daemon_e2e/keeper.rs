@@ -5,7 +5,8 @@
 //!   keeper on the same socket, and the death is recorded under the runtime
 //!   daemon's socket, never the old daemon's;
 //! - a deliberate stop (a client's `daemon.shutdown`, the daemon's own drain
-//!   on SIGTERM, or a kill after a recorded stop intent) is not restarted;
+//!   on SIGTERM, or a kill after a recorded stop intent) is not restarted,
+//!   nor is the one `prime-agent shutdown --force` asks for;
 //! - a runtime daemon that dies at every start is given up on at the limit,
 //!   every death recorded;
 //! - a wedged (SIGSTOP'd) runtime daemon holding the agent dir's lock is
@@ -226,6 +227,43 @@ async fn a_deliberate_stop_of_a_kept_runtime_daemon_is_not_restarted() {
             Vec::<Value>::new(),
             Vec::<Value>::new()
         )
+    );
+}
+
+/// `prime-agent shutdown --force` with the opt-in set finds the runtime daemon beside the old
+/// daemon's socket and stops it through its own `daemon.shutdown`: the deliberate stop its
+/// restart owner does not undo (the keeper exits cleanly, nothing serves the socket again, no
+/// death is recorded).
+#[test]
+fn shutdown_force_stops_a_kept_runtime_daemon_and_its_keeper_does_not_restart_it() {
+    let bed = Bed::new();
+    let mut kept = bed.kept_runtime_daemon(&bed.old_socket());
+    let holder = serving_holder(&bed, None);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
+    bed.env(&mut command, "shutdown.log");
+    let output = command
+        .args(["shutdown", "--force"])
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "1")
+        .env("PRIME_AGENT_DAEMON_SOCKET", bed.old_socket())
+        .stdout(std::process::Stdio::piped())
+        .output()
+        .expect("run shutdown");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let keeper_exit = exit_code(&mut kept.keeper);
+    assert_eq!(
+        (
+            output.status.code(),
+            stdout.contains(&format!(
+                "stopped {}: stopped the runtime daemon (pid {})",
+                bed.runtime_socket().display(),
+                holder.pid
+            )),
+            keeper_exit,
+            answers(&bed.runtime_socket()),
+            bed.deaths(&bed.runtime_socket()),
+        ),
+        (Some(0), true, Some(0), false, Vec::<Value>::new()),
+        "stdout: {stdout}"
     );
 }
 

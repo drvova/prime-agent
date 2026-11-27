@@ -76,16 +76,12 @@ impl Pane {
 
 impl Drop for Pane {
     fn drop(&mut self) {
-        // The product's daemon outlives its client: stop it through the product's own command.
+        // The product's daemon outlives its client: stop it through the product's own command,
+        // which stops either daemon.
         let _ = Command::new("sh")
             .arg(&self.launcher)
             .args(["shutdown", "--force"])
             .output();
-        // `shutdown --force` stops the supervisor's daemons; the runtime daemon's is stopped by
-        // its lock.
-        if let Some(dir) = self.launcher.parent() {
-            support::stop_runtime_daemon(&dir.join("home/.prime/agent"));
-        }
         let _ = self.tmux(&["kill-server"]);
     }
 }

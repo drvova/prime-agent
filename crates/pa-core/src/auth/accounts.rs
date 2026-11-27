@@ -215,6 +215,47 @@ impl AuthAccounts {
         }
     }
 
+    /// The credential a new session is pinned to, in the order the daemons' creates resolve it:
+    /// the profile `profile` maps the session's `provider` to (else the profile's default
+    /// provider, else its one named credential), then the `credential` selector, then the pin of
+    /// the session it is created under (`parent`'s header: a scoped child inherits it). `None`
+    /// pins nothing.
+    ///
+    /// # Errors
+    ///
+    /// The profile does not exist or cannot be read, or the selected credential is not stored
+    /// (as [`AuthAccounts::select`]): the create is refused before any transcript exists.
+    pub fn new_session_pin(
+        &self,
+        profile: Option<&str>,
+        provider: Option<&str>,
+        credential: Option<&str>,
+        parent: Option<&Path>,
+    ) -> Result<Option<CredentialPin>, String> {
+        // The agent dir is the one `auth-accounts.json` sits in.
+        let agent_dir = self.path.parent().unwrap_or_else(|| Path::new(""));
+        let profile = match profile {
+            Some(name) => Some(
+                crate::settings::load_profile(agent_dir, name)
+                    .map_err(|error| format!("{error:#}"))?
+                    .ok_or_else(|| {
+                        format!("profile '{name}' does not exist; /profile new {name} saves one")
+                    })?,
+            ),
+            None => None,
+        };
+        match profile
+            .as_ref()
+            .and_then(|profile| profile.credential_for(provider))
+            .or(credential)
+        {
+            Some(selector) => self.select(selector).map(Some),
+            None => Ok(parent
+                .and_then(crate::session::manager::read_session_header)
+                .and_then(|header| header.credential_pin())),
+        }
+    }
+
     /// The pinned credential as stored now.
     ///
     /// # Errors

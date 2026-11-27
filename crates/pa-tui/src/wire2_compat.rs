@@ -198,7 +198,7 @@
 //!
 //! | command | wire2 | arguments, and the result |
 //! | --- | --- | --- |
-//! | `create` | call `session.create` | `path` (the resumed `sessionPath`), `cwd` and `options` (the create config's `provider`, `model`, `thinking`, `systemPrompt`, `appendSystemPrompt`, `skills`, `promptTemplates`, `autonomous`, `executionMode`), `ephemeral` (`noSession`); `{session, path, cwd}` becomes the old `{activeSessionId, sessionId, sessionFile}` beside them |
+//! | `create` | call `session.create` (`pa_types::wire2::SessionCreate`) | `path` (the resumed `sessionPath`), `cwd`, `sessionDir`, `launchEnv`, `ephemeral` (`noSession`) and `options`: the create config's `provider`, `model`, `thinking`, `systemPrompt`, `appendSystemPrompt`, `skills`, `promptTemplates`, `autonomous`, `executionMode`, `apiKey`, `credential`, `profile` and `models`, its `telemetryDisabled` (or the command's), and `parent` (`parentSessionPath`, `rlmDepth`); `{session, path, cwd}` becomes the old `{activeSessionId, sessionId, sessionFile}` beside them |
 //! | `list` | query `sessions.list` | `open` (all but `all`) |
 //! | `kill` | call `session.stop` | `session` |
 //! | `rename`, `set_session_name` | call `session.rename` | `session`, `name` |
@@ -214,12 +214,16 @@
 //! | `heartbeats_list` | query `schedules` | `session` when it names one; `{jobs}` becomes the old `{heartbeats: [{job}]}` of its heartbeat jobs |
 //! | `detach` of no session | none | answered by the layer, as the old daemon answered it |
 //!
-//! A create whose config carries a choice the runtime's create has no form of yet (`apiKey`,
-//! `credential`, `profile`, `models`, `parentSessionPath`, `rlmDepth`) is not carried, and
-//! refused, rather than run without it. Its `sessionDir`, `script`, `childScript`,
-//! `telemetryDisabled`, `env`, `launchEnv` and `lifecycle` are left out: the daemon keeps its
-//! sessions in its own session dir and runs with the environment, the faux script and the
-//! telemetry switch of the launch that started it.
+//! A create's other members are left out, because the runtime daemon needs none of them:
+//!
+//! - `script` and `childScript`, the faux-provider verification seam the product never sets: the
+//!   runtime daemon reads its scripts from its own environment (`PRIME_AGENT_FAUX_SCRIPT`,
+//!   `PRIME_AGENT_FAUX_CHILD_SCRIPT`), which the launch that starts it gives it.
+//! - `lifecycle`: only a `noSession` create is client-owned, and an `ephemeral` session ends with
+//!   the client that created it.
+//! - `env`, the Herdr pane identity: the runtime daemon reports to no Herdr pane (its `HERDR_*`
+//!   variables reach the session in its `launchEnv`).
+//! - `name` and `runtimeMetadata`: no TUI create sets them.
 //!
 //! # Not carried
 //!
@@ -245,7 +249,7 @@ use pa_types::daemon::{
     DAEMON_PROTOCOL_VERSION,
 };
 use pa_types::event_log::{AgentInput, Event, Priority, Topic, TopicFilter};
-use pa_types::wire2::{ClientFrame, Outcome, Since};
+use pa_types::wire2::{ClientFrame, Outcome, SessionCreate, SessionParent, Since};
 use serde_json::{Map, Value};
 
 /// How an event reached the client: in a subscription's replay, or live after it.
@@ -1075,32 +1079,48 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
             session_path,
             no_session,
             config,
+            telemetry_disabled,
+            launch_env,
             ..
         } => {
             let config = config.clone().unwrap_or(Value::Null);
-            // A choice the runtime's create cannot honour refuses the create, never runs the
-            // session without it (a pinned credential, a scoped child, a session dir).
-            if CREATE_UNCARRIED
-                .iter()
-                .any(|key| config.get(*key).is_some())
-            {
-                return Ok(unmapped(command, CREATE_CHOICES));
-            }
-            let options: Map<String, Value> = CREATE_OPTIONS
+            let text = |key: &str| config.get(key).and_then(Value::as_str).map(str::to_string);
+            let mut options: Map<String, Value> = CREATE_OPTIONS
                 .iter()
                 .filter_map(|key| Some(((*key).to_string(), config.get(*key)?.clone())))
                 .collect();
-            let mut args = serde_json::json!({ "options": options });
-            if let Some(cwd) = config.get("cwd") {
-                args["cwd"] = cwd.clone();
+            if *telemetry_disabled == Some(true)
+                || config.get("telemetryDisabled") == Some(&Value::Bool(true))
+            {
+                options.insert("telemetryDisabled".to_string(), Value::Bool(true));
             }
-            if let Some(path) = session_path {
-                args["path"] = Value::from(path.as_str());
+            if let Some(path) = text("parentSessionPath") {
+                let rlm_depth = match config.get("rlmDepth") {
+                    None | Some(Value::Null) => 0,
+                    Some(depth) => depth
+                        .as_u64()
+                        .and_then(|depth| u32::try_from(depth).ok())
+                        .context("the create's rlmDepth must be a whole number")?,
+                };
+                options.insert(
+                    "parent".to_string(),
+                    serde_json::to_value(SessionParent { path, rlm_depth })?,
+                );
             }
-            if *no_session == Some(true) {
-                args["ephemeral"] = Value::Bool(true);
-            }
-            Ok(call(request_id, "session.create", args))
+            let create = SessionCreate {
+                path: session_path.clone(),
+                cwd: text("cwd"),
+                ephemeral: *no_session == Some(true),
+                session_dir: text("sessionDir"),
+                launch_env: launch_env.clone(),
+                options: Some(Value::Object(options)),
+                ..SessionCreate::default()
+            };
+            Ok(call(
+                request_id,
+                "session.create",
+                serde_json::to_value(create)?,
+            ))
         }
         DaemonCommand::List { all, .. } => Ok(query_frame(
             request_id,
@@ -1476,24 +1496,9 @@ fn unmapped(command: DaemonCommand, reason: &'static str) -> Outgoing {
     }
 }
 
-/// The create config's members the runtime daemon's `session.create` has no form of yet; a create
-/// that carries one is not carried ([`CREATE_CHOICES`]). `telemetryDisabled`, `sessionDir`,
-/// `script` and `childScript` are not among them: the daemon the launch started runs with the
-/// launch's own telemetry switch and faux script (`PRIME_AGENT_FAUX_SCRIPT`, a verification seam),
-/// and keeps its sessions in its own session dir.
-const CREATE_UNCARRIED: [&str; 6] = [
-    "apiKey",
-    "credential",
-    "profile",
-    "models",
-    "parentSessionPath",
-    "rlmDepth",
-];
-const CREATE_CHOICES: &str = "the runtime daemon's create has no form yet of an API key, a credential or profile pin, a model scope or a parent session";
-
-/// The create config's members the runtime daemon's `session.create` takes as `options` (pa-runtime
-/// `acp::wire2_link` lists the same; the rest of the config is not carried, see the module docs).
-const CREATE_OPTIONS: [&str; 9] = [
+/// The create config's members the runtime daemon's `session.create` takes as `options` under
+/// their own names (the rest of the config is mapped or left out as the module docs say).
+const CREATE_OPTIONS: [&str; 13] = [
     "provider",
     "model",
     "thinking",
@@ -1503,6 +1508,10 @@ const CREATE_OPTIONS: [&str; 9] = [
     "promptTemplates",
     "autonomous",
     "executionMode",
+    "apiKey",
+    "credential",
+    "profile",
+    "models",
 ];
 
 /// The input command on session `session` as the runtime daemon's `agent/<id>/input` event: its

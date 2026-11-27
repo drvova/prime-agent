@@ -149,8 +149,9 @@ fn apply(
 /// (or the JSON confirmation error), 0 otherwise.
 pub(crate) fn run_shutdown_all(json: bool, force: bool, root: &DaemonStateRoot) -> i32 {
     let daemons = discover_daemons(root);
+    let runtime = runtime_daemon(root);
     match plan_shutdown_confirmation(
-        daemons.len(),
+        daemons.len() + usize::from(runtime.is_some()),
         json,
         force,
         std::io::IsTerminal::is_terminal(&std::io::stdin()),
@@ -158,9 +159,11 @@ pub(crate) fn run_shutdown_all(json: bool, force: bool, root: &DaemonStateRoot) 
         ShutdownConfirmationPlan::JsonError => {
             let failed: Vec<(String, String)> = daemons
                 .iter()
-                .map(|daemon| {
+                .map(|daemon| daemon.socket_path.clone())
+                .chain(runtime.map(|runtime| runtime.socket))
+                .map(|socket_path| {
                     (
-                        daemon.socket_path.display().to_string(),
+                        socket_path.display().to_string(),
                         r#"confirmation required; use "prime-agent shutdown --force --json""#
                             .to_string(),
                     )
@@ -191,11 +194,20 @@ pub(crate) fn run_shutdown_all(json: bool, force: bool, root: &DaemonStateRoot) 
 }
 
 /// Run the planned actions, then (with `force`) sweep residuals until
-/// the listener set quiets down.
+/// the listener set quiets down. The runtime daemon goes first, through its
+/// own wire.
 fn run_shutdown_converging(json: bool, force: bool, root: &DaemonStateRoot) -> i32 {
     let mut stopped: Vec<(String, String)> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
     let mut handled_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    if let Some(runtime) = runtime_daemon(root) {
+        apply_stop(
+            stop_runtime_daemon(&runtime, force, &mut handled_pids),
+            &runtime.socket.display().to_string(),
+            &mut stopped,
+            &mut failed,
+        );
+    }
 
     let daemons = discover_daemons(root);
     let action_order = |kind: &ReapActionKind| match kind {
@@ -388,6 +400,89 @@ fn verified_force_kill(
     handled_pids.insert(pid);
     remove_socket_file(socket_path);
     StopOutcome::Reaped(success_action)
+}
+
+/// The runtime daemon of a state root (`pa_runtime::daemon`): its socket,
+/// `daemon2.sock` beside the root's, and the pid its agent-dir lock records
+/// for that socket while the process lives and runs the product binary
+/// (Linux only; elsewhere the stop is confirmed by the socket alone).
+struct RuntimeDaemon {
+    socket: std::path::PathBuf,
+    pid: Option<u32>,
+}
+
+/// The root's runtime daemon, when one answers on its socket or holds the
+/// agent dir's lock for it.
+fn runtime_daemon(root: &DaemonStateRoot) -> Option<RuntimeDaemon> {
+    let socket = pa_runtime::daemon::socket_path(&root.default_socket_path);
+    let canonical =
+        |path: &Path| pa_types::platform::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let pid = pa_core::platform::RuntimeDaemonLock::recorded(&root.agent_dir)
+        .filter(|holder| canonical(&holder.socket) == canonical(&socket))
+        .map(|holder| holder.pid)
+        .filter(|pid| {
+            // The binary check reads `/proc`: elsewhere no pid is verified, so none is killed.
+            #[cfg(target_os = "linux")]
+            let product = pa_core::platform::process_stop::exe_is_product_binary(*pid);
+            #[cfg(not(target_os = "linux"))]
+            let product = false;
+            product && pa_types::platform::process::is_process_alive(*pid).unwrap_or(false)
+        });
+    (pid.is_some() || probe_runtime_daemon(&socket)).then_some(RuntimeDaemon { socket, pid })
+}
+
+/// Whether a runtime daemon answers wire2's hello on `socket`.
+fn probe_runtime_daemon(socket: &Path) -> bool {
+    crate::runtime_daemon_client::RuntimeDaemonClient::connect(socket).is_ok()
+}
+
+/// Stop the runtime daemon through its own `daemon.shutdown {force}` (a
+/// deliberate stop, which its restart owner does not undo), confirmed once
+/// its socket stops answering and its process has exited; escalating only
+/// with `force`, to the verified kill (the stop intent recorded first).
+fn stop_runtime_daemon(
+    runtime: &RuntimeDaemon,
+    force: bool,
+    handled_pids: &mut std::collections::HashSet<u32>,
+) -> StopOutcome {
+    let pid_label = runtime.pid.map_or_default(|pid| format!(" (pid {pid})"));
+    // The daemon may still stop on its own; the checks below are the source of truth.
+    if let Ok(mut client) =
+        crate::runtime_daemon_client::RuntimeDaemonClient::connect(&runtime.socket)
+    {
+        let _ = client.call("daemon.shutdown", serde_json::json!({ "force": force }));
+    }
+    let stopped = || {
+        !probe_runtime_daemon(&runtime.socket)
+            && runtime.pid.is_none_or(|pid| {
+                !pa_types::platform::process::is_process_alive(pid).unwrap_or(false)
+            })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if stopped() {
+            if let Some(pid) = runtime.pid {
+                handled_pids.insert(pid);
+            }
+            return StopOutcome::Reaped(format!("stopped the runtime daemon{pid_label}"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    match runtime.pid {
+        Some(pid) if force => verified_force_kill(
+            pid,
+            &runtime.socket,
+            format!("force-killed the unresponsive runtime daemon (pid {pid})"),
+            handled_pids,
+        ),
+        Some(_) => {
+            StopOutcome::Skipped("the runtime daemon did not stop; retry with --force".to_string())
+        }
+        None => StopOutcome::Skipped(
+            "the runtime daemon still answers but its lock names no live process to kill"
+                .to_string(),
+        ),
+    }
 }
 
 /// Ask the daemon to stop and confirm it actually stopped listening: the ack

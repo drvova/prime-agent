@@ -4,8 +4,9 @@
 //! Each old-wire command the ACP surface sends becomes the wire2 frames
 //! that do the same:
 //!
-//! - `create` is `session.create {path, cwd, options}` (the create config's
-//!   session options; `--no-session` asks for an `ephemeral` session);
+//! - `create` is `session.create {path, cwd, sessionDir, launchEnv,
+//!   options}` (the create config's session options and the command's
+//!   telemetry opt-out; `--no-session` asks for an `ephemeral` session);
 //!   `attach` and `detach` subscribe to and unsubscribe from the session's
 //!   `agent/<id>/#` (an attach answers once the subscription's `backfilled`
 //!   came); `list_saved_sessions` is `sessions.list`, `get_messages`
@@ -482,21 +483,31 @@ impl DaemonTransport for Wire2Link {
                 session_path,
                 no_session,
                 config,
+                telemetry_disabled,
+                launch_env,
                 ..
             } => {
                 let config = config.unwrap_or(Value::Null);
-                let options: serde_json::Map<String, Value> = OPTION_KEYS
+                let text = |key: &str| config.get(key).and_then(Value::as_str).map(str::to_string);
+                let mut options: serde_json::Map<String, Value> = OPTION_KEYS
                     .iter()
                     .filter_map(|key| Some(((*key).to_string(), config.get(*key)?.clone())))
                     .collect();
-                let mut args = json!({ "cwd": config.get("cwd"), "options": options });
-                if let Some(path) = session_path {
-                    args["path"] = json!(path);
+                if telemetry_disabled == Some(true) {
+                    options.insert("telemetryDisabled".to_string(), json!(true));
                 }
-                if no_session == Some(true) {
-                    args["ephemeral"] = json!(true);
-                }
-                let created = self.call("session.create", args).await?;
+                let args = pa_types::wire2::SessionCreate {
+                    path: session_path,
+                    cwd: text("cwd"),
+                    ephemeral: no_session == Some(true),
+                    session_dir: text("sessionDir"),
+                    launch_env,
+                    options: Some(Value::Object(options)),
+                    ..pa_types::wire2::SessionCreate::default()
+                };
+                let created = self
+                    .call("session.create", serde_json::to_value(args)?)
+                    .await?;
                 (
                     "create",
                     created.map(|created| {

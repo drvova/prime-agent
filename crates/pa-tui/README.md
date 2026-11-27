@@ -294,7 +294,10 @@ and the rest of what the TUI sends (`create`, `list`, `kill`, the renames, `dele
 `execute_bash`, `abort_bash`, `cancel_rlm_child`, the session reads, `heartbeats_list`) to the
 runtime's own calls and queries; its module docs state the contract the runtime honours (the
 stream is live only, so the session's event counter rides in the payload's `meta.sequence`), what
-of a create's config is not carried, and the commands not carried with their reasons. Every recorded frame round-trips through it. A session's stored fault topics
+of a create's config is left out and why (a create carries its API key, credential and profile
+pins, its model scope, a scoped child's parent, its telemetry opt-out, session dir and launch
+environment as `pa_types::wire2::SessionCreate`), and the commands not carried with their
+reasons. Every recorded frame round-trips through it. A session's stored fault topics
 (`agent/<id>/crashed`, `recovered`, `failed`) map to their `session_event` only when replayed, so a
 client that attaches after a fault (one a daemon's death left) sees it, while live the stream's
 copy is the frame. `wire2_live_frames`, `wire2_request_frames` and `wire2_response_frame`

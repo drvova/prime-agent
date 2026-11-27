@@ -716,6 +716,9 @@ impl<B: SessionBuilder> Schedules<B> {
                 .await
                 .context("the lease's thread panicked")??
         };
+        let mut options = super::session_options(runtime.log(), id);
+        self.open.keep_api_key(id, &mut options);
+        let scope = super::model_scope::resolve(&self.agent_dir, cwd, &options, false).await;
         runtime
             .create_session(SessionSpec {
                 id: Some(id.to_string()),
@@ -724,7 +727,7 @@ impl<B: SessionBuilder> Schedules<B> {
                 env: super::session_env(&self.agent_dir, id),
                 subagent: None,
                 transcript: Some(path.to_path_buf()),
-                options: super::session_options(runtime.log(), id),
+                options,
                 ephemeral: false,
             })
             .await?;
@@ -736,7 +739,7 @@ impl<B: SessionBuilder> Schedules<B> {
                     cwd: cwd.to_path_buf(),
                     lease: Some(lease),
                     owner: None,
-                    scoped_models: Vec::new(),
+                    scoped_models: scope.entries,
                 },
             )
             .await;

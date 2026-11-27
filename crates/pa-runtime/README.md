@@ -380,12 +380,22 @@ SQLite implementations over `pa-log`.
   `session.rename`, `session.label` and `session.set_effort` change an open session through its
   engine (on the session's runtime, once its first build is done: `Runtime::built_engine`, which
   the state queries wait on too) and a saved one under its lease; `session.delete` changes saved
-  sessions only. `session.create` also takes `options` (`SessionOptions`: `provider`, `model`,
+  sessions only. `session.create`'s arguments are `pa_types::wire2::SessionCreate`
+  (`daemon/handlers/create.rs`). It also takes `options` (`SessionOptions`: `provider`, `model`,
   `thinking`, `systemPrompt`, `appendSystemPrompt`, `skills`, `promptTemplates`, `autonomous`,
-  `goal: {objective, tokenBudget?}`, `executionMode`; an unknown key is refused), the launch
-  choices an ACP client forwards, handed to the builder on the `SessionSpec` and kept under `kv`
-  `runtime-daemon`/`options:<id>`, so the session's revival and scheduled wake build it the same
-  way and a create without options keeps them. `session.create {"ephemeral": true}`
+  `goal: {objective, tokenBudget?}`, `executionMode`, `apiKey`, `credential`, `profile`,
+  `models`, `telemetryDisabled`, `parent: {path, rlmDepth}`; an unknown key is refused), the
+  launch choices a client forwards, handed to the builder on the `SessionSpec` and kept under
+  `kv` `runtime-daemon`/`options:<id>`, so the session's revival and scheduled wake build it the
+  same way and a create without options keeps them. An `apiKey` is never written: the daemon
+  holds it in memory (`OpenSessions::keep_api_key`, which a model switch's request auth reads
+  too), the stored options keep only `apiKeyGiven`, and a later daemon's build of such a session
+  fails rather than run on another key. `models` (else the settings' `enabledModels`) is the
+  session's scope, resolved at every open as the old worker resolves it (`daemon/model_scope.rs`):
+  the list `session.cycle_model` steps through, and a new session that chose no model starts on
+  its pick. `sessionDir` is where a new session's transcript is made, and `launchEnv` (the
+  client's environment, the old create's `launchEnv`) is the session scope's environment over the
+  daemon's, re-filtered and without `RLM_DEPTH`, held for its lifetimes in this process only. `session.create {"ephemeral": true}`
   (`daemon/handlers/owned.rs`, `--no-session`) opens a new session kept in memory only (the
   builder gets `SessionSpec::ephemeral`): no transcript file, options row, lease or held-session
   record, owned by the creating connection's `hello` name and stopped on `session.stop` or 30 s
@@ -726,8 +736,9 @@ SQLite implementations over `pa-log`.
   `DaemonTransport`, the old wire's `DaemonLink`), whose one frame stream delivers each response
   after the events sent before it. The TS capture corpus it is checked against is
   `testdata/acp/`. With the runtime daemon selected it drives that daemon on wire2 instead
-  (`acp/wire2_link.rs`, `Wire2Link`): `create` is `session.create {path, cwd, options}`
-  (`--no-session` an `ephemeral` one), `attach`/`detach` subscribe to and unsubscribe from
+  (`acp/wire2_link.rs`, `Wire2Link`): `create` is `session.create {path, cwd, sessionDir,
+  launchEnv, options}` (the command's telemetry opt-out among the options; `--no-session` an
+  `ephemeral` one), `attach`/`detach` subscribe to and unsubscribe from
   `agent/<id>/#` (an attach answers at its `backfilled`), `prompt_and_wait` publishes on
   `agent/<id>/input` as a follow-up and answers at that task's `agent/<id>/done` (the task kept
   under the prompt's admission id for `cancel_prompt_admission`, `session.cancel_task`, also

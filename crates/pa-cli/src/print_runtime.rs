@@ -476,6 +476,9 @@ pub(crate) enum HeadlessEmbedding {
         /// the start as a supervisor worker does); `None` answers from the
         /// process's shared `faux` queue (the print run's one session).
         faux_lane: Option<String>,
+        /// How deep a daemon session created under a parent (a scoped child)
+        /// runs; `None` for a root.
+        rlm_depth: Option<u32>,
     },
     /// A spawned subagent: the runtime's seams, and its engine deltas.
     Child {
@@ -568,7 +571,8 @@ pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> Headle
         extra_host_handlers: seams.map(|seams| seams.host_handlers.clone()),
         rlm_depth: match embedding {
             HeadlessEmbedding::Child { overrides, .. } => Some(overrides.depth),
-            HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => None,
+            HeadlessEmbedding::Root { rlm_depth, .. } => *rlm_depth,
+            HeadlessEmbedding::Rpc => None,
         },
         factory_child: matches!(
             embedding,
@@ -700,6 +704,13 @@ pub(crate) async fn build_headless_engine_with(
             select_model(&mut registry, config, session.as_ref()).await?
         }
     };
+    // `--api-key` serves the chosen model's provider, over its stored credentials (the old
+    // worker's selection key).
+    if let Some(key) = &config.api_key {
+        registry
+            .auth
+            .set_runtime_api_key(&model.provider, key.clone());
+    }
     // Resolve request auth once: the stored team / `PRIME_TEAM_ID` reach the wire through these
     // headers (children resolve against the same catalog the spawn used).
     let resolved = registry.get_api_key_and_headers(&model, model.headers.as_ref());

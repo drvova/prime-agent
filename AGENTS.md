@@ -232,7 +232,10 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `pa_types::session_scope`; session code never calls `std::env::var`, `std::env::current_dir`
   or `Command::new` directly, and a thread or runtime started on a session's behalf
   propagates the scope. Process-wide by design, and therefore not per session:
-  `SSL_CERT_FILE`/`SSL_CERT_DIR`, `TMPDIR`, `STEEL_HOME`, the telemetry origin. The
+  `SSL_CERT_FILE`/`SSL_CERT_DIR`, `TMPDIR`, `STEEL_HOME`, the telemetry origin. On the runtime
+  daemon a client's launch environment (`session.create {launchEnv}`) is the session scope's
+  environment, held in memory only, and its profile (`options.profile`) is set in the session's
+  scope; a create's API key is held in memory and never stored. The
   switches Steel's compiler reads from the environment (`STEEL_DEBUG_AST`, `STEEL_INLINE`,
   `STEEL_INLINE_RECURSIVE`, `STEEL_MODULE_INLINE`, `STEEL_CLOSURE_LIFTING`,
   `STEEL_SEARCH_PATHS`) are removed from the process at start (`pin_scheme_home`): no
@@ -266,7 +269,7 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   keeps whichever daemon the launch selects: the runtime daemon's keeper keeps its records
   under `daemon2.sock`, apart from the supervisor's. A deliberate stop of either daemon (its
   stop signal, a client's `shutdown`/`restart`; on the runtime daemon `daemon.shutdown` and
-  `daemon.restart`) records the stop intent, answers first, tells every client
+  `daemon.restart`, which `prime-agent shutdown` sends it) records the stop intent, answers first, tells every client
   (`daemon_closing`; on wire2 the live-only `system/closing`, after which each connection is
   closed), cuts each session's running turn off with the continuation prompt
   (`pa_core::session::revival::UPDATE_RESTART_CONTINUATION_PROMPT`) queued at the front of its

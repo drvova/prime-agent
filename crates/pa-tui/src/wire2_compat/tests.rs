@@ -1482,3 +1482,43 @@ fn the_history_import_is_followed_and_its_frames_come_back() {
         )
     );
 }
+
+/// A create goes out as `session.create` with every choice the old supervisor's create carried
+/// and the runtime needs: the key, credential and profile pins, the model scope, the parent of a
+/// scoped child, the telemetry opt-out, the session dir and the launch environment. The faux
+/// script, the Herdr pane identity and the lifecycle stay home.
+#[test]
+fn a_create_carries_its_pins_scope_parent_and_environment() {
+    let command: DaemonCommand = serde_json::from_value(json!({
+        "type": "create",
+        "config": {
+            "cwd": "/work", "executionMode": "interactive", "sessionDir": "/sessions",
+            "script": "/s.json", "childScript": "/s.json",
+            "provider": "openai", "model": "m", "apiKey": "sk-key", "credential": "work",
+            "profile": "work", "thinking": "high", "models": ["openai/*"],
+            "telemetryDisabled": true, "parentSessionPath": "/sessions/p.jsonl", "rlmDepth": 2,
+        },
+        "lifecycle": "resident",
+        "env": { "HERDR_PANE": "p1" },
+        "launchEnv": { "PATH": "/bin" },
+    }))
+    .unwrap();
+    assert_eq!(
+        outgoing("c1".to_string(), command).unwrap(),
+        Outgoing::Call(ClientFrame::Call {
+            id: "c1".to_string(),
+            method: "session.create".to_string(),
+            args: json!({
+                "cwd": "/work",
+                "sessionDir": "/sessions",
+                "launchEnv": { "PATH": "/bin" },
+                "options": {
+                    "provider": "openai", "model": "m", "thinking": "high",
+                    "executionMode": "interactive", "apiKey": "sk-key", "credential": "work",
+                    "profile": "work", "models": ["openai/*"], "telemetryDisabled": true,
+                    "parent": { "path": "/sessions/p.jsonl", "rlmDepth": 2 },
+                },
+            }),
+        })
+    );
+}

@@ -16,6 +16,10 @@
 //! - The restart owner and the boot reap (phase 7c-2): [`keeper`].
 //! - Scheduled jobs and heartbeats (phase 7d): [`schedules`].
 //! - Subagents, agent messages and the event bus (phase 7e): [`family`].
+//! - A TUI create's choices (its credential, profile and API key, its model
+//!   scope, a scoped child's parent, its session dir and launch environment),
+//!   built as the old daemon builds them (phase 8e2): [`create`]; `prime-agent
+//!   shutdown --force` stops a kept runtime daemon: [`keeper`].
 //! - What an ACP client needs (phase 7g-2): create options, model switches,
 //!   MCP servers, schedule changes and the bus queries: [`client_surface`].
 //! - The user's `!` commands (phase 7g-3): [`bash`].
@@ -86,6 +90,7 @@ mod agents_view;
 mod bash;
 mod checkpoints;
 mod client_surface;
+mod create;
 mod family;
 mod goldens;
 mod heartbeats;

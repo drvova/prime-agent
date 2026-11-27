@@ -110,6 +110,27 @@ pub struct SessionOptions {
     /// The telemetry execution mode the session reports (`acp`); `None` is
     /// the embedder's.
     pub execution_mode: Option<String>,
+    /// `--api-key`: the key the session's requests send. It is never
+    /// written: [`SessionOptions::to_json`] keeps only that one was given
+    /// (`apiKeyGiven`), so a session built again from its stored options in a
+    /// process that no longer holds the key fails rather than run on another.
+    pub api_key: Option<pa_types::wire2::ApiKey>,
+    /// The stored options say a key was given that these options do not
+    /// hold.
+    pub api_key_given: bool,
+    /// `--credential <label|id>`: the named credential a new session pins.
+    pub credential: Option<String>,
+    /// `--profile`: the profile whose settings overlay the session reads, and
+    /// whose credential mapping a new session pins.
+    pub profile: Option<String>,
+    /// `--models` patterns, the session's model scope; `None` is the
+    /// settings' `enabledModels`.
+    pub models: Option<Vec<String>>,
+    /// The client's environment opts out of telemetry (the old create's
+    /// `telemetryDisabled`): the session reports nothing.
+    pub telemetry_disabled: bool,
+    /// The session a new one is created under (a scoped child).
+    pub parent: Option<pa_types::wire2::SessionParent>,
 }
 
 /// The goal a session starts with (`--goal`, `--goal-token-budget`).
@@ -122,8 +143,10 @@ pub struct SessionGoal {
 impl SessionOptions {
     /// The options a client gave as JSON (`{"provider", "model", "thinking",
     /// "systemPrompt", "appendSystemPrompt", "skills", "promptTemplates",
-    /// "autonomous", "goal": {"objective", "tokenBudget"},
-    /// "executionMode"}`), refusing a key it does not know.
+    /// "autonomous", "goal": {"objective", "tokenBudget"}, "executionMode",
+    /// "apiKey", "credential", "profile", "models", "telemetryDisabled",
+    /// "parent": {"path", "rlmDepth"}}`, and the stored `apiKeyGiven`),
+    /// refusing a key it does not know.
     ///
     /// # Errors
     ///
@@ -200,6 +223,26 @@ impl SessionOptions {
                     });
                 }
                 "executionMode" => options.execution_mode = Some(text(key, value)?),
+                "apiKey" => options.api_key = Some(pa_types::wire2::ApiKey::new(text(key, value)?)),
+                "apiKeyGiven" => {
+                    options.api_key_given = value
+                        .as_bool()
+                        .context("the `apiKeyGiven` option must be a boolean")?;
+                }
+                "credential" => options.credential = Some(text(key, value)?),
+                "profile" => options.profile = Some(text(key, value)?),
+                "models" => options.models = Some(texts(key, value)?),
+                "telemetryDisabled" => {
+                    options.telemetry_disabled = value
+                        .as_bool()
+                        .context("the `telemetryDisabled` option must be a boolean")?;
+                }
+                "parent" => {
+                    options.parent = Some(
+                        serde_json::from_value(value.clone())
+                            .context("the `parent` option must be {path, rlmDepth}")?,
+                    );
+                }
                 unknown => anyhow::bail!("unknown session option `{unknown}`"),
             }
         }
@@ -207,7 +250,7 @@ impl SessionOptions {
     }
 
     /// The options as [`SessionOptions::from_json`] reads them, the chosen
-    /// ones only.
+    /// ones only, and of an API key only that one was given.
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         let mut object = serde_json::Map::new();
@@ -262,6 +305,25 @@ impl SessionOptions {
         }
         if let Some(mode) = &self.execution_mode {
             put("executionMode", mode.clone().into());
+        }
+        // The key itself is never written.
+        if self.api_key.is_some() || self.api_key_given {
+            put("apiKeyGiven", true.into());
+        }
+        if let Some(credential) = &self.credential {
+            put("credential", credential.clone().into());
+        }
+        if let Some(profile) = &self.profile {
+            put("profile", profile.clone().into());
+        }
+        if let Some(models) = &self.models {
+            put("models", models.clone().into());
+        }
+        if self.telemetry_disabled {
+            put("telemetryDisabled", true.into());
+        }
+        if let Some(parent) = &self.parent {
+            put("parent", serde_json::to_value(parent).unwrap_or_default());
         }
         serde_json::Value::Object(object)
     }

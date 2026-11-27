@@ -23,8 +23,12 @@ owner-only permissions, the exit cleanup that spares a successor) and `pa_runtim
 until SIGINT or SIGTERM. Its `SessionBuilder` opens the transcript a session's spec names
 (creating it under its id), applies the client's `SessionOptions` over the daemon's own run
 options (provider, model, thinking, system prompt and appended ones, skills, prompt templates;
-the autonomous run on `BuiltSession`, the goal seeded on a fresh branch, `executionMode` `acp` as
-the telemetry mode), builds the engine through the headless assembly (the faux provider
+the autonomous run on `BuiltSession`, the goal seeded on a fresh branch, `executionMode` `acp` or
+`interactive` as the telemetry mode, the API key, the telemetry opt-out), reads a session's
+profile's settings overlay (`set_active_profile` in the session's scope; an unknown profile fails
+the build), pins a new session's header as the old worker's create does (the profile's credential
+for its provider, else `credential`, else its parent's pin) and tags its profile, names a scoped
+child's parent and depth in its header and runs it at that depth, builds the engine through the headless assembly (the faux provider
 under `PRIME_AGENT_FAUX_SCRIPT`, each session answering from a queue of its own,
 `faux-<session id>`, presenting the script's `provider` and `modelId`, as each supervisor worker
 does), streams the turn driver's events, and
@@ -108,7 +112,11 @@ extracting a release, succeeds without doing anything. Verifier:
 The discovery commands (`status`, `doctor [--fix]`, `shutdown [--force]`, TS
 `cli/daemon-ps.ts`) live in the crate-private `daemon_discovery` module: an OS census of
 listening unix sockets owned by product processes, a socket-dir sweep, probing/classifying
-each discovered daemon, and the reap/shutdown planners and executors. Containment is part of
+each discovered daemon, and the reap/shutdown planners and executors. The runtime daemon on `daemon2.sock` beside the root's
+socket speaks wire2, so the old-wire census leaves it out and `shutdown` stops it first through
+its own `daemon.shutdown {force}` (a deliberate stop its keeper does not undo), confirmed once its
+socket stops answering and the process its agent-dir lock records has exited; with `--force` a
+daemon that does not stop gets the verified kill. Containment is part of
 the contract: every scan, probe, and stop is scoped to an explicit `DaemonStateRoot`
 (the env-resolved current root for the CLI). All e2e daemons live in
 test-created fixture directories only.

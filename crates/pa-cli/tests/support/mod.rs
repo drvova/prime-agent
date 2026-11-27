@@ -297,8 +297,8 @@ pub fn daemon_env() -> &'static str {
 
 /// Stop the runtime daemon a test's product started in `agent_dir`, if one runs: its restart
 /// owner (or, unkept, the daemon) named in the agent dir's runtime-daemon lock is sent the
-/// deliberate stop, then the test waits for the lock's holder to be gone (bounded). The product's
-/// `shutdown --force` stops the supervisor's daemons only.
+/// deliberate stop, then the test waits for the lock's holder to be gone (bounded): the cleanup
+/// of a test that stops its daemons without the product's `shutdown`.
 #[allow(dead_code, reason = "each test target compiles this module itself")]
 #[cfg(unix)]
 pub fn stop_runtime_daemon(agent_dir: &std::path::Path) {

@@ -90,6 +90,7 @@ impl SessionBuilder for PrintSession {
                     &super::HeadlessEmbedding::Root {
                         seams,
                         faux_lane: None,
+                        rlm_depth: None,
                     },
                 )
                 .await?;
@@ -266,6 +267,12 @@ pub(super) async fn build_subagent(
             id: Some(id.to_string()),
             parent_session: Some(parent_file.clone()),
             rlm_depth: Some(u64::from(subagent.depth)),
+            // A child runs on its parent's pinned credential, as the old daemon's children do.
+            credential_pin: pa_core::session::manager::read_session_header(std::path::Path::new(
+                parent_file,
+            ))
+            .and_then(|header| header.credential_pin()),
+            ..Default::default()
         });
         manager
     } else {

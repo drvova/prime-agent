@@ -52,6 +52,10 @@ pub struct NewSessionOptions {
     pub id: Option<String>,
     pub parent_session: Option<String>,
     pub rlm_depth: Option<u64>,
+    /// The credential the new session is pinned to, written into its header.
+    pub credential_pin: Option<pa_types::session::CredentialPin>,
+    /// The profile the new session is created under, tagged on its header.
+    pub profile: Option<String>,
 }
 
 #[expect(

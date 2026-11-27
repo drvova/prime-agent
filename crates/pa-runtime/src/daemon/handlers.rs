@@ -24,10 +24,10 @@ use pa_core::session_engine::kernel_activity::KernelBashAction;
 use pa_types::session::FileEntry;
 use serde_json::{json, Value};
 
-use super::held::{OpenSession, OpenSessions};
+use super::held::OpenSessions;
 use super::schedules::Schedules;
 use crate::runtime::{AfterAbort, Runtime};
-use crate::session::{SessionBuilder, SessionSpec};
+use crate::session::SessionBuilder;
 use crate::wire::{Attached, Call, ConnectionId, Handlers, Query};
 pub(super) use bash::UserBashes;
 pub(super) use feeds::Feeds;
@@ -39,6 +39,7 @@ mod attach;
 mod bash;
 mod bus;
 mod children;
+mod create;
 mod feeds;
 mod history_import;
 mod info;
@@ -213,131 +214,6 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             .spawn(async move { change(&mut *persistence.lock().await) })
             .await
             .context("the session's runtime ended during the change")?
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a create's steps read in the order they run: the session named, its lease or \
-                  owner, its options, its build"
-    )]
-    async fn create(&self, args: Value, connection: ConnectionId) -> anyhow::Result<Value> {
-        let named = optional_string_arg(&args, "session")?;
-        let ephemeral = match args.get("ephemeral") {
-            None | Some(Value::Null | Value::Bool(false)) => false,
-            Some(Value::Bool(true)) => true,
-            Some(_) => anyhow::bail!("the `ephemeral` argument must be a boolean"),
-        };
-        let given_path = optional_string_arg(&args, "path")?.map(PathBuf::from);
-        let given_cwd = optional_string_arg(&args, "cwd")?.map(PathBuf::from);
-        let options = match args.get("options") {
-            None | Some(Value::Null) => None,
-            Some(options) => Some(crate::SessionOptions::from_json(options)?),
-        };
-        let (id, path) = match (named, given_path) {
-            (Some(_), Some(_)) => {
-                anyhow::bail!("give session.create a `session` or a `path`, not both")
-            }
-            (_, Some(_)) if ephemeral => {
-                anyhow::bail!("an ephemeral session has no transcript: give it no `path`")
-            }
-            // Open already: its transcript may not have its header yet.
-            (None, Some(path)) => {
-                if let Some(id) = self.open.id_of(&path) {
-                    (id, path)
-                } else {
-                    let header = pa_core::session::manager::read_session_header(&path)
-                        .with_context(|| format!("no session header in {}", path.display()))?;
-                    (header.id, path)
-                }
-            }
-            (Some(id), None) => {
-                let path = get_session_file_path(&self.session_dir, &id);
-                (id, path)
-            }
-            (None, None) => {
-                let id = uuid::Uuid::now_v7().to_string();
-                let path = get_session_file_path(&self.session_dir, &id);
-                (id, path)
-            }
-        };
-        // Open already (the boot revived it, or another client opened it):
-        // answered as it runs, the old daemon's create-open reuse.
-        if let Some(path) = self.open.path(&id) {
-            let cwd = self.open.cwd(&id);
-            return Ok(json!({ "session": id, "path": path, "cwd": cwd, "reused": true }));
-        }
-        let cwd = match given_cwd {
-            Some(cwd) => cwd,
-            None => pa_core::session::manager::read_session_header(&path)
-                .map_or_else(|| self.cwd.clone(), |header| PathBuf::from(header.cwd)),
-        };
-        if ephemeral {
-            anyhow::ensure!(
-                !store().exists(&path),
-                "session {id} has a transcript: an ephemeral session is a new one"
-            );
-        }
-        // An ephemeral session has no transcript to lease, and is owned by
-        // the client that created it.
-        let (lease, owner) = if ephemeral {
-            (None, Some(self.attached.client_of(connection)))
-        } else {
-            let (path, agent_dir) = (path.clone(), self.agent_dir.clone());
-            let lease = tokio::task::spawn_blocking(move || {
-                acquire_runtime_session_lease(&path, &agent_dir)
-            })
-            .await
-            .context("the lease's thread panicked")??;
-            (Some(lease), None)
-        };
-        // Given options are kept for the session's later builds (its
-        // revival, a scheduled wake); a session created again without any
-        // keeps the ones it was created with. An ephemeral session is never
-        // built again: its options are not kept.
-        let options = match options {
-            Some(options) if ephemeral => options,
-            Some(options) => {
-                self.runtime
-                    .log()
-                    .put_value(
-                        super::OPTIONS_SCOPE,
-                        &format!("options:{id}"),
-                        options.to_json().to_string(),
-                        pa_log::Origin::Written,
-                    )
-                    .wait()
-                    .await?;
-                options
-            }
-            None => super::session_options(self.runtime.log(), &id),
-        };
-        self.runtime
-            .create_session(SessionSpec {
-                id: Some(id.clone()),
-                name: None,
-                cwd: cwd.clone(),
-                env: super::session_env(&self.agent_dir, &id),
-                subagent: None,
-                transcript: (!ephemeral).then(|| path.clone()),
-                options,
-                ephemeral,
-            })
-            .await?;
-        self.open
-            .insert(
-                id.clone(),
-                OpenSession {
-                    path: path.clone(),
-                    cwd: cwd.clone(),
-                    lease,
-                    owner,
-                    scoped_models: Vec::new(),
-                },
-            )
-            .await;
-        // Its roster entry, for the clients that follow the roster.
-        self.feeds.due(&id);
-        Ok(json!({ "session": id, "path": path, "cwd": cwd, "reused": false }))
     }
 
     async fn stop(&self, args: &Value) -> anyhow::Result<Value> {

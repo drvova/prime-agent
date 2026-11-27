@@ -454,7 +454,10 @@ fn discover_daemons_with(root: &DaemonStateRoot, named_pipes: bool) -> Vec<Daemo
         .chain(named_pipes.then(|| root.default_socket_path.clone()))
         .chain(pinned_socket_file.then(|| root.default_socket_path.clone()))
         .collect();
-    sockets.retain(|path| state_root_matches(root, path));
+    // The runtime daemon speaks wire2, not the old wire this census probes: `shutdown` stops it
+    // through its own wire (`stop.rs`).
+    let runtime_socket = pa_runtime::daemon::socket_path(&root.default_socket_path);
+    sockets.retain(|path| state_root_matches(root, path) && *path != runtime_socket);
 
     let mut infos: Vec<DaemonInfo> = sockets
         .into_iter()

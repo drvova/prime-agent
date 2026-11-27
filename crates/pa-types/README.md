@@ -49,7 +49,10 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   a replay start, unsubscribe, publish, query, call) and `ServerFrame` (welcome, event,
   backfilled, reply, closing), versioned by `WIRE2_VERSION`. A reply's `Outcome` is `ok` with
   its result or `error` with its message and, when the error carries it, its `info` (the old
-  daemon's `errorInfo`).
+  daemon's `errorInfo`). `SessionCreate` is the `session.create` call's arguments (the session
+  by id or path, its cwd, `ephemeral`, `sessionDir`, the client's `launchEnv`, and its build
+  `options`), `SessionParent` a scoped child's `options.parent`, and `ApiKey` a key a client gives
+  a session (its JSON form is the key; its debug form, and `SessionCreate`'s, shows no secret).
 - `daemon::plane`: the session/control command-plane table (worker-side peer gating and client-side socket routing both read it).
 - `daemon::{DaemonPeerTransportTicket, DaemonWorkerPeerGrant, DaemonPeerCommand}`: the direct-transport ticket and grant wire shapes.
 - `goal`: the thread-goal wire state (`GoalState`/`GoalStatus`) shared by the

@@ -82,6 +82,7 @@ use crate::wire::{Attached, WireConfig};
 mod boot_reap;
 mod handlers;
 mod held;
+mod model_scope;
 mod schedules;
 
 pub use boot_reap::take_lock;

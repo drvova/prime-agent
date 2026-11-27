@@ -14,10 +14,19 @@ use crate::mode::RunOptions;
 /// The runtime daemon's engine builds: a session opens the transcript its
 /// spec names (creating it under its id the first time), runs in the cwd
 /// the client gave it with the options it chose over the daemon's own (the
-/// launch flags an ACP client forwards: model, thinking level, system
-/// prompt, resources, autonomous run, goal), and streams the turn driver's
-/// events; each subagent it spawns is built as the print run builds its
-/// children.
+/// launch flags a client forwards: model, thinking level, system prompt,
+/// resources, autonomous run, goal, API key, credential, profile, telemetry
+/// switch), and streams the turn driver's events; each subagent it spawns is
+/// built as the print run builds its children.
+///
+/// As the old worker's create does, a session under a profile reads the
+/// profile's settings overlay, and a new session's header is pinned to its
+/// credential (`AuthAccounts::new_session_pin`: the profile's mapping for its
+/// provider, else `credential`, else its parent's pin) and tagged with its
+/// profile, so every later build restores the pin as-is. A session
+/// created under a parent names it in its header and runs at its depth. A
+/// session created with an API key the daemon no longer holds (a later
+/// daemon's revival of it) fails rather than run on another key.
 struct DaemonSessions {
     options: RunOptions,
     faux: Option<serde_json::Value>,
@@ -59,6 +68,23 @@ impl SessionBuilder for DaemonSessions {
                 anyhow::bail!("unknown execution mode {other:?} (acp, daemon, interactive)")
             }
         };
+        anyhow::ensure!(
+            chosen.api_key.is_some() || !chosen.api_key_given,
+            "session {id} was created with an API key, which the daemon keeps in memory only: \
+             open it again from a client that gives the key"
+        );
+        if let Some(key) = &chosen.api_key {
+            options.config.api_key = Some(key.expose().to_string());
+        }
+        if let Some(profile) = &chosen.profile {
+            // The profile's overlay for every settings read of this lifetime (its scope's).
+            pa_core::settings::set_active_profile(Some(profile.clone()));
+            options.config.profile = Some(profile.clone());
+        }
+        if chosen.credential.is_some() {
+            options.config.credential.clone_from(&chosen.credential);
+        }
+        options.config.telemetry_disabled |= chosen.telemetry_disabled;
         if chosen.provider.is_some() {
             options.config.provider.clone_from(&chosen.provider);
         }
@@ -104,11 +130,29 @@ impl SessionBuilder for DaemonSessions {
         } else if pa_core::session::store::store().exists(&transcript) {
             pa_core::session::manager::SessionManager::open(&spec.cwd, &session_dir, &transcript)
         } else {
+            // The new session's pin (the handler's create refused one that does not resolve).
+            let credential_pin = pa_core::auth::AuthAccounts::create(&options.config.agent_dir)
+                .new_session_pin(
+                    chosen.profile.as_deref(),
+                    chosen.provider.as_deref(),
+                    chosen.credential.as_deref(),
+                    chosen
+                        .parent
+                        .as_ref()
+                        .map(|parent| std::path::Path::new(&parent.path)),
+                )
+                .map_err(anyhow::Error::msg)?;
             let mut manager =
                 pa_core::session::manager::SessionManager::persisted(&spec.cwd, &session_dir);
             manager.new_session(&pa_core::session::manager::NewSessionOptions {
                 id: Some(id.to_string()),
-                ..Default::default()
+                parent_session: chosen.parent.as_ref().map(|parent| parent.path.clone()),
+                rlm_depth: chosen
+                    .parent
+                    .as_ref()
+                    .map(|parent| u64::from(parent.rlm_depth)),
+                credential_pin,
+                profile: chosen.profile.clone(),
             });
             manager
         };
@@ -120,6 +164,7 @@ impl SessionBuilder for DaemonSessions {
             &super::HeadlessEmbedding::Root {
                 seams,
                 faux_lane: Some(id.to_string()),
+                rlm_depth: chosen.parent.as_ref().map(|parent| parent.rlm_depth),
             },
         )
         .await

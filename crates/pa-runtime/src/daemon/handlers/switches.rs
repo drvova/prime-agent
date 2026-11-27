@@ -148,7 +148,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         let before = pa_types::ai::clamp_service_tier(Some(&running), preference);
         let after = pa_types::ai::clamp_service_tier(Some(&model), preference);
         // Its request auth resolves before anything moves.
-        let target = self.provider_target(&live, &model, after).await?;
+        let target = self.provider_target(&id, &live, &model, after).await?;
         let retargeted = live.clone();
         let pinned = next
             .thinking_level

@@ -89,6 +89,9 @@ pub(super) struct OpenSessions {
     open: Mutex<HeldSessions>,
     /// The open sessions' `!` commands.
     pub(super) bashes: UserBashes,
+    /// The API keys the daemon's sessions were created with
+    /// (`handlers/create.rs`), held in memory only, for the daemon's life.
+    api_keys: Mutex<HashMap<String, pa_types::wire2::ApiKey>>,
 }
 
 #[derive(Default)]
@@ -107,9 +110,11 @@ pub(super) struct OpenSession {
     /// for a session that keeps its transcript. An ephemeral session is not
     /// kept in the database: no daemon revives it.
     pub(super) owner: Option<String>,
-    /// The scoped model list its `session.cycle_model` steps through
-    /// (`session.set_scoped_models`), empty for the whole catalog; kept for
-    /// the session's open life only, as the old worker kept it.
+    /// The scoped model list its `session.cycle_model` steps through, empty
+    /// for the whole catalog: resolved at each open from the scope it was
+    /// created with (`daemon::model_scope`), and replaced by
+    /// `session.set_scoped_models` for the open's life, as the old worker
+    /// kept it.
     pub(super) scoped_models: Vec<Value>,
 }
 
@@ -119,6 +124,24 @@ impl OpenSessions {
             log,
             open: Mutex::new(HeldSessions::default()),
             bashes: UserBashes::default(),
+            api_keys: Mutex::default(),
+        }
+    }
+
+    /// The API key session `id` was created with in this process.
+    pub(super) fn api_key(&self, id: &str) -> Option<pa_types::wire2::ApiKey> {
+        lock(&self.api_keys).get(id).cloned()
+    }
+
+    /// Holds the API key `options` give session `id`, or gives `options` the
+    /// one it was created with in this process.
+    pub(super) fn keep_api_key(&self, id: &str, options: &mut crate::SessionOptions) {
+        let mut keys = lock(&self.api_keys);
+        match &options.api_key {
+            Some(key) => {
+                keys.insert(id.to_string(), key.clone());
+            }
+            None => options.api_key = keys.get(id).cloned(),
         }
     }
 
@@ -384,6 +407,8 @@ async fn revive_one<B: SessionBuilder>(
     let running = tasks
         .into_iter()
         .find(|task| task.state == TaskState::Running);
+    let options = super::session_options(log, id);
+    let scope = super::model_scope::resolve(agent_dir, &session.cwd, &options, false).await;
     let spec = SessionSpec {
         id: Some(id.to_string()),
         name: None,
@@ -391,7 +416,7 @@ async fn revive_one<B: SessionBuilder>(
         env: super::session_env(agent_dir, id),
         subagent: None,
         transcript: Some(session.path.clone()),
-        options: super::session_options(log, id),
+        options,
         ephemeral: false,
     };
     match running {
@@ -432,7 +457,7 @@ async fn revive_one<B: SessionBuilder>(
             cwd: session.cwd,
             lease: Some(lease),
             owner: None,
-            scoped_models: Vec::new(),
+            scoped_models: scope.entries,
         },
     )
     .await;

@@ -119,6 +119,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             let (_, preference) = self.running(&id).await?;
             let target = self
                 .provider_target(
+                    &id,
                     &live,
                     &model,
                     pa_types::ai::clamp_service_tier(Some(&model), preference),
@@ -304,12 +305,14 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         Ok(effective)
     }
 
-    /// The provider target that sends open session `live`'s requests to
-    /// `model` at `tier` (see the module documentation): its request auth
-    /// resolved through the session's credential pin; refused when it does
-    /// not resolve.
+    /// The provider target that sends open session `id`'s (`live`'s)
+    /// requests to `model` at `tier` (see the module documentation): its
+    /// request auth resolved through the session's credential pin, or the API
+    /// key it was created with, as the old worker's selection key serves
+    /// every model it switches to; refused when it does not resolve.
     pub(super) async fn provider_target(
         &self,
+        id: &str,
         live: &LiveEngine,
         model: &pa_types::ai::Model,
         tier: Option<ServiceTier>,
@@ -327,10 +330,16 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 .await
                 .context("the session's runtime ended during the read")?
         };
-        let (agent_dir, model) = (self.agent_dir.clone(), model.clone());
+        let (agent_dir, model, key) =
+            (self.agent_dir.clone(), model.clone(), self.open.api_key(id));
         tokio::task::spawn_blocking(move || {
             let mut registry = registry(&agent_dir);
             registry.set_credential_pin(&agent_dir, pin);
+            if let Some(key) = key {
+                registry
+                    .auth
+                    .set_runtime_api_key(&model.provider, key.expose().to_string());
+            }
             let resolved = registry.get_api_key_and_headers(&model, model.headers.as_ref());
             anyhow::ensure!(
                 resolved.ok,

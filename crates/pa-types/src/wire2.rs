@@ -128,11 +128,159 @@ pub enum Outcome {
     },
 }
 
+/// The arguments of the `session.create` call: which session it opens (by
+/// id, by transcript path, or a new one), where, and what its build is
+/// chosen from. Every member is optional; a create with none opens a new
+/// session in the runtime's own session dir and working directory. Its
+/// debug form names the launch environment's and the options' keys, never
+/// their values (an API key, a token in the environment).
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCreate {
+    /// The id of a session to open; with no `path`, its transcript is
+    /// `<sessions dir>/<id>.jsonl`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// The transcript to open (a resumed session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The session's working directory; absent, a resumed session's own
+    /// (its header's), else the runtime's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The session keeps nothing and ends with the client that created it
+    /// (`--no-session`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ephemeral: bool,
+    /// The directory a new session's transcript is made in (`--session-dir`);
+    /// absent, the runtime's own session dir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_dir: Option<String>,
+    /// The environment of the client that asked (the old daemon's
+    /// `launchEnv`, `daemon::launch_env`): the session runs in it over the
+    /// runtime's own process environment, minus the daemon-internal vars and
+    /// `RLM_DEPTH`. It may carry secrets: the runtime keeps it in memory for
+    /// the session's lifetimes in this process only, never in its stores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_env: Option<std::collections::BTreeMap<String, String>>,
+    /// What the client chose for the session's build (pa-runtime's
+    /// `SessionOptions`): its model, thinking level, prompts, resources,
+    /// autonomous run, goal, execution mode, and what it runs on
+    /// ([`SessionCredentials`] members), its model scope, telemetry switch
+    /// and parent ([`SessionParent`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Value>,
+}
+
+impl std::fmt::Debug for SessionCreate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionCreate")
+            .field("session", &self.session)
+            .field("path", &self.path)
+            .field("cwd", &self.cwd)
+            .field("ephemeral", &self.ephemeral)
+            .field("session_dir", &self.session_dir)
+            .field(
+                "launch_env",
+                &self
+                    .launch_env
+                    .as_ref()
+                    .map(|env| env.keys().collect::<Vec<_>>()),
+            )
+            .field(
+                "options",
+                &self
+                    .options
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .map(|options| options.keys().collect::<Vec<_>>()),
+            )
+            .finish()
+    }
+}
+
+/// The session a new one is created under (a scoped child: the agents
+/// view's new session inside a subtree), as `session.create`'s
+/// `options.parent`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionParent {
+    /// The parent's transcript: the new header names it, and the new session
+    /// inherits its credential pin unless it pins its own.
+    pub path: String,
+    /// How deep the new session is under the tree's root.
+    pub rlm_depth: u32,
+}
+
+/// An API key a client gives a session (`--api-key`, `session.create`'s
+/// `options.apiKey`): its JSON form is the key itself, and it is never
+/// printed ([`std::fmt::Debug`] shows no part of it).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ApiKey(String);
+
+impl ApiKey {
+    #[must_use]
+    pub fn new(key: impl Into<String>) -> Self {
+        ApiKey(key.into())
+    }
+
+    /// The key, for the request that sends it.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ApiKey(<redacted>)")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{ClientFrame, Outcome, ServerFrame, Since};
+    use super::{ApiKey, ClientFrame, Outcome, ServerFrame, SessionCreate, SessionParent, Since};
+
+    /// `session.create`'s arguments have their wire form, and their debug form
+    /// shows nothing of a key or the environment's values.
+    #[test]
+    fn a_create_has_its_wire_form_and_hides_its_key() {
+        let create = SessionCreate {
+            path: Some("/s/a.jsonl".to_string()),
+            ephemeral: false,
+            session_dir: Some("/s".to_string()),
+            launch_env: Some([("TOKEN".to_string(), "env-secret".to_string())].into()),
+            options: Some(json!({
+                "apiKey": ApiKey::new("sk-secret"),
+                "parent": SessionParent { path: "/s/p.jsonl".to_string(), rlm_depth: 2 },
+            })),
+            ..SessionCreate::default()
+        };
+        assert_eq!(
+            (
+                serde_json::to_value(&create).unwrap(),
+                ["sk-secret", "env-secret"].map(|secret| format!("{create:?}").contains(secret)),
+                format!("{:?}", ApiKey::new("sk-secret")),
+            ),
+            (
+                json!({
+                    "path": "/s/a.jsonl",
+                    "sessionDir": "/s",
+                    "launchEnv": { "TOKEN": "env-secret" },
+                    "options": {
+                        "apiKey": "sk-secret",
+                        "parent": { "path": "/s/p.jsonl", "rlmDepth": 2 },
+                    },
+                }),
+                [false, false],
+                "ApiKey(<redacted>)".to_string(),
+            )
+        );
+    }
 
     /// The frames' JSON is the wire contract between separately built
     /// clients and runtimes.

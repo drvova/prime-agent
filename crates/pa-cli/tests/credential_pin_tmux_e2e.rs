@@ -81,16 +81,12 @@ impl Pane {
 
 impl Drop for Pane {
     fn drop(&mut self) {
-        // The product's daemon outlives its client: stop it through the product's own command.
+        // The product's daemon outlives its client: stop it through the product's own command,
+        // which stops either daemon.
         let _ = Command::new("sh")
             .arg(&self.launcher)
             .args(["shutdown", "--force"])
             .output();
-        // `shutdown --force` stops the supervisor's daemons; the runtime daemon's is stopped by
-        // its lock.
-        if let Some(dir) = self.launcher.parent() {
-            support::stop_runtime_daemon(&dir.join("home/.prime/agent"));
-        }
         let _ = self.tmux(&["kill-server"]);
     }
 }
@@ -363,8 +359,8 @@ fn print_mode_with_a_credential_sends_only_that_key() {
     );
 }
 
-// Not listed: `a_session_pinned_to_a_named_credential_sends_only_that_key` and
-// `a_new_session_under_a_profile_uses_the_profiles_credential`. The runtime daemon's create has
-// no form of a credential or profile pin yet, so the TUI's wire2 transport refuses such a create
-// (pa-tui `wire2_compat`) rather than run the session on the default key.
-support::on_the_runtime_daemon!(print_mode_with_a_credential_sends_only_that_key);
+support::on_the_runtime_daemon!(
+    a_session_pinned_to_a_named_credential_sends_only_that_key,
+    a_new_session_under_a_profile_uses_the_profiles_credential,
+    print_mode_with_a_credential_sends_only_that_key,
+);
