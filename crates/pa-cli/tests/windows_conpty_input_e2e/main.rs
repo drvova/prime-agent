@@ -728,6 +728,8 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         ("PRIME_AGENT_FAUX_SCRIPT", script.display().to_string()),
         ("PI_OFFLINE", "1".to_string()),
         ("DO_NOT_TRACK", "1".to_string()),
+        // The TUI talks to the supervisor this test spawned, on the old wire.
+        ("PRIME_AGENT_RUNTIME_DAEMON", "0".to_string()),
     ] {
         env.push((key.to_string(), value));
     }
@@ -1356,6 +1358,8 @@ fn a_pasted_image_renders_inline_without_escape_text_on_conpty() {
             ),
             ("PI_OFFLINE", "1".to_string()),
             ("DO_NOT_TRACK", "1".to_string()),
+            // The TUI talks to the supervisor this test spawned, on the old wire.
+            ("PRIME_AGENT_RUNTIME_DAEMON", "0".to_string()),
         ] {
             env.push((key.to_string(), value));
         }
