@@ -30,7 +30,9 @@ the autonomous run on `BuiltSession`, the goal seeded on a fresh branch, `execut
 profile's settings overlay (`set_active_profile` in the session's scope; an unknown profile fails
 the build), pins a new session's header as the old worker's create does (the profile's credential
 for its provider, else `credential`, else its parent's pin) and tags its profile, names a scoped
-child's parent and depth in its header and runs it at that depth, builds the engine through the headless assembly (the faux provider
+child's parent and depth in its header and runs it at that depth, builds the engine through the headless assembly (a session that names no model and finds none
+signed in starts on the catalog's first, as the old worker's does, so it opens and its prompt
+reports the missing sign-in; a print or RPC run still fails; the faux provider
 under `PRIME_AGENT_FAUX_SCRIPT`, each session answering from a queue of its own,
 `faux-<session id>`, presenting the script's `provider` and `modelId`, as each supervisor worker
 does), streams the turn driver's events, and

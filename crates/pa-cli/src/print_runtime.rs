@@ -700,7 +700,26 @@ pub(crate) async fn build_headless_engine_with(
             let session = session_manager
                 .as_ref()
                 .map(pa_core::session::manager::SessionManager::active_context);
-            select_model(&mut registry, config, session.as_ref()).await?
+            match select_model(&mut registry, config, session.as_ref()).await {
+                Ok(model) => model,
+                // A daemon's session (the runtime daemon gives each a faux lane of its own) that
+                // names no model and finds none signed in starts on the catalog's first, as the
+                // old worker's does: it opens, and a prompt reports the missing sign-in. A print
+                // or RPC run fails here instead.
+                Err(error)
+                    if config.model.is_none()
+                        && matches!(
+                            embedding,
+                            HeadlessEmbedding::Root {
+                                faux_lane: Some(_),
+                                ..
+                            }
+                        ) =>
+                {
+                    registry.get_all().first().cloned().ok_or(error)?
+                }
+                Err(error) => return Err(error),
+            }
         }
     };
     // `--api-key` serves the chosen model's provider, over its stored credentials (the old

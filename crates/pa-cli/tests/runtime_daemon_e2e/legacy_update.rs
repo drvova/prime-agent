@@ -158,7 +158,10 @@ async fn legacy_restore(bed: &Bed, runtime: bool) -> Restored {
             std::fs::read_to_string(&script).unwrap(),
         );
     // The runtime daemon is the default; the supervisor is selected by name.
-    command.env("PRIME_AGENT_RUNTIME_DAEMON", if runtime { "1" } else { "0" });
+    command.env(
+        "PRIME_AGENT_RUNTIME_DAEMON",
+        if runtime { "1" } else { "0" },
+    );
     let finished = command.status().expect("run the coordinator");
     let status: Value =
         serde_json::from_str(&std::fs::read_to_string(&status_path).unwrap()).unwrap();

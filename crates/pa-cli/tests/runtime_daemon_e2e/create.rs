@@ -485,3 +485,33 @@ async fn a_tui_create_builds_on_the_runtime_daemon_what_it_builds_on_the_old_dae
         "the runtime daemon wrote the API key"
     );
 }
+
+/// A session on an agent dir with no provider signed in opens on the runtime
+/// daemon as on the old one, on the catalog's first model (the old worker's
+/// fallback): its attach answers, where its build used to fail with "No
+/// authenticated models available" and the TUI could not open it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_opens_with_no_provider_signed_in() {
+    let bed = Bed::new();
+    let _daemon = real_runtime_daemon(&bed);
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = through_the_compat_layer(
+        &mut client,
+        "create",
+        &json!({ "type": "create", "config": { "cwd": bed.dir.path() } }),
+    )
+    .await;
+    assert_eq!(created["success"], true, "{created}");
+    let active = created["data"]["activeSessionId"].as_str().unwrap();
+    let state = through_the_compat_layer(
+        &mut client,
+        "state",
+        &json!({ "type": "get_state", "activeSessionId": active }),
+    )
+    .await;
+    assert_eq!(
+        (state["success"].clone(), state["data"]["model"].is_object()),
+        (json!(true), true),
+        "{state}"
+    );
+}
