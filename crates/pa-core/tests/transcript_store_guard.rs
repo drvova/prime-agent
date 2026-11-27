@@ -104,12 +104,12 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "the window snapshot sidecar write",
     ),
     (
-        "pa-daemon/src/session_store/info_sidecar.rs",
+        "pa-core/src/session/catalog/info_sidecar.rs",
         "std::fs::read(sidecar_path(path))",
         "the session-info scan sidecar (a file-store cache, certified against the store's generation)",
     ),
     (
-        "pa-daemon/src/session_store/info_sidecar.rs",
+        "pa-core/src/session/catalog/info_sidecar.rs",
         "pa_types::platform::AtomicFile::create(",
         "the session-info scan sidecar write",
     ),
