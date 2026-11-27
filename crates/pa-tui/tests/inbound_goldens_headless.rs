@@ -253,7 +253,10 @@ fn recorded_streams_render_their_golden_frames() {
         (
             "prompt_stream",
             SessionSelection::New,
-            vec![submit("hello"), idle()],
+            // The title's `$—` (an unpriced call) comes from the roster's first usage reading,
+            // the `roster_update` the daemon sends after `agent_end`: the turn reads idle
+            // before that frame lands, so the replay waits for the marker it draws.
+            vec![submit("hello"), idle(), render("$\u{2014}")],
         ),
         (
             "eval_cell",
