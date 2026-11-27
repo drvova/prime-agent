@@ -1486,7 +1486,7 @@ fn the_history_import_is_followed_and_its_frames_come_back() {
 /// A create goes out as `session.create` with every choice the old supervisor's create carried
 /// and the runtime needs: the key, credential and profile pins, the model scope, the parent of a
 /// scoped child, the telemetry opt-out, the session dir and the launch environment. The faux
-/// script, the Herdr pane identity and the lifecycle stay home.
+/// script, the ignored `env` and the lifecycle stay home.
 #[test]
 fn a_create_carries_its_pins_scope_parent_and_environment() {
     let command: DaemonCommand = serde_json::from_value(json!({

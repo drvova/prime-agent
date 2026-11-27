@@ -92,7 +92,6 @@ fn live_feed_runner(
             )),
             worker_token: "token".to_string(),
         },
-        herdr: std::sync::Arc::new(std::sync::Mutex::new(crate::herdr::HerdrReporter::default())),
         checkpoints: Arc::new(crate::workspace_checkpoints::WorkspaceCheckpoints::new(
             scratch.to_path_buf(),
         )),

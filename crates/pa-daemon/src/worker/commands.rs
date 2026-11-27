@@ -816,14 +816,6 @@ impl Worker {
         let _ = self.emit_session_closed(&active_session_id, reason.session_closed_reason());
         let _ = self.record_recovery(false, reason.recovery_operation());
         self.release_session_lease();
-        // The session runtime ended (TS `prime-agent stop <agent>`): the
-        // pane reporter releases its pane as the last write on the wire —
-        // no report may reclaim it afterwards. The slot is taken out
-        // first (swapped to the disabled no-op) so a later attach can
-        // adopt the pane again; the taken handle's release is the
-        // release of the session this kill stopped.
-        let reporter = std::mem::take(&mut *self.herdr.lock().unwrap());
-        reporter.release().await;
         response_success(None, "kill", None)
     }
 

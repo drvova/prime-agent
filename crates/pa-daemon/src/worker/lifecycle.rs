@@ -151,12 +151,6 @@ impl Worker {
         }
         self.engine.end_telemetry().await;
         self.release_session_lease();
-        // The worker's quit (TS `session_shutdown` reason `quit`): the
-        // pane reporter releases its pane as the last write on the wire
-        // — awaited here so the release lands before this reply unlocks
-        // the process exit, and no late report reclaims the pane.
-        let reporter = self.herdr.lock().unwrap().clone();
-        reporter.release().await;
         // The verdict is durable BEFORE the reply: the supervisor may escalate
         // the stop as soon as the reply lands. Parked (suspended) lanes are not
         // busy: they wait for an explicit resume.

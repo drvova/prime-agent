@@ -193,17 +193,6 @@ pub struct Worker {
     /// The scheduling surface: the session's cron/heartbeat store plus the
     /// scheduler firing due jobs into the queue (jobs rebind on replacement).
     pub(crate) scheduled: std::sync::Arc<crate::scheduled_jobs::ScheduledJobs>,
-    /// The session's Herdr reporter (the built-in connector): starts
-    /// disabled and is (re)bound at `create` from the create payload's
-    /// client env — the session's own pane identity, never this
-    /// process's boot context. Replacing it silences the old task
-    /// exactly like the TS session-shutdown arm (no release; a successor
-    /// re-reports), because the task ends when its last handle drops.
-    pub(crate) herdr: std::sync::Arc<std::sync::Mutex<crate::herdr::HerdrReporter>>,
-    /// The reporter epoch (bumped on every (re)bind): a replaced
-    /// reporter's task drops its queued boundary events instead of
-    /// flushing them over the successor's pane state.
-    pub(crate) herdr_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Session creation is one serialized critical section (TS
     /// `openingSessions`: a concurrent open for the same session JOINS
     /// the in-flight one instead of racing it). Commands run on spawned
@@ -367,15 +356,6 @@ impl Worker {
         let worker_token = pa_types::session_scope::var(WORKER_TOKEN_ENV).unwrap_or_default();
         let roster_delta_sequence = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let input_pauses = crate::session_input_pause::InputPauseTable::new();
-        // The shared pane-reporter slot: the worker binds it at create and
-        // the turn runner reads it at every boundary (a slot, not a
-        // snapshot, so a create-time rebind reaches the runner too).
-        let herdr_slot =
-            std::sync::Arc::new(std::sync::Mutex::new(crate::herdr::HerdrReporter::default()));
-        // The reporter epoch shared with every reporter the worker
-        // starts: a rebind bumps it so the replaced task drops its
-        // queued boundary events instead of flushing them.
-        let herdr_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         // The worker's prompt-admission registry: shared with the turn
         // runner (the commit happens at turn start).
         let prompt_admissions = crate::prompt_admission::WorkerAdmissions::new();
@@ -792,7 +772,6 @@ impl Worker {
                     link: Arc::clone(&roster_link),
                     worker_token,
                 },
-                herdr: std::sync::Arc::clone(&herdr_slot),
                 checkpoints: Arc::clone(&checkpoints),
             };
             tokio::spawn(async move {
@@ -874,24 +853,9 @@ impl Worker {
             navigation,
             prompt_admissions,
             scheduled,
-            herdr: std::sync::Arc::clone(&herdr_slot),
-            herdr_generation: std::sync::Arc::clone(&herdr_generation),
             create_gate: tokio::sync::Mutex::new(()),
             replacement_gate: tokio::sync::Mutex::new(()),
         }
-    }
-
-    /// The Herdr session reference the reports carry (TS
-    /// `agent_session_path` / `agent_session_id`): the session file when
-    /// the session has one, otherwise the session id.
-    pub(crate) fn herdr_session_ref(core: &SessionCore) -> crate::herdr::HerdrSessionRef {
-        let store = core.store.as_ref();
-        crate::herdr::HerdrSessionRef::new(
-            store
-                .filter(|store| !store.path.as_os_str().is_empty())
-                .map(|store| store.path.to_string_lossy().to_string()),
-            store.map(|store| store.session_id().to_string()),
-        )
     }
 
     /// Close the bound listener, then clean up the socket path: the TS

@@ -44,7 +44,6 @@ struct LegacySession {
     cwd: String,
     config: Map<String, Value>,
     runtime_metadata: Option<Map<String, Value>>,
-    client_env: Option<BTreeMap<String, String>>,
     queue: LegacyQueue,
     should_resume: bool,
     #[serde(default)]
@@ -138,9 +137,6 @@ pub(super) fn convert(
         let mut create = json!({"sessionPath": session.session_file, "cwd": session.cwd, "config": session.config});
         if let Some(metadata) = session.runtime_metadata {
             create["runtimeMetadata"] = Value::Object(metadata);
-        }
-        if let Some(env) = session.client_env {
-            create["env"] = serde_json::to_value(env)?;
         }
         sessions.push(UpdateRosterSession {
             session_id: session.session_id,
@@ -270,8 +266,7 @@ mod tests {
             "session_id": "child", "active_session_id": "active-child", "session_file": "/sessions/child.jsonl",
             "kind": "subagent", "parent_session_id": "parent", "rlm_depth": 1, "cwd": "/project",
             "runtime_config": {"create": {"sessionPath": "/sessions/child.jsonl", "cwd": "/project",
-                "config": {"modelId": "model", "thinkingLevel": "high"}, "runtimeMetadata": metadata,
-                "env": {"TEST_VAR": "preserved"}}},
+                "config": {"modelId": "model", "thinkingLevel": "high"}, "runtimeMetadata": metadata}},
             "queue": {"next_turn": manifest["sessions"][0]["queue"]["nextTurn"], "actions": manifest["sessions"][0]["queue"]["actions"]},
             "in_flight": {"streaming": false, "compacting": true, "bash_running": true, "rlm_children": true, "retrying": true, "prompt_in_flight": true},
             "should_resume": true

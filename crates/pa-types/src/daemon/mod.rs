@@ -97,7 +97,6 @@ pub mod agent_roster;
 mod command;
 mod crash;
 pub mod framing;
-pub mod herdr_env;
 pub mod launch_env;
 pub mod message_delta;
 mod outbound;

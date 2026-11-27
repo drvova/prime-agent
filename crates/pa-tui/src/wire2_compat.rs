@@ -221,8 +221,8 @@
 //!   `PRIME_AGENT_FAUX_CHILD_SCRIPT`), which the launch that starts it gives it.
 //! - `lifecycle`: only a `noSession` create is client-owned, and an `ephemeral` session ends with
 //!   the client that created it.
-//! - `env`, the Herdr pane identity: the runtime daemon reports to no Herdr pane (its `HERDR_*`
-//!   variables reach the session in its `launchEnv`).
+//! - `env`: accepted for old clients and ignored (it carried a pane identity for an integration
+//!   that no longer exists).
 //! - `name` and `runtimeMetadata`: no TUI create sets them.
 //!
 //! # Not carried
