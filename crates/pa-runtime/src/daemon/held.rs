@@ -107,6 +107,10 @@ pub(super) struct OpenSession {
     /// for a session that keeps its transcript. An ephemeral session is not
     /// kept in the database: no daemon revives it.
     pub(super) owner: Option<String>,
+    /// The scoped model list its `session.cycle_model` steps through
+    /// (`session.set_scoped_models`), empty for the whole catalog; kept for
+    /// the session's open life only, as the old worker kept it.
+    pub(super) scoped_models: Vec<Value>,
 }
 
 impl OpenSessions {
@@ -145,6 +149,24 @@ impl OpenSessions {
 
     pub(super) fn contains(&self, id: &str) -> bool {
         lock(&self.open).open.contains_key(id)
+    }
+
+    /// Open session `id`'s scoped model list (empty when none is set).
+    pub(super) fn scoped_models(&self, id: &str) -> Vec<Value> {
+        lock(&self.open)
+            .open
+            .get(id)
+            .map_or_else(Vec::new, |session| session.scoped_models.clone())
+    }
+
+    /// Sets open session `id`'s scoped model list; `false` when it is not
+    /// open.
+    pub(super) fn set_scoped_models(&self, id: &str, scoped: Vec<Value>) -> bool {
+        lock(&self.open)
+            .open
+            .get_mut(id)
+            .map(|session| session.scoped_models = scoped)
+            .is_some()
     }
 
     /// The ephemeral sessions client `owner` created.
@@ -359,6 +381,7 @@ async fn revive_one<B: SessionBuilder>(
             cwd: session.cwd,
             _lease: Some(lease),
             owner: None,
+            scoped_models: Vec::new(),
         },
     )
     .await;

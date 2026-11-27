@@ -301,6 +301,15 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   the request's live-only `runtime/session_list/<request>` while it walks the store, never
   waiting for a slow reader, and its reply is the catalog (`pa-runtime`
   `daemon/handlers/saved.rs`); `wire2_compat` maps `list_saved_sessions` to it.
+- One set of setting-switch rules: the queue mode and transport a switch persists, the scoped
+  model list it accepts, and the model or thinking level a cycle lands on are
+  `pa_core::settings::switches`, applied by the old worker (`pa-daemon` `setting_switches.rs`)
+  and by the runtime daemon's `session.cycle_model`, `session.set_scoped_models`,
+  `session.cycle_effort`, `session.set_service_tier`, `session.set_transport`,
+  `session.set_steering_mode`, `session.set_follow_up_mode`, `session.set_auto_compaction` and
+  `session.set_auto_retry` (`pa-runtime` `daemon/handlers/switches.rs`), which answer the old
+  responses' `data` and publish the old `service_tier_changed` on the session's stream when the
+  active tier moves; `wire2_compat` maps the TUI's commands to them.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

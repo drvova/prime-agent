@@ -6,13 +6,12 @@
 
 use serde_json::{json, Value};
 
+use pa_core::settings::switches;
 use pa_types::ai::{ServiceTier, Transport};
 
 use crate::engine::EngineModelSelection;
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::worker::Worker;
-
-const QUEUE_MODES: &[&str] = &["all", "one-at-a-time"];
 
 /// Whether the engine's resolved model supports `tier`; a session without
 /// a resolved model supports only the `default` tier.
@@ -88,56 +87,22 @@ impl Worker {
         let available: Vec<pa_types::ai::Model> =
             registry.get_available().into_iter().cloned().collect();
         let is_scoped = !scoped.is_empty();
-        let candidates: Vec<(Option<String>, Option<pa_types::ai::Model>)> = if is_scoped {
-            scoped
-                .iter()
-                .filter_map(|entry| {
-                    let model = entry.get("model")?;
-                    let provider = model.get("provider")?.as_str()?;
-                    let id = model.get("id")?.as_str()?;
-                    available
-                        .iter()
-                        .find(|candidate| candidate.provider == provider && candidate.id == id)
-                        .map(|candidate| {
-                            (
-                                entry
-                                    .get("thinkingLevel")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_string),
-                                Some(candidate.clone()),
-                            )
-                        })
-                })
-                .collect()
+        let candidates = switches::cycle_candidates(&scoped, &available);
+        let direction = if backward {
+            switches::CycleDirection::Backward
         } else {
-            available
-                .into_iter()
-                .map(|model| (None, Some(model)))
-                .collect()
+            switches::CycleDirection::Forward
         };
-        if candidates.len() <= 1 {
-            return response_success(None, "cycle_model", Some(Value::Null));
-        }
-        let current_index = current
-            .and_then(|(provider, id)| {
-                candidates.iter().position(|(_, candidate)| {
-                    candidate
-                        .as_ref()
-                        .is_some_and(|model| model.provider == provider && model.id == id)
-                })
-            })
-            .unwrap_or(0);
-        let len = candidates.len();
-        let next_index = if backward {
-            (current_index + len - 1) % len
-        } else {
-            (current_index + 1) % len
-        };
-        let (scoped_thinking, next_model) =
-            candidates.get(next_index).cloned().unwrap_or((None, None));
-        let Some(next_model) = next_model else {
+        let Some(next) = switches::next_candidate(
+            &candidates,
+            current
+                .as_ref()
+                .map(|(provider, id)| (provider.as_str(), id.as_str())),
+            direction,
+        ) else {
             return response_success(None, "cycle_model", Some(Value::Null));
         };
+        let (scoped_thinking, next_model) = (next.thinking_level.clone(), next.model.clone());
         let provider = next_model.provider.clone();
         let model_id = next_model.id.clone();
         // The allowlist gate before the switch: an off-list candidate answers with the loud
@@ -288,46 +253,11 @@ impl Worker {
         if let Err(response) = self.require_created("set_scoped_models") {
             return response;
         }
-        let Some(scoped) = payload.get("scopedModels").and_then(Value::as_array) else {
-            return response_failure(
-                None,
-                "set_scoped_models",
-                "set_scoped_models requires a scopedModels array",
-                None,
-            );
+        let scoped = match switches::scoped_models(payload.get("scopedModels")) {
+            Ok(scoped) => scoped,
+            Err(refusal) => return response_failure(None, "set_scoped_models", refusal, None),
         };
-        for entry in scoped {
-            let model = entry
-                .get("model")
-                .and_then(Value::as_object)
-                .filter(|model| {
-                    model.get("provider").and_then(Value::as_str).is_some()
-                        && model.get("id").and_then(Value::as_str).is_some()
-                });
-            if model.is_none() {
-                return response_failure(
-                    None,
-                    "set_scoped_models",
-                    "set_scoped_models requires scopedModels entries with a model",
-                    None,
-                );
-            }
-            if let Some(level) = entry.get("thinkingLevel") {
-                if level
-                    .as_str()
-                    .and_then(pa_ai::models::thinking_level_from_str)
-                    .is_none()
-                {
-                    return response_failure(
-                        None,
-                        "set_scoped_models",
-                        "Invalid thinking level: expected one of off, minimal, low, medium, high, xhigh, max",
-                        None,
-                    );
-                }
-            }
-        }
-        self.core.lock().unwrap().scoped_models.clone_from(scoped);
+        self.core.lock().unwrap().scoped_models = scoped.to_vec();
         response_success(None, "set_scoped_models", None)
     }
 
@@ -349,17 +279,12 @@ impl Worker {
             .engine
             .supported_thinking_levels()
             .unwrap_or_else(|| vec!["off".to_string()]);
-        if levels.is_empty() {
-            return response_success(None, "cycle_thinking_level", Some(Value::Null));
-        }
         let current = self
             .engine
             .effective_thinking_level()
             .unwrap_or_else(|| "off".to_string());
-        let index = levels.iter().position(|level| *level == current);
-        let next = match index {
-            Some(index) => &levels[(index + 1) % levels.len()],
-            None => &levels[0],
+        let Some(next) = switches::next_thinking_level(&levels, &current) else {
+            return response_success(None, "cycle_thinking_level", Some(Value::Null));
         };
         let applied = self
             .handle_set_thinking_level(&json!({ "level": next }))
@@ -451,13 +376,7 @@ impl Worker {
         let core = self.core.lock().unwrap();
         let cwd = core.cwd.clone();
         drop(core);
-        let setting = match transport {
-            Transport::Auto => pa_core::settings::TransportSetting::Auto,
-            Transport::Sse => pa_core::settings::TransportSetting::Sse,
-            Transport::Websocket | Transport::WebsocketCached => {
-                pa_core::settings::TransportSetting::WebSocket
-            }
-        };
+        let setting = switches::transport_setting(transport);
         let mut settings = pa_core::settings::SettingsManager::create(&cwd, &self.config.agent_dir);
         if let Err(error) = settings.set_transport(setting) {
             return response_failure(None, "set_transport", &error.to_string(), None);
@@ -471,25 +390,14 @@ impl Worker {
         if let Err(response) = self.require_created(command) {
             return response;
         }
-        let Some(mode) = payload.get("mode").and_then(Value::as_str) else {
-            return response_failure(
-                None,
-                command,
-                &format!("{command} requires mode \"all\" or \"one-at-a-time\""),
-                None,
-            );
+        let mode = payload.get("mode").and_then(Value::as_str);
+        let setting = match switches::queue_mode(command, mode) {
+            Ok(setting) => setting,
+            Err(refusal) => return response_failure(None, command, &refusal, None),
         };
-        if !QUEUE_MODES.contains(&mode) {
-            return response_failure(
-                None,
-                command,
-                &format!("{command} requires mode \"all\" or \"one-at-a-time\""),
-                None,
-            );
-        }
-        let setting = match mode {
-            "all" => pa_core::settings::QueueModeSetting::All,
-            _ => pa_core::settings::QueueModeSetting::OneAtATime,
+        let mode = match setting {
+            pa_core::settings::QueueModeSetting::All => "all",
+            pa_core::settings::QueueModeSetting::OneAtATime => "one-at-a-time",
         };
         {
             let mut core = self.core.lock().unwrap();

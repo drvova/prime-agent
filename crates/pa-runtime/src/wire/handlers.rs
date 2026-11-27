@@ -180,6 +180,32 @@ pub enum Call {
     /// `session.cancel_child`: cancels the run of one of a session's
     /// subagents.
     SessionCancelChild,
+    /// `session.cycle_model`: switches an open session to the next model of
+    /// its scoped list or of the catalog.
+    SessionCycleModel,
+    /// `session.set_scoped_models`: sets the model list an open session's
+    /// `session.cycle_model` steps through.
+    SessionSetScopedModels,
+    /// `session.cycle_effort`: steps an open session's thinking level
+    /// through the levels its model supports.
+    SessionCycleEffort,
+    /// `session.set_service_tier`: sets an open session's service tier.
+    SessionSetServiceTier,
+    /// `session.set_transport`: sets the transport an open session's
+    /// requests use.
+    SessionSetTransport,
+    /// `session.set_steering_mode`: sets how an open session reads its
+    /// waiting steers.
+    SessionSetSteeringMode,
+    /// `session.set_follow_up_mode`: sets how an open session reads its
+    /// waiting follow-ups.
+    SessionSetFollowUpMode,
+    /// `session.set_auto_compaction`: turns an open session's automatic
+    /// compaction on or off.
+    SessionSetAutoCompaction,
+    /// `session.set_auto_retry`: turns the automatic retry of failed model
+    /// requests on or off.
+    SessionSetAutoRetry,
 }
 
 impl FromStr for Call {
@@ -213,6 +239,15 @@ impl FromStr for Call {
             "session.release_input" => Call::SessionReleaseInput,
             "session.cancel_task" => Call::SessionCancelTask,
             "session.cancel_child" => Call::SessionCancelChild,
+            "session.cycle_model" => Call::SessionCycleModel,
+            "session.set_scoped_models" => Call::SessionSetScopedModels,
+            "session.cycle_effort" => Call::SessionCycleEffort,
+            "session.set_service_tier" => Call::SessionSetServiceTier,
+            "session.set_transport" => Call::SessionSetTransport,
+            "session.set_steering_mode" => Call::SessionSetSteeringMode,
+            "session.set_follow_up_mode" => Call::SessionSetFollowUpMode,
+            "session.set_auto_compaction" => Call::SessionSetAutoCompaction,
+            "session.set_auto_retry" => Call::SessionSetAutoRetry,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

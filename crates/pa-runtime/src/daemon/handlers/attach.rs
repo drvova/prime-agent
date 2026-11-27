@@ -673,7 +673,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         state["compactionCount"] = json!(read.compactions);
         state["goal"] = read.goal;
         state["todos"] = serde_json::to_value(&read.todos)?;
-        state["scopedModels"] = json!([]);
+        state["scopedModels"] = json!(self.open.scoped_models(&id));
         state["activeToolNames"] = json!([]);
         if let Some(usage) = read.context_usage {
             state["contextUsage"] = serde_json::to_value(usage)?;

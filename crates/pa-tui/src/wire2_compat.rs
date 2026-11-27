@@ -80,6 +80,23 @@
 //! the catalog (a row that reaches the client after it is one the old daemon's full queue
 //! would have skipped).
 //!
+//! A session's setting switches become one call each, whose arguments are the command's own JSON
+//! without `type` and `activeSessionId`, plus `session` (the command's `activeSessionId`), and
+//! whose reply's result is the old response's `data`; a command the old daemon answered without
+//! `data` is answered `null`, which the layer leaves out again ([`response_from_reply`]):
+//!
+//! | command | call | old response `data` |
+//! | --- | --- | --- |
+//! | `cycle_model` | `session.cycle_model` | `{model, thinkingLevel, serviceTier, isScoped}`, or `null` |
+//! | `cycle_thinking_level` | `session.cycle_effort` | `{level}`, or `null` |
+//! | `set_scoped_models` | `session.set_scoped_models` | none |
+//! | `set_service_tier` | `session.set_service_tier` | none |
+//! | `set_transport` | `session.set_transport` | none |
+//! | `set_steering_mode` | `session.set_steering_mode` | none |
+//! | `set_follow_up_mode` | `session.set_follow_up_mode` | none |
+//! | `set_auto_compaction` | `session.set_auto_compaction` | none |
+//! | `set_auto_retry` | `session.set_auto_retry` | none |
+//!
 //! Every other command stays on the old wire.
 //!
 //! # Not mapped yet (phase 7 types these queries and calls)
@@ -89,10 +106,11 @@
 //!   (`get_settings`), `models` (`get_model_catalog`, `get_available_models`,
 //!   `model_catalog_changed`), `subscriptions` and `tasks` (`heartbeats_list`,
 //!   `heartbeats_changed`, `list_kernel_bash`, `factory_activity`), `get_session_stats`,
-//!   `get_commands`, `get_rlm_children`.
+//!   `get_commands`, `get_rlm_children`, `get_mcp_connections`, `get_usage`.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
 //!   `fork`, `label`, `export`, the auth commands, `abort`/`abort_and_send_queued`,
-//!   `abort_compaction`, `compact`, the queue mutations, `detach`.
+//!   `abort_compaction`, `compact`, the queue mutations, `detach`, `reload`,
+//!   `mark_anthropic_warning_shown`.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
 //! - Connection frames: `daemon_hello` from `welcome`, `daemon_closing` from `closing`, the
 //!   direct worker link (retired: wire2 has one connection), `history_import`,
@@ -121,6 +139,8 @@ pub(crate) enum Outgoing {
     Publish(ClientFrame),
     /// A session read: its reply's result is the old response's `data` ([`response_from_reply`]).
     Query(ClientFrame),
+    /// A session switch: its reply's result is the old response's `data` ([`response_from_reply`]).
+    Call(ClientFrame),
     /// A feed followed: the subscription, then the query whose reply is the old response.
     Follow {
         subscribe: ClientFrame,
@@ -271,8 +291,9 @@ const ROSTER_FEED: (&str, &str, &str) = ("compat:roster", "runtime/roster", "run
 const TRAFFIC_FEED: (&str, &str, &str) = ("compat:traffic", "runtime/traffic", "runtime.traffic");
 
 /// `command` as wire2 carries it: an input command becomes a publish, a session read a query, a
-/// feed's subscribe and unsubscribe its subscription's, the saved-session list a stream, each request with `request_id` as its
-/// frame id; every other command comes back unmapped.
+/// setting switch a call, a feed's subscribe and unsubscribe its subscription's, the
+/// saved-session list a stream, each request with `request_id` as its frame id; every other
+/// command comes back unmapped.
 ///
 /// # Errors
 ///
@@ -391,6 +412,96 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 unsubscribe: ClientFrame::Unsubscribe { sub_id },
             });
         }
+        DaemonCommand::CycleModel {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.cycle_model",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::SetScopedModels {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.set_scoped_models",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::CycleThinkingLevel {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.cycle_effort",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::SetServiceTier {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.set_service_tier",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::SetTransport {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.set_transport",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::SetSteeringMode {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.set_steering_mode",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::SetFollowUpMode {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.set_follow_up_mode",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::SetAutoCompaction {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.set_auto_compaction",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::SetAutoRetry {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.set_auto_retry",
+                active_session_id,
+                &command,
+            )
+        }
         DaemonCommand::RosterSubscribe { .. } => return follow(request_id, ROSTER_FEED),
         DaemonCommand::AgentTrafficSubscribe { .. } => return follow(request_id, TRAFFIC_FEED),
         DaemonCommand::RosterUnsubscribe { .. } => {
@@ -422,6 +533,41 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
         payload: Value::Object(payload),
     }))
 }
+
+/// The call `method` on session `session` that `command` (a setting switch) becomes: its
+/// arguments are the command's own members without `type`, `id` and `activeSessionId`, plus
+/// `session`.
+fn session_call(
+    request_id: String,
+    method: &str,
+    session: &str,
+    command: &DaemonCommand,
+) -> Result<Outgoing> {
+    let Value::Object(mut args) = serde_json::to_value(command)? else {
+        return Err(anyhow!("a command serializes to an object"));
+    };
+    for key in ["type", "id", "activeSessionId"] {
+        args.remove(key);
+    }
+    args.insert("session".to_string(), Value::from(session));
+    Ok(Outgoing::Call(ClientFrame::Call {
+        id: request_id,
+        method: method.to_string(),
+        args: Value::Object(args),
+    }))
+}
+
+/// The commands the old daemon answered without `data`: their call's `null` result is left out
+/// of the response again.
+const ANSWERED_WITHOUT_DATA: [&str; 7] = [
+    "set_scoped_models",
+    "set_service_tier",
+    "set_transport",
+    "set_steering_mode",
+    "set_follow_up_mode",
+    "set_auto_compaction",
+    "set_auto_retry",
+];
 
 /// Following `feed` (its subscription id, topic and query): live from now, then its state.
 fn follow(request_id: String, (sub_id, topic, query): (&str, &str, &str)) -> Result<Outgoing> {
@@ -463,14 +609,18 @@ fn member<T: serde::Serialize>(value: Option<&T>) -> Option<Value> {
     value.and_then(|value| serde_json::to_value(value).ok())
 }
 
-/// The old response to the `command` a mapped query stood for (request `id`), from the query's
-/// reply: its result is the response's `data`, its error the failure's message.
+/// The old response to the `command` a mapped query or call stood for (request `id`), from its
+/// reply: its result is the response's `data` (none for a command the old daemon answered without
+/// one), its error the failure's message.
 pub(crate) fn response_from_reply(
     command: &str,
     id: Option<String>,
     outcome: Outcome,
 ) -> DaemonOutbound {
     let (success, data, error) = match outcome {
+        Outcome::Ok {
+            result: Value::Null,
+        } if ANSWERED_WITHOUT_DATA.contains(&command) => (true, None, None),
         Outcome::Ok { result } => (true, Some(result), None),
         Outcome::Error { message } => (false, None, Some(message)),
     };
@@ -496,7 +646,7 @@ pub(crate) fn response_from_reply(
 #[doc(hidden)]
 pub fn request_frames(request_id: String, command: DaemonCommand) -> Result<Vec<ClientFrame>> {
     Ok(match outgoing(request_id, command)? {
-        Outgoing::Publish(frame) | Outgoing::Query(frame) => vec![frame],
+        Outgoing::Publish(frame) | Outgoing::Query(frame) | Outgoing::Call(frame) => vec![frame],
         Outgoing::Follow { subscribe, query }
         | Outgoing::Stream {
             subscribe, query, ..

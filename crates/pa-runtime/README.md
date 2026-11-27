@@ -440,7 +440,24 @@ SQLite implementations over `pa-log`.
   (`{session, child}`) cancels one's run (`cancelled: false` for an unknown or settled child),
   its `cancel_rlm_child` (a cancelled child's row reads `cancelled`, as the old daemon's does);
   `session.system_prompt` (`{session}`) answers an open session's system prompt, the old
-  `get_system_prompt`. A root session stopped and opened again waits for its new engine's
+  `get_system_prompt`. A session's setting switches are the old worker's commands of the same
+  names (`daemon/handlers/switches.rs`, their rules `pa_core::settings::switches`), each a call
+  on an open session answering the old response's `data` (`null` for one that had none):
+  `session.cycle_model` (`{session, direction?}`: the scoped list's available entries, else the
+  available catalog; gated by `allowedModels`, switched with its pinned or clamped level, a
+  `model_change` row and the settings' default model; `{model, thinkingLevel, serviceTier,
+  isScoped}`, `null` with fewer than two), `session.set_scoped_models` (`{session,
+  scopedModels}`, kept for the session's open life and shown as the snapshot's
+  `scopedModels`), `session.cycle_effort` (`cycle_thinking_level`: the next supported level, as
+  `session.set_effort` sets it; `{level}`, `null` for a model that does not think),
+  `session.set_service_tier` (the requested tier as a `service_tier_change` row when the
+  preference changes, the settings' default when the model supports it), and
+  `session.set_transport`, `session.set_steering_mode`, `session.set_follow_up_mode`,
+  `session.set_auto_compaction`, `session.set_auto_retry` (the settings the next turn reads; the
+  queue modes and auto-compaction also switch the running session). A move of the active tier
+  (the preference clamped to the model) is the old `service_tier_changed` on the session's
+  stream; a cycled model or level reaches the roster feed. The requests' tier itself is not
+  applied yet: the session's provider target belongs to its embedder. A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
@@ -611,7 +628,10 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `session.abort`,
   `session.abort_and_send_queued`, `session.resume_queue`, `session.withdraw`,
   `session.restore`, `session.compact`, `session.pause_input`, `session.release_input`,
-  `session.cancel_task`, `session.cancel_child`.
+  `session.cancel_task`, `session.cancel_child`, `session.cycle_model`,
+  `session.set_scoped_models`, `session.cycle_effort`, `session.set_service_tier`,
+  `session.set_transport`, `session.set_steering_mode`, `session.set_follow_up_mode`,
+  `session.set_auto_compaction`, `session.set_auto_retry`.
 
 Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-sources` (the timer and watch
 sources it starts and stops), `pa-core` (the session engine, the

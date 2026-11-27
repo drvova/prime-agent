@@ -44,7 +44,10 @@ session-artifacts tree - and wake over their own session file), wire protocol se
 `set_model`/`set_thinking_level` commands — `model_switch.rs`: registry
 resolution, the durable `model_change`/`thinking_level_change` rows, the
 settings defaults, and the engine's live agent/provider-target/level
-switch), session export commands (`session_export.rs`: the worker-side
+switch; `setting_switches.rs`: `cycle_model`, `set_scoped_models`,
+`cycle_thinking_level`, the service tier, transport, queue-mode, auto-compaction and
+auto-retry switches, over pa-core's `settings::switches` rules, which the runtime
+daemon applies too), session export commands (`session_export.rs`: the worker-side
 `export_html`/`export_jsonl` handlers; the HTML data carries the engine's
 tools section and custom-tool pre-render through the
 `SessionEngine::export_tools`/`export_rendered_tools` seams, built

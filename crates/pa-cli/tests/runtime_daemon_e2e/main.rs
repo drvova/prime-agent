@@ -32,6 +32,8 @@
 //! - The agents view's saved-session catalog, streamed through
 //!   `wire2_compat` as the old daemon streams it (phase 8c-3):
 //!   [`saved_list`].
+//! - A session's setting switches, answered and written as the old daemon
+//!   answers and writes them (phase 8d-1): [`switches`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -47,6 +49,7 @@ mod schedules;
 mod stream;
 #[path = "../support/mod.rs"]
 mod support;
+mod switches;
 mod turns;
 
 use std::path::{Path, PathBuf};

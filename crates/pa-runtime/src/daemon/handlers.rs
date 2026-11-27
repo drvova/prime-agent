@@ -46,6 +46,7 @@ mod queue;
 mod saved;
 mod state;
 mod summary;
+mod switches;
 
 /// The most entries one `transcript.page` returns, and how many it returns
 /// when the client names no `limit`.
@@ -281,6 +282,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                     cwd: cwd.clone(),
                     _lease: lease,
                     owner,
+                    scoped_models: Vec::new(),
                 },
             )
             .await;
@@ -518,6 +520,19 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionReleaseInput => self.release_input(&args),
             Call::SessionCancelTask => self.cancel_task(&args).await,
             Call::SessionCancelChild => self.cancel_child(&args).await,
+            Call::SessionCycleModel => self.cycle_model(&args).await,
+            Call::SessionSetScopedModels => self.set_scoped_models(&args),
+            Call::SessionCycleEffort => self.cycle_effort(&args).await,
+            Call::SessionSetServiceTier => self.set_service_tier(&args).await,
+            Call::SessionSetTransport => self.set_transport(&args).await,
+            Call::SessionSetSteeringMode => {
+                self.set_queue_mode(&args, switches::Queue::Steering).await
+            }
+            Call::SessionSetFollowUpMode => {
+                self.set_queue_mode(&args, switches::Queue::FollowUp).await
+            }
+            Call::SessionSetAutoCompaction => self.set_auto_compaction(&args).await,
+            Call::SessionSetAutoRetry => self.set_auto_retry(&args).await,
         }
     }
 

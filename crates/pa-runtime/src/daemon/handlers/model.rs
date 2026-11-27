@@ -36,7 +36,7 @@ use super::{optional_string_arg, string_arg, RuntimeHandlers};
 use crate::session::SessionBuilder;
 
 /// The agent dir's model registry: its sign-ins and `models.json`.
-fn registry(agent_dir: &Path) -> ModelRegistry {
+pub(super) fn registry(agent_dir: &Path) -> ModelRegistry {
     let auth = pa_core::auth::AuthStorage::create(agent_dir);
     ModelRegistry::create(auth, agent_dir.join("models.json"))
 }
@@ -226,7 +226,20 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             .await?;
             return Ok(json!({ "session": id, "level": requested.wire_name() }));
         }
-        let live = self.runtime.built_engine(&id).await?;
+        let effective = self.apply_effort(&id, requested).await?;
+        Ok(json!({ "session": id, "level": effective.wire_name() }))
+    }
+
+    /// Sets open session `id`'s thinking level to `requested`, clamped to
+    /// what its model supports (see the module documentation), and answers
+    /// the effective level: `session.set_effort` and
+    /// `session.cycle_effort`.
+    pub(super) async fn apply_effort(
+        &self,
+        id: &str,
+        requested: ModelThinkingLevel,
+    ) -> anyhow::Result<ModelThinkingLevel> {
+        let live = self.runtime.built_engine(id).await?;
         let running = {
             let engine = Arc::clone(&live.engine);
             live.runtime
@@ -254,7 +267,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         // The old daemon's settings rule: the default follows a model that
         // thinks, or a level that is not `off`, as the clamped level.
         if reasoning || effective != ModelThinkingLevel::Off {
-            let cwd = self.open.cwd(&id).unwrap_or_else(|| self.cwd.clone());
+            let cwd = self.open.cwd(id).unwrap_or_else(|| self.cwd.clone());
             let agent_dir = self.agent_dir.clone();
             tokio::task::spawn_blocking(move || {
                 pa_core::settings::SettingsManager::create(&cwd, &agent_dir)
@@ -265,6 +278,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             .await
             .context("the settings' thread panicked")??;
         }
-        Ok(json!({ "session": id, "level": effective.wire_name() }))
+        // The level reaches the roster's entry, as the old worker's push.
+        self.feeds.due(id);
+        Ok(effective)
     }
 }

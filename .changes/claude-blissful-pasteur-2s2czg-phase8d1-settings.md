@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now answers the model and thinking-level cycles and the session setting switches (service tier, transport, queue modes, auto-compaction, auto-retry) the way the interactive TUI expects them, with the same settings writes and transcript rows as the default daemon.

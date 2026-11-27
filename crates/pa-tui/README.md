@@ -236,7 +236,10 @@ to a subscription on their live-only topic and the `runtime.roster` / `runtime.t
 whose result is the old reply (their unsubscribes to an unsubscribe the layer answers itself),
 and `list_saved_sessions` to a subscription on its request's live-only topic, the `sessions.list
 {shape: "saved"}` query whose result is the old response, and an unsubscribe at its reply
-(`Outgoing::Stream`);
+(`Outgoing::Stream`), and the setting switches (`cycle_model`, `cycle_thinking_level`,
+`set_scoped_models`, `set_service_tier`, `set_transport`, the queue modes, auto-compaction and
+auto-retry) to one `session.*` call each whose result is the old response's `data`
+(`Outgoing::Call`);
 its module docs state the contract the runtime honours (the stream is live
 only, so the session's event counter rides in the payload's `meta.sequence`) and list what is left
 to map. Every recorded frame round-trips through it. A session's stored fault topics

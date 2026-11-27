@@ -547,6 +547,7 @@ impl<B: SessionBuilder> Schedules<B> {
                     cwd: cwd.to_path_buf(),
                     _lease: Some(lease),
                     owner: None,
+                    scoped_models: Vec::new(),
                 },
             )
             .await;

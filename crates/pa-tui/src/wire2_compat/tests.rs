@@ -615,3 +615,94 @@ fn the_saved_session_list_streams_on_its_request_topic_and_its_frames_round_trip
         )
     );
 }
+
+/// The setting switches go out as their calls, each with the command's own members and its
+/// session; a switch the old daemon answered without `data` comes back without it, a cycle's
+/// `null` stays `null`.
+#[test]
+fn the_setting_switches_call_and_their_replies_round_trip() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let calls: Vec<ClientFrame> = [
+        json!({ "type": "cycle_model", "activeSessionId": "s1", "direction": "backward" }),
+        json!({ "type": "cycle_thinking_level", "activeSessionId": "s1" }),
+        json!({ "type": "set_scoped_models", "activeSessionId": "s1",
+                "scopedModels": [{ "model": { "provider": "p", "id": "m" } }] }),
+        json!({ "type": "set_service_tier", "id": "x", "activeSessionId": "s1",
+                "serviceTier": "priority" }),
+        json!({ "type": "set_transport", "activeSessionId": "s1", "transport": "sse" }),
+        json!({ "type": "set_steering_mode", "activeSessionId": "s1", "mode": "all" }),
+        json!({ "type": "set_follow_up_mode", "activeSessionId": "s1", "mode": "all" }),
+        json!({ "type": "set_auto_compaction", "activeSessionId": "s1", "enabled": false }),
+        json!({ "type": "set_auto_retry", "activeSessionId": "s1", "enabled": true }),
+    ]
+    .into_iter()
+    .map(
+        |value| match outgoing("c".to_string(), command(value)).unwrap() {
+            Outgoing::Call(frame) => frame,
+            other => panic!("not a call: {other:?}"),
+        },
+    )
+    .collect();
+    let call = |method: &str, args: Value| ClientFrame::Call {
+        id: "c".to_string(),
+        method: method.to_string(),
+        args,
+    };
+    assert_eq!(
+        calls,
+        [
+            call(
+                "session.cycle_model",
+                json!({ "session": "s1", "direction": "backward" })
+            ),
+            call("session.cycle_effort", json!({ "session": "s1" })),
+            call(
+                "session.set_scoped_models",
+                json!({ "session": "s1",
+                        "scopedModels": [{ "model": { "provider": "p", "id": "m" } }] })
+            ),
+            call(
+                "session.set_service_tier",
+                json!({ "session": "s1", "serviceTier": "priority" })
+            ),
+            call(
+                "session.set_transport",
+                json!({ "session": "s1", "transport": "sse" })
+            ),
+            call(
+                "session.set_steering_mode",
+                json!({ "session": "s1", "mode": "all" })
+            ),
+            call(
+                "session.set_follow_up_mode",
+                json!({ "session": "s1", "mode": "all" })
+            ),
+            call(
+                "session.set_auto_compaction",
+                json!({ "session": "s1", "enabled": false })
+            ),
+            call(
+                "session.set_auto_retry",
+                json!({ "session": "s1", "enabled": true })
+            ),
+        ]
+    );
+    let replied = |command: &str| {
+        serde_json::to_value(response_from_reply(
+            command,
+            None,
+            Outcome::Ok {
+                result: Value::Null,
+            },
+        ))
+        .unwrap()
+    };
+    assert_eq!(
+        [replied("set_transport"), replied("cycle_model")],
+        [
+            json!({ "type": "response", "command": "set_transport", "success": true }),
+            json!({ "type": "response", "command": "cycle_model", "success": true,
+                    "data": null }),
+        ]
+    );
+}

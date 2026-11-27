@@ -164,7 +164,7 @@ fn read_as_the_tui_does(frame: &Value) -> Value {
 
 /// The old daemon's frames for `command` (request `id`), as it sent them:
 /// its streamed rows and progress, then its response.
-fn old_list(socket: &Path, id: &str, command: &Value) -> Vec<Value> {
+pub(super) fn old_list(socket: &Path, id: &str, command: &Value) -> Vec<Value> {
     let stream = UnixStream::connect(socket).expect("connect to the old daemon");
     stream
         .set_read_timeout(Some(Duration::from_millis(200)))
