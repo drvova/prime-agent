@@ -11,7 +11,10 @@
 //! parent hears the child through a subscription on `agent/<child>/done`,
 //! whose delivery ([`Subagents::deliver_done`]) settles the child and steers
 //! the terminal or failure notice onto the parent, as the inline host did.
-//! The family's `agent_message.*` ([`messages`]) delivers the same way.
+//! The family's `agent_message.*` ([`messages`]) publishes each message on
+//! the receiver's `agent/<to>/inbox`, which the runtime's inbox subscription
+//! delivers under the daemon's wake budget ([`inbox`]); the kernel's notices
+//! go through the bus the same way ([`notices`]).
 //!
 //! A session is at rest ([`has_unsettled_rlm_work`]) when no child is
 //! unsettled, no late receipt is pending, no row waits on its agent, and no
@@ -33,7 +36,8 @@ use pa_core::session_engine::rlm_notices::{
 };
 use pa_types::ai::{Model, ModelThinkingLevel};
 use pa_types::event_log::{
-    AgentDone, AgentInput, Event, NewEvent, TaskFailure, TaskState, Topic, Trust,
+    AgentDone, AgentInput, AgentTarget, Event, NewEvent, Priority, Route, Scope, Subscription,
+    TaskFailure, TaskState, Topic, TopicFilter, Trust,
 };
 use pa_types::session::CustomMessage;
 use serde_json::{json, Value};
@@ -46,16 +50,27 @@ use crate::trust::TaskTrust;
 use crate::turn::boundary::TurnBoundary;
 
 mod host;
+mod inbox;
 mod messages;
+mod notices;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use host::SessionSubagents;
 pub(crate) use messages::{late_sent_agent_message_sink, FamilyMessages};
+pub(crate) use notices::kernel_notice_sink;
 
 /// What names a child's `agent/<child>/done` subscription: this, then the
 /// child's session id.
 pub(crate) const SUBSCRIPTION_PREFIX: &str = "subagent/";
+
+/// The id of the subscription that delivers every session's agent messages
+/// (`agent/+/inbox`, [`Subagents::deliver_inbox`]).
+pub(crate) const INBOX_SUBSCRIPTION: &str = "runtime/inbox";
+
+/// The id of the subscription that wakes every session for the kernel
+/// notices it steered (`session/+/bash/+`, [`Subagents::deliver_notice`]).
+pub(crate) const NOTICE_SUBSCRIPTION: &str = "runtime/bash";
 
 /// The runtime's sessions as the subagents reach them: opening a child,
 /// ending its tasks and closing it.
@@ -83,6 +98,8 @@ pub(crate) struct Subagents {
     outbox: Outbox,
     tree: MemorySessionTree,
     attached: OnceLock<Attached>,
+    /// The senders waiting to hear how their agent messages went.
+    answers: inbox::InboxAnswers,
 }
 
 /// What the runtime gives the subagents once its bus is up.
@@ -100,13 +117,48 @@ impl Subagents {
             outbox,
             tree,
             attached: OnceLock::new(),
+            answers: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Gives the tree the bus's subscriptions and the runtime's sessions.
+    /// Gives the tree the bus's subscriptions and the runtime's sessions,
+    /// and subscribes every session's inbox and kernel notices.
     pub(crate) fn attach(&self, registry: Arc<Mutex<Registry>>, control: Weak<dyn SessionControl>) {
+        for (id, filter) in [
+            (INBOX_SUBSCRIPTION, "agent/+/inbox"),
+            (NOTICE_SUBSCRIPTION, "session/+/bash/+"),
+        ] {
+            let added = TopicFilter::new(filter)
+                .map_err(anyhow::Error::from)
+                .and_then(|filter| {
+                    lock(&registry)
+                        .add(Subscription {
+                            id: id.to_string(),
+                            scope: Scope::Global,
+                            filter,
+                            when: None,
+                            throttle_ms: 0,
+                            debounce_ms: 0,
+                            route: Route::Agent {
+                                target: AgentTarget::Origin,
+                                prompt: String::new(),
+                                priority: Priority::Steer,
+                            },
+                            trust: Trust::Owner,
+                        })
+                        .map_err(anyhow::Error::from)
+                });
+            if let Err(error) = added {
+                tracing::error!("subscription {id} is not on the bus: {error:#}");
+            }
+        }
         // Attached once, by the runtime's open.
         let _ = self.attached.set(Attached { registry, control });
+    }
+
+    /// The node of the open session `id`.
+    fn node(&self, id: &str) -> Option<Arc<Node>> {
+        lock(&self.nodes).get(id).cloned()
     }
 
     /// The node of the session `spec` opens as `id`: the one a spawn made for
@@ -140,7 +192,7 @@ impl Subagents {
     /// [`SUBSCRIPTION_PREFIX`]`<child>` routes it here): its answer and
     /// verdict, and the notice to its parent.
     pub(crate) async fn deliver_done(&self, child: &str, event: &Event) {
-        let Some(node) = lock(&self.nodes).get(child).cloned() else {
+        let Some(node) = self.node(child) else {
             return;
         };
         let Some(parent) = node.parent_node() else {
@@ -214,9 +266,12 @@ pub(crate) struct Node {
     /// Set by `rlm.delete_subagent` and the run's finish: the drives
     /// observe it and stop.
     disposed: AtomicBool,
-    /// The trust of the task the session runs: what the tasks it gives its
-    /// children carry.
+    /// The trust of the task the session runs (what the tasks it gives its
+    /// children carry) and its trigger (what the messages it sends are
+    /// caused by).
     pub(crate) trust: TaskTrust,
+    /// The wakes each sender has spent on this session.
+    wakes: inbox::WakeBudget,
     /// The outcome of the session's first engine build; `None` until then.
     built: watch::Sender<Option<Result<(), String>>>,
 }
@@ -265,6 +320,7 @@ impl Node {
             activity: Notify::new(),
             disposed: AtomicBool::new(false),
             trust: TaskTrust::default(),
+            wakes: inbox::WakeBudget::default(),
             built: watch::Sender::new(None),
         }
     }
@@ -628,6 +684,22 @@ fn retask(child: &Child, state: &mut ChildState, trust: Trust) {
             "subagent {} was not given its next task: {error:#}",
             child.rlm_child_id
         );
+    }
+}
+
+/// Gives `node`'s session, when it is a settled child, its next task over the
+/// rows delivered to it, with `trust`.
+async fn retask_if_settled(node: &Arc<Node>, trust: Trust) {
+    let Some(parent) = node.parent_node() else {
+        return;
+    };
+    for child in parent.children.lock().await.iter() {
+        if Arc::ptr_eq(&child.node, node) {
+            let mut state = child.state.lock().await;
+            if state.settled && !node.is_disposed() {
+                retask(child, &mut state, trust);
+            }
+        }
     }
 }
 

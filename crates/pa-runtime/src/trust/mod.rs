@@ -18,7 +18,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use pa_core::kernel::{CallKind, CallPolicy, CallRefused};
-use pa_types::event_log::Trust;
+use pa_types::event_log::{Cause, Trust};
 use serde_json::Value;
 
 use crate::lock;
@@ -29,21 +29,38 @@ mod tests;
 
 use classes::{native_class, CallClass, HOST_REQUESTS};
 
-/// The trust of the task a session runs now: set by its host as a task
-/// starts, cleared as it ends, and read by the session's [`TrustGate`] and
-/// its stream (whose events carry it).
+/// The trust of the task a session runs now, and the event that caused it:
+/// set by its host as a task starts, cleared as it ends, and read by the
+/// session's [`TrustGate`], its stream (whose events carry the trust) and
+/// whatever its turn publishes for others (whose cause the trigger is).
 #[derive(Clone, Default)]
-pub(crate) struct TaskTrust(Arc<Mutex<Option<Trust>>>);
+pub(crate) struct TaskTrust(Arc<Mutex<Option<RunningTask>>>);
+
+/// What a running task's events carry: its trust, and its trigger as their
+/// cause (so they sit one hop past it in its chain).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunningTask {
+    pub(crate) trust: Trust,
+    pub(crate) cause: Cause,
+}
 
 impl TaskTrust {
-    /// Sets the running task's trust; `None` once no task runs.
-    pub(crate) fn set(&self, trust: Option<Trust>) {
-        *lock(&self.0) = trust;
+    /// Sets the running task; `None` once no task runs.
+    pub(crate) fn set(&self, task: Option<RunningTask>) {
+        *lock(&self.0) = task;
     }
 
     /// The running task's trust, `Owner` when no task runs.
     pub(crate) fn current(&self) -> Trust {
-        lock(&self.0).unwrap_or(Trust::Owner)
+        lock(&self.0)
+            .as_ref()
+            .map_or(Trust::Owner, |task| task.trust)
+    }
+
+    /// The running task's trigger, as the cause of what it publishes;
+    /// `None` when no task runs.
+    pub(crate) fn cause(&self) -> Option<Cause> {
+        lock(&self.0).as_ref().map(|task| task.cause.clone())
     }
 }
 

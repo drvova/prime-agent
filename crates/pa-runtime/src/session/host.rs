@@ -22,7 +22,7 @@ use pa_agent::agent::Agent;
 use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
 use pa_core::session_engine::session_events::agent_event_json;
 use pa_types::ai::ImageContent;
-use pa_types::event_log::{EventId, NewEvent, Task, TaskFailure};
+use pa_types::event_log::{Cause, EventId, NewEvent, Task, TaskFailure};
 use pa_types::session_scope::{self, SessionScope};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -38,11 +38,11 @@ use super::{
 use crate::events::{BusEvents, SessionEvents};
 use crate::lock;
 use crate::subagents::{
-    dispose, drive_to_quiescence, has_unsettled_rlm_work, late_sent_agent_message_sink,
-    FamilyMessages, Node, SessionSubagents,
+    dispose, drive_to_quiescence, has_unsettled_rlm_work, kernel_notice_sink,
+    late_sent_agent_message_sink, FamilyMessages, Node, SessionSubagents,
 };
 use crate::tasks::{Steered, TaskOutcome};
-use crate::trust::{TaskTrust, TrustGate};
+use crate::trust::{RunningTask, TaskTrust, TrustGate};
 use crate::turn::autonomous::{latest_assistant_error, HeadlessAutonomous};
 use crate::turn::boundary::TurnBoundary;
 use crate::turn::continuation::{wire_continuation_hook, UnsettledWork};
@@ -58,6 +58,8 @@ enum Work {
     Task {
         task: Task,
         images: Vec<pa_agent::types::ImageContent>,
+        /// Its trigger: the cause of what its turn publishes.
+        cause: Cause,
         outcome: oneshot::Sender<Ran>,
     },
     /// The run driven to rest, and how it ended.
@@ -187,8 +189,8 @@ impl SessionHost {
     }
 
     /// Runs `task`, with the images its prompt carries, on the session's
-    /// thread.
-    pub(crate) async fn run(&self, task: Task, images: Vec<ImageContent>) -> Ran {
+    /// thread; what its turn publishes is caused by `cause`, its trigger.
+    pub(crate) async fn run(&self, task: Task, images: Vec<ImageContent>, cause: Cause) -> Ran {
         let (outcome, answer) = oneshot::channel();
         let images = images
             .into_iter()
@@ -200,6 +202,7 @@ impl SessionHost {
         if !self.send(Work::Task {
             task,
             images,
+            cause,
             outcome,
         }) {
             return Ran::Unreported(TaskEnd::failed(
@@ -482,6 +485,7 @@ impl<B: SessionBuilder> Lifetime<B> {
             Work::Task {
                 task,
                 images,
+                cause,
                 outcome,
             } => {
                 {
@@ -491,7 +495,10 @@ impl<B: SessionBuilder> Lifetime<B> {
                     turn.cancelled = false;
                     turn.steered = false;
                 }
-                self.control.trust.set(Some(task.trust));
+                self.control.trust.set(Some(RunningTask {
+                    trust: task.trust,
+                    cause: cause.clone(),
+                }));
                 let ran = session_scope::catching_panics(AssertUnwindSafe(|| {
                     runtime.block_on(self.run_task(session, &task, images))
                 }));
@@ -532,7 +539,8 @@ impl<B: SessionBuilder> Lifetime<B> {
                 };
                 // The `done` goes behind the turn's stream and ahead of
                 // anything a settle streams.
-                self.outbox.send(done_event(&self.topics, &task, &end));
+                self.outbox
+                    .send(done_event(&self.topics, &task, &end, &cause));
                 let _ = outcome.send(Ran::Reported(end));
                 match armed {
                     Some(settled) if settles => {
@@ -585,6 +593,10 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// wires the turn driver onto it: the goal usage accounting, the
     /// autonomous accounting and the natural-turn-end continuation hook, in
     /// that order after the stream.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the seams, the engine build and the driver wiring read in the order they run"
+    )]
     fn build(&self, runtime: &tokio::runtime::Runtime) -> Result<Hosted, String> {
         let built = session_scope::catching_panics(AssertUnwindSafe(|| {
             let gate = TrustGate::new(self.control.trust.clone(), &self.spec.cwd);
@@ -592,6 +604,7 @@ impl<B: SessionBuilder> Lifetime<B> {
             register_event_bus_host_handlers(
                 &Arc::new(SessionEvents {
                     events: Arc::clone(&self.events),
+                    task: self.control.trust.clone(),
                     requester: EventRequester {
                         session_id: self.id.clone(),
                         name: self.spec.name.clone().unwrap_or_else(|| self.id.clone()),
@@ -613,6 +626,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                     let node = Arc::clone(&self.node);
                     Arc::new(move || node.activity.notify_waiters())
                 },
+                kernel_notices: kernel_notice_sink(&self.node),
             };
             runtime.block_on(self.builder.build(&self.id, &self.spec, seams))
         }));

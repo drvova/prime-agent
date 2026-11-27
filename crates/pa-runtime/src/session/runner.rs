@@ -6,16 +6,52 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use pa_types::event_log::{AgentInput, AgentTarget, Task, TaskFailure, TaskState, Trust};
+use pa_types::event_log::{AgentInput, AgentTarget, Cause, Task, TaskFailure, TaskState, Trust};
 
 use super::host::{Ran, TaskEnd};
-use super::{done_event, SessionBuilder, SessionSpec, SessionTopics, Sessions};
+use super::{done_event, Queued, SessionBuilder, SessionSpec, SessionTopics, Sessions};
 use crate::events::BusEvents;
 use crate::log_stores::LogTaskStore;
 use crate::routes::{TaskRequest, TaskSink};
-use crate::subagents::{Subagents, SUBSCRIPTION_PREFIX};
+use crate::subagents::{
+    Subagents, INBOX_SUBSCRIPTION, NOTICE_SUBSCRIPTION, SUBSCRIPTION_PREFIX as SUBAGENT_PREFIX,
+};
 use crate::subscriptions::MemorySessionTree;
 use crate::tasks::{Steered, TaskOutcome, TaskQueue, TaskRunner};
+
+/// What an `Agent` route of the runtime does, by its subscription's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteKind<'a> {
+    /// `subagent/<child>`: settles the child on its `done`; no task.
+    SubagentDone { child: &'a str },
+    /// [`INBOX_SUBSCRIPTION`]: delivers the agent message; no task of its
+    /// own (a settled child it reaches is given its next one).
+    Inbox,
+    /// [`NOTICE_SUBSCRIPTION`]: wakes the session for a notice it took; no
+    /// task of its own (as the inbox).
+    Notice,
+    /// `event-bus/<id>`: a kernel event subscription's task, over the
+    /// message its event delivers.
+    Event { subscription: &'a str },
+    /// Any other: a task over the route's prompt or the event's input.
+    Task,
+}
+
+impl<'a> RouteKind<'a> {
+    fn of(subscription: &'a str) -> Self {
+        if let Some(child) = subscription.strip_prefix(SUBAGENT_PREFIX) {
+            return RouteKind::SubagentDone { child };
+        }
+        if let Some(subscription) = subscription.strip_prefix(crate::events::SUBSCRIPTION_PREFIX) {
+            return RouteKind::Event { subscription };
+        }
+        match subscription {
+            INBOX_SUBSCRIPTION => RouteKind::Inbox,
+            NOTICE_SUBSCRIPTION => RouteKind::Notice,
+            _ => RouteKind::Task,
+        }
+    }
+}
 
 /// Runs each task as a turn of its session on the session's host thread,
 /// which queues the stored `agent/<id>/done` (an `AgentDone`, with the
@@ -51,9 +87,9 @@ impl<B: SessionBuilder> SessionRunner<B> {
 impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
     #[tracing::instrument(level = "debug", skip_all, fields(task = %task.id, session = %task.session))]
     async fn run(&self, task: Task) -> TaskOutcome {
-        let images = self.sessions.take_images(&task.id);
+        let Queued { images, cause } = self.sessions.take_queued(&task);
         let ran = match self.sessions.host(&task.session) {
-            Some(host) => host.run(task.clone(), images).await,
+            Some(host) => host.run(task.clone(), images, cause.clone()).await,
             None => Ran::Unreported(TaskEnd::failed(
                 TaskFailure::Turn,
                 format!("session {} is not open in this runtime", task.session),
@@ -68,7 +104,7 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
                     let published = self
                         .sessions
                         .outbox()
-                        .publish(done_event(&topics, &task, &end))
+                        .publish(done_event(&topics, &task, &end, &cause))
                         .await;
                     if let Err(error) = published {
                         tracing::error!(
@@ -100,9 +136,13 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
 /// its text and images, and its priority when it names one. A kernel event
 /// subscription's task starts from the message its event delivers
 /// ([`BusEvents::deliver`]), and none is queued for the subscriber's own
-/// event. A subagent's `done` queues no task: it settles the subagent, whose
-/// notice its parent's agent takes ([`Subagents::deliver_done`]). Its trust is
-/// the request's; an untrusted task's prompt is wrapped as
+/// event. The runtime's own routes ([`RouteKind`]) queue no task of their
+/// own: a subagent's `done` settles the subagent, whose notice its parent's
+/// agent takes ([`Subagents::deliver_done`]); an agent message is delivered
+/// to its receiver ([`Subagents::deliver_inbox`]); a kernel notice the
+/// session took wakes it ([`Subagents::deliver_notice`]). A task's trust is
+/// the request's, and the event it runs for is the cause of what its turn
+/// publishes; an untrusted task's prompt is wrapped as
 /// `<untrusted-event source="<the event's source>">…</untrusted-event>`.
 pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
     pub(crate) queue: TaskQueue<SessionRunner<B>, LogTaskStore>,
@@ -118,9 +158,20 @@ pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
 
 impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
     async fn queue(&self, request: TaskRequest) -> anyhow::Result<()> {
-        if let Some(child) = request.subscription.strip_prefix(SUBSCRIPTION_PREFIX) {
-            self.subagents.deliver_done(child, &request.event).await;
-            return Ok(());
+        let kind = RouteKind::of(&request.subscription);
+        match kind {
+            RouteKind::SubagentDone { child } => {
+                self.subagents.deliver_done(child, &request.event).await;
+                return Ok(());
+            }
+            RouteKind::Inbox => {
+                self.subagents.deliver_inbox(&request.event).await;
+                return Ok(());
+            }
+            RouteKind::Notice => {
+                return self.subagents.deliver_notice(&request.event).await;
+            }
+            RouteKind::Event { .. } | RouteKind::Task => {}
         }
         let event = &request.event.event;
         let session = match request.target {
@@ -143,10 +194,7 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                 id
             }
         };
-        let (prompt, priority, images) = if let Some(subscription) = request
-            .subscription
-            .strip_prefix(crate::events::SUBSCRIPTION_PREFIX)
-        {
+        let (prompt, priority, images) = if let RouteKind::Event { subscription } = kind {
             // A kernel event subscription: the message its event delivers, or
             // nothing (the subscriber's own event, or a session this runtime
             // does not run).
@@ -185,7 +233,17 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
             }
         };
         let id = uuid::Uuid::now_v7().to_string();
-        self.sessions.attach_images(&id, images);
+        self.sessions.attach(
+            &id,
+            Queued {
+                images,
+                cause: Cause {
+                    id: request.event.id.clone(),
+                    trust: event.trust,
+                    hops: request.event.hops(),
+                },
+            },
+        );
         self.queue
             .push(Task {
                 id,

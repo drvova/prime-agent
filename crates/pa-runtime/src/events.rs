@@ -9,7 +9,8 @@
 //!
 //! - A publication is a stored event on `source/<name>/published`: the
 //!   payload as the schema checked it, from the source's owner (`source` its
-//!   name, `session` its id), with an owner's trust.
+//!   name, `session` its id), with the publishing task's trust and caused by
+//!   its trigger (an owner's, and caused by nothing, between tasks).
 //! - A subscription is a bus subscription named [`SUBSCRIPTION_PREFIX`] and
 //!   its id, on `source/<name>/#` (or the topic filter it names), its filter
 //!   the `when` (every key's value equal), routed to its session at a
@@ -41,6 +42,7 @@ use serde_json::{json, Value};
 use crate::lock;
 use crate::session::Outbox;
 use crate::subscriptions::Registry;
+use crate::trust::TaskTrust;
 
 /// The file whose database partition keeps the bus's state, in the agent dir.
 const EVENT_BUS_FILE_NAME: &str = "event-bus.json";
@@ -74,6 +76,8 @@ struct Attached {
 /// One session's `event.*` requests, as that session.
 pub(crate) struct SessionEvents {
     pub(crate) events: Arc<BusEvents>,
+    /// The task the session runs: what its publications carry.
+    pub(crate) task: TaskTrust,
     pub(crate) requester: EventRequester,
 }
 
@@ -236,8 +240,8 @@ impl EventBusController for SessionEvents {
                         source: source.owner_name,
                         session: Some(self.requester.session_id.clone()),
                         payload,
-                        trust: Trust::Owner,
-                        cause: None,
+                        trust: self.task.current(),
+                        cause: self.task.cause(),
                         reply: None,
                     })
                     .await?;

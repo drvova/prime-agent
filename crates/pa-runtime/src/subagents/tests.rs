@@ -2,6 +2,7 @@
 //! a spawn opens the child's session, its `done` reaches the parent, a
 //! collect waits for it (and ends with its cell), and a settle waits for it.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,7 +13,17 @@ use pa_core::session_engine::rlm_host::{rlm_depth_limit_error, RlmSpawnRequest, 
 use pa_types::event_log::{AgentDone, AgentInput, EventId, NewEvent, TaskState, Topic, Trust};
 use serde_json::{json, Value};
 
-use super::{Node, SessionSubagents, Subagents};
+use pa_core::session_engine::agent_messaging::{
+    create_agent_session_message_prompt, AgentFamilyRelationship, AgentMessageController,
+    AgentMessageDeliveryStatus, AgentMessageKind, AgentMessagePromptPayload, AgentMessageReceipt,
+    AgentMessageSendInput, DEFAULT_AGENT_MESSAGE_WAKE_BUDGET, DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS,
+};
+use pa_core::session_engine::bash_notices::{KernelNotice, NoticeAdmission, NoticeDelivery};
+use pa_core::session_engine::messages::{
+    create_async_bash_quiet_message, QuietJob, ASYNC_BASH_QUIET_PREVIEW_LABEL,
+};
+
+use super::{kernel_notice_sink, FamilyMessages, Node, SessionSubagents, Subagents};
 use crate::bus::{Heard, Listener};
 use crate::runtime::{Runtime, RuntimeOptions};
 use crate::session::{
@@ -118,7 +129,8 @@ impl SessionBuilder for TreeBuilder {
                 model_info: Some(model.clone()),
                 prewarm_kernel: Some(true),
                 on_background_work_settled: Some(Arc::clone(&seams.bash_wake)),
-                bash_notice_wake: Some(seams.bash_wake),
+                bash_notice_wake: None,
+                kernel_notice_sink: Some(seams.kernel_notices),
                 call_policy: Some(seams.call_policy),
                 queued_goal_context_purge: None,
                 queued_steering_probe: None,
@@ -223,26 +235,42 @@ impl Bed {
 
     /// The parent's stream payloads up to its next `done`, and the `done`.
     async fn until_done(&mut self) -> (Vec<Value>, AgentDone) {
-        let stream = format!("agent/{}/stream", self.parent);
-        let done = format!("agent/{}/done", self.parent);
-        let mut payloads = Vec::new();
-        loop {
-            let heard = tokio::time::timeout(Duration::from_secs(60), self.listener.recv())
-                .await
-                .expect("the parent publishes")
-                .expect("the bus is open");
-            let Heard::Event(event) = heard else {
-                panic!("the listener lagged");
-            };
-            if event.event.topic.as_str() == stream {
-                payloads.push(event.event.payload.clone());
-            } else if event.event.topic.as_str() == done {
-                return (
-                    payloads,
-                    serde_json::from_value(event.event.payload.clone()).unwrap(),
-                );
-            }
-        }
+        until_done_of(&mut self.listener, &self.parent).await
+    }
+
+    /// The node of the session `id`.
+    fn node(&self, id: &str) -> Arc<Node> {
+        self.runtime
+            .subagents()
+            .node(id)
+            .expect("the session is open")
+    }
+
+    /// The parent's children's nodes, by name.
+    async fn kids(&self) -> BTreeMap<String, Arc<Node>> {
+        self.node(&self.parent)
+            .children
+            .lock()
+            .await
+            .iter()
+            .map(|child| {
+                let name = child.node.session_name().expect("a spawned child is named");
+                (name, Arc::clone(&child.node))
+            })
+            .collect()
+    }
+
+    /// `from`'s agent message `text` to the session `to`, and its receipt.
+    async fn send(&self, from: &Arc<Node>, to: &str, text: &str) -> AgentMessageReceipt {
+        FamilyMessages(Arc::clone(from))
+            .send_agent_message(AgentMessageSendInput {
+                target: to.to_string(),
+                message: text.to_string(),
+                receiver_role: None,
+                kind: AgentMessageKind::Direct,
+            })
+            .await
+            .unwrap()
     }
 
     /// Finishes the parent's run, closes the runtime, and reads the parent's
@@ -250,17 +278,59 @@ impl Bed {
     async fn close(self) -> Vec<Value> {
         self.runtime.finish(&self.parent).await.unwrap();
         self.runtime.shutdown().await;
-        let sessions = self.cwd.join("sessions");
-        SessionManager::open(
-            &self.cwd,
-            &sessions,
-            &get_session_file_path(&sessions, &self.parent),
-        )
+        entries(&self.cwd, &self.parent)
+    }
+}
+
+/// The transcript entries of the session `id` working in `cwd`.
+fn entries(cwd: &std::path::Path, id: &str) -> Vec<Value> {
+    let sessions = cwd.join("sessions");
+    SessionManager::open(cwd, &sessions, &get_session_file_path(&sessions, id))
         .get_entries()
         .iter()
         .map(|entry| serde_json::to_value(entry).unwrap())
         .collect()
+}
+
+/// `session`'s stream payloads up to its next `done` that `listener` hears,
+/// and the `done`; other sessions' events are passed over.
+async fn until_done_of(listener: &mut Listener, session: &str) -> (Vec<Value>, AgentDone) {
+    let stream = format!("agent/{session}/stream");
+    let done = format!("agent/{session}/done");
+    let mut payloads = Vec::new();
+    loop {
+        let event = heard(listener).await;
+        if event.event.topic.as_str() == stream {
+            payloads.push(event.event.payload.clone());
+        } else if event.event.topic.as_str() == done {
+            return (
+                payloads,
+                serde_json::from_value(event.event.payload.clone()).unwrap(),
+            );
+        }
     }
+}
+
+/// The payload of the next event on `topic` that `listener` hears.
+async fn payload_on(listener: &mut Listener, topic: &str) -> Value {
+    loop {
+        let event = heard(listener).await;
+        if event.event.topic.as_str() == topic {
+            return event.event.payload.clone();
+        }
+    }
+}
+
+/// The next event `listener` hears.
+async fn heard(listener: &mut Listener) -> Arc<pa_types::event_log::Event> {
+    let heard = tokio::time::timeout(Duration::from_secs(60), listener.recv())
+        .await
+        .expect("the runtime publishes")
+        .expect("the bus is open");
+    let Heard::Event(event) = heard else {
+        panic!("the listener lagged");
+    };
+    event
 }
 
 fn eval_cell(code: &str) -> Value {
@@ -475,4 +545,221 @@ async fn a_childs_late_receipt_holds_and_wakes_its_ancestors() {
             Some("late receipt arrived without a live session engine".to_string())
         )
     );
+}
+
+/// An agent message to an idle sibling wakes it: it is delivered, and the
+/// sibling's next task runs over today's `agent_message` row.
+#[tokio::test]
+async fn an_inbox_message_wakes_an_idle_sibling_with_todays_row() {
+    let bed = bed(json!({
+        "responses": [
+            eval_cell("(rlm-spawn \"go\" #:name \"a\") (rlm-spawn \"go\" #:name \"b\")"),
+            { "text": "WAITING" },
+            { "text": "PARENT" },
+            { "text": "PARENT" },
+        ],
+        "children": {
+            "a": [{ "text": "a done" }],
+            "b": [{ "text": "b done" }, { "text": "b heard a" }],
+        },
+    }))
+    .await;
+    let input = bed.input("delegate").await;
+    bed.runtime
+        .settle(&bed.parent, SettleAfter::Task(input))
+        .await
+        .unwrap();
+    let kids = bed.kids().await;
+    let (a, b) = (&kids["a"], &kids["b"]);
+    let mut listener = bed.runtime.listen();
+    let receipt = bed.send(a, &b.session_id, "ping from a").await;
+    let (_, done) = until_done_of(&mut listener, &b.session_id).await;
+    let rows: Vec<Value> = entries(&bed.cwd, &b.session_id)
+        .into_iter()
+        .filter(|entry| entry["customType"] == "agent_message")
+        .map(|entry| entry["content"].clone())
+        .collect();
+    assert_eq!(
+        (receipt.delivery_status, done.outcome, rows),
+        (
+            AgentMessageDeliveryStatus::Delivered,
+            TaskState::Done,
+            vec![
+                json!("[task from parent]\n\ngo"),
+                json!(create_agent_session_message_prompt(
+                    &AgentMessagePromptPayload {
+                        message: "ping from a".to_string(),
+                        sender_name: "a".to_string(),
+                        from_relationship: Some(AgentFamilyRelationship::Sibling),
+                    }
+                )),
+            ]
+        )
+    );
+    bed.close().await;
+}
+
+/// One sender wakes an idle receiver at most the budget's times in the
+/// window: the next message is refused with `wake_refused` and when to
+/// retry, and is not delivered.
+#[tokio::test]
+async fn the_wake_past_the_budget_of_an_idle_receiver_is_refused() {
+    let mut kid = vec![json!({ "text": "kid done" })];
+    kid.extend(std::iter::repeat_n(
+        json!({ "text": "heard" }),
+        DEFAULT_AGENT_MESSAGE_WAKE_BUDGET + 1,
+    ));
+    let bed = bed(json!({
+        "responses": [spawn_kid("start"), { "text": "WAITING" }, { "text": "PARENT" }],
+        "children": { "kid": kid },
+    }))
+    .await;
+    let input = bed.input("delegate").await;
+    bed.runtime
+        .settle(&bed.parent, SettleAfter::Task(input))
+        .await
+        .unwrap();
+    let parent = bed.node(&bed.parent);
+    let kid = Arc::clone(&bed.kids().await["kid"]);
+    let started = std::time::Instant::now();
+    // Each message finds the child settled: it wakes it, and the child's
+    // task over it ends before the next is sent.
+    let mut listener = bed.runtime.listen();
+    for round in 0..DEFAULT_AGENT_MESSAGE_WAKE_BUDGET {
+        let receipt = bed
+            .send(&parent, &kid.session_id, &format!("ping {round}"))
+            .await;
+        let (_, done) = until_done_of(&mut listener, &kid.session_id).await;
+        assert_eq!(
+            (receipt.delivery_status, done.outcome),
+            (AgentMessageDeliveryStatus::Delivered, TaskState::Done)
+        );
+    }
+    let refused = bed.send(&parent, &kid.session_id, "one more").await;
+    let window = DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS;
+    // Whole milliseconds since the first wake: at most the window, and at
+    // least what is left of it after everything since the loop began.
+    let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap() + 1;
+    let in_window = matches!(
+        refused.delivery_status,
+        AgentMessageDeliveryStatus::WakeRefused { retry_after_ms }
+            if retry_after_ms <= window && retry_after_ms + elapsed >= window
+    );
+    assert_eq!(
+        (
+            in_window,
+            refused.delivered_at,
+            refused.queued_at,
+            kid.wakes.spent(&bed.parent)
+        ),
+        (true, None, None, DEFAULT_AGENT_MESSAGE_WAKE_BUDGET)
+    );
+    bed.close().await;
+}
+
+/// A message to a receiver in a turn queues behind it and spends no wake.
+#[tokio::test]
+async fn a_busy_receiver_queues_a_message_without_spending_a_wake() {
+    let mut bed = bed(json!({
+        "responses": [spawn_kid(HOLD_TASK), { "text": "WAITING" }, { "text": "PARENT DONE" }],
+        "children": { "kid": [{ "text": "kid finished" }, { "text": "kid heard" }] },
+    }))
+    .await;
+    bed.input("delegate").await;
+    bed.until_done().await;
+    // The child's model call waits: its turn is streaming.
+    bed.hold.entered.notified().await;
+    let parent = bed.node(&bed.parent);
+    let kid = Arc::clone(&bed.kids().await["kid"]);
+    let receipt = bed.send(&parent, &kid.session_id, "ping").await;
+    assert_eq!(
+        (receipt.delivery_status, kid.wakes.spent(&bed.parent)),
+        (AgentMessageDeliveryStatus::Queued, 0)
+    );
+    bed.hold.release.add_permits(8);
+    bed.close().await;
+}
+
+/// A background command's end is published on the session's
+/// `bash/done` topic with its row steered, and the settle's drive runs
+/// that row as a follow-up turn.
+#[tokio::test]
+async fn a_background_commands_end_runs_a_follow_up_turn_through_its_topic() {
+    let mut bed = bed(json!({
+        "responses": [
+            eval_cell("(hash-ref (bash \"sleep 1; echo hi\" (hash 'background #t)) 'running)"),
+            { "text": "STARTED" },
+            { "text": "SAW IT" },
+        ],
+        "children": {},
+    }))
+    .await;
+    let input = bed.input("start it").await;
+    let settled = bed
+        .runtime
+        .settle(&bed.parent, SettleAfter::Task(input))
+        .await
+        .unwrap()
+        .expect("the run settled");
+    let topic = format!("session/{}/bash/done", bed.parent);
+    let notice = payload_on(&mut bed.listener, &topic).await;
+    assert_eq!(
+        (
+            notice["taken"].clone(),
+            notice["row"]["customType"].clone(),
+            settled
+                .terminal
+                .primary
+                .and_then(|primary| primary.stdout_text())
+        ),
+        (
+            json!("steered"),
+            json!("async_bash_completion"),
+            Some("SAW IT".to_string())
+        )
+    );
+    bed.close().await;
+}
+
+/// A wake-idle notice (`[bash-quiet]`) that reaches a session in a turn is
+/// dropped: nothing is steered, and its topic says so.
+#[tokio::test]
+async fn a_wake_idle_notice_to_a_session_in_a_turn_is_dropped() {
+    let mut bed = bed(json!({
+        "responses": [spawn_kid(HOLD_TASK), { "text": "WAITING" }],
+        "children": { "kid": [{ "text": "kid finished" }] },
+    }))
+    .await;
+    bed.input("delegate").await;
+    bed.until_done().await;
+    bed.hold.entered.notified().await;
+    let kid = Arc::clone(&bed.kids().await["kid"]);
+    let row = create_async_bash_quiet_message(
+        &[QuietJob {
+            job: "job-1".to_string(),
+            pid: 1,
+            command: "sleep 600".to_string(),
+            elapsed_ms: 180_000,
+            quiet_ms: 180_000,
+            output: String::new(),
+            output_truncated: false,
+        }],
+        0,
+    );
+    let admission = kernel_notice_sink(&kid)(KernelNotice {
+        row,
+        preview_label: ASYNC_BASH_QUIET_PREVIEW_LABEL,
+        delivery: NoticeDelivery::WakeIdle,
+    });
+    let topic = format!("session/{}/bash/quiet", kid.session_id);
+    let notice = payload_on(&mut bed.listener, &topic).await;
+    let queued = kid
+        .engine()
+        .is_some_and(|engine| engine.session.agent().has_queued_messages());
+    assert_eq!(
+        (admission, queued, notice["taken"].clone()),
+        (NoticeAdmission::DroppedBusy, false, json!("dropped_busy"))
+    );
+    bed.hold.release.add_permits(8);
+    bed.close().await;
 }

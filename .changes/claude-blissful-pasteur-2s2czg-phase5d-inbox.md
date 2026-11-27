@@ -1,0 +1,1 @@
+- Print and json runs now hold agent messages between subagents to the daemon's wake budget (a sender can wake an idle subagent at most 20 times in 10 minutes, and at most 20 messages wait for one subagent), and a chain of event subscriptions that keep triggering each other now stops after 8 steps.

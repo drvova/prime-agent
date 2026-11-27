@@ -483,10 +483,11 @@ pub(crate) enum ChildLane {
 
 /// The per-embedding fields both headless builders (the real provider
 /// and the faux script) share: the subagent host and the runtime's host
-/// requests with the RLM depth, the background-bash wake both engine seams
-/// fire (the completion row's admission wake and the kernel's
-/// background-settle callback), the late agent-message receipt sink print
-/// sessions record through, and the trust gate.
+/// requests with the RLM depth, the background-bash wake (the kernel's
+/// background-settle callback, and the RPC mode's completion row's
+/// admission wake), a print session's kernel-notice admission, the late
+/// agent-message receipt sink print sessions record through, and the trust
+/// gate.
 pub(crate) struct HeadlessEmbeddingFields {
     pub(crate) rlm_subagent_host:
         Option<Arc<dyn pa_core::session_engine::rlm_host::RlmSubagentHost>>,
@@ -497,6 +498,10 @@ pub(crate) struct HeadlessEmbeddingFields {
     /// The RPC mode's wake handle, carried onto the engine handle so the
     /// queue-pump listener parks on it; `None` outside the RPC embedding.
     pub(crate) rpc_bash_wake: Option<Arc<Notify>>,
+    /// A print session's kernel-notice admission, the runtime's: it wins
+    /// over the in-process sink over `bash_wake`; `None` for the RPC
+    /// embedding.
+    pub(crate) kernel_notice_sink: Option<pa_core::session_engine::bash_notices::KernelNoticeSink>,
     /// The late fire-and-forget `agent_message.send` receipt sink
     /// (#10-print); `None` for the RPC embedding.
     pub(crate) on_late_sent_agent_message: Option<pa_core::LateSentAgentMessageHandler>,
@@ -537,6 +542,7 @@ pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> Headle
         ),
         bash_wake,
         rpc_bash_wake,
+        kernel_notice_sink: seams.map(|seams| Arc::clone(&seams.kernel_notices)),
         on_late_sent_agent_message: seams
             .map(|seams| Arc::clone(&seams.on_late_sent_agent_message)),
         call_policy: seams.map(|seams| Arc::clone(&seams.call_policy)),
@@ -762,6 +768,7 @@ pub(crate) async fn build_headless_engine_with(
         factory_child,
         bash_wake,
         rpc_bash_wake,
+        kernel_notice_sink,
         on_late_sent_agent_message,
         call_policy,
     } = headless_embedding_fields(embedding);
@@ -844,6 +851,7 @@ pub(crate) async fn build_headless_engine_with(
             // admission fires it, and the kernel's background settle does
             // too, so the embedding's parked drive or pump re-checks.
             bash_notice_wake: Some(Arc::clone(&bash_wake)),
+            kernel_notice_sink,
             call_policy,
             on_background_work_settled: Some(bash_wake),
             queued_goal_context_purge: None,

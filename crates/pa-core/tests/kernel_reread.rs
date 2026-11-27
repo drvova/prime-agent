@@ -111,6 +111,7 @@ async fn a_reread_of_an_unchanged_file_is_one_line_in_the_transcript() {
         prewarm_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
+        kernel_notice_sink: None,
         call_policy: None,
         queued_goal_context_purge: None,
         queued_steering_probe: None,

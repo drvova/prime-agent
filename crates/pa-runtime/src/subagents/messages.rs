@@ -1,6 +1,7 @@
 //! The family's `agent_message.*`: the parent, the siblings and the children
-//! of one session, each message delivered as today's `agent_message` row,
-//! and the late receipts of fire-and-forget sends.
+//! of one session, each message published on its receiver's inbox
+//! ([`super::inbox`]) as today's `agent_message` row, and the late receipts
+//! of fire-and-forget sends.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -13,7 +14,10 @@ use pa_core::session_engine::agent_messaging::{
     AgentMessageReceipt, AgentMessageSendInput, AgentSessionMessageRowPayload,
 };
 
-use super::{deliver_row, lock, now_ms, retask, Node};
+use pa_types::event_log::{NewEvent, Topic, MAX_HOPS};
+
+use super::inbox::InboxMessage;
+use super::{lock, now_ms, Node};
 
 /// The family roster and delivery over one node's place in the tree.
 pub(crate) struct FamilyMessages(pub(crate) Arc<Node>);
@@ -137,36 +141,53 @@ impl AgentMessageController for FamilyMessages {
             target: Some(&target_node.endpoint()),
             timestamp: now_ms(),
         });
-        let engine = target_node
-            .engine()
-            .ok_or_else(|| anyhow::anyhow!("the target session is not running"))?;
-        // One delivery path: the steer lane; a streaming target takes the
-        // row at its next turn boundary, its drive runs it when idle, and a
-        // settled child starts its next task over it.
-        let streaming = engine.session.agent().state().await.is_streaming;
-        deliver_row(&target_node, row)?;
-        if let Some(parent) = target_node.parent_node() {
-            for child in parent.children.lock().await.iter() {
-                if Arc::ptr_eq(&child.node, &target_node) {
-                    let mut state = child.state.lock().await;
-                    if state.settled && !target_node.is_disposed() {
-                        retask(child, &mut state, node.trust.current());
-                    }
+        // One delivery path: the receiver's inbox, whose subscription
+        // steers the row (a streaming receiver takes it at its next turn
+        // boundary, its drive runs it when idle, and a settled child starts
+        // its next task over it) under the wake budget. Its outcome is here
+        // once the publish returns.
+        let tree = node
+            .tree
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("the runtime is not running"))?;
+        let (answer, mut answered) = tokio::sync::oneshot::channel();
+        lock(&tree.answers).insert(id.clone(), answer);
+        let published = tree
+            .outbox
+            .publish(NewEvent {
+                topic: Topic::new(format!("agent/{}/inbox", target_node.session_id))?,
+                source: node.session_id.clone(),
+                session: Some(node.session_id.clone()),
+                payload: InboxMessage {
+                    id: id.clone(),
+                    from: node.session_id.clone(),
+                    row,
                 }
+                .payload(),
+                trust: node.trust.current(),
+                cause: node.trust.cause(),
+                reply: None,
+            })
+            .await;
+        lock(&tree.answers).remove(&id);
+        let published = published?;
+        let Ok(status) = answered.try_recv() else {
+            let dropped = published
+                .caused
+                .iter()
+                .any(|event| event.event.topic.as_str() == "system/loop_dropped");
+            if dropped {
+                anyhow::bail!(
+                    "Agent message not delivered: it ends a chain of {MAX_HOPS} events that caused each other"
+                );
             }
-        }
-        let (delivered_at, queued_at, status) = if streaming {
-            (
-                None,
-                Some(format_iso_now()),
-                AgentMessageDeliveryStatus::Queued,
-            )
-        } else {
-            (
-                Some(format_iso_now()),
-                None,
-                AgentMessageDeliveryStatus::Delivered,
-            )
+            anyhow::bail!("Agent message not delivered: no inbox took it");
+        };
+        let status = status?;
+        let (delivered_at, queued_at) = match status {
+            AgentMessageDeliveryStatus::Delivered => (Some(format_iso_now()), None),
+            AgentMessageDeliveryStatus::Queued => (None, Some(format_iso_now())),
+            AgentMessageDeliveryStatus::WakeRefused { .. } => (None, None),
         };
         Ok(AgentMessageReceipt {
             id,
