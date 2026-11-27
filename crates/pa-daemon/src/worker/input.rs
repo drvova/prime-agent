@@ -260,7 +260,7 @@ impl Worker {
     /// Agent-to-agent delivery: render the `[agent-message from ...]` prompt and queue
     /// it on the requested lane with the `agent_message` custom row (the turn renders
     /// the collapsed card). Answers `queued` when running, else `delivered`.
-    pub(crate) fn handle_worker_deliver_message(&self, payload: &Value) -> DaemonResponse {
+    pub(crate) async fn handle_worker_deliver_message(&self, payload: &Value) -> DaemonResponse {
         if let Err(response) = self.require_created("worker_deliver_message") {
             return response;
         }
@@ -462,9 +462,11 @@ impl Worker {
         let _ = self.emit_action_update(&snapshot);
         self.work_notify.notify_one();
         // A parked `agent_message.wait` hears the accepted delivery (identity and preview only:
-        // the body still arrives once, as the queued turn above).
+        // the body still arrives once, as the queued turn above). A wait it ends withdraws its
+        // `waitingOn`, which reaches the supervisor's roster before the receipt does: the sender
+        // may wait on this session next, and its cycle walk reads that roster.
         if let Some(waits) = self.engine.agent_message_waits() {
-            waits.deliver(crate::agent_message_wait::AgentMessageArrival {
+            let withdrawn = waits.deliver(crate::agent_message_wait::AgentMessageArrival {
                 message_id: id.clone(),
                 sender_ids: ["activeSessionId", "sessionId"]
                     .iter()
@@ -478,6 +480,9 @@ impl Worker {
                 ),
                 kind,
             });
+            if withdrawn {
+                self.roster_pushes.flush().await;
+            }
         }
         self.report_agent_traffic(&pa_types::agent_traffic::AgentTrafficEntry {
             root_active_session_id: String::new(),

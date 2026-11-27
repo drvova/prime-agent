@@ -1,8 +1,10 @@
 //! Agent engine tests.
 /// The faux provider registry is process-global; faux-driven tests must
-/// not register concurrently (each registration replaces the queue).
+/// not register concurrently (each registration replaces the queue). An async
+/// lock: async tests hold it across their awaits, sync tests take it with
+/// `blocking_lock` (never from inside a runtime).
 #[cfg(test)]
-pub(crate) static FAUX_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static FAUX_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use super::*;
 use serde_json::Map;

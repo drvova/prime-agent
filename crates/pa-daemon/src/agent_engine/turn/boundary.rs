@@ -221,9 +221,7 @@ mod tests {
 
     #[test]
     fn requested_refinement_commits_its_durable_outcome_row() {
-        let _faux = FAUX_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _faux = FAUX_TEST_LOCK.blocking_lock();
         // The engine battery shape plus the session dir the durable
         // outcome rows land in: the shared helper pins `session_dir` to
         // `None`, so the config is written here.
