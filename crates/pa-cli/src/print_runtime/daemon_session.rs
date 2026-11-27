@@ -153,6 +153,17 @@ pub(crate) fn run_runtime_daemon(
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        // The stop signals are this process's before anything can stop it on purpose: from
+        // the lock on, a SIGTERM or SIGINT is the drain it was sent for, however early, never
+        // the default death its restart owner would start the daemon again after.
+        #[cfg(unix)]
+        let (mut terminate, mut interrupt) = {
+            use tokio::signal::unix::{signal, SignalKind};
+            (
+                signal(SignalKind::terminate()).ok(),
+                signal(SignalKind::interrupt()).ok(),
+            )
+        };
         let lock =
             pa_runtime::daemon::take_lock(&agent_dir, &socket, pa_daemon::keeper::keeper_pid())
                 .await?;
@@ -185,17 +196,16 @@ pub(crate) fn run_runtime_daemon(
             async {
                 #[cfg(unix)]
                 {
-                    let mut terminate =
-                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                            .ok();
-                    tokio::select! {
-                        _ = tokio::signal::ctrl_c() => {}
-                        () = async {
-                            match terminate.as_mut() {
-                                Some(terminate) => { terminate.recv().await; }
-                                None => std::future::pending().await,
+                    let received =
+                        async |stream: Option<&mut tokio::signal::unix::Signal>| match stream {
+                            Some(stream) => {
+                                stream.recv().await;
                             }
-                        } => {}
+                            None => std::future::pending().await,
+                        };
+                    tokio::select! {
+                        () = received(interrupt.as_mut()) => {}
+                        () = received(terminate.as_mut()) => {}
                     }
                 }
                 #[cfg(not(unix))]
