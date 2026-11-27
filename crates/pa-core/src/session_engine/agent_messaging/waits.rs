@@ -123,10 +123,15 @@ impl AgentMessageWaits {
     }
 
     /// Report one accepted delivery: the oldest matching waiter takes it, else a direct message
-    /// joins the backlog. A broadcast is never awaited.
-    pub fn deliver(&self, arrival: AgentMessageArrival) {
+    /// joins the backlog. A broadcast is never awaited. Answers whether the delivery ended a wait
+    /// that named its target: that `waitingOn` is withdrawn here and the change hook hears it, and
+    /// a caller whose roster is a pushed copy (the old daemon's supervisor) publishes it before it
+    /// acknowledges the delivery, so a sender that heard the acknowledgement never walks the stale
+    /// edge into a false cycle.
+    #[must_use = "a withdrawn `waitingOn` must reach the roster before the delivery is acknowledged"]
+    pub fn deliver(&self, arrival: AgentMessageArrival) -> bool {
         if arrival.kind == AgentMessageKind::Broadcast {
-            return;
+            return false;
         }
         let mut state = self.state();
         let mut arrival = arrival;
@@ -143,7 +148,7 @@ impl AgentMessageWaits {
                     if named {
                         self.notify_changed();
                     }
-                    return;
+                    return named;
                 }
                 // The waiter's cell was cancelled before its guard dropped: try the next one.
                 Err(returned) => arrival = returned,
@@ -153,6 +158,7 @@ impl AgentMessageWaits {
             state.backlog.pop_front();
         }
         state.backlog.push_back(arrival);
+        false
     }
 
     /// Start one wait: claim a still-queued backlog arrival from an accepted sender, else park.
@@ -344,7 +350,8 @@ mod tests {
 
     /// A broadcast never ends a wait or joins the backlog; a direct message from another sender
     /// waits in the backlog for its own wait while it is still queued; the awaited sender's direct
-    /// message ends the wait, which withdraws `waitingOn`.
+    /// message ends the wait, which withdraws `waitingOn` (the hook hears it) and tells the
+    /// delivering caller so.
     #[tokio::test]
     async fn only_the_awaited_senders_direct_message_ends_a_wait() {
         let waits = Arc::new(AgentMessageWaits::default());
@@ -358,9 +365,13 @@ mod tests {
         );
         let mut wait = waits.begin(Some(vec!["b".to_string()]), Some("b".to_string()));
         assert_eq!(waits.waiting_on().as_deref(), Some("b"));
-        waits.deliver(arrival("m-all", "b", AgentMessageKind::Broadcast));
-        waits.deliver(arrival("m-other", "c", AgentMessageKind::Direct));
-        waits.deliver(arrival("m-direct", "b", AgentMessageKind::Direct));
+        let withdrawn = [
+            arrival("m-all", "b", AgentMessageKind::Broadcast),
+            arrival("m-other", "c", AgentMessageKind::Direct),
+            arrival("m-direct", "b", AgentMessageKind::Direct),
+        ]
+        .map(|delivered| waits.deliver(delivered));
+        assert_eq!(withdrawn, [false, false, true]);
         let AgentMessageWaitStart::Parked(receiver) = &mut wait.started else {
             panic!("the backlog held nothing from b");
         };

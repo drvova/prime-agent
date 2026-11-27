@@ -335,6 +335,9 @@ fn the_usage_details_keep_the_overview_card_and_esc_returns_to_it() {
                     .to_string()
             })
     };
+    // The provider's quota title; the subscription-auth banner also names
+    // Anthropic and can be drawn above it.
+    let quota_title = "Anthropic \u{b7}";
     let overview = pane.wait("the overview's quota card", |screen| {
         screen.contains("Esc close")
             && row(screen, "5-hour").is_some_and(|row| row.contains('\u{2501}'))
@@ -349,7 +352,7 @@ fn the_usage_details_keep_the_overview_card_and_esc_returns_to_it() {
     assert_eq!(
         (
             row(&details, "5-hour"),
-            row(&details, "Anthropic").map(|title| title.contains("fetched")),
+            row(&details, quota_title).map(|title| title.contains("fetched")),
         ),
         (row(&overview, "5-hour"), Some(true)),
         "the overview:\n{overview}\nthe details:\n{details}"
@@ -360,8 +363,8 @@ fn the_usage_details_keep_the_overview_card_and_esc_returns_to_it() {
         .success());
     let back = pane.wait("the overview again", |screen| screen.contains("Esc close"));
     assert_eq!(
-        (row(&back, "5-hour"), row(&back, "Anthropic")),
-        (row(&overview, "5-hour"), row(&overview, "Anthropic")),
+        (row(&back, "5-hour"), row(&back, quota_title)),
+        (row(&overview, "5-hour"), row(&overview, quota_title)),
         "the overview:\n{overview}\nback:\n{back}"
     );
 }

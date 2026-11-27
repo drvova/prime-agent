@@ -202,6 +202,7 @@ pub(super) fn spawn(
     session: &Arc<Session>,
     command: &str,
     on_finished: Option<FinishHook>,
+    call: Option<&str>,
 ) -> anyhow::Result<Arc<Job>> {
     if !session.cwd.is_dir() {
         bail!(
@@ -269,7 +270,7 @@ pub(super) fn spawn(
     }));
     let job = Arc::new(job);
     job::read_output(&job, output, fence.clone()).context("could not start the output reader")?;
-    let Some(queued) = job::enlist(session, &job, /*may_queue*/ true) else {
+    let Some(queued) = job::enlist(session, &job, /*may_queue*/ true, call) else {
         bail!("the kernel was shut down");
     };
     // The hold exists before the task is first polled: a runtime shut down
