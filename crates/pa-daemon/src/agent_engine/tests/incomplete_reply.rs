@@ -62,9 +62,7 @@ fn run_request(
     message: &str,
     custom_message: Option<serde_json::Value>,
 ) -> Vec<EngineEvent> {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let engine = AgentSessionEngine::new(AgentEngineConfig {
         cwd: dir.path().to_path_buf(),

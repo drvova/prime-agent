@@ -180,7 +180,8 @@ fn refuse(
         uuid::Uuid::new_v4().simple().to_string(),
         /*lasting*/ None,
     ));
-    if job::enlist(session, &job, /*may_queue*/ false).is_none() {
+    // Never running, it is no call's to answer for.
+    if job::enlist(session, &job, /*may_queue*/ false, /*call*/ None).is_none() {
         bail!("the kernel was shut down");
     }
     report(session, outcome, route);
@@ -197,8 +198,13 @@ fn refuse(
 /// No working directory, a pipe or a process that could not be started, or
 /// a kernel already killed. Nothing the command would have done has
 /// happened in any of these. A refused or impossible consent is the job's
-/// result, not an error.
-pub(super) fn spawn(session: &Arc<Session>, command: &str) -> anyhow::Result<Arc<Job>> {
+/// result, not an error. `call` is the model's tool call that waits for it,
+/// when one does.
+pub(super) fn spawn(
+    session: &Arc<Session>,
+    command: &str,
+    call: Option<&str>,
+) -> anyhow::Result<Arc<Job>> {
     if !session.cwd.is_dir() {
         bail!(
             "the working directory does not exist: {}",
@@ -219,12 +225,12 @@ pub(super) fn spawn(session: &Arc<Session>, command: &str) -> anyhow::Result<Arc
             ElevationOutcome::Approved,
             ConsentRoute::AlreadyElevated,
         );
-        return job::spawn(session, command, /*on_finished*/ None);
+        return job::spawn(session, command, /*on_finished*/ None, call);
     }
     #[cfg(windows)]
-    return windows::spawn(session, command);
+    return windows::spawn(session, command, call);
     #[cfg(unix)]
-    return unix::spawn(session, command);
+    return unix::spawn(session, command, call);
     #[cfg(not(any(unix, windows)))]
     return refuse(
         session,
@@ -453,7 +459,11 @@ exit "$status"
     }
 
     /// See [`super::spawn`].
-    pub(super) fn spawn(session: &Arc<Session>, command: &str) -> anyhow::Result<Arc<Job>> {
+    pub(super) fn spawn(
+        session: &Arc<Session>,
+        command: &str,
+        call: Option<&str>,
+    ) -> anyhow::Result<Arc<Job>> {
         let (program, way) = match way(session) {
             Ok(found) => found,
             Err(why) => {
@@ -580,7 +590,7 @@ exit "$status"
                 anyhow!("could not start the output reader: {error}"),
             ));
         }
-        if job::enlist(session, &job, /*may_queue*/ false).is_none() {
+        if job::enlist(session, &job, /*may_queue*/ false, call).is_none() {
             return Err(abandon(&mut child, anyhow!("the kernel was shut down")));
         }
         session.runtime.spawn(supervise(
