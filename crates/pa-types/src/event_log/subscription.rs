@@ -100,6 +100,9 @@ pub enum Priority {
 pub enum AgentTarget {
     /// An existing session.
     Session { session: String },
+    /// The session the matching event was published in (an `agent/<id>/input`
+    /// event's `<id>`): one subscription serves every session's input.
+    Origin,
     /// A new session, started for the event.
     Spawn {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,7 +131,9 @@ pub enum Route {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
     },
-    /// Queue a turn that starts from `prompt` and the event.
+    /// Queue a turn that starts from `prompt` and the event. An empty
+    /// `prompt` is the event's own input: its payload is an
+    /// [`AgentInput`](super::AgentInput) and the turn starts from its text.
     Agent {
         target: AgentTarget,
         prompt: String,

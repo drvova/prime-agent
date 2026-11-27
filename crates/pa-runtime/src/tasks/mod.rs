@@ -126,21 +126,18 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
         }
     }
 
-    /// The queue as `store` left it: its queued tasks queued again in their
-    /// order, and each task that was running Failed with
-    /// [`INTERRUPTED_BY_RESTART`], since it may have done part of its work.
+    /// Restores `session`'s lane as the store left it: its queued tasks
+    /// queued again in their order, and each task that was running Failed
+    /// with [`INTERRUPTED_BY_RESTART`], since it may have done part of its
+    /// work. Called once, as the session opens, by whoever holds the
+    /// session: no other session's tasks are read or touched, since another
+    /// process on the same store may be running them.
     ///
     /// # Errors
     ///
     /// The store failed to load the tasks or to save an interrupted one.
-    pub async fn restore(
-        runner: R,
-        store: S,
-        max_concurrent_runs: NonZeroUsize,
-    ) -> anyhow::Result<Self> {
-        let unfinished = store.unfinished().await?;
-        let queue = TaskQueue::new(runner, store, max_concurrent_runs);
-        for task in unfinished {
+    pub async fn restore(&self, session: &str) -> anyhow::Result<()> {
+        for task in self.inner.store.unfinished(session).await? {
             match task.state {
                 TaskState::Running => {
                     let failed = Task {
@@ -148,13 +145,13 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                         error: Some(INTERRUPTED_BY_RESTART.to_string()),
                         ..task
                     };
-                    queue.inner.store.save(failed).await?;
+                    self.inner.store.save(failed).await?;
                 }
-                TaskState::Queued => queue.enqueue(task),
+                TaskState::Queued => self.enqueue(task),
                 TaskState::Done | TaskState::Failed | TaskState::Cancelled => {}
             }
         }
-        Ok(queue)
+        Ok(())
     }
 
     /// Queues `task` in its session's lane, whatever its state says (it
@@ -225,6 +222,19 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
         let mut busy = self.inner.busy.subscribe();
         // The sender lives in `self`, so the wait cannot see it closed.
         let _ = busy.wait_for(|busy| *busy == 0).await;
+    }
+
+    /// Waits until no task of `session` is queued or running.
+    pub async fn session_idle(&self, session: &str) {
+        // Subscribed before the lanes are read: every change to a lane after
+        // the read republishes the busy count and wakes the wait. The lanes
+        // are not read inside the watch's lock, which their writers take
+        // while holding the lanes.
+        let mut busy = self.inner.busy.subscribe();
+        while lock(&self.inner.lanes).by_session.contains_key(session) {
+            // The sender lives in `self`, so the wait cannot see it closed.
+            let _ = busy.changed().await;
+        }
     }
 
     fn enqueue(&self, task: Task) {

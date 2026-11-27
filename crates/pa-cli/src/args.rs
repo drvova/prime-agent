@@ -128,6 +128,30 @@ impl AutonomousConfig {
     }
 }
 
+/// The autonomous runtime config from the typed CLI flags: any
+/// autonomous flag enables the run.
+pub fn autonomous_runtime_config(
+    config: &AutonomousConfig,
+) -> pa_core::autonomous::AgentAutonomousConfig {
+    pa_core::autonomous::AgentAutonomousConfig {
+        enabled: Some(true),
+        max_continuations: config.max_continuations.map(u64::from),
+        max_turns: config.max_turns.map(u64::from),
+        max_tokens: config.max_tokens,
+        timeout_ms: config.timeout_ms,
+        continuation_prompt: None,
+        gates: config
+            .gates
+            .as_ref()
+            .map(|gates| pa_core::autonomous::AgentAutonomousGateConfig {
+                commands: Some(gates.commands.clone()),
+                max_retries: gates.max_retries.map(u64::from),
+                timeout_ms: gates.timeout_ms,
+            }),
+        subagent_keep_alive_ms: None,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 #[expect(
     clippy::struct_excessive_bools,

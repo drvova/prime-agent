@@ -210,7 +210,7 @@ class TheMappingTestCase(unittest.TestCase):
         rc, out, outputs = run_mapper(["crates/pa-telemetry/src/lib.rs"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(outputs["crates"],
-                         "pa-cli,pa-core,pa-daemon,pa-perf,pa-telemetry,pa-tui")
+                         "pa-cli,pa-core,pa-daemon,pa-perf,pa-runtime,pa-telemetry,pa-tui")
 
     def test_an_unknown_crate_fails_safe(self):
         rc, out, outputs = run_mapper(["crates/pa-future/src/lib.rs"])

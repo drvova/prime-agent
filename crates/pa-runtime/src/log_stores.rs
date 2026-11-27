@@ -91,8 +91,9 @@ impl TaskStore for LogTaskStore {
         self.log.save_task(task).wait()
     }
 
-    fn unfinished(&self) -> impl Future<Output = anyhow::Result<Vec<Task>>> + Send {
-        read_blocking(&self.log, Log::unfinished_tasks)
+    fn unfinished(&self, session: &str) -> impl Future<Output = anyhow::Result<Vec<Task>>> + Send {
+        let session = session.to_string();
+        read_blocking(&self.log, move |log| log.unfinished_tasks(&session))
     }
 }
 

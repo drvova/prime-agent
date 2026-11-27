@@ -12,30 +12,21 @@ No business logic; it composes pa-daemon, pa-core, pa-tui, pa-ai via their publi
 The `prime-agent` executable surface (flags, subcommands, exit codes). Internal lib types `pub(crate)`, plus the daemon wiring (`interactive_mode::{ensure_daemon_running, ensure_daemon_running_with, resolve_socket_path}`) exported for the integration verifier.
 
 ## Depends on
-pa-types, pa-ai, pa-agent, pa-core, pa-daemon, pa-tui (one-way, composition root).
+pa-types, pa-ai, pa-agent, pa-core, pa-daemon, pa-runtime, pa-tui (one-way, composition root).
 
 ## Print runtime
 The headless print/json modes (`print_runtime.rs`) drive the in-process
-session engine directly: prompt admission, the turn-boundary compaction
-checks (`print_boundary.rs` — the overflow compact-and-retry arm, the
-model-requested compaction/refinement consumption, and the threshold arm,
-the TS `_checkCompaction` flow), the json event stream, and the headless
-terminal selection (stdout/stderr/exit code) mirroring modes/print-mode.ts.
-Autonomous continuation (print_autonomous.rs, the #254 follow-up): the
-composed in-run continuation hook (the pa-agent loop's
-`getContinuationMessages` seam) runs the natural continuations inside
-the one agent run (the TS shape: `turn_end` -> `turn_start` with the
-continuation user row between them, no run boundary); the goal arm runs
-first (exclusive priority), the boundary gates (queued input, a
-requested compaction, the threshold arm) are shared, and a threshold
-compaction holds its minted continuation for the boundary's queued
-`followUp` admission (`TurnBoundary::admit_continuation`). The stop
-surfaces only through the headless exit contract (TS: no row, no frame).
-Goal continuation (print_goal.rs, the #252 residue): the `--goal` seed rides
-the first turn; the in-loop continuation hook runs an active goal's natural
-continuations inside the one agent run; the budget-limit steer and the
-threshold-held continuation drain as this invocation's follow-up runs
-with the TS session-action phase frames.
+session engine directly through pa-runtime's turn driver: prompt admission,
+the turn-boundary compaction checks (`pa_runtime::TurnBoundary` — the
+overflow compact-and-retry arm, the model-requested compaction/refinement
+consumption, and the threshold arm, the TS `_checkCompaction` flow), the
+json event stream, and the headless terminal selection (stdout/stderr/exit
+code) mirroring modes/print-mode.ts. The goal and autonomous continuations
+(`PrintGoalSurface`, `HeadlessAutonomous`, `wire_continuation_hook`) and
+the session slash commands (`execute_prompt_session_command`) are
+pa-runtime's too; the print run supplies the inline-subagent probe they
+defer behind, prints their events, and owns the prompt loop, the
+quiescence drive and the exit contract.
 Inline subagents (print_rlm.rs): the daemonless print session hosts
 `rlm.spawn` children in-process over a tree of session nodes — the
 `RlmSubagentHost` impl (depth gate, name uniqueness, model resolution,
@@ -46,20 +37,6 @@ descendant settles and its replies and notices drain (the #2270 fix),
 the goal/autonomous deferral behind unsettled work, and the exit
 disposal (kernels released, drivers joined; no child outlives the
 process).
-Session slash commands (`print_session_command.rs`, the #253 residue): print
-prompts that are `/compact`, `/refine`, `/goal`, `/autonomous`, or `/better` execute
-through the pa-core session-command executor (the daemon worker's seam — no
-parallel implementation), streaming the TS shapes: the
-`session_action_update` phase frames around the durable echo row, the
-per-command events (`compaction_start`/`compaction_end` for `/compact`, the
-refinement rows plus `refine_complete`/`refine_failed` for `/refine`, the
-unconditional `goal_update` publish for `/goal`), the result rows, and the
-settled queue frame. A `/goal` start (or resume) drains its scheduled
-continuation inside the same prompt wait; a failed command rejects the
-prompt wait (the raw error to stderr, exit 1, no later prompts). Client
-commands (`/model`, `/tree`, ...) stay model prompts — TS
-`_normalizeSubmission` classifies only the four session commands before
-admission, so they never cross the turn boundary.
 The json stream emits the TS session-event surface byte-for-shape: the
 session header row (version 3), the `message_update` streaming deltas with
 the slim `assistantMessageEvent` (the daemon wire drops the nested

@@ -94,21 +94,22 @@ impl Log {
         })
     }
 
-    /// Every queued and running task, in the order their ids were first
-    /// saved.
+    /// Every queued and running task of `session`, in the order their ids
+    /// were first saved. Another session's tasks are another runtime's to
+    /// restore: one process may run a session while another opens its own.
     ///
     /// # Errors
     ///
     /// The database could not be read, or a stored row does not decode.
-    pub fn unfinished_tasks(&self) -> Result<Vec<Task>> {
+    pub fn unfinished_tasks(&self, session: &str) -> Result<Vec<Task>> {
         let unfinished = [word(TaskState::Queued)?, word(TaskState::Running)?];
         self.read(|connection| {
             connection
                 .prepare_cached(
                     "SELECT id, session, priority, state, trigger, prompt, trust, attempts, error \
-                     FROM tasks WHERE state IN (?1, ?2) ORDER BY seq",
+                     FROM tasks WHERE state IN (?1, ?2) AND session = ?3 ORDER BY seq",
                 )?
-                .query_map(params![unfinished[0], unfinished[1]], decode)?
+                .query_map(params![unfinished[0], unfinished[1], session], decode)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
                 .into_iter()
                 .collect()

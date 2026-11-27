@@ -59,7 +59,7 @@ impl TurnBoundary {
         let Some(row) = &run.kernel_state else {
             return;
         };
-        let value = crate::headless_autonomous::custom_row_wire_value(row);
+        let value = crate::turn::autonomous::custom_row_wire_value(row);
         for event_type in ["message_start", "message_end"] {
             (self.sink)(&json!({ "type": event_type, "message": value }));
         }
@@ -85,7 +85,7 @@ impl TurnBoundary {
         match row {
             Ok(row) => {
                 if self.json_mode {
-                    let value = crate::headless_autonomous::custom_row_wire_value(&row);
+                    let value = crate::turn::autonomous::custom_row_wire_value(&row);
                     for event_type in ["message_start", "message_end"] {
                         (self.sink)(&json!({ "type": event_type, "message": value }));
                     }

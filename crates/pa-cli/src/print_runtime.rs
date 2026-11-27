@@ -10,15 +10,15 @@ use pa_core::session::discovery::{
 use pa_types::ai::Model;
 use tokio::sync::Notify;
 
-use crate::headless_autonomous::{autonomous_runtime_config, HeadlessAutonomous};
+use crate::args::autonomous_runtime_config;
 use crate::mode::{AppMode, MissingSubsystem, RunOptions};
 use pa_agent::stream::{LlmContext, StreamFn, StreamRequestOptions};
-use pa_core::session_engine::auto_retry::AutoRetryEvent;
 use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
 use pa_core::session_engine::provider_adapter::{
     json_round_trip, map_thinking_level, stream_once, switchable_stream_fn, ProviderTarget,
 };
 use pa_core::session_engine::session_events::agent_event_json;
+use pa_runtime::HeadlessAutonomous;
 
 pub struct PrintRuntime;
 
@@ -1531,7 +1531,7 @@ pub(crate) async fn run_prompts_and_emit(
 ) -> Result<i32, String> {
     let global_harness_dir =
         pa_core::refinement::get_global_harness_state_dir(&options.config.agent_dir);
-    let mut boundary = crate::print_boundary::TurnBoundary::new(options.app_mode == AppMode::Json);
+    let mut boundary = pa_runtime::TurnBoundary::new(options.app_mode == AppMode::Json);
     let exit = run_prompts(
         engine,
         model,
@@ -1565,7 +1565,7 @@ async fn run_prompts(
     api_key: Option<String>,
     options: &RunOptions,
     root_node: &std::sync::Arc<crate::print_rlm::InlineSessionNode>,
-    boundary: &mut crate::print_boundary::TurnBoundary,
+    boundary: &mut pa_runtime::TurnBoundary,
     global_harness_dir: std::path::PathBuf,
 ) -> Result<i32, String> {
     let json_mode = options.app_mode == AppMode::Json;
@@ -1591,27 +1591,38 @@ async fn run_prompts(
     }
     // The goal continuation surface: wired in every output mode — the loop runs in text mode too,
     // only silently.
-    let goal = std::sync::Arc::new(crate::print_goal::PrintGoalSurface::new(json_mode));
+    let goal = std::sync::Arc::new(pa_runtime::PrintGoalSurface::new(json_mode));
     goal.seed_publish_baseline(engine).await;
     let goal_updated_at_start = engine.goal_state().await.updated_at;
     let goal_accounting = goal.wire_accounting(engine, engine.session.agent()).await;
     // The autonomous run: the CLI flags enable it, a no-flag session starts disabled and
     // `/autonomous` rewrites it live.
     let autonomous = std::sync::Arc::new(match options.config.autonomous.as_ref() {
-        Some(config) => HeadlessAutonomous::from_cli(config, &options.config.cwd),
+        Some(config) => {
+            HeadlessAutonomous::with_config(&autonomous_runtime_config(config), &options.config.cwd)
+        }
         None => HeadlessAutonomous::disabled(&options.config.cwd),
     });
     let accounting = autonomous.wire_accounting(engine.session.agent()).await;
     // The composed natural-turn-end hook: the goal arm first (exclusive priority), the
     // autonomous arm on the fall-through; both arms defer while inline-subagent work is
     // unsettled.
-    crate::print_autonomous::wire_continuation_hook(
+    let unsettled_root = std::sync::Arc::downgrade(root_node);
+    pa_runtime::wire_continuation_hook(
         engine,
         engine.session.agent(),
         model,
         &goal,
         &autonomous,
-        Some(root_node),
+        Some(std::sync::Arc::new(move || {
+            let root = unsettled_root.upgrade();
+            Box::pin(async move {
+                match root {
+                    Some(root) => crate::print_rlm::has_unsettled_rlm_work(&root).await,
+                    None => false,
+                }
+            })
+        })),
     );
     // The autonomous runtime state the session-command executor mutates —
     // `/autonomous` rewrites what the hook, accounting, and exit contract read.
@@ -1629,7 +1640,7 @@ async fn run_prompts(
         // Session commands never reach the model loop: the pre-turn boundary stays theirs to skip
         // and the prompt's turn never exists.
         if let Some(command) = engine.session.classify_session_command(prompt) {
-            let execution = crate::print_session_command::execute_prompt_session_command(
+            let execution = pa_runtime::execute_prompt_session_command(
                 engine,
                 &goal,
                 model,
@@ -1690,36 +1701,7 @@ async fn run_prompts(
                 model.context_window,
                 |event| {
                     if json_mode {
-                        let event = match event {
-                            AutoRetryEvent::Start {
-                                attempt,
-                                max_attempts,
-                                delay_ms,
-                                error_message,
-                            } => serde_json::json!({
-                                "type": "auto_retry_start",
-                                "attempt": attempt,
-                                "maxAttempts": max_attempts,
-                                "delayMs": delay_ms,
-                                "errorMessage": error_message,
-                            }),
-                            AutoRetryEvent::End {
-                                success,
-                                attempt,
-                                final_error,
-                            } => {
-                                let mut event = serde_json::json!({
-                                    "type": "auto_retry_end",
-                                    "success": success,
-                                    "attempt": attempt,
-                                });
-                                if let Some(final_error) = final_error {
-                                    event["finalError"] = serde_json::json!(final_error);
-                                }
-                                event
-                            }
-                        };
-                        println!("{event}");
+                        println!("{}", pa_runtime::auto_retry_event_json(event));
                     }
                     std::future::ready(Ok(()))
                 },
@@ -2234,3 +2216,6 @@ mod tests {
 #[cfg(test)]
 #[path = "print_model_tests.rs"]
 mod print_model_tests;
+
+#[cfg(test)]
+mod refine_drain_tests;

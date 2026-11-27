@@ -31,13 +31,11 @@ mod autorefine;
 
 use autorefine::RefineSurface;
 
-/// Where the boundary's json events go: stdout in the product, a captured
-/// buffer in tests.
-type EventSink = std::sync::Arc<dyn Fn(&serde_json::Value) + Send + Sync>;
+use crate::turn::goal::EventSink;
 
 /// The print loop's turn-boundary state: the one-attempt overflow machine, the
 /// compact-trigger auto-refine bookkeeping, and the json/text output mode.
-pub(crate) struct TurnBoundary {
+pub struct TurnBoundary {
     recovery: OverflowRecovery,
     refinement_reports: Vec<tokio::task::JoinHandle<()>>,
     /// Set by a failed `/refine` command's report: the print run exits 1.
@@ -61,7 +59,8 @@ pub(crate) struct TurnBoundary {
 }
 
 impl TurnBoundary {
-    pub(crate) fn new(json_mode: bool) -> Self {
+    #[must_use]
+    pub fn new(json_mode: bool) -> Self {
         Self {
             recovery: OverflowRecovery::Idle,
             refinement_reports: Vec::new(),
@@ -75,10 +74,10 @@ impl TurnBoundary {
         }
     }
 
-    /// A boundary with an explicit event sink (json-mode event-capture
-    /// verifiers; the product path always uses [`TurnBoundary::new`]).
-    #[cfg(test)]
-    pub(crate) fn with_sink(json_mode: bool, sink: EventSink) -> Self {
+    /// A boundary whose json events go to `sink` instead of stdout
+    /// (a runtime session's stream; the event-capture verifiers).
+    #[must_use]
+    pub fn with_sink(json_mode: bool, sink: EventSink) -> Self {
         Self {
             recovery: OverflowRecovery::Idle,
             refinement_reports: Vec::new(),
@@ -97,7 +96,11 @@ impl TurnBoundary {
     /// the settled boundary (the requested/threshold arms only when the
     /// overflow arm stayed silent). A pre-turn compaction never re-issues:
     /// the admitted prompt continues on the compacted context.
-    pub(crate) async fn run_pre_turn(
+    ///
+    /// # Errors
+    ///
+    /// A compaction, refinement or admitted turn failed; the text is its reason.
+    pub async fn run_pre_turn(
         &mut self,
         engine: &SessionEngine,
         model: &Model,
@@ -130,7 +133,11 @@ impl TurnBoundary {
 
     /// The settled-turn boundary: the checkpoint's auto-refine consumption, then the
     /// overflow arm with its retry loop, then the requested and threshold arms.
-    pub(crate) async fn run_at_settled_turn(
+    ///
+    /// # Errors
+    ///
+    /// A compaction, refinement or admitted turn failed; the text is its reason.
+    pub async fn run_at_settled_turn(
         &mut self,
         engine: &SessionEngine,
         model: &Model,

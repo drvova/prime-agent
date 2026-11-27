@@ -13,31 +13,36 @@ use pa_agent::types::AgentMessage;
 use pa_core::session_engine::engine::SessionEngine;
 use pa_types::ai::Model;
 
-use crate::headless_autonomous::HeadlessAutonomous;
-use crate::print_goal::{NaturalContinuation, PrintGoalSurface};
+use crate::turn::autonomous::HeadlessAutonomous;
+use crate::turn::goal::{NaturalContinuation, PrintGoalSurface};
+
+/// Answers whether inline-subagent work under the session is still
+/// unsettled (the print embedding's inline-subagent tree); both
+/// continuation arms defer behind it.
+pub type UnsettledWork = Arc<dyn Fn() -> pa_agent::BoxFut<'static, bool> + Send + Sync>;
 
 /// Install the composed natural-turn-end continuation hook: the goal
 /// arm first, the autonomous arm on the fall-through. Both defer behind
-/// unsettled inline-subagent work; the quiescence drive delivers after
-/// the settle.
-pub(crate) fn wire_continuation_hook(
+/// unsettled inline-subagent work (`unsettled_work`; without it no
+/// descendant work exists); the quiescence drive delivers after the
+/// settle.
+pub fn wire_continuation_hook(
     engine: &Arc<SessionEngine>,
     agent: &Arc<Agent>,
     model: &Model,
     goal: &Arc<PrintGoalSurface>,
     autonomous: &Arc<HeadlessAutonomous>,
-    root_node: Option<&Arc<crate::print_rlm::InlineSessionNode>>,
+    unsettled_work: Option<UnsettledWork>,
 ) {
     let weak_engine = Arc::downgrade(engine);
     let weak_goal = Arc::downgrade(goal);
     let weak_autonomous = Arc::downgrade(autonomous);
-    let weak_root = root_node.map(Arc::downgrade);
     let model = Arc::new(model.clone());
     agent.set_continuation_hook(Some(Arc::new(move |context, _signal| {
         let weak_engine = weak_engine.clone();
         let weak_goal = weak_goal.clone();
         let weak_autonomous = weak_autonomous.clone();
-        let weak_root = weak_root.clone();
+        let unsettled_work = unsettled_work.clone();
         let model = Arc::clone(&model);
         Box::pin(async move {
             let (Some(engine), Some(goal), Some(autonomous)) = (
@@ -49,8 +54,8 @@ pub(crate) fn wire_continuation_hook(
             };
             // Without the inline-subagent runtime no descendant work
             // exists: both arms mint as before.
-            let unsettled_rlm_work = match weak_root.as_ref().and_then(std::sync::Weak::upgrade) {
-                Some(root) => crate::print_rlm::has_unsettled_rlm_work(&root).await,
+            let unsettled_rlm_work = match unsettled_work {
+                Some(unsettled_work) => unsettled_work().await,
                 None => false,
             };
             match goal
