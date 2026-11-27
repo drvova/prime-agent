@@ -559,18 +559,20 @@ fn abort_compaction_mid_threshold_run_records_the_cancelled_outcome() {
     assert!(end_event.get("errorSeverity").is_none(), "{end_event}");
     assert_eq!(end_event["willRetry"], false);
 
-    let session_file = std::fs::read_dir(&session_dir)
+    let session_file = common::transcripts(&session_dir)
+        .list(&session_dir)
         .expect("list session dir")
-        .flatten()
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
-                && std::fs::read_to_string(path)
+                && common::read_transcript(path)
                     .is_ok_and(|content| content.contains("compaction_outcome"))
         })
         .expect("the durable outcome row in the session file");
-    let persisted = std::fs::read_to_string(&session_file).expect("read session file");
+    let persisted = common::read_transcript(&session_file).expect("read session file");
     assert!(
         !persisted.contains("\"type\":\"compaction\"")
             && !persisted.contains("\"type\": \"compaction\""),
@@ -834,16 +836,18 @@ fn wedged_session_abort_acks_immediately_and_declares_terminal() {
     let _revived = spawn_supervisor(&socket, &agent_dir);
     let deadline = Instant::now() + Duration::from_secs(90);
     let durable = loop {
-        let row = std::fs::read_dir(&session_dir)
+        let row = common::transcripts(&session_dir)
+            .list(&session_dir)
             .expect("list session dir")
-            .flatten()
-            .map(|entry| entry.path())
+            .transcripts
+            .into_iter()
+            .map(|transcript| transcript.locator)
             .filter(|path| {
                 path.extension()
                     .is_some_and(|extension| extension == "jsonl")
             })
             .find_map(|path| {
-                let content = std::fs::read_to_string(&path).ok()?;
+                let content = common::read_transcript(&path).ok()?;
                 content
                     .lines()
                     .find(|line| line.contains("\"compaction_outcome\""))

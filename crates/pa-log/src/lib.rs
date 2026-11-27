@@ -13,6 +13,10 @@
 //!   [`Log::append_entry`], [`Log::sessions`] and [`Log::entries`] keep
 //!   session transcripts line for line, so a JSONL session file imported and
 //!   exported again is the same bytes.
+//! - [`Log::put_transcript`], [`Log::append_transcript`],
+//!   [`Log::transcript_bytes`] and their siblings keep transcripts by
+//!   locator, byte for byte, for the transcript store in `pa-core`: a read at
+//!   any byte position goes straight to the line holding it.
 //!
 //! The database runs with `journal_mode=WAL` and `synchronous=NORMAL`: a power
 //! loss can drop the last commits, but never leaves the file inconsistent.
@@ -27,10 +31,14 @@ use rusqlite::{Connection, OpenFlags};
 mod events;
 mod schema;
 mod sessions;
+mod transcripts;
 mod writer;
 
 pub use events::{EventRetention, DEFAULT_EVENT_RETENTION};
 pub use sessions::{EntryRow, ImportOutcome, SessionRow};
+pub use transcripts::{
+    AppendMode, MoveOutcome, NewTranscript, PutMode, TranscriptChunk, TranscriptRow,
+};
 pub use writer::Receipt;
 
 /// How long a connection waits on a lock another holds before failing.
@@ -60,6 +68,14 @@ impl Log {
         }
         let mut connection =
             Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
+        // The transcripts are the user's own: the database is private, and
+        // SQLite gives its WAL and shared-memory files the same mode.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("make {} private", path.display()))?;
+        }
         connection.busy_timeout(BUSY_TIMEOUT)?;
         // Switching a new database to WAL answers SQLITE_BUSY at once, without
         // the busy handler, while another process creates the same file (a

@@ -188,14 +188,7 @@ pub fn track_sessions_imported(
     report: &crate::settings::HistoryImportReport,
     duration_ms: u64,
 ) {
-    const MB: u64 = 1024 * 1024;
-    let bucket = match report.bytes_imported {
-        bytes if bytes < MB => "lt_1mb",
-        bytes if bytes < 100 * MB => "lt_100mb",
-        bytes if bytes < 1024 * MB => "lt_1gb",
-        bytes if bytes < 10 * 1024 * MB => "lt_10gb",
-        _ => "ge_10gb",
-    };
+    let bucket = bytes_bucket(report.bytes_imported);
     let mode = if trigger == "command" {
         "cli"
     } else {
@@ -217,6 +210,50 @@ pub fn track_sessions_imported(
     properties.set("bytes_bucket", Value::from(bucket));
     properties.set("duration_ms", Value::from(duration_ms));
     client.track("agent sessions imported", properties);
+}
+
+/// The size bucket of the bytes an import moved.
+fn bytes_bucket(bytes: u64) -> &'static str {
+    const MB: u64 = 1024 * 1024;
+    match bytes {
+        bytes if bytes < MB => "lt_1mb",
+        bytes if bytes < 100 * MB => "lt_100mb",
+        bytes if bytes < 1024 * MB => "lt_1gb",
+        bytes if bytes < 10 * 1024 * MB => "lt_10gb",
+        _ => "ge_10gb",
+    }
+}
+
+/// Track a settled background import of JSONL session files into the SQLite
+/// transcript store (`agent transcripts imported`): counts and a size bucket,
+/// never a path or a session id.
+pub fn track_transcripts_imported(
+    client: &TelemetryClient,
+    report: &crate::session::store::TranscriptImportReport,
+    duration_ms: u64,
+) {
+    let mut properties = base_properties("daemon");
+    properties.set("imported_count", Value::from(report.imported));
+    properties.set("already_stored_count", Value::from(report.already_stored));
+    properties.set("failed_count", Value::from(report.failed.len()));
+    properties.set("bytes_bucket", Value::from(bytes_bucket(report.bytes)));
+    properties.set("duration_ms", Value::from(duration_ms));
+    client.track("agent transcripts imported", properties);
+}
+
+/// Track one `prime-agent export-jsonl` (`agent sessions exported`): `scope`
+/// is `session` or `all`; counts only, never a path or a session id.
+pub fn track_sessions_exported(
+    client: &TelemetryClient,
+    scope: &str,
+    report: &crate::session::store::ExportReport,
+) {
+    let mut properties = base_properties("cli");
+    properties.set("scope", Value::from(scope));
+    properties.set("written_count", Value::from(report.written.len()));
+    properties.set("unchanged_count", Value::from(report.unchanged.len()));
+    properties.set("failed_count", Value::from(report.failed.len()));
+    client.track("agent sessions exported", properties);
 }
 
 #[cfg(test)]
@@ -260,6 +297,69 @@ mod tests {
                 serde_json::json!({ "surface": "tui", "flow": "device_code",
                     "outcome": "canceled", "duration_ms": 1234 })
             )
+        );
+    }
+
+    /// The transcript store's import and export events carry exactly their
+    /// catalogued counts (a key the catalog does not know would be dropped).
+    #[tokio::test]
+    async fn the_transcript_import_and_export_track_their_catalogued_counts() {
+        let mock = Arc::new(MockSink::new());
+        let mut config = TelemetryClientConfig::new("install-1");
+        config.sinks = vec![mock.clone() as Arc<dyn pa_telemetry::TelemetrySink>];
+        let client = TelemetryClient::spawn(config).expect("spawn client");
+        track_transcripts_imported(
+            &client,
+            &crate::session::store::TranscriptImportReport {
+                imported: 3,
+                bytes: 2 * 1024 * 1024,
+                already_stored: 1,
+                failed: vec![("/x.jsonl".into(), "unreadable".to_string())],
+            },
+            40,
+        );
+        track_sessions_exported(
+            &client,
+            "all",
+            &crate::session::store::ExportReport {
+                written: vec!["/out/a.jsonl".into(), "/out/b.jsonl".into()],
+                ..crate::session::store::ExportReport::default()
+            },
+        );
+        client.shutdown().await.expect("flush");
+        let picked: Vec<(String, serde_json::Value)> = mock
+            .events()
+            .iter()
+            .map(|event| {
+                let properties = serde_json::to_value(&event.properties).expect("serialize");
+                let counts: serde_json::Map<String, serde_json::Value> = properties
+                    .as_object()
+                    .expect("properties")
+                    .iter()
+                    .filter(|(key, _)| {
+                        key.ends_with("_count")
+                            || key.as_str() == "bytes_bucket"
+                            || key.as_str() == "scope"
+                    })
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
+                (event.name.clone(), serde_json::Value::Object(counts))
+            })
+            .collect();
+        assert_eq!(
+            picked,
+            vec![
+                (
+                    "agent transcripts imported".to_string(),
+                    serde_json::json!({ "imported_count": 3, "already_stored_count": 1,
+                        "failed_count": 1, "bytes_bucket": "lt_100mb" })
+                ),
+                (
+                    "agent sessions exported".to_string(),
+                    serde_json::json!({ "scope": "all", "written_count": 2,
+                        "unchanged_count": 0, "failed_count": 0 })
+                ),
+            ]
         );
     }
 }

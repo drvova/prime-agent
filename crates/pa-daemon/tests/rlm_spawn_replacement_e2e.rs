@@ -255,10 +255,12 @@ fn child_session_file(agent_dir: &Path, child_id: &str) -> PathBuf {
         Duration::from_mins(1),
         &format!("session file for {child_id}"),
         || {
-            std::fs::read_dir(&dir)
+            common::transcripts(&dir)
+                .list(&dir)
                 .ok()?
-                .filter_map(std::result::Result::ok)
-                .map(|entry| entry.path())
+                .transcripts
+                .into_iter()
+                .map(|transcript| transcript.locator)
                 .find(|path| {
                     path.extension().and_then(|extension| extension.to_str()) == Some("jsonl")
                 })
@@ -364,7 +366,7 @@ async fn concurrent_spawns_prompt_exactly_once_across_a_session_replacement() {
         let session_file = child_session_file(&agent_dir, child_id);
         let deadline = Instant::now() + Duration::from_secs(150);
         let content = loop {
-            let content = std::fs::read_to_string(&session_file).unwrap_or_default();
+            let content = common::read_transcript(&session_file).unwrap_or_default();
             let kickoff_rows = content
                 .lines()
                 .filter_map(|line| serde_json::from_str::<Value>(line).ok())

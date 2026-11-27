@@ -605,7 +605,7 @@ mod tests {
             .get_session_file()
             .expect("session file")
             .to_path_buf();
-        std::fs::read_to_string(path)
+        crate::session::store::read_to_string(&path)
             .unwrap()
             .lines()
             .filter_map(|line| serde_json::from_str(line).ok())

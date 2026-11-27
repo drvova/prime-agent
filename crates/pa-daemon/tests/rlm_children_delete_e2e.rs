@@ -231,7 +231,7 @@ fn semantic_spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
 /// not exist yet reads as empty: the settle poll runs ahead of the
 /// parent's return recording.
 fn semantic_ledger(path: &Path) -> Vec<LedgerEvent> {
-    let Ok(contents) = std::fs::read_to_string(path) else {
+    let Ok(contents) = common::read_transcript(path) else {
         return Vec::new();
     };
     contents

@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 
-from lifecycle_lib import Terminal, digest, env_for, stop, LIMIT
+from lifecycle_lib import Terminal, digest, env_for, session_transcripts, stop, LIMIT
 
 PROMPT = 'NEW_GOAL_PARITY_INITIAL_PROMPT'
 SETTLED = 'Parity fixture settled'
@@ -113,10 +113,9 @@ def wait_for(predicate, label, process=None):
 
 def session_rows(root):
     result = []
-    for path in sorted((root / 'agent/sessions').rglob('*.jsonl')):
-        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-        if rows and rows[0].get('type') == 'session':
-            result.append({'path': str(path), 'rows': rows})
+    for path, text in session_transcripts(root / 'agent', root / 'agent/sessions'):
+        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+        result.append({'path': str(path), 'rows': rows})
     return result
 
 

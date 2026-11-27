@@ -501,18 +501,20 @@ fn threshold_compaction_streams_summary_deltas_to_attached_clients() {
 
     // The delta frames are ephemeral: the session file carries the compaction entry but never a
     // delta frame.
-    let session_file = std::fs::read_dir(&session_dir)
+    let session_file = common::transcripts(&session_dir)
+        .list(&session_dir)
         .expect("list session dir")
-        .flatten()
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
-                && std::fs::read_to_string(path)
+                && common::read_transcript(path)
                     .is_ok_and(|content| content.contains("\"type\":\"compaction\""))
         })
         .expect("the durable compaction entry in the session file");
-    let persisted = std::fs::read_to_string(&session_file).expect("read session file");
+    let persisted = common::read_transcript(&session_file).expect("read session file");
     assert!(
         !persisted.contains("compaction_summary_delta"),
         "the streamed deltas never persist: {persisted}"

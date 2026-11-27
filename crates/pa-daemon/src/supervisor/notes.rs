@@ -216,6 +216,40 @@ impl Supervisor {
         }
     }
 
+    /// Report a settled import of JSONL session files into the transcript
+    /// store: one log line, one per file that failed (skipped whole; the
+    /// next boot retries it), and its `agent transcripts imported` event
+    /// (counts and a size bucket only).
+    pub(crate) fn note_transcript_import(
+        &self,
+        report: &pa_core::session::store::TranscriptImportReport,
+        elapsed: std::time::Duration,
+    ) {
+        self.log_line(&format!(
+            "transcript import: {} session file(s) imported ({} bytes), {} already stored, {} failed",
+            report.imported,
+            report.bytes,
+            report.already_stored,
+            report.failed.len()
+        ));
+        for (path, error) in &report.failed {
+            self.log_line(&format!(
+                "transcript import skipped {} (retried on the next boot): {error}",
+                path.display()
+            ));
+        }
+        if !self.telemetry_recording_on() {
+            return;
+        }
+        if let Some(client) = &*self.telemetry.lock().unwrap() {
+            pa_core::session_engine::telemetry::track_transcripts_imported(
+                client,
+                report,
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+            );
+        }
+    }
+
     pub(crate) fn log_line(&self, message: &str) {
         self.log.append(&format!("[{}] {message}", util::now_iso()));
     }

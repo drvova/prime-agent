@@ -445,7 +445,7 @@ async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message(
         ))
     };
     loop {
-        let grown = std::fs::read_to_string(&child_file).unwrap_or_default();
+        let grown = common::read_transcript(&child_file).unwrap_or_default();
         if grown.contains(revive_prompt) {
             break;
         }
@@ -474,7 +474,7 @@ fn root_worker_ids(agent_dir: &Path) -> Vec<String> {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(&path) else {
+            let Ok(content) = common::read_transcript(&path) else {
                 continue;
             };
             let Ok(descriptor) = serde_json::from_str::<Value>(&content) else {
@@ -718,7 +718,7 @@ async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_chil
     // The durable oracle: the child's session file carries the new name's
     // `session_info` row (only a woken worker writes it), and the
     // parent's registry row follows the applied name.
-    let entries = std::fs::read_to_string(&child_file).unwrap_or_default();
+    let entries = common::read_transcript(&child_file).unwrap_or_default();
     let named = entries
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())

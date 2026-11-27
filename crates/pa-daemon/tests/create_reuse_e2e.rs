@@ -451,6 +451,8 @@ fn concurrent_creates_for_one_file_share_a_single_launch() {
     saved.set_path(session_path.clone());
     saved.append_session_state("active");
     saved.rewrite().expect("write the saved session");
+    // A saved session the supervisor (its own agent dir) finds as its file.
+    common::into_original_file(&session_path);
 
     // Two panes open the SAME file concurrently: both in flight before either answers.
     let mut first = Client::connect(&socket);

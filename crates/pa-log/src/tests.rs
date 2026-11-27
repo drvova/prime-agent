@@ -261,6 +261,27 @@ fn pruning_deletes_only_expired_events() {
     );
 }
 
+/// The database holds every transcript: it and its WAL are the user's own.
+#[cfg(unix)]
+#[test]
+fn the_database_is_private_to_the_user() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let log = open(dir.path());
+    log.set_meta("probe", "1").wait_blocking().unwrap();
+    let modes: Vec<u32> = ["agent.db", "agent.db-wal"]
+        .iter()
+        .map(|name| {
+            std::fs::metadata(dir.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077
+        })
+        .collect();
+    assert_eq!(modes, vec![0, 0]);
+}
+
 /// A database a newer build migrated further is refused, not written.
 #[test]
 fn a_newer_schema_is_refused() {
@@ -276,10 +297,212 @@ fn a_newer_schema_is_refused() {
     assert_eq!(
         refused,
         Some(format!(
-            "migrate {}: the database is at schema version 99, newer than this build's 1: it \
+            "migrate {}: the database is at schema version 99, newer than this build's 2: it \
              was written by a newer Prime Agent",
             path.display()
         ))
+    );
+}
+
+fn transcript(locator: &str, bytes: &[u8]) -> super::NewTranscript {
+    super::NewTranscript {
+        locator: locator.to_string(),
+        dir: "/sessions".to_string(),
+        bytes: bytes.to_vec(),
+        created_ns: 1,
+        modified_ns: 2,
+        source: None,
+    }
+}
+
+/// A transcript's bytes come back exactly, whole or read from any byte
+/// position (captured sessions, a torn last write, bytes that are not
+/// UTF-8), and its first line's session id is indexed.
+#[test]
+fn transcripts_read_back_byte_for_byte_from_any_position() {
+    use super::PutMode;
+    let dir = tempfile::tempdir().unwrap();
+    let log = open(dir.path());
+    let mut torn =
+        b"{\"type\":\"session\",\"id\":\"s-torn\"}\n\xff\xfe not utf-8\n\n{\"type\":\"mess"
+            .to_vec();
+    torn.extend_from_slice(b"age\"");
+    let originals = [
+        std::fs::read(workspace_file(
+            "pa-daemon/tests/fixtures/attribution-fold-captured.jsonl",
+        ))
+        .unwrap(),
+        std::fs::read(workspace_file(
+            "pa-core/tests/fixtures/run_metrics/synthetic-two-runs.jsonl",
+        ))
+        .unwrap(),
+        torn,
+    ];
+    let mut seen = Vec::new();
+    for (index, bytes) in originals.iter().enumerate() {
+        let row = log
+            .put_transcript(
+                transcript(&format!("/sessions/{index}.jsonl"), bytes),
+                PutMode::Replace,
+            )
+            .wait_blocking()
+            .unwrap()
+            .unwrap();
+        let whole = log
+            .transcript_bytes(row.id, 0, usize::MAX)
+            .unwrap()
+            .unwrap();
+        // Every position reads the bytes from there on, a few at a time.
+        let from_everywhere = (0..=bytes.len()).step_by(7).all(|from| {
+            let mut read = Vec::new();
+            let mut at = from as u64;
+            loop {
+                let chunk = log.transcript_bytes(row.id, at, 5).unwrap().unwrap();
+                if chunk.bytes.is_empty() {
+                    break;
+                }
+                at += chunk.bytes.len() as u64;
+                read.extend(chunk.bytes);
+            }
+            read == bytes[from..]
+        });
+        seen.push((
+            whole.bytes == *bytes,
+            from_everywhere,
+            row.len,
+            row.session.is_some(),
+        ));
+    }
+    assert_eq!(
+        seen,
+        originals
+            .iter()
+            .map(|bytes| (true, true, bytes.len() as u64, true))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Appends keep the transcript's identity and match a JSONL file's append:
+/// a torn last line is ended before new lines (`NewLine`), or finished in
+/// place (`AsIs`). A replace gives a new identity, an import never replaces,
+/// and a move or remove frees the locator.
+#[test]
+fn transcript_appends_replaces_moves_and_removes() {
+    use super::{AppendMode, MoveOutcome, PutMode};
+    let dir = tempfile::tempdir().unwrap();
+    let log = open(dir.path());
+    let put = |bytes: &[u8], mode| {
+        log.put_transcript(transcript("/sessions/a.jsonl", bytes), mode)
+            .wait_blocking()
+            .unwrap()
+    };
+    let append = |bytes: &[u8], mode| {
+        log.append_transcript("/sessions/a.jsonl", bytes.to_vec(), mode, 3)
+            .wait_blocking()
+            .unwrap()
+            .unwrap()
+    };
+    let read = |id| {
+        log.transcript_bytes(id, 0, usize::MAX)
+            .unwrap()
+            .unwrap()
+            .bytes
+    };
+    let first = put(
+        b"{\"type\":\"session\",\"id\":\"s\"}\n{\"torn",
+        PutMode::Replace,
+    )
+    .unwrap();
+    let guarded = append(b"{\"a\":1}\n", AppendMode::NewLine);
+    let finished = append(b"\":2}\n{\"b\":", AppendMode::AsIs);
+    let completed = append(b"3}\n", AppendMode::AsIs);
+    let unchanged = append(b"", AppendMode::NewLine);
+    let after_appends = read(first.id);
+    let kept = put(b"other\n", PutMode::IfAbsent);
+    let replaced = put(b"{\"type\":\"session\",\"id\":\"t\"}\n", PutMode::Replace).unwrap();
+    let old_identity = log.transcript_bytes(first.id, 0, 1).unwrap();
+    let moved = log
+        .move_transcript("/sessions/a.jsonl", "/archive/a.jsonl", "/archive")
+        .wait_blocking()
+        .unwrap();
+    let missing = log
+        .move_transcript("/sessions/a.jsonl", "/archive/b.jsonl", "/archive")
+        .wait_blocking()
+        .unwrap();
+    let removed = log
+        .remove_transcript("/archive/a.jsonl")
+        .wait_blocking()
+        .unwrap();
+    let removed_again = log
+        .remove_transcript("/archive/a.jsonl")
+        .wait_blocking()
+        .unwrap();
+    assert_eq!(
+        (
+            [guarded.id, finished.id, completed.id, unchanged.id].map(|id| id == first.id),
+            String::from_utf8(after_appends).unwrap(),
+            (completed.lines, completed.version, unchanged.version),
+            kept,
+            (replaced.id > first.id, replaced.session.as_deref()),
+            old_identity,
+            matches!(moved, MoveOutcome::Moved(ref row) if row.id == replaced.id && row.dir == "/archive"),
+            missing,
+            (removed, removed_again, log.all_transcripts().unwrap()),
+        ),
+        (
+            [true; 4],
+            "{\"type\":\"session\",\"id\":\"s\"}\n{\"torn\n{\"a\":1}\n\":2}\n{\"b\":3}\n"
+                .to_string(),
+            (5, 3, 3),
+            None,
+            (true, Some("t")),
+            None,
+            true,
+            MoveOutcome::Missing,
+            (true, false, Vec::new()),
+        )
+    );
+}
+
+/// A receipt waited on from inside a task that has spent its coop budget
+/// (a session's turn persisting a row mid-poll) returns the committed answer
+/// instead of spinning on tokio's budget refusal.
+#[test]
+fn a_receipt_waits_inside_a_task_without_coop_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = open(dir.path());
+    let (answered, answer) = std::sync::mpsc::channel();
+    // The waiting thread spins forever without the fix, so the wait runs on
+    // its own thread and the test reads its answer with a failure bound.
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (wake, mut woken) = tokio::sync::mpsc::unbounded_channel::<()>();
+            std::future::poll_fn(|context| {
+                while tokio::task::coop::has_budget_remaining() {
+                    wake.send(()).unwrap();
+                    let _ = woken.poll_recv(context);
+                }
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let stored = log
+                .put_transcript(
+                    transcript("/sessions/a.jsonl", b"{}\n"),
+                    super::PutMode::Replace,
+                )
+                .wait_blocking()
+                .map(|row| row.map(|row| row.locator));
+            let _ = answered.send(stored.map_err(|error| error.to_string()));
+        });
+    });
+    assert_eq!(
+        answer
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the receipt answered"),
+        Ok(Some("/sessions/a.jsonl".to_string()))
     );
 }
 

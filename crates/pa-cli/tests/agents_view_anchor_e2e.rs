@@ -362,7 +362,7 @@ async fn rename_saved_session_renames_the_row_and_the_file() {
             .is_some_and(|frame| !frame.contains("gateway worker")),
         "the final frame dropped the old name:\n{rendered}"
     );
-    let content = std::fs::read_to_string(&path).expect("read fixture");
+    let content = support::saved_transcript(&agent_dir, &path);
     assert!(
         content.contains("\"name\":\"renamed agent\""),
         "the fixture gained the session_info name entry:\n{content}"

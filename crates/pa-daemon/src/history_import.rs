@@ -109,9 +109,10 @@ pub(crate) fn spawn_history_import(
 
 impl Supervisor {
     /// Start the boot's history import in the background (a distribution
-    /// build's own agent dir only): it waits for the boot reap, never holds
-    /// up the accept loop, and reports to every client, the log, and
-    /// telemetry when it settles.
+    /// build's own agent dir only), then the import of the agent dir's JSONL
+    /// session files into the transcript store: it waits for the boot reap,
+    /// never holds up the accept loop, and reports to every client (the
+    /// history import), the log, and telemetry when each settles.
     pub(crate) fn spawn_boot_history_import(self: &Arc<Self>) {
         let Some(home) = pa_types::platform::home_dir() else {
             return;
@@ -138,6 +139,19 @@ impl Supervisor {
                 .unwrap_or_else(|error| HistoryImportOutcome::Failed(error.to_string()));
             *supervisor.history_import.lock().unwrap() = None;
             supervisor.note_history_import(&outcome, started.elapsed());
+            // Then the JSONL session files (the chats just copied among
+            // them) into the transcript store's database.
+            let started = std::time::Instant::now();
+            let agent_dir = supervisor.options.agent_dir.clone();
+            let imported = tokio::task::spawn_blocking(move || {
+                pa_core::session::store::import_session_trees(&agent_dir)
+            })
+            .await;
+            match imported {
+                Ok(Some(report)) => supervisor.note_transcript_import(&report, started.elapsed()),
+                Ok(None) => {}
+                Err(error) => supervisor.log_line(&format!("transcript import stopped: {error}")),
+            }
         });
     }
 }
@@ -175,6 +189,8 @@ mod tests {
                 let id = session.session_id().to_string();
                 session.set_path(official.join(crate::session_store::session_file_name(&id)));
                 session.rewrite().expect("official chat");
+                // The official build's chats are its JSONL files.
+                crate::session_store::test_support::into_original_file(&session.path);
                 id
             })
             .collect();

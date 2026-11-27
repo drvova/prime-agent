@@ -532,7 +532,7 @@ mod tests {
         // Like the TS `_buildIndex`, the leaf is the last entry, including
         // the carried label entry.
         assert_eq!(forked.leaf_id(), Some(forked.entries()[2].id.as_str()));
-        assert!(forked.path.exists());
+        assert!(pa_core::session::store::store().exists(&forked.path));
         let _ = c;
     }
 
@@ -574,7 +574,7 @@ mod tests {
             forked.anthropic_warning_shown(),
             "the fork of a marked path serves the gate its rows carry"
         );
-        let text = std::fs::read_to_string(&forked.path).unwrap();
+        let text = pa_core::session::store::read_to_string(&forked.path).unwrap();
         assert!(
             text.contains("anthropic_subscription_warning_shown"),
             "the forked file carries the marker row: {text}"

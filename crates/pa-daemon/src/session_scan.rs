@@ -225,7 +225,7 @@ mod tests {
     }
 
     /// Write one valid session file with `message_count` user/assistant turns
-    /// and return its path. The rewrite stamps the filesystem mtime.
+    /// and return its path, as a JSONL file the scan reads as it is.
     fn write_session(dir: &Path, cwd: &str, name: Option<&str>, message_count: usize) -> PathBuf {
         let mut session = SessionFile::create(cwd, None, 0);
         if let Some(name) = name {
@@ -243,6 +243,7 @@ mod tests {
         let path = dir.join(session_file_name(session.session_id()));
         session.set_path(path.clone());
         session.rewrite().unwrap();
+        crate::session_store::test_support::into_original_file(&path);
         path
     }
 
@@ -324,6 +325,7 @@ mod tests {
         let mut session = SessionFile::create("/repo/mistyped", None, 0);
         session.set_path(mistyped.clone());
         session.rewrite().unwrap();
+        crate::session_store::test_support::into_original_file(&mistyped);
         let header_line = fs::read_to_string(&mistyped).unwrap();
         fs::write(
             &mistyped,

@@ -2001,7 +2001,7 @@ fn seeded_parent_recorder() -> (
 /// The `child_cancelled` lines of one parent ledger: (parent, child,
 /// cancelling request, which parent-side action cancelled the run).
 fn cancelled_lines(path: &Path) -> Vec<(String, String, String, ChildCancelledReason)> {
-    std::fs::read_to_string(path)
+    pa_core::session::store::read_to_string(path)
         .unwrap_or_default()
         .lines()
         .filter_map(|line| serde_json::from_str::<SemanticEdgeLedgerEvent>(line.trim()).ok())
@@ -2253,7 +2253,7 @@ async fn a_lifecycle_close_records_no_cancel_line() {
 
 /// The `child_returned` lines of one parent ledger: the child session ids.
 fn returned_children(path: &Path) -> Vec<String> {
-    std::fs::read_to_string(path)
+    pa_core::session::store::read_to_string(path)
         .unwrap_or_default()
         .lines()
         .filter_map(|line| serde_json::from_str::<SemanticEdgeLedgerEvent>(line.trim()).ok())

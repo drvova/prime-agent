@@ -160,14 +160,10 @@ async fn summary_rows(
     // The runs as the session saved them, each opened by its user row: the tool calls its
     // model responses made, whether one ran the slow cell, and the usage the row sums.
     let mut runs: Vec<(usize, bool, [u64; 4])> = Vec::new();
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("the session dir")
-        .map(|entry| entry.expect("a session dir entry").path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-        .flat_map(|path| {
-            std::fs::read_to_string(path)
-                .expect("the session file")
-                .lines()
+    for entry in support::session_texts(&session_dir)
+        .into_iter()
+        .flat_map(|(_, text)| {
+            text.lines()
                 .map(|line| serde_json::from_str::<Value>(line).expect("a session row"))
                 .collect::<Vec<Value>>()
         })

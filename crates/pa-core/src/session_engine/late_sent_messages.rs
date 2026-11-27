@@ -389,7 +389,7 @@ mod tests {
                 ))
                 .unwrap();
             let file = session.get_session_file().unwrap().to_path_buf();
-            std::fs::remove_file(&file).unwrap();
+            crate::session::store::store().remove(&file).unwrap();
             std::fs::create_dir(&file).unwrap(); // deterministic append failure, even as root
             let session = Arc::new(Mutex::new(session));
             let agent = agent_with(if landed {

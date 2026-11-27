@@ -746,7 +746,11 @@ fn a_failing_rebuild_loop_leaves_nothing_behind() {
     let baseline = described_fds(supervisor_pid);
 
     // Corrupt the durable session file, then crash the session: every create replay fails.
-    std::fs::write(&session_file, "not valid jsonl\n").expect("corrupt session file");
+    common::transcripts(Path::new(&session_file))
+        .create(Path::new(&session_file), &mut |out| {
+            out.write_all(b"not valid jsonl\n")
+        })
+        .expect("corrupt session file");
     client.send_command(
         "crash",
         &serde_json::json!({

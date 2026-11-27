@@ -596,6 +596,8 @@ fn wave_b11_saved_sessions_wire_shapes() {
         ));
         session.set_path(path.clone());
         session.rewrite().expect("write saved session");
+        // A saved session the supervisor (its own agent dir) finds as its file.
+        common::into_original_file(&path);
         path
     };
 
@@ -611,6 +613,9 @@ fn wave_b11_saved_sessions_wire_shapes() {
     let response = client.read_response("r1");
     assert_eq!(response["success"], true, "{response}");
     assert_eq!(response["data"], Value::Null, "{response}");
+    // The rename imported the session into the supervisor's database (its
+    // own agent dir's); this process reads its own store.
+    common::mirror_into_process_store(&saved_path);
     let info =
         pa_daemon::session_store::read_session_info(&saved_path).expect("saved session readable");
     assert_eq!(info.name.as_deref(), Some("renamed"));
@@ -626,7 +631,10 @@ fn wave_b11_saved_sessions_wire_shapes() {
     let response = client.read_response("d1");
     assert_eq!(response["success"], true, "{response}");
     assert_eq!(response["data"]["ok"], true, "{response}");
-    assert!(!saved_path.is_file(), "saved session deleted");
+    assert!(
+        !common::transcripts(&saved_path).exists(&saved_path),
+        "saved session deleted"
+    );
 
     // The live rename: the owning worker's arm answers the TS no-data success.
     client.send_command(
@@ -958,7 +966,7 @@ fn session_lifetime(agent_dir: &std::path::Path, active_session_id: &str) -> u32
         paths.sort();
         for path in paths {
             let descriptor: Value =
-                serde_json::from_str(&std::fs::read_to_string(path).expect("descriptor read"))
+                serde_json::from_str(&common::read_transcript(&path).expect("descriptor read"))
                     .expect("descriptor parse");
             if descriptor["rootActiveSessionId"] != active_session_id {
                 continue;

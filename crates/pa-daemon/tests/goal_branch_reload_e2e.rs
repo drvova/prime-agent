@@ -230,10 +230,12 @@ fn setup(name: &str) -> Harness {
 impl Harness {
     fn session_file(&self) -> PathBuf {
         let session_dir = self.dir.path().join("agent").join("sessions");
-        std::fs::read_dir(&session_dir)
+        common::transcripts(&session_dir)
+            .list(&session_dir)
             .expect("session dir readable")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
+            .transcripts
+            .into_iter()
+            .map(|transcript| transcript.locator)
             .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
             .expect("one session file")
     }
@@ -286,7 +288,7 @@ impl Harness {
         if let Some(status) = wire {
             return status;
         }
-        std::fs::read_to_string(self.session_file())
+        common::read_transcript(self.session_file())
             .expect("session file readable")
             .lines()
             .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
@@ -438,7 +440,7 @@ fn navigate_tree_moves_follow_the_branchs_goal_state() {
 
     // The abandoned branch's durable rows survived the round trip: the reload reads, it never
     // rewrites.
-    let rows = std::fs::read_to_string(harness.session_file())
+    let rows = common::read_transcript(harness.session_file())
         .expect("session file readable")
         .lines()
         .filter(|line| !line.trim().is_empty())

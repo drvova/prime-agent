@@ -20,7 +20,7 @@ import threading
 import time
 
 from check_agent_bounce import Client
-from lifecycle_lib import digest, env_for, session_serving, stop, verify_session
+from lifecycle_lib import digest, env_for, session_serving, stop, transcript_text, verify_session
 from check_restore_notice import texts
 
 MARKER = 'LAUNCH_ENV_PARITY='
@@ -225,7 +225,7 @@ def run_case(binary, root, observed):
         row = client.call('create', name=name, lifecycle=lifecycle, config=config, **forwarded)
         active = row.get('activeSessionId') or row.get('id')
         assert active
-        header = json.loads(Path(row['sessionFile']).read_text().splitlines()[0])
+        header = json.loads(transcript_text(root / 'agent', row['sessionFile']).splitlines()[0])
         assert header.get('rlmDepth', 0) == 0, header
         session_info[name] = {'sessionId': header['id'], 'sessionFile': row['sessionFile']}
         assert row['sessionId'] == header['id'], 'create response/file identity mismatch'

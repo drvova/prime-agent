@@ -196,6 +196,52 @@ state has been adopted. A definitive preparation refusal with no new manifest
 must allow another attempt. Queued actions must remain paused while the resumed
 continuation is admitted, so follow-up input cannot run ahead of that turn.
 
+## Storage migration
+
+From this release, session transcripts are kept in one SQLite database,
+`<agent dir>/agent.db` (WAL, `synchronous=NORMAL`), instead of one JSONL file
+per session. The JSONL files of earlier builds and of the TypeScript product
+are brought in without a migration step the user runs.
+
+- **Trigger.** Two paths, neither on a path a client waits on:
+  - **Background.** The daemon imports `<agent dir>/sessions/` and
+    `<agent dir>/sessions-archive/` (recursively; also a `sessionDir` that the
+    global settings or `PRIME_AGENT_SESSION_DIR` name) on the blocking pool
+    after its boot. This runs after a distribution build's own history import,
+    so the chats that import copies are imported too.
+  - **On demand.** Until a file is imported it is read from the file as it
+    is, so a session from before the move is listed, opened and resumed at
+    once. The first write to it imports the file, whole, before writing.
+    Sessions in a custom sessions dir come in this way.
+- **Idempotency.** A transcript is keyed by its canonical locator (the
+  directory resolved, joined with the file name). A file whose locator the
+  database already holds is left alone, so a pass that stopped part way
+  resumes and a second pass changes nothing. A root that imported without a
+  failure is recorded in the database (`imported:<root>`) and not scanned
+  again. Only files that start with a `session` header line are imported:
+  other `.jsonl` files in those trees (journals, indexes) are not transcripts.
+- **Originals.** An imported file stays where it was, byte for byte, made
+  read-only, and is never written again. Deleting a session deletes its
+  original too (to the trash when the platform has one), so it does not come
+  back from the file.
+- **Rollback.** A downgrade to a build without the database reads the
+  untouched JSONL files: every session as it was when it was imported.
+  Sessions created after the migration, and what was added to imported ones,
+  exist only in the database; `prime-agent export-jsonl --all --out <dir>`
+  writes them as v3 JSONL files, byte for byte what the database holds (an
+  imported session that was not continued exports as its original's bytes).
+  To let an older build continue an imported original, make it writable
+  again (`chmod u+w`). The global setting `"transcriptStore": "file"` keeps
+  this release on JSONL files (one release only).
+- **Failure reporting.** A file that cannot be read or stored is skipped
+  whole, never half-imported: one transaction stores it or nothing. The
+  daemon log names it, the `agent transcripts imported` telemetry event
+  counts it (counts and a size bucket only), its root keeps no marker, and
+  the next boot retries it. A database that cannot be opened leaves the
+  process on the JSONL files, with the reason in the daemon log and in the
+  daemon's hello (`transcriptStoreFallback`), which every attached window
+  shows as a warning.
+
 ## Platform limits and release claims
 
 The old native distribution supports Darwin arm64/x64 and Linux arm64/x64,

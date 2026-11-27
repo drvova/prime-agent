@@ -70,7 +70,7 @@ fn persist_appends_after_first_assistant() {
     let mut manager = SessionManager::persisted(tmp.path(), &dir);
     // Pre-model entries are not flushed until an assistant message exists.
     let first = manager.append_thinking_level_change("high");
-    assert!(!manager.get_session_file().unwrap().exists());
+    assert!(!crate::session::store::store().exists(manager.get_session_file().unwrap()));
     manager
         .append_message(AgentMessage::Assistant(pa_types::ai::AssistantMessage {
             content: vec![],
@@ -89,9 +89,9 @@ fn persist_appends_after_first_assistant() {
         }))
         .unwrap();
     let file = manager.get_session_file().unwrap().to_path_buf();
-    assert!(file.exists());
+    assert!(crate::session::store::store().exists(&file));
     // The assistant append rewrote the whole file, including the earlier entry.
-    let content = std::fs::read_to_string(&file).unwrap();
+    let content = crate::session::store::read_to_string(&file).unwrap();
     assert!(content.contains("thinking_level_change"));
     assert!(content.contains("claude-x"));
     assert_eq!(
@@ -124,8 +124,8 @@ fn open_repairs_and_resumes() {
     });
     manager.append_message(assistant).unwrap();
     let file = manager.get_session_file().unwrap().to_path_buf();
-    let content = std::fs::read_to_string(&file).unwrap();
-    std::fs::write(&file, content.trim_end()).unwrap();
+    let content = crate::session::store::read_to_string(&file).unwrap();
+    crate::session::store::write(&file, content.trim_end()).unwrap();
     let reopened = SessionManager::open(tmp.path(), &dir, &file);
     assert_eq!(reopened.get_entries().len(), 1); // assistant (header excluded)
     assert_eq!(reopened.get_session_id(), manager.get_session_id());
@@ -137,7 +137,7 @@ fn flush_now_durability_without_assistant() {
     let dir = tmp.path().join("sessions");
     let mut manager = SessionManager::persisted(tmp.path(), &dir);
     manager.append_session_info("my session").unwrap();
-    assert!(manager.get_session_file().unwrap().exists());
+    assert!(crate::session::store::store().exists(manager.get_session_file().unwrap()));
     assert_eq!(manager.get_session_name().as_deref(), Some("my session"));
 }
 
@@ -204,7 +204,10 @@ fn fork_from_copies_the_branch_under_a_fresh_header() {
     let forked = SessionManager::fork_from(&source_file, &target_cwd, &target_dir)
         .expect("fork copies the file");
     let fork_file = forked.get_session_file().unwrap().to_path_buf();
-    assert!(fork_file.exists(), "the fork file landed on disk");
+    assert!(
+        crate::session::store::store().exists(&fork_file),
+        "the fork landed in the store"
+    );
     assert!(fork_file != source_file, "the fork is a new session file");
     assert!(
         fork_file.starts_with(&target_dir),
@@ -239,7 +242,7 @@ fn fork_from_copies_the_branch_under_a_fresh_header() {
         .expect("the git_state child copied");
     assert_eq!(trailing.parent_id(), Some(assistant_id.as_str()));
 
-    let before = std::fs::read_to_string(&fork_file).unwrap();
+    let before = crate::session::store::read_to_string(&fork_file).unwrap();
     let trailing_line = before
         .lines()
         .find(|line| line.contains(&trailing_id))
@@ -253,7 +256,7 @@ fn fork_from_copies_the_branch_under_a_fresh_header() {
             rest: serde_json::Map::default(),
         }))
         .unwrap();
-    let after = std::fs::read_to_string(&fork_file).unwrap();
+    let after = crate::session::store::read_to_string(&fork_file).unwrap();
     assert!(after.contains("follow up"), "appends extend the fork file");
     assert!(after.lines().count() > before.lines().count());
 }
@@ -269,7 +272,10 @@ fn fork_from_never_rewrites_the_source() {
     let target_dir = tmp.path().join("fork-sessions");
     let forked = SessionManager::fork_from(&file, tmp.path(), &target_dir)
         .expect("the torn tail is skipped, not fatal");
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), content);
+    assert_eq!(
+        crate::session::store::read_to_string(&file).unwrap(),
+        content
+    );
     let entries = forked.get_all_entries();
     assert!(
         entries.iter().any(|entry| entry.id() == Some("keep1")),
@@ -459,7 +465,7 @@ fn replay_admitted_user_rows_stays_windowed_and_reuses_only_registered_ids() {
     assert_eq!(manager.retained_entries().len(), retained.len() + 1);
     assert!(manager.window.is_some(), "no full-history hydration");
     assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
+        crate::session::store::read_to_string(&path).unwrap(),
         bytes,
         "the worker-owned durable file is untouched by mirrored replay"
     );

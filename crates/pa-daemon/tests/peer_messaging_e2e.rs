@@ -249,7 +249,7 @@ fn read_receipt(messaging: &Messaging, index: usize) -> Value {
         if let Ok(error) = std::fs::read_to_string(&error_path) {
             panic!("agent_message.send failed in the kernel cell: {error}");
         }
-        if let Ok(content) = std::fs::read_to_string(&receipt_path) {
+        if let Ok(content) = common::read_transcript(&receipt_path) {
             return serde_json::from_str(&content).expect("receipt json");
         }
         assert!(

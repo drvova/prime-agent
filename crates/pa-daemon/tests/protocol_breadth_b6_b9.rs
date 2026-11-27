@@ -344,14 +344,23 @@ fn wave_b7_agent_messages_wire_shapes() {
         );
         let response = client.read_response("m2");
         assert_eq!(response["success"], true, "{response}");
+        // The delivery starts the idle session's turn on its own task: wait until the
+        // session is idle again (not busy, both queues empty) before clearing, so the
+        // clear never races the turn's taking of the message.
+        client.send_command(
+            "w2",
+            &json!({ "type": "wait_for_idle", "activeSessionId": session_id }),
+        );
+        let response = client.read_response("w2");
+        assert_eq!(response["success"], true, "{response}");
         client.send_command(
             "c1",
             &json!({ "type": "agent_messages_clear", "activeSessionId": session_id }),
         );
         let response = client.read_response("c1");
         assert_eq!(response["success"], true, "{response}");
-        // The delivered message already started its turn (the session was idle), so
-        // nothing is queued to clear — TS clears queued agent messages only.
+        // The delivered message started its turn (the session was idle), so nothing is
+        // queued to clear — TS clears queued agent messages only.
         assert_eq!(response["data"], json!({ "steering": [], "followUp": [] }));
     }
 }

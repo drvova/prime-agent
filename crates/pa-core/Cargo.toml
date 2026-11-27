@@ -21,6 +21,7 @@ pa-models = { path = "../pa-models" }
 pa-agent.workspace = true
 pa-shell.workspace = true
 pa-telemetry.workspace = true
+pa-log.workspace = true
 base64 = "0.22"
 # The Scheme kernel's `attach-image`: decode, scale and re-encode images, as
 # the Python kernel did with Pillow. The same crate and formats pa-tui uses.

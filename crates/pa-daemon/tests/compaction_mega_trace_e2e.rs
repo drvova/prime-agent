@@ -301,7 +301,7 @@ impl TimedClient {
 }
 
 fn read_trace(path: &Path) -> Vec<(String, u128, Value)> {
-    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let content = common::read_transcript(path).unwrap_or_default();
     content
         .lines()
         .filter_map(|line| {
@@ -502,7 +502,8 @@ fn mega_session_threshold_compaction_phase_measurement() {
         .map(|entry| entry.path())
         .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
         .expect("session file");
-    let session_bytes = std::fs::metadata(&session_file)
+    let session_bytes = common::transcripts(&session_file)
+        .stat(&session_file)
         .expect("session file metadata")
         .len();
     println!("session file bytes after compaction: {session_bytes}");

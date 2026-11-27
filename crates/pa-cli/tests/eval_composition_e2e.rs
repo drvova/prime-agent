@@ -10,6 +10,8 @@ use std::process::Command;
 
 use serde_json::{json, Value};
 
+mod support;
+
 fn isolated_home() -> tempfile::TempDir {
     tempfile::TempDir::new().unwrap()
 }
@@ -93,21 +95,21 @@ fn always_failing_verifier(home: &Path) -> String {
 }
 
 fn session_files(home: &Path) -> Vec<PathBuf> {
-    let dir = home.join(".prime/agent/sessions");
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map_or_default(|entries| {
-        entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-            .collect()
-    });
-    files.sort();
-    files
+    let agent_dir = home.join(".prime/agent");
+    support::saved_transcripts_in(&agent_dir, &agent_dir.join("sessions"))
+        .into_iter()
+        .map(|(locator, _)| locator)
+        .collect()
 }
 
+/// A saved session's entries; `path` is a locator in the agent dir's
+/// `sessions/`.
 fn read_entries(path: &Path) -> Vec<Value> {
-    std::fs::read_to_string(path)
-        .unwrap()
+    let agent_dir = path
+        .parent()
+        .and_then(Path::parent)
+        .expect("a locator in the agent dir's sessions");
+    support::saved_transcript(agent_dir, path)
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).unwrap())

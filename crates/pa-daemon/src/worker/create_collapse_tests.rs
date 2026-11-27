@@ -99,7 +99,10 @@ fn legacy_sequence_file(
 /// `parentId` chain, the `timestamp`s); everything else must be byte-equal.
 fn masked_lines(path: &std::path::Path) -> Vec<Value> {
     let mut rows = Vec::new();
-    for line in std::fs::read_to_string(path).unwrap().lines() {
+    for line in pa_core::session::store::read_to_string(path)
+        .unwrap()
+        .lines()
+    {
         let mut value: Value = serde_json::from_str(line).unwrap();
         let is_header = value.get("type").and_then(Value::as_str) == Some("session");
         if let Value::Object(map) = &mut value {
@@ -148,7 +151,7 @@ async fn fresh_create_single_write_matches_legacy_sequence_bytes() {
         core.store.as_ref().unwrap().path.clone()
     };
     assert!(
-        fresh.exists(),
+        pa_core::session::store::store().exists(&fresh),
         "the fresh arm's own file must exist after its single write"
     );
     assert_eq!(
@@ -259,7 +262,7 @@ async fn fresh_create_ignores_a_legacy_crash_orphan() {
         "the created file completes with the folded name row"
     );
     assert_eq!(
-        std::fs::read_to_string(&orphan_path)
+        pa_core::session::store::read_to_string(&orphan_path)
             .unwrap()
             .lines()
             .count(),
@@ -297,7 +300,7 @@ async fn a_resume_is_append_only_and_never_deletes_rows() {
     // A mid-file unparsable row between two valid rows: the tail stays
     // healthy, so the torn-tail repair leaves the file alone; only the
     // loader's row-skip sees it.
-    let mut original = std::fs::read_to_string(&path).unwrap();
+    let mut original = pa_core::session::store::read_to_string(&path).unwrap();
     // The torn row is newline-terminated: a MID-file unparsable row the
     // loader skips (the tail stays healthy, so the torn-tail repair leaves
     // the file alone — that repair owns only the trailing row).
@@ -307,8 +310,8 @@ async fn a_resume_is_append_only_and_never_deletes_rows() {
     );
     original.push_str(torn);
     original.push_str(&after_torn);
-    std::fs::write(&path, &original).unwrap();
-    let bytes_before = std::fs::read(&path).unwrap();
+    pa_core::session::store::write(&path, &original).unwrap();
+    let bytes_before = pa_core::session::store::store().read(&path).unwrap();
 
     let worker = worker_in(dir.path(), "resume-append-only");
     let response = worker
@@ -318,7 +321,7 @@ async fn a_resume_is_append_only_and_never_deletes_rows() {
         )
         .await;
     assert!(response.success, "{response:?}");
-    let bytes_after = std::fs::read(&path).unwrap();
+    let bytes_after = pa_core::session::store::store().read(&path).unwrap();
     assert!(
         bytes_after.starts_with(&bytes_before),
         "the reopen appends without touching a single original byte\nbefore:\n{bytes_before:?}\nafter:\n{bytes_after:?}"

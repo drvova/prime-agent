@@ -2236,7 +2236,7 @@ async fn a_ledger_delete_of_a_stopped_child_tombstones_without_a_worker() {
         "the deleted child's artifact partition must be swept"
     );
     assert!(
-        std::fs::read_to_string(&child_file)
+        pa_core::session::store::read_to_string(&child_file)
             .expect("the child file survives (archived, not unlinked)")
             .contains("archived"),
         "the stopped child's delete must archive the session file"

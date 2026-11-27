@@ -471,7 +471,6 @@ mod tests {
     use super::*;
     use crate::session_store::{session_file_name, SessionFile};
     use pa_core::cron::AgentCronJob;
-    use std::io::Write;
 
     fn temp_dir() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();
@@ -548,7 +547,10 @@ mod tests {
             .join("child-2");
         std::fs::create_dir_all(&moved_dir).unwrap();
         let moved_file = moved_dir.join(moved_at.file_name().unwrap());
-        std::fs::rename(&moved_at, &moved_file).unwrap();
+        pa_core::session::store::store()
+            .import(&moved_at, &moved_file)
+            .unwrap();
+        pa_core::session::store::store().remove(&moved_at).unwrap();
         let ledger = RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
         ledger
             .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
@@ -662,13 +664,9 @@ mod tests {
                 }
             }
         });
-        {
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&child_file)
-                .unwrap();
-            writeln!(file, "{usage_row}").unwrap();
-        }
+        pa_core::session::store::store()
+            .append(&child_file, format!("{usage_row}\n").as_bytes())
+            .unwrap();
         let captured =
             append_deleted_child_usage_amendments(&ledger, &child_file.to_string_lossy(), "sub-1");
         assert_eq!(captured, Some(1), "the one tombstoned edge is amended");
@@ -691,10 +689,12 @@ mod tests {
             "a live transcript's spend rides its own row, not the bucket"
         );
         // The sweep never ran: the transcript is the lazy fallback's copy.
-        assert!(child_file.is_file());
+        assert!(pa_core::session::store::store().exists(&child_file));
         // The transcript dies (the sweep or a later delete): the bucket's
         // snapshot is now the only carrier — the spend survives.
-        std::fs::remove_file(&child_file).unwrap();
+        pa_core::session::store::store()
+            .remove(&child_file)
+            .unwrap();
         ledger
             .append_delete(
                 "sub-1",
@@ -753,14 +753,10 @@ mod tests {
                 "childUsage": usage_block(0.10), "aggregateUsage": usage_block(0.50)
             }),
         ];
-        {
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&child_file)
+        for row in rows {
+            pa_core::session::store::store()
+                .append(&child_file, format!("{row}\n").as_bytes())
                 .unwrap();
-            for row in rows {
-                writeln!(file, "{row}").unwrap();
-            }
         }
         let totals = crate::session_usage::read_session_usage(&child_file).unwrap();
         assert!(

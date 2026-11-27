@@ -375,6 +375,7 @@ impl SessionUi {
                 });
                 // What happened to the daemon, whatever its age: this window lived through it.
                 self.show_daemon_death(view, None);
+                self.show_transcript_store_fallback(view);
                 // Then what it did to this session: the daemon recorded the interrupted turn
                 // on the session's row while nobody was attached. The read is spawned; its
                 // note lands when it does.
@@ -456,6 +457,27 @@ impl SessionUi {
             crate::crash_notice::report_shown(self.telemetry.as_ref(), "daemon_death");
             self.dirty = true;
         }
+    }
+
+    /// Warn when the connected daemon keeps its sessions as JSONL files because its transcript
+    /// database could not be opened (its hello says why); nothing else of that fallback shows.
+    pub(crate) fn show_transcript_store_fallback(&mut self, view: &mut AgentView) {
+        let Some(reason) = self
+            .client
+            .hello()
+            .get("transcriptStoreFallback")
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        view.push_entry(crate::chat::ChatEntry::Status {
+            text: format!(
+                "Prime Agent could not open its transcript database {reason}; sessions are kept \
+                 as JSONL files until the daemon restarts with the database available."
+            ),
+            kind: crate::chat::StatusKind::Warning,
+        });
+        self.dirty = true;
     }
 
     /// Detach the current session and attach `id`, rebuilding the transcript from the slim attach

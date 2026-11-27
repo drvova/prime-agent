@@ -2,6 +2,8 @@
 //! HOME, and the scripted faux provider drive the complete pipeline from
 //! CLI parse to headless terminal selection, deterministically.
 
+mod support;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -159,20 +161,16 @@ fn run_in_home(
 
 fn session_files(home: &std::path::Path) -> Vec<std::path::PathBuf> {
     let dir = home.join(".prime/agent/sessions");
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).map_or_default(|entries| {
-        entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-            .collect()
-    });
+    let mut files: Vec<std::path::PathBuf> = support::session_texts(&dir)
+        .into_iter()
+        .map(|(locator, _)| locator)
+        .collect();
     files.sort();
     files
 }
 
 fn read_entries(path: &std::path::Path) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(path)
-        .unwrap()
+    support::saved_text(path)
         .lines()
         .map(serde_json::from_str)
         .collect::<Result<_, _>>()

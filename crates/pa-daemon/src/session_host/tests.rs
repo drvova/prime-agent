@@ -199,7 +199,7 @@ fn a_thread_of_an_ended_lifetime_cannot_write_the_journal_its_successor_took_ove
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .remove(&new_pid);
-    let operations: Vec<String> = std::fs::read_to_string(&path)
+    let operations: Vec<String> = pa_core::session::store::read_to_string(&path)
         .unwrap()
         .lines()
         .map(|line| {

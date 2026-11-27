@@ -24,7 +24,7 @@ fn child() -> Usage {
 }
 
 fn attribution_rows(store: &SessionFile) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(&store.path)
+    pa_core::session::store::read_to_string(&store.path)
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
@@ -241,7 +241,7 @@ fn generic_append_after_uncertain_attribution_preserves_bytes_and_branch_order()
     assert!(store
         .append_child_usage_once("a", &target, child(), None)
         .is_err());
-    let before = std::fs::read(&store.path).unwrap();
+    let before = pa_core::session::store::store().read(&store.path).unwrap();
     let c = store
         .persist_entry(
             "custom",
@@ -252,7 +252,7 @@ fn generic_append_after_uncertain_attribution_preserves_bytes_and_branch_order()
     store
         .append_child_usage_once("b", &target, child(), None)
         .unwrap();
-    let after = std::fs::read(&store.path).unwrap();
+    let after = pa_core::session::store::store().read(&store.path).unwrap();
     assert!(after.starts_with(&before));
     let observed: Vec<_> = store.branch().iter().map(|row| row.id.clone()).collect();
     assert_eq!(
@@ -283,19 +283,25 @@ fn failed_confirmation_keeps_pending_and_blocks_a_new_attribution() {
     assert!(store
         .append_child_usage_once("a", &target, child(), None)
         .is_err());
-    let before = std::fs::read(&store.path).unwrap();
+    let before = pa_core::session::store::store().read(&store.path).unwrap();
     FAIL_CHILD_CONFIRM_SYNC.with(|fault| fault.set(true));
     assert!(store
         .append_child_usage_once("b", &target, child(), None)
         .is_err());
-    assert_eq!(std::fs::read(&store.path).unwrap(), before);
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        before
+    );
     assert!(store.child_usage_recovery.pending.is_some());
     assert_eq!(store.child_usage_recovery.created.len(), 1);
     FAIL_CHILD_CONFIRM_SYNC.with(|fault| fault.set(true));
     assert!(store
         .persist_entry("custom", json!({"customType":"blocked"}))
         .is_err());
-    assert_eq!(std::fs::read(&store.path).unwrap(), before);
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        before
+    );
     assert!(matches!(
         store
             .append_child_usage_once("a", &target, child(), None)
@@ -337,17 +343,19 @@ fn conflicting_owned_bytes_and_incomplete_tail_fail_closed_without_truncation() 
         .append_child_usage_once("a", &target, child(), None)
         .is_err());
     {
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&store.path)
+        let mut file = pa_core::session::store::store()
+            .open_for_completion(&store.path)
             .unwrap();
         file.write_all(b"{\"unrelated\":").unwrap();
     }
-    let before = std::fs::read(&store.path).unwrap();
+    let before = pa_core::session::store::store().read(&store.path).unwrap();
     assert!(store
         .append_child_usage_once("b", &target, child(), None)
         .is_err());
-    assert_eq!(std::fs::read(&store.path).unwrap(), before);
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        before
+    );
     assert!(store.child_usage_recovery.pending.is_some());
     let mut conflict = before;
     let owned_start = conflict
@@ -355,11 +363,14 @@ fn conflicting_owned_bytes_and_incomplete_tail_fail_closed_without_truncation() 
         .position(|bytes| bytes == b"\"input\":10,")
         .unwrap();
     conflict[owned_start + 8] = b'2';
-    std::fs::write(&store.path, &conflict).unwrap();
+    pa_core::session::store::write(&store.path, &conflict).unwrap();
     assert!(store
         .append_child_usage_once("a", &target, child(), None)
         .is_err());
-    assert_eq!(std::fs::read(&store.path).unwrap(), conflict);
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        conflict
+    );
 }
 
 #[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
@@ -396,7 +407,7 @@ fn changed_session_identity_cannot_confirm_an_owned_attribution() {
     assert!(store
         .append_child_usage_once("a", &target, child(), None)
         .is_err());
-    let mut rows: Vec<serde_json::Value> = std::fs::read_to_string(&store.path)
+    let mut rows: Vec<serde_json::Value> = pa_core::session::store::read_to_string(&store.path)
         .unwrap()
         .lines()
         .map(|row| serde_json::from_str(row).unwrap())
@@ -408,12 +419,20 @@ fn changed_session_identity_cannot_confirm_an_owned_attribution() {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    std::fs::write(&store.path, &changed).unwrap();
+    pa_core::session::store::write(&store.path, &changed).unwrap();
     let error = store
         .append_child_usage_once("a", &target, child(), None)
         .unwrap_err();
-    assert!(error.to_string().contains("header changed"), "{error}");
-    assert_eq!(std::fs::read(&store.path).unwrap(), changed.as_bytes());
+    // Rewritten through the store, the transcript is a replacement (a new
+    // identity) where the file store rewrote it in place: either fails closed.
+    assert!(
+        error.to_string().contains("header changed") || error.to_string().contains("replaced"),
+        "{error}"
+    );
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        changed.as_bytes()
+    );
     assert!(store.child_usage_recovery.pending.is_some());
 }
 
@@ -438,7 +457,7 @@ fn nonzero_cost_hydration_confirms_the_complete_wire_decoded_owned_row() {
     assert!(live
         .append_child_usage_once("cost-a", &target, spend, None)
         .is_err());
-    let before = std::fs::read(&live.path).unwrap();
+    let before = pa_core::session::store::store().read(&live.path).unwrap();
     let full = SessionFile::open(&live.path).unwrap();
     let wire_expected = serde_json::from_value::<pa_types::session::ChildUsageAttributionEntry>(
         full.entry("cost-a").unwrap().fields.clone(),
@@ -450,7 +469,10 @@ fn nonzero_cost_hydration_confirms_the_complete_wire_decoded_owned_row() {
         .append_child_usage_once("cost-a", &target, spend, None)
         .unwrap();
     assert!(matches!(confirmed, ChildUsageAppendResult::Created(usage) if usage == wire_expected));
-    assert_eq!(std::fs::read(&live.path).unwrap(), before);
+    assert_eq!(
+        pa_core::session::store::store().read(&live.path).unwrap(),
+        before
+    );
     assert!(live.child_usage_recovery.created.is_empty());
 }
 
@@ -468,7 +490,7 @@ fn recovery_preserves_complete_wire_header_extensions_across_plain_reopen() {
     assert!(store
         .append_child_usage_once("a", &target, child(), None)
         .is_err());
-    let before = std::fs::read(&store.path).unwrap();
+    let before = pa_core::session::store::store().read(&store.path).unwrap();
     let reopened = SessionFile::open(&store.path).unwrap();
     assert_eq!(reopened.header.rest.get("type"), Some(&json!("session")));
     let before_header: serde_json::Value =
@@ -481,23 +503,26 @@ fn recovery_preserves_complete_wire_header_extensions_across_plain_reopen() {
             .unwrap(),
         ChildUsageAppendResult::Created(_)
     ));
-    assert_eq!(std::fs::read(&store.path).unwrap(), before);
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        before
+    );
 }
 
 #[test]
 fn conflicting_partial_owned_write_remains_owed_without_truncating_its_healthy_prefix() {
     let (_dir, mut store, target) = fixture();
-    let prefix = std::fs::read(&store.path).unwrap();
+    let prefix = pa_core::session::store::store().read(&store.path).unwrap();
     PARTIAL_CHILD_APPEND.with(|fault| fault.set(Some(12)));
     FAIL_CHILD_TAIL_COMPLETION.with(|fault| fault.set(true));
     assert!(store
         .append_child_usage_once("partial-a", &target, child(), None)
         .is_err());
     FAIL_CHILD_TAIL_COMPLETION.with(|fault| fault.set(false));
-    let mut partial = std::fs::read(&store.path).unwrap();
+    let mut partial = pa_core::session::store::store().read(&store.path).unwrap();
     // A foreign change is not an owned prefix: retain every byte and fail closed.
     partial[prefix.len() + 9] = b'X';
-    std::fs::write(&store.path, &partial).unwrap();
+    pa_core::session::store::write(&store.path, &partial).unwrap();
     assert!(partial.starts_with(&prefix));
     assert_eq!(partial.len(), prefix.len() + 12);
     assert!(store.child_usage_recovery.pending.is_some());
@@ -511,39 +536,61 @@ fn conflicting_partial_owned_write_remains_owed_without_truncating_its_healthy_p
     assert!(store
         .append_child_usage_once("partial-a", &target, child(), None)
         .is_err());
-    assert_eq!(std::fs::read(&store.path).unwrap(), partial);
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        partial
+    );
 }
 
 #[test]
 fn recovery_preserves_valid_unterminated_eof_and_rejects_a_changed_separator() {
     let (_dir, mut store, target) = fixture();
-    let mut prefix = std::fs::read(&store.path).unwrap();
+    let mut prefix = pa_core::session::store::store().read(&store.path).unwrap();
     assert_eq!(prefix.pop(), Some(b'\n'));
-    std::fs::write(&store.path, &prefix).unwrap();
+    pa_core::session::store::write(&store.path, &prefix).unwrap();
     FAIL_AFTER_CHILD_APPEND.with(|fault| fault.set(true));
     assert!(store
         .append_child_usage_once("a", &target, child(), None)
         .is_err());
-    let healthy = std::fs::read(&store.path).unwrap();
+    let healthy = pa_core::session::store::store().read(&store.path).unwrap();
     assert!(healthy.starts_with(&prefix));
     assert_eq!(healthy[prefix.len()], b'\n');
     let mut damaged = healthy.clone();
     damaged[prefix.len()] = b'X';
-    std::fs::write(&store.path, &damaged).unwrap();
+    pa_core::session::store::write(&store.path, &damaged).unwrap();
     let error = store
         .append_child_usage_once("a", &target, child(), None)
         .unwrap_err();
-    assert!(error.to_string().contains("separator changed"), "{error}");
-    assert_eq!(std::fs::read(&store.path).unwrap(), damaged);
-    std::fs::write(&store.path, &healthy).unwrap();
-    assert!(matches!(
-        store
-            .append_child_usage_once("a", &target, child(), None)
-            .unwrap(),
-        ChildUsageAppendResult::Created(_)
-    ));
-    assert_eq!(std::fs::read(&store.path).unwrap(), healthy);
-    assert_eq!(attribution_rows(&store).len(), 1);
+    // Rewritten through the store, the transcript is a replacement (a new
+    // identity) where the file store rewrote it in place: either fails closed.
+    assert!(
+        error.to_string().contains("separator changed") || error.to_string().contains("replaced"),
+        "{error}"
+    );
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        damaged
+    );
+    pa_core::session::store::write(&store.path, &healthy).unwrap();
+    let restored = store.append_child_usage_once("a", &target, child(), None);
+    match pa_core::session::store::store_kind() {
+        // Rewritten in place, the healthy bytes confirm the owned row.
+        pa_core::session::store::TranscriptStoreKind::File => {
+            assert!(matches!(
+                restored.unwrap(),
+                ChildUsageAppendResult::Created(_)
+            ));
+            assert_eq!(attribution_rows(&store).len(), 1);
+        }
+        // The database's rewrite is a replacement: it never confirms.
+        pa_core::session::store::TranscriptStoreKind::Sqlite => {
+            assert!(restored.unwrap_err().to_string().contains("replaced"));
+        }
+    }
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        healthy
+    );
 }
 
 #[test]
@@ -555,14 +602,14 @@ fn exact_owned_partial_tail_completes_without_truncation_and_unblocks_generic_wr
         .append_child_usage_once("partial-a", &target, child(), None)
         .is_err());
     FAIL_CHILD_TAIL_COMPLETION.with(|fault| fault.set(false));
-    let partial = std::fs::read(&store.path).unwrap();
+    let partial = pa_core::session::store::store().read(&store.path).unwrap();
     let mut expected = Usage::default();
     pa_core::session_engine::rlm_usage::attribute_child_usage(&mut expected, &child());
     let confirmed = store
         .append_child_usage_once("partial-a", &target, child(), None)
         .unwrap();
     assert!(matches!(confirmed, ChildUsageAppendResult::Created(usage) if usage == expected));
-    let completed = std::fs::read(&store.path).unwrap();
+    let completed = pa_core::session::store::store().read(&store.path).unwrap();
     assert!(completed.starts_with(&partial));
     assert!(completed.len() > partial.len());
     assert_eq!(attribution_rows(&store).len(), 1);
@@ -585,7 +632,10 @@ fn exact_owned_partial_tail_completes_without_truncation_and_unblocks_generic_wr
         ChildUsageAppendResult::Existing(_)
     ));
     assert_eq!(attribution_rows(&store).len(), 1);
-    assert!(std::fs::read(&store.path).unwrap().starts_with(&completed));
+    assert!(pa_core::session::store::store()
+        .read(&store.path)
+        .unwrap()
+        .starts_with(&completed));
 }
 
 #[test]
@@ -597,7 +647,7 @@ fn owned_tail_completion_obeys_a_managed_lease_and_refuses_a_released_one() {
         .append_child_usage_once("leased-a", &target, child(), None)
         .is_err());
     FAIL_CHILD_TAIL_COMPLETION.with(|fault| fault.set(false));
-    let partial = std::fs::read(&store.path).unwrap();
+    let partial = pa_core::session::store::store().read(&store.path).unwrap();
     let stale = std::sync::Arc::new(
         crate::lease::acquire_runtime_session_lease(&store.path, dir.path()).unwrap(),
     );
@@ -606,7 +656,10 @@ fn owned_tail_completion_obeys_a_managed_lease_and_refuses_a_released_one() {
     assert!(store
         .append_child_usage_once("leased-a", &target, child(), None)
         .is_err());
-    assert_eq!(std::fs::read(&store.path).unwrap(), partial);
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        partial
+    );
     store.lease = Some(std::sync::Arc::new(
         crate::lease::acquire_runtime_session_lease(&store.path, dir.path()).unwrap(),
     ));
@@ -616,7 +669,10 @@ fn owned_tail_completion_obeys_a_managed_lease_and_refuses_a_released_one() {
             .unwrap(),
         ChildUsageAppendResult::Created(_)
     ));
-    assert!(std::fs::read(&store.path).unwrap().starts_with(&partial));
+    assert!(pa_core::session::store::store()
+        .read(&store.path)
+        .unwrap()
+        .starts_with(&partial));
     assert_eq!(attribution_rows(&store).len(), 1);
     store.lease.take().unwrap().release();
 }
@@ -633,7 +689,7 @@ fn admitted_confirmation_finishes_while_release_drains_and_later_writes_are_refu
         .append_child_usage_once("release-a", &target, child(), None)
         .is_err());
     assert_eq!(attribution_rows(&store).len(), 1);
-    let original_bytes = std::fs::read(&store.path).unwrap();
+    let original_bytes = pa_core::session::store::store().read(&store.path).unwrap();
     let (start_tx, start_rx) = std::sync::mpsc::sync_channel(1);
     std::thread::scope(|scope| {
         let releaser = std::sync::Arc::clone(&lease);
@@ -671,14 +727,20 @@ fn admitted_confirmation_finishes_while_release_drains_and_later_writes_are_refu
     });
     assert!(store.child_usage_recovery.pending.is_none());
     assert!(store.child_usage_recovery.created.is_empty());
-    assert_eq!(std::fs::read(&store.path).unwrap(), original_bytes);
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        original_bytes
+    );
     assert!(store
         .persist_entry("custom", json!({"customType":"after-release"}))
         .is_err());
     assert!(store
         .append_child_usage_once("release-b", &target, child(), None)
         .is_err());
-    assert_eq!(std::fs::read(&store.path).unwrap(), original_bytes);
+    assert_eq!(
+        pa_core::session::store::store().read(&store.path).unwrap(),
+        original_bytes
+    );
     let mut reopened = SessionFile::open(&store.path).unwrap();
     assert!(matches!(
         reopened

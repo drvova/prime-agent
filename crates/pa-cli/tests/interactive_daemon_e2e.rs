@@ -699,11 +699,7 @@ async fn tui_attaches_prompts_streams_lists_and_switches() {
     );
     client.close();
 
-    let persisted = std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-        .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
-        .count();
+    let persisted = support::session_texts(&session_dir).len();
     assert_eq!(persisted, 2, "two session files persisted");
     drop(supervisor);
 }
@@ -1614,15 +1610,7 @@ async fn tui_dispatches_slash_commands_menu_and_suggestions() {
 
     let mut saw_echo = false;
     let mut saw_result = false;
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+    for (_path, content) in support::session_texts(&session_dir) {
         saw_echo |= content.contains("\"session_slash_command\"");
         saw_result |= content.contains("\"session_slash_command_result\"");
     }
@@ -1765,15 +1753,7 @@ async fn tui_model_picker_applies_and_effort_reports() {
     // The durable rows persisted: the creation-prefix `model_change` plus the
     // switch's own row (a switch to the current model still records one).
     let mut model_changes = 0;
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+    for (_path, content) in support::session_texts(&session_dir) {
         model_changes += content
             .lines()
             .filter(|line| line.contains(r#""type":"model_change""#))
@@ -1894,15 +1874,7 @@ async fn tui_effort_applies_on_a_map_addressable_model_without_the_reasoning_fla
     );
 
     let mut level_changes = 0;
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+    for (_path, content) in support::session_texts(&session_dir) {
         level_changes += content
             .lines()
             .filter(|line| line.contains(r#""type":"thinking_level_change""#))
@@ -1995,15 +1967,7 @@ async fn tui_compact_on_a_short_session_warns_nothing_to_compact() {
     );
     let mut saw_compaction_entry = false;
     let mut saw_result_row = false;
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+    for (_path, content) in support::session_texts(&session_dir) {
         saw_compaction_entry |= content.contains("\"type\":\"compaction\"");
         saw_result_row |= content.contains("\"session_slash_command_result\"");
     }
@@ -2186,15 +2150,7 @@ async fn tui_compact_shows_the_loader_then_the_summary_and_rebuilds() {
     );
 
     let mut saw_compaction_entry = false;
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+    for (_path, content) in support::session_texts(&session_dir) {
         saw_compaction_entry |= content.contains("\"type\":\"compaction\"");
     }
     assert!(
@@ -2356,11 +2312,7 @@ async fn tui_session_tree_navigates_forks_and_clones() {
         settled.contains("first answer"),
         "the moved branch kept the target path:\n{settled}"
     );
-    let session_files: Vec<_> = std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-        .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
-        .collect();
+    let session_files: Vec<_> = support::session_texts(&session_dir).into_iter().collect();
     assert!(
         session_files.len() >= 2,
         "the fork wrote a new session file: {} files",
@@ -3151,15 +3103,7 @@ async fn tui_renames_session_through_slash_command() {
     );
     // The session file carries the `session_info` entry with the name.
     let mut saw_name = false;
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+    for (_path, content) in support::session_texts(&session_dir) {
         for line in content.lines() {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
                 if value["type"] == "session_info" && value["name"] == "my session" {
@@ -3250,15 +3194,7 @@ async fn tui_new_command_honors_name_and_prompt() {
     // created session: the startup session plus the three /new runs; the
     // parse error added none.
     let mut files: Vec<(String, String)> = Vec::new();
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+    for (_path, content) in support::session_texts(&session_dir) {
         let id = content
             .lines()
             .next()
@@ -3455,15 +3391,7 @@ async fn tui_side_question_pane_flow() {
     );
     // Side questions are not durable: the session file has no side-question user rows.
     let mut leaked = false;
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+    for (_path, content) in support::session_texts(&session_dir) {
         leaked |= content.contains("what is the capital of France");
     }
     assert!(!leaked, "the side question stayed out of the session file");
@@ -3868,16 +3796,8 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
 
     // The persisted message carries the image: the registry held it only through the hydrate.
     let mut persisted_with_image = false;
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                persisted_with_image |= text.contains("image/png");
-            }
-        }
+    for (_path, text) in support::session_texts(&session_dir) {
+        persisted_with_image |= text.contains("image/png");
     }
     assert!(
         persisted_with_image,
@@ -4016,18 +3936,10 @@ async fn tui_prompt_stash_restores_a_pasted_image_with_the_draft() {
     );
     // The persisted message carries the image: the restored marker attached the stashed bytes.
     let mut persisted_with_image = String::new();
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if text.contains("image/png") {
-                    persisted_with_image = text;
-                    break;
-                }
-            }
+    for (_path, text) in support::session_texts(&session_dir) {
+        if text.contains("image/png") {
+            persisted_with_image = text;
+            break;
         }
     }
     assert!(
@@ -4177,16 +4089,8 @@ async fn tui_ctrl_s_stashes_and_restores_the_prompt_draft() {
     );
     client.close();
     let mut persisted_with_image = false;
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                persisted_with_image |= text.contains("image/png");
-            }
-        }
+    for (_path, text) in support::session_texts(&session_dir) {
+        persisted_with_image |= text.contains("image/png");
     }
     assert!(
         persisted_with_image,
@@ -4989,19 +4893,13 @@ async fn tui_anthropic_warning_warns_once_then_a_fresh_process_reattaches_silent
     // The gate is durable: the marker row landed in the session file, and
     // the daemon's `get_state` serves it open.
     let file = session_dir.join(format!("{}.jsonl", outcome.session_id));
-    let persisted = std::fs::read_to_string(&file).unwrap_or_else(|_| {
-        let listing = std::fs::read_dir(&session_dir).map_or_else(
-            |error| format!("unreadable: {error}"),
-            |entries| {
-                entries
-                    .filter_map(std::result::Result::ok)
-                    .map(|entry| entry.file_name().to_string_lossy().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            },
+    let persisted = support::session_texts(&session_dir)
+        .into_iter()
+        .find(|(locator, _)| locator.file_name() == file.file_name())
+        .map_or_else(
+            || panic!("the session file {} is not saved", file.display()),
+            |(_, text)| text,
         );
-        panic!("the session file {} ({listing})", file.display())
-    });
     assert!(
         persisted.contains("anthropic_subscription_warning_shown"),
         "the marker row reached the session file:\n{persisted}"
@@ -5181,17 +5079,20 @@ async fn tui_bare_launch_opens_a_fresh_session_when_a_newer_saved_one_exists_for
         "the fresh session has its own id"
     );
     // The saved file is byte-identical: no reopen, no append, no resume.
-    let after = std::fs::read_to_string(&poisoned_path).expect("read poisoned session back");
+    let saved = support::session_texts(&session_dir);
+    let after = saved
+        .iter()
+        .find(|(locator, _)| locator.file_name() == poisoned_path.file_name())
+        .map(|(_, text)| text.clone())
+        .expect("read poisoned session back");
     assert_eq!(
         after, poisoned_bytes,
         "the bare launch never wrote to the saved session file"
     );
-    let new_files: Vec<std::path::PathBuf> = std::fs::read_dir(&session_dir)
-        .expect("read sessions dir")
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
-        .filter(|path| path != &poisoned_path)
+    let new_files: Vec<std::path::PathBuf> = saved
+        .into_iter()
+        .map(|(locator, _)| locator)
+        .filter(|path| path.file_name() != poisoned_path.file_name())
         .collect();
     assert_eq!(
         new_files.len(),
@@ -5289,15 +5190,7 @@ async fn tui_two_back_to_back_submits_reach_the_daemon_in_order() {
     // The daemon received the prompts in order: "first submit" before "second submit".
     let mut first_index = None;
     let mut second_index = None;
-    for entry in std::fs::read_dir(&session_dir)
-        .expect("read session dir")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+    for (_path, content) in support::session_texts(&session_dir) {
         first_index = first_index.or_else(|| content.find("first submit"));
         second_index = second_index.or_else(|| content.find("second submit"));
     }
@@ -5423,14 +5316,8 @@ async fn tui_submit_outlived_by_switch_stays_silent_on_the_new_session() {
     let mut ran = false;
     while Instant::now() < deadline {
         let mut content = String::new();
-        for entry in std::fs::read_dir(&session_dir)
-            .expect("read session dir")
-            .flatten()
-        {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                content.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
-            }
+        for (_path, text) in support::session_texts(&session_dir) {
+            content.push_str(&text);
         }
         if content.contains("for a") && content.contains("a turn reply") {
             ran = true;
@@ -5528,7 +5415,7 @@ async fn tui_headless_done_with_a_turn_settling_parks_the_closed_input_channel()
 }
 
 /// A refused submit restores the draft through the backgrounded outcome:
-/// killing the worker (and removing its file, so no rebind can resurrect it)
+/// killing the worker (and deleting its session, so no rebind can resurrect it)
 /// settles the round trip as a refusal — the turn never ran.
 #[tokio::test]
 async fn tui_refused_submit_restores_the_draft_after_the_round_trip() {
@@ -5569,16 +5456,19 @@ async fn tui_refused_submit_restores_the_draft_after_the_round_trip() {
             })
             .await
             .expect("kill session worker");
-        client.close();
-        for entry in std::fs::read_dir(&kill_session_dir)
-            .expect("read session dir")
-            .flatten()
-        {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                std::fs::remove_file(&path).expect("remove the session file");
-            }
+        // The sessions live in the daemon's database: delete through it.
+        for (path, _) in support::session_texts(&kill_session_dir) {
+            client
+                .request_ok(DaemonCommand::DeleteSavedSession {
+                    id: None,
+                    active_session_id: None,
+                    session_path: path.to_string_lossy().into_owned(),
+                    rest: serde_json::Map::default(),
+                })
+                .await
+                .expect("delete the saved session");
         }
+        client.close();
     });
 
     let options = pa_tui::interactive::InteractiveOptions {

@@ -192,10 +192,10 @@ The table summarizes each crate's current direct workspace dependencies:
 | `pa-telemetry` | Events and sinks | none |
 | `pa-agent` | Provider-independent agent loop | none |
 | `pa-shell` | Built-in bash-compatible shell and its utilities | `pa-types` |
-| `pa-log` | SQLite store: the event log and session transcripts (being built; nothing uses it yet) | `pa-types` |
+| `pa-log` | SQLite store: the event log and session transcripts (the transcript store's database) | `pa-types` |
 | `pa-ai` | Providers, model registry, streaming | `pa-types` |
 | `pa-models` | Live model catalog and transport | `pa-ai`, `pa-types` |
-| `pa-core` | Session engine, tools, skills, Scheme kernel, settings | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-shell`, `pa-telemetry` |
+| `pa-core` | Session engine, tools, skills, Scheme kernel, settings, transcript store | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-shell`, `pa-telemetry`, `pa-log` |
 | `pa-daemon` | Supervisor, hosted sessions, restart owner, wire protocol | `pa-types`, `pa-core`, `pa-agent`, `pa-ai`, `pa-telemetry`, `pa-models` |
 | `pa-tui` | Terminal UI, daemon-wire client | `pa-types` |
 | `pa-cli` | `prime-agent` binary, composition root | `pa-types`, `pa-core`, `pa-ai`, `pa-agent`, `pa-daemon`, `pa-tui`, `pa-telemetry` |
@@ -255,8 +255,16 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   what the transcript shows was saved, a command its kernel left running is reaped and
   reported to the model, and an idle session with an armed scheduled job is woken when the
   job is due. Attached clients reconnect on their own and show what happened.
-- Sessions persist on disk (append-only JSONL, same layout as `~/.prime/agent/sessions`), so
-  every recovery above starts from the transcript.
+- Sessions persist on disk in the transcript store (`pa_core::session::store`), so every
+  recovery above starts from the transcript. The default store is one SQLite database,
+  `<agent dir>/agent.db` (`pa-log`): each transcript is kept byte for byte as its JSONL lines,
+  addressed by its `<sessions dir>/<id>.jsonl` locator. It runs WAL with `synchronous=NORMAL`:
+  a write returns once committed, which survives a crash of the process; a power loss can drop
+  the last commits but never corrupts the database. JSONL session files are imported (in the
+  background, or whole on their first write) and left in place, read-only, as the rollback;
+  `prime-agent export-jsonl` writes the JSONL format back (`docs/legacy-upgrade-contract.md`,
+  "Storage migration"). The global setting `"transcriptStore": "file"` keeps one JSONL file per
+  session for one release.
 - Fault-injection seams for tests (`panicOn`, `(%test-block marker)`, the export hold) exist
   in debug builds only.
 - No stubs, no `todo!()`, no swallowed errors (`anyhow` bubbling to UI is fine).

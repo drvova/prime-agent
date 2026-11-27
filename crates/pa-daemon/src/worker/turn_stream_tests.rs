@@ -523,7 +523,7 @@ async fn model_transitions_reach_the_worker_owned_session_file() {
                 }],
             )
             .await;
-        let rows: Vec<Value> = std::fs::read_to_string(&path)
+        let rows: Vec<Value> = pa_core::session::store::read_to_string(&path)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -605,7 +605,7 @@ async fn prompt_restore_boundary_is_supplied_only_for_file_backed_stores() {
             let path = dir.path().join("backed.jsonl");
             let persisted = crate::session_store::SessionFile::open(&path).unwrap();
             assert!(
-                std::fs::read_to_string(&path)
+                pa_core::session::store::read_to_string(&path)
                     .unwrap()
                     .contains("prior_context"),
                 "the captured boundary follows the prefix on disk"

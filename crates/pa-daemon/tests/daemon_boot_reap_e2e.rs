@@ -237,6 +237,8 @@ fn boot_reap_clears_a_leftover_worker_process_and_its_session_reopens() {
     let session_file = sessions_dir.join(format!("{}.jsonl", session.session_id()));
     session.set_path(session_file.clone());
     session.rewrite().expect("session file");
+    // A saved session the supervisor (its own agent dir) finds as its file.
+    common::into_original_file(&session_file);
     let leftover = spawn_leftover_worker(dir.path(), &socket, "leftover");
     std::mem::forget(
         pa_daemon::lease::acquire_runtime_session_lease(&session_file, &agent_dir)

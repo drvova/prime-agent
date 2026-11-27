@@ -353,14 +353,16 @@ impl Harness {
     }
 
     fn session_entries(&self) -> Vec<Value> {
-        let files: Vec<PathBuf> = std::fs::read_dir(&self.session_dir)
+        let files: Vec<PathBuf> = common::transcripts(&self.session_dir)
+            .list(&self.session_dir)
             .expect("read session dir")
-            .flatten()
-            .map(|entry| entry.path())
+            .transcripts
+            .into_iter()
+            .map(|transcript| transcript.locator)
             .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
             .collect();
         assert_eq!(files.len(), 1, "one session file, got {files:?}");
-        let text = std::fs::read_to_string(&files[0]).expect("read session file");
+        let text = common::read_transcript(&files[0]).expect("read session file");
         text.lines()
             .map(|line| serde_json::from_str(line).expect("parse entry"))
             .collect()
@@ -567,10 +569,12 @@ fn session_summaries_carry_the_thinking_level_for_both_session_kinds() {
             .clone()
     };
     let parent_session_id = parent_info["id"].as_str().expect("id").to_string();
-    let session_file = std::fs::read_dir(&harness.session_dir)
+    let session_file = common::transcripts(&harness.session_dir)
+        .list(&harness.session_dir)
         .expect("read session dir")
-        .flatten()
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
         .expect("session file");
     let child_dir = harness.agent_dir.join("subagents");

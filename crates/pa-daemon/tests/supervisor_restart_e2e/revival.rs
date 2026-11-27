@@ -35,7 +35,11 @@ fn write_revival_fixture(
     let session_file = sessions_dir.join(format!("{session_id}.jsonl"));
     session.set_path(session_file.clone());
     session.rewrite().expect("session file");
-    let session_bytes = std::fs::read(&session_file).expect("session bytes");
+    // A saved session the supervisor (its own agent dir) finds as its file.
+    crate::common::into_original_file(&session_file);
+    let session_bytes = crate::common::transcripts(&session_file)
+        .read(&session_file)
+        .expect("session bytes");
 
     // A script the relaunched create would drive; the gate must park the
     // worker instead of reviving it.
@@ -162,7 +166,9 @@ fn plain_boot_parks_stale_busy_evidence() {
         "the parked session must not come back as a worker"
     );
     assert_eq!(
-        std::fs::read(&fixture.session_file).expect("session bytes"),
+        crate::common::transcripts(&fixture.session_file)
+            .read(&fixture.session_file)
+            .expect("session bytes"),
         fixture.session_bytes,
         "the parked session file must stay byte-identical"
     );
@@ -208,7 +214,9 @@ fn plain_boot_never_revives_a_stopped_session() {
         "the stopped session resurrected as a worker"
     );
     assert_eq!(
-        std::fs::read(&fixture.session_file).expect("session bytes"),
+        crate::common::transcripts(&fixture.session_file)
+            .read(&fixture.session_file)
+            .expect("session bytes"),
         fixture.session_bytes,
         "the archived session file must stay byte-identical"
     );

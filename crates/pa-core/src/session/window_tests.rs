@@ -210,7 +210,9 @@ fn warm_cache_reads_only_header_and_suffix_and_append_stays_warm() {
     assert_eq!(appended.context().thinking_level, "low");
     assert_eq!(appended.leaf_id(), "new");
     let expected = build_session_context(
-        &super::super::parse_session_entries(&std::fs::read_to_string(&path).unwrap()),
+        &super::super::parse_session_entries(
+            &crate::session::store::read_to_string(&path).unwrap(),
+        ),
         None,
     );
     assert_eq!(
@@ -476,7 +478,7 @@ async fn context_and_hydration_match_full_reader() {
         serde_json::to_vec(window.entries()).unwrap(),
         serde_json::to_vec(&full).unwrap()
     );
-    assert_eq!(std::fs::read_to_string(path).unwrap(), body);
+    assert_eq!(crate::session::store::read_to_string(&path).unwrap(), body);
 }
 
 #[cfg(unix)] // the windowed reader is unix-only: it anchors on inode identity
@@ -503,7 +505,8 @@ async fn metadata_and_concurrent_disk_append_survive_hydration() {
     store.ensure_full_history().await.unwrap();
     assert_eq!(store.leaf_id(), "leaf");
     assert_eq!(store.entries().last().unwrap().id(), Some("appended"));
-    let expected = super::super::parse_session_entries(&std::fs::read_to_string(&path).unwrap());
+    let expected =
+        super::super::parse_session_entries(&crate::session::store::read_to_string(&path).unwrap());
     assert_eq!(
         serde_json::to_vec(store.entries()).unwrap(),
         serde_json::to_vec(&expected).unwrap()
@@ -529,7 +532,7 @@ async fn manager_opens_window_and_appends_without_hydration() {
     );
     manager.append_session_info("resumed").unwrap();
     assert!(!manager.is_full_history());
-    let after = std::fs::read_to_string(&path).unwrap();
+    let after = crate::session::store::read_to_string(&path).unwrap();
     assert!(after.starts_with(&body));
     let reopened = super::super::manager::SessionManager::open(dir.path(), dir.path(), &path);
     assert_eq!(
@@ -1017,7 +1020,7 @@ fn append_cached_bounds_an_unterminated_tail() {
     let appended =
         b"{\"type\":\"message\",\"id\":\"after\",\"timestamp\":\"2026-10-08T00:00:00.000Z\"}\n";
     append_cached(&path, appended, AppendOwnership::Unleased).unwrap();
-    let text = std::fs::read_to_string(&path).unwrap();
+    let text = crate::session::store::read_to_string(&path).unwrap();
     let mut parsed = Vec::new();
     for (index, line) in text.lines().enumerate() {
         if serde_json::from_str::<serde_json::Value>(line).is_ok() {

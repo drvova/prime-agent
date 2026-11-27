@@ -40,6 +40,11 @@ const RAW_IO: &[&str] = &[
     "rename_onto",
     "AtomicFile",
     "tokio::fs::",
+    // A transcript need not be a file (the SQLite store keeps it in its
+    // database): whether one is there is the store's `exists`/`stat`.
+    ".exists()",
+    ".is_file()",
+    ".try_exists()",
 ];
 
 /// Words that name a transcript in an I/O call's argument.
@@ -103,9 +108,9 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "the session-info scan sidecar write",
     ),
     (
-        "pa-daemon/src/session_store/write.rs",
-        "let mut file = std::fs::OpenOptions::new().append(true).open(&self.path)?;",
-        "a #[cfg(test)] fault injection that simulates a torn append",
+        "pa-daemon/src/stop_cleanup.rs",
+        ".is_file()",
+        "the session's `scheduled-jobs.json` artifact (a file of its own, not the transcript)",
     ),
     (
         "pa-daemon/src/context_tree_children.rs",

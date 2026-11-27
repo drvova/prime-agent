@@ -201,9 +201,8 @@ async fn a_switched_session_repairs_a_torn_tail_before_its_first_append() {
     session.rewrite().unwrap();
     {
         use std::io::Write as _;
-        let mut torn = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
+        let mut torn = pa_core::session::store::store()
+            .open_for_completion(&path)
             .unwrap();
         torn.write_all(
             b"{\"type\":\"message\",\"id\":\"torn\",\"timestamp\":\"2026-10-07T00:00:00Z\",\"message\":{\"role\":\"user\",\"con\xc3",
@@ -265,7 +264,7 @@ async fn a_switched_non_session_file_is_never_rewritten() {
         .await;
     assert!(!switched.success, "the switch must fail: {switched:?}");
     assert_eq!(
-        std::fs::read(&path).unwrap(),
+        pa_core::session::store::store().read(&path).unwrap(),
         b"hello\nworld".to_vec(),
         "the non-session file keeps its bytes"
     );
@@ -284,9 +283,8 @@ async fn a_resumed_session_repairs_a_non_utf8_torn_tail_before_its_first_append(
     session.rewrite().unwrap();
     {
         use std::io::Write as _;
-        let mut torn = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
+        let mut torn = pa_core::session::store::store()
+            .open_for_completion(&path)
             .unwrap();
         torn.write_all(
             b"{\"type\":\"message\",\"id\":\"torn\",\"timestamp\":\"2026-10-07T00:00:00Z\",\"message\":{\"role\":\"user\",\"con\xc3",
@@ -344,9 +342,8 @@ async fn a_symlinked_session_repairs_its_target_and_keeps_the_append_lease() {
     std::os::unix::fs::symlink(&target, &alias).unwrap();
     {
         use std::io::Write as _;
-        let mut torn = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&target)
+        let mut torn = pa_core::session::store::store()
+            .open_for_completion(&target)
             .unwrap();
         torn.write_all(b"{\"type\":\"message\",\"id\":\"torn\",\"message\":\"con\xc3")
             .unwrap();
@@ -400,22 +397,27 @@ fn a_large_valid_last_row_stays_intact_during_tail_repair() {
         "timestamp": 0,
     }));
     session.rewrite().unwrap();
-    let original = std::fs::read(&path).unwrap();
+    let original = pa_core::session::store::store().read(&path).unwrap();
     assert!(original.len() > 1024 * 1024);
     pa_core::session::store::store().repair_tail(&path);
-    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(
+        pa_core::session::store::store().read(&path).unwrap(),
+        original
+    );
 
     {
         use std::io::Write as _;
-        let mut torn = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
+        let mut torn = pa_core::session::store::store()
+            .open_for_completion(&path)
             .unwrap();
         torn.write_all(b"{\"type\":\"message\",\"id\":\"torn\"\xc3")
             .unwrap();
     }
     pa_core::session::store::store().repair_tail(&path);
-    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(
+        pa_core::session::store::store().read(&path).unwrap(),
+        original
+    );
     let reopened = crate::session_store::SessionFile::open(&path).unwrap();
     assert!(reopened.entry(&id).is_some(), "the large row reloads");
 }
@@ -444,14 +446,13 @@ async fn an_unleased_switch_never_rewrites_another_workers_damaged_file() {
         .is_some());
     {
         use std::io::Write as _;
-        let mut torn = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&target)
+        let mut torn = pa_core::session::store::store()
+            .open_for_completion(&target)
             .unwrap();
         torn.write_all(b"{\"type\":\"message\",\"id\":\"torn\",\"message\":\"con\xc3")
             .unwrap();
     }
-    let before = std::fs::read(&target).unwrap();
+    let before = pa_core::session::store::store().read(&target).unwrap();
     let visitor = recording_worker(dir.path(), events);
     let created = visitor
         .dispatch("create", &json!({ "noSession": true, "cwd": "/tmp" }))
@@ -467,7 +468,10 @@ async fn an_unleased_switch_never_rewrites_another_workers_damaged_file() {
         !switched.success,
         "the damaged target must fail open: {switched:?}"
     );
-    assert_eq!(std::fs::read(&target).unwrap(), before);
+    assert_eq!(
+        pa_core::session::store::store().read(&target).unwrap(),
+        before
+    );
     assert!(owner
         .core
         .lock()

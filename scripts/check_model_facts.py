@@ -22,7 +22,7 @@ import tempfile
 import threading
 import time
 
-from lifecycle_lib import digest, env_for, stop
+from lifecycle_lib import digest, env_for, stop, transcripts_under
 from check_restore_notice import texts
 
 MARKER = 'MODEL_FACTS_PARITY='
@@ -232,8 +232,9 @@ def run_case(binary, root, observation):
                 probe = latest_probe(requests[-1], 'call_facts_%s' % phase)
                 observation['probes'].append(probe)
                 verify_probe(probe, model, phase + 1)
-            session_rows = [json.loads(line) for path in (root / 'agent/sessions').rglob('*.jsonl')
-                            for line in path.read_text().splitlines()]
+            session_rows = [json.loads(line) for _path, text in
+                            transcripts_under(root / 'agent', root / 'agent/sessions')
+                            for line in text.splitlines()]
             changes = [{'provider': row['provider'], 'modelId': row['modelId']}
                        for row in session_rows if row.get('type') == 'model_change']
             observation['persisted_model_changes'] = changes

@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 /// The sidecar must certify the file's final generation and have consumed
 /// it whole: `generation.len == file len && offset == file len`.
 fn assert_sidecar_current(label: &str, session_file: &Path) {
-    let file_len = std::fs::metadata(session_file).expect("session file").len();
+    let file_len = pa_core::session::store::store()
+        .stat(session_file)
+        .expect("session file")
+        .len();
     let sidecar = session_file.with_extension("info-cache.json");
     let bytes =
         std::fs::read(&sidecar).unwrap_or_else(|error| panic!("{label}: no sidecar: {error}"));

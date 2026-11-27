@@ -241,9 +241,9 @@ impl SessionFile {
                     self.lease.is_none() && cut < bytes.len(),
                     "invalid partial append fixture"
                 );
-                let mut file = std::fs::OpenOptions::new().append(true).open(&self.path)?;
-                file.write_all(&bytes[..cut])?;
-                file.flush()?;
+                transcripts
+                    .open_for_completion(&self.path)?
+                    .write_all(&bytes[..cut])?;
                 anyhow::bail!("injected partial attribution append error");
             }
             match &self.lease {

@@ -159,6 +159,20 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
     )
     .options(&["--skip  Never import automatically (writes the import marker)"]),
     CommandSpec::new(
+        &["export-jsonl"],
+        "export-jsonl (--session <id> | --all) --out <dir>",
+        "Write saved sessions out as JSONL session files",
+    )
+    .description(
+        "Sessions are kept in one database (agent.db in the agent dir). This writes them out as JSONL session files, byte for byte what is stored: a session imported from a JSONL file and not continued comes back as that file. --session takes a session id or the start of one; --all keeps the agent dir's layout under --out (sessions outside it go under other/). A file already at a destination is never overwritten.",
+    )
+    .options(&[
+        "--session <id>  Export the session with this id (or id prefix)",
+        "--all           Export every saved session",
+        "--out <dir>     Where to write the files",
+    ])
+    .examples(&["export-jsonl --all --out ~/sessions-backup"]),
+    CommandSpec::new(
         &["shutdown"],
         "shutdown [--force] [--json]",
         "Stop every agent and background service",

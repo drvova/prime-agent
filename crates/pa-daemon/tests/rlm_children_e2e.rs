@@ -342,19 +342,15 @@ async fn rlm_children_spawn_roster_collect_delete_end_to_end() {
         .join(&handle.rlm_child_id);
     assert_eq!(handle.session_dir, expected_dir.to_string_lossy());
     // Same layout, alongside the per-child display file the passive roster reads.
-    let child_files: Vec<std::fs::DirEntry> = std::fs::read_dir(&expected_dir)
+    let child_files: Vec<std::path::PathBuf> = common::transcripts(&expected_dir)
+        .list(&expected_dir)
         .expect("child session dir")
-        .filter_map(std::result::Result::ok)
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .and_then(|extension| extension.to_str())
-                == Some("jsonl")
-        })
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .collect();
     assert_eq!(child_files.len(), 1, "one session file in the child dir");
-    assert!(child_files[0].path().to_string_lossy().ends_with(".jsonl"));
+    assert!(child_files[0].to_string_lossy().ends_with(".jsonl"));
     let display: Value = serde_json::from_str(
         &std::fs::read_to_string(expected_dir.join("rlm-subagent.json")).expect("display file"),
     )
@@ -370,8 +366,7 @@ async fn rlm_children_spawn_roster_collect_delete_end_to_end() {
     // The child session header records the recursion identity (TS parity:
     // parentSession + rlmDepth).
     let header: Value = {
-        let content =
-            std::fs::read_to_string(child_files[0].path()).expect("read child session file");
+        let content = common::read_transcript(&child_files[0]).expect("read child session file");
         let first = content.lines().next().expect("header line");
         serde_json::from_str(first).expect("parse header")
     };
@@ -426,7 +421,7 @@ async fn rlm_children_spawn_roster_collect_delete_end_to_end() {
     // carrying the promised `[task from parent]` label, the raw prompt as
     // `details.message`, `details.id "spawn:<child id>"`, and the
     // delivery's parent/child endpoints.
-    let rows: Vec<Value> = std::fs::read_to_string(child_files[0].path())
+    let rows: Vec<Value> = common::read_transcript(&child_files[0])
         .expect("read child session file")
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -607,7 +602,8 @@ async fn rlm_create_session_spawns_a_prompted_depth_zero_session() {
     assert!(Path::new(&handle.session_file)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl")));
-    assert!(Path::new(&handle.session_file).exists());
+    assert!(common::transcripts(Path::new(&handle.session_file))
+        .exists(Path::new(&handle.session_file)));
     assert_eq!(handle.model, "scripted/faux-1");
 
     // A depth-0 resident session, not a subagent roster row.

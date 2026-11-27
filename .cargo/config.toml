@@ -3,3 +3,7 @@
 # already set, so a test that needs it can still set its own value.
 [env]
 DO_NOT_TRACK = "1"
+# Every cargo test/run keeps its transcript databases under target/, never in
+# a real agent dir (pa_core::session::store::DATABASE_DIR_ENV): a test run
+# never creates or writes ~/.prime/agent/agent.db.
+PRIME_AGENT_TRANSCRIPT_DB_DIR = { value = "target/test-transcripts", relative = true }

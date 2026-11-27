@@ -852,7 +852,8 @@ mod tests {
             data["thinkingLevel"], "high",
             "the state's thinking: {data}"
         );
-        let file = std::fs::read_to_string(&session_path).expect("the session file");
+        let file =
+            pa_core::session::store::read_to_string(&session_path).expect("the session file");
         assert!(
             file.contains("\"type\":\"model_change\"")
                 && file.contains("\"provider\":\"prime-inference\"")

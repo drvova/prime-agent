@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+mod support;
+
 /// The child plus the tempdir it runs in.
 struct AcpChild {
     child: Child,
@@ -1152,9 +1154,10 @@ fn acp_daemon_attached_default_session_persists_and_resumes() {
             .is_some_and(|dir| dir.ends_with("agent/sessions")),
         "the session is saved in the session dir: {session_file}"
     );
-    assert!(std::fs::read_to_string(&session_file)
-        .unwrap()
-        .contains("Name a river."));
+    assert!(
+        support::saved_transcript(&home_path.join(".prime/agent"), &session_file)
+            .contains("Name a river.")
+    );
     let descriptor = worker_descriptor(&home_path);
     assert_eq!(descriptor["telemetryDisabled"], json!(true), "{descriptor}");
     assert!(
@@ -1204,7 +1207,7 @@ fn acp_daemon_attached_default_session_persists_and_resumes() {
         sessions[0]["activeSessionId"], active_session_id,
         "--resume binds the live worker"
     );
-    let saved = std::fs::read_to_string(&session_file).unwrap();
+    let saved = support::saved_transcript(&home_path.join(".prime/agent"), &session_file);
     assert!(saved.contains("Name a river.") && saved.contains("Name a mountain."));
 }
 
@@ -1406,7 +1409,10 @@ fn acp_daemon_attached_resident_eof_mid_turn_cancels_the_prompt() {
         "a resident session survives EOF: {sessions:?}"
     );
     assert_eq!(sessions[0]["activeSessionId"], active_session_id);
-    let saved = std::fs::read_to_string(&session_file).unwrap();
+    let saved = support::saved_transcript(
+        &socket.parent().expect("the home").join(".prime/agent"),
+        &session_file,
+    );
     assert!(saved.contains("a slow question"), "{saved}");
     assert!(
         !saved.contains(answer),

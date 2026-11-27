@@ -349,15 +349,17 @@ fn session_tree_commands_over_the_supervisor_wire() {
         serde_json::json!("explored the second branch")
     );
     let mut saw_branch_summary = false;
-    for entry in std::fs::read_dir(&session_dir)
+    for path in common::transcripts(&session_dir)
+        .list(&session_dir)
         .expect("read session dir")
-        .flatten()
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
     {
-        let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let content = common::read_transcript(&path).unwrap_or_default();
         saw_branch_summary |= content.contains("\"type\":\"branch_summary\"");
     }
     assert!(
@@ -390,11 +392,10 @@ fn session_tree_commands_over_the_supervisor_wire() {
         !texts.iter().any(|text| text.contains("second question")),
         "the fork cut before the target message: {texts:?}"
     );
-    let session_files: Vec<_> = std::fs::read_dir(&session_dir)
+    let session_files: Vec<_> = common::transcripts(&session_dir)
+        .list(&session_dir)
         .expect("read session dir")
-        .flatten()
-        .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
-        .collect();
+        .transcripts;
     assert!(
         session_files.len() >= 2,
         "the fork wrote a new session file: {} files",

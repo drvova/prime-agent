@@ -147,7 +147,7 @@ pub fn export_from_file(
     output_path: Option<&str>,
     agent_dir: &Path,
 ) -> Result<String> {
-    if !input_path.exists() {
+    if !crate::session::store::store().exists(input_path) {
         bail!("File not found: {}", input_path.display());
     }
     let data = session_data_from_file(input_path)?;

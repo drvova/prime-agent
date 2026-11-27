@@ -53,6 +53,18 @@ fn spawn_daemon(socket: &std::path::Path, agent_dir: &std::path::Path) -> Daemon
         .spawn()
         .expect("spawn pa-daemon supervisor");
     common::await_listening(socket, &mut child);
+    // The boot import brings the fixture files into the store (each one's
+    // generation changes with it): the catalog is read after it settled, so
+    // a fold and the sidecar it backfills see one generation.
+    let log = pa_daemon::paths::daemon_log_path(socket, agent_dir);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !std::fs::read_to_string(&log).is_ok_and(|text| text.contains("transcript import:")) {
+        assert!(
+            Instant::now() < deadline,
+            "the boot transcript import never settled"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     Daemon {
         child,
         socket: socket.to_path_buf(),

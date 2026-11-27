@@ -87,9 +87,22 @@ impl SessionAlreadyActiveError {
 /// The canonical spelling of a session path that may not exist yet: the
 /// nearest existing ancestor is canonicalized and the missing tail rejoined,
 /// so a lease taken before the file (or its directory) exists names the same
-/// path the file canonicalizes to once created.
+/// path the file canonicalizes to once created. A symbolic link at the path
+/// names its target even when the target is no file (the transcript store
+/// may keep it in its database).
 #[must_use]
 pub fn canonical_session_path(path: &Path) -> PathBuf {
+    let mut linked = path.to_path_buf();
+    for _ in 0..40 {
+        let Ok(target) = fs::read_link(&linked) else {
+            break;
+        };
+        linked = match linked.parent() {
+            Some(parent) if target.is_relative() => parent.join(target),
+            _ => target,
+        };
+    }
+    let path = linked.as_path();
     let mut missing = Vec::new();
     let mut existing = path;
     loop {
@@ -1003,7 +1016,10 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "{}\n").unwrap();
         lease.append(&path, b"{}\n").unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "{}\n{}\n");
+        assert_eq!(
+            pa_core::session::store::read_to_string(&path).unwrap(),
+            "{}\n{}\n"
+        );
     }
 
     #[test]

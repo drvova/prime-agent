@@ -259,7 +259,7 @@ mod tests {
         session
             .append_message(AgentMessage::Assistant(legacy))
             .unwrap();
-        let text = std::fs::read_to_string(&file).unwrap();
+        let text = crate::session::store::read_to_string(&file).unwrap();
         let reopened = SessionManager::open(dir.path(), &session_dir, &file);
         let modes: Vec<_> = reopened
             .get_entries()

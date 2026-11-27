@@ -847,6 +847,8 @@ async fn run_interactive_surface(
                 .map_or(0, |elapsed| elapsed.as_millis() as i64),
         ),
     );
+    // A daemon that could not open its transcript database keeps sessions as JSONL files.
+    session.show_transcript_store_fallback(&mut view);
     // The empty composer's self-retiring key hint (omp), until its key has been used enough.
     view.composer_hint = session.composer_hint.label(view.editor.keybindings());
     // TS `restorePromptStashOnOpen`: a draft stashed on the way out (a

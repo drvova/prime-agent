@@ -995,14 +995,9 @@ mod tombstone_usage_tests {
                 }
             }
         });
-        {
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&path)
-                .unwrap();
-            writeln!(file, "{usage_row}").unwrap();
-        }
+        pa_core::session::store::store()
+            .append(&path, format!("{usage_row}\n").as_bytes())
+            .unwrap();
         path
     }
 
@@ -1044,7 +1039,7 @@ mod tombstone_usage_tests {
         assert!((snapshot.cost - 0.4).abs() < 1e-9);
         // The file goes (the trash/unlink below the tombstone): the bucket
         // survives the removal - the snapshot is the source, not the file.
-        std::fs::remove_file(&child).unwrap();
+        pa_core::session::store::store().remove(&child).unwrap();
         let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();
         let parent_key = crate::lease::canonical_session_path(&parent)
             .to_string_lossy()

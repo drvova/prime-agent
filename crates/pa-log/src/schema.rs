@@ -53,6 +53,46 @@ const MIGRATIONS: &[&str] = &[
     ) WITHOUT ROWID;
     CREATE INDEX entries_entry_id ON entries (session, entry_id) WHERE entry_id IS NOT NULL;
     ",
+    // 2: transcripts addressed by locator, byte for byte (the transcript
+    // store's tables), and the store's own facts (its identity, import
+    // markers). A line is stored with its newline; `start` is where it
+    // starts in the transcript's bytes.
+    r"
+    CREATE TABLE store_meta (
+        key   TEXT PRIMARY KEY,
+        value NOT NULL
+    );
+    INSERT INTO store_meta (key, value) VALUES ('store_id', abs(random()));
+
+    CREATE TABLE transcripts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        locator     TEXT NOT NULL UNIQUE,
+        dir         TEXT NOT NULL,
+        session     TEXT,
+        len         INTEGER NOT NULL,
+        lines       INTEGER NOT NULL,
+        version     INTEGER NOT NULL,
+        created_ns  INTEGER NOT NULL,
+        modified_ns INTEGER NOT NULL,
+        source      TEXT
+    );
+    CREATE INDEX transcripts_dir ON transcripts (dir);
+    CREATE INDEX transcripts_session ON transcripts (session) WHERE session IS NOT NULL;
+
+    CREATE TABLE transcript_lines (
+        transcript INTEGER NOT NULL REFERENCES transcripts (id) ON DELETE CASCADE,
+        seq        INTEGER NOT NULL,
+        start      INTEGER NOT NULL,
+        kind       TEXT,
+        entry_id   TEXT,
+        parent_id  TEXT,
+        bytes      BLOB NOT NULL,
+        PRIMARY KEY (transcript, seq)
+    );
+    CREATE UNIQUE INDEX transcript_lines_start ON transcript_lines (transcript, start);
+    CREATE INDEX transcript_lines_entry_id ON transcript_lines (transcript, entry_id)
+        WHERE entry_id IS NOT NULL;
+    ",
 ];
 
 /// Bring `connection`'s database to the current schema.

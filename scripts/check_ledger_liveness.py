@@ -290,7 +290,12 @@ def run_case(binary, root, observed):
     (root / 'agent/models.json').write_text(json.dumps(models))
     (root / 'agent/settings.json').write_text(json.dumps({'prewarmPythonKernel': False,
         'defaultProvider': 'parity-local', 'defaultModel': 'parity-1',
-        'onboardingCompleted': True, 'telemetry': {'noticeShown': True}}))
+        'onboardingCompleted': True, 'telemetry': {'noticeShown': True},
+        # This check moves, deletes and stats the child's transcript file on
+        # disk (relocation, removal, the exit sidecar's byte length): it runs on
+        # the JSONL file store, the escape hatch from the default SQLite store,
+        # where a transcript is no file an outside tool can move.
+        'transcriptStore': 'file'}))
     process, client = None, None
     log_path = root / 'daemon.log'
     try:

@@ -10,6 +10,7 @@ All providers, homes, sessions, and subprocesses belong to this fixture.
 import argparse
 import http.server
 import json
+import shutil
 import os
 from pathlib import Path
 import sys
@@ -20,7 +21,7 @@ import time
 
 from check_restore_notice import invoke, probe_from, texts
 from check_kernel_env import KernelClient
-from lifecycle_lib import OwnedProcesses, TAG, digest, finish
+from lifecycle_lib import OwnedProcesses, TAG, digest, finish, session_transcripts, transcripts_under
 
 MARKER = 'MINIMUM_REASONING_RESULT='
 
@@ -107,10 +108,14 @@ def summarize_branch(client, active, session_file):
     assert moved.get('cancelled') is not True, moved
 
 
-def wait_for_operation(server, scenario, sessions, timeout_seconds=90):
-    """Turn-idle can precede the deferred operation and its continuation."""
+def wait_for_operation(server, scenario, sessions, timeout_seconds=90, refresh=None):
+    """Turn-idle can precede the deferred operation and its continuation.
+    `refresh`, when given, rewrites `sessions` from the product's store before each
+    scan (the transcripts live in its database, not in files)."""
     deadline = time.monotonic() + timeout_seconds
     while True:
+        if refresh is not None:
+            refresh()
         assert server.error is None, server.error
         bodies = [row['body'] for row in server.requests]
         probe_ready = any(line.startswith(MARKER)
@@ -200,10 +205,20 @@ def run_case(binary, scenario, root, observation):
                         activeSessionId=active, message=message)
         assert server.error is None, server.error
         if scenario == 'branch':
-            session_files = list(sessions.rglob('*.jsonl'))
-            assert len(session_files) == 1, session_files
-            summarize_branch(client, active, session_files[0])
-        scheduled, outcomes = wait_for_operation(server, scenario, sessions)
+            session_files = session_transcripts(agent, sessions)
+            assert len(session_files) == 1, [path for path, _ in session_files]
+            branch_file = root / 'branch-session.jsonl'
+            branch_file.write_text(session_files[0][1])
+            summarize_branch(client, active, branch_file)
+        exported = root / 'exported-sessions'
+
+        def refresh():
+            shutil.rmtree(exported, ignore_errors=True)
+            exported.mkdir()
+            for index, (_path, text) in enumerate(transcripts_under(agent, sessions)):
+                (exported / ('%d.jsonl' % index)).write_text(text)
+
+        scheduled, outcomes = wait_for_operation(server, scenario, exported, refresh=refresh)
         observation['scheduled'] = scheduled
         assert scheduled.get('scheduled') is True, scheduled
         auxiliary = [row['body'] for row in server.requests if row['auxiliary']]

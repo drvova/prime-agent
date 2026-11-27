@@ -265,13 +265,16 @@ fn captured_window_matches_full_transcript_and_stats() {
         assert!(probe.read_stats().cache_hit);
         eprintln!("phase={phase} full={full_elapsed:?} open={elapsed:?} bytes={} jsonl_bytes={} ranges={:?} entries={}/{}", path.metadata().unwrap().len(), probe.read_stats().jsonl_bytes, probe.read_stats().jsonl_ranges, window.entries.len(), full.entries.len());
         if phase == "warm" {
-            let original = std::fs::read(&path).unwrap();
+            let original = pa_core::session::store::store().read(&path).unwrap();
             let started = std::time::Instant::now();
             window
                 .persist_entry("session_state", json!({"state":{"status":"active"}}))
                 .unwrap();
             eprintln!("resume_active_append={:?}", started.elapsed());
-            assert!(std::fs::read(&path).unwrap().starts_with(&original));
+            assert!(pa_core::session::store::store()
+                .read(&path)
+                .unwrap()
+                .starts_with(&original));
             let maintained = pa_core::session::window::WindowedSessionStore::open(&path)
                 .unwrap()
                 .unwrap();
@@ -661,7 +664,7 @@ fn non_message_compaction_boundary_retains_the_persisted_timeline() {
         );
         store.append_message(&json!({"role":"user","content":"after","timestamp":223}));
         store.rewrite().unwrap();
-        let persisted = std::fs::read(&path).unwrap();
+        let persisted = pa_core::session::store::store().read(&path).unwrap();
         let full = SessionFile::open(&path).unwrap();
         let windowed = SessionFile::open_windowed(&path).unwrap();
         assert!(windowed.window.is_some());
@@ -682,6 +685,9 @@ fn non_message_compaction_boundary_retains_the_persisted_timeline() {
             assert_eq!(messages[4]["content"], json!("after"));
             assert_eq!(view.scan_message_scalars().message_count, 5);
         }
-        assert_eq!(std::fs::read(&path).unwrap(), persisted);
+        assert_eq!(
+            pa_core::session::store::store().read(&path).unwrap(),
+            persisted
+        );
     }
 }

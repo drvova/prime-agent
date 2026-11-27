@@ -145,10 +145,13 @@ async fn record_survives_a_failed_disk_write() {
     let mut manager = SessionManager::persisted(tmp.path(), &sessions);
     manager.append_message(seeded_assistant()).unwrap();
     let file = manager.get_session_file().unwrap().to_path_buf();
-    assert!(file.exists(), "the session file materialized");
+    assert!(
+        crate::session::store::store().exists(&file),
+        "the session file materialized"
+    );
     // Replace the session file with a directory at the same path: every
     // disk write path fails, even for root.
-    std::fs::remove_file(&file).unwrap();
+    crate::session::store::store().remove(&file).unwrap();
     std::fs::create_dir(&file).unwrap();
     let session = scripted_session_over(manager).await;
     session
@@ -190,7 +193,7 @@ async fn message_end_persist_failure_retains_the_row_and_swallows() {
     let mut manager = SessionManager::persisted(tmp.path(), &sessions);
     manager.append_message(seeded_assistant()).unwrap();
     let file = manager.get_session_file().unwrap().to_path_buf();
-    std::fs::remove_file(&file).unwrap();
+    crate::session::store::store().remove(&file).unwrap();
     std::fs::create_dir(&file).unwrap();
     let session = scripted_session_over(manager).await;
     let before = session

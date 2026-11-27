@@ -353,14 +353,21 @@ fn saved_session_wake(location: SavedLocation) {
         .join("sessions-archive")
         .join(format!("{session_id}.jsonl"));
     let live_path = sessions.join(format!("{session_id}.jsonl"));
-    let saved_bytes = std::fs::read(&live_path).expect("saved transcript");
+    let saved_bytes = common::transcripts(&live_path)
+        .read(&live_path)
+        .expect("saved transcript");
     let (_daemon, mut client) = match location {
         SavedLocation::Live => (daemon, client),
         SavedLocation::Archive => {
             drop(client);
             drop(daemon);
             std::fs::create_dir_all(archive_path.parent().unwrap()).expect("archive dir");
-            std::fs::rename(&live_path, &archive_path).expect("pre-upgrade archive fixture");
+            common::transcripts(&live_path)
+                .import(&live_path, &archive_path)
+                .expect("pre-upgrade archive fixture");
+            common::transcripts(&live_path)
+                .remove(&live_path)
+                .expect("pre-upgrade archive fixture");
             let daemon = spawn_daemon(&socket, &agent_dir);
             let (client, _) = Client::connect(&socket);
             (daemon, client)
@@ -381,9 +388,15 @@ fn saved_session_wake(location: SavedLocation) {
         .expect("woken active id")
         .to_string();
     assert_ne!(woken_id, active_id, "a new worker hosts the woken session");
-    assert!(!archive_path.exists(), "woken root is in the live store");
     assert!(
-        std::fs::read(&live_path).unwrap().starts_with(&saved_bytes),
+        !common::transcripts(&archive_path).exists(&archive_path),
+        "woken root is in the live store"
+    );
+    assert!(
+        common::transcripts(&live_path)
+            .read(&live_path)
+            .unwrap()
+            .starts_with(&saved_bytes),
         "wake preserves the complete pre-upgrade transcript"
     );
 

@@ -117,7 +117,7 @@ fn tool_result_entries_persisted_and_streamed() {
             .as_str()
             .expect("session file in stats"),
     );
-    let entries: Vec<serde_json::Value> = std::fs::read_to_string(&session_file)
+    let entries: Vec<serde_json::Value> = crate::common::read_transcript(&session_file)
         .expect("read session file")
         .lines()
         .map(|line| serde_json::from_str(line).expect("parse entry line"))

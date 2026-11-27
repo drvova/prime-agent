@@ -191,13 +191,14 @@ fn message_texts(client: &mut Client, id: &str, session_id: &str) -> Vec<String>
 }
 
 fn session_dir_text(session_dir: &std::path::Path) -> String {
-    std::fs::read_dir(session_dir)
+    common::transcripts(session_dir)
+        .list(session_dir)
         .expect("read session dir")
-        .flatten()
-        .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
-        .map(|entry| {
-            let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
-            format!("--- {} ---\n{content}", entry.path().display())
+        .transcripts
+        .into_iter()
+        .map(|transcript| {
+            let content = common::read_transcript(&transcript.locator).unwrap_or_default();
+            format!("--- {} ---\n{content}", transcript.locator.display())
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -323,7 +324,8 @@ fn the_fork_is_a_fully_detached_session() {
     assert_ne!(fork_durable, original_durable, "the fork minted an id");
     assert_ne!(fork_file, original_file, "the fork wrote a new file");
     assert!(
-        std::path::Path::new(&original_file).exists(),
+        common::transcripts(std::path::Path::new(&original_file))
+            .exists(std::path::Path::new(&original_file)),
         "the original file survives the fork"
     );
 
@@ -422,7 +424,7 @@ fn the_fork_is_a_fully_detached_session() {
         "the fork's file received the original's message"
     );
     assert!(
-        std::fs::read_to_string(&original_file)
+        common::read_transcript(&original_file)
             .unwrap_or_default()
             .contains("message for the original"),
         "the original's message must reach the original's file"
@@ -437,7 +439,7 @@ fn the_fork_is_a_fully_detached_session() {
         "the original received the fork's message: {original_texts:?}"
     );
     assert!(
-        !std::fs::read_to_string(&original_file)
+        !common::read_transcript(&original_file)
             .unwrap_or_default()
             .contains("message for the fork"),
         "the original's file received the fork's message"
@@ -512,7 +514,7 @@ fn the_fork_is_a_fully_detached_session() {
         "the stale id answers the unknown-session failure: {stale}"
     );
     assert!(
-        !std::fs::read_to_string(&original_file)
+        !common::read_transcript(&original_file)
             .unwrap_or_default()
             .contains("must not reach the original"),
         "the stale id's message must not reach the original"
@@ -526,7 +528,7 @@ fn the_fork_is_a_fully_detached_session() {
 }
 
 fn fork_file_text(path: &str) -> String {
-    std::fs::read_to_string(path).unwrap_or_default()
+    common::read_transcript(path).unwrap_or_default()
 }
 
 /// Wait until the socket accepts connections (a restarted supervisor parks on
@@ -827,7 +829,7 @@ fn a_restart_after_a_failed_identity_persist_serves_the_moved_session() {
         "the fork's own message reaches its transcript: {fork_texts:?}"
     );
     assert!(
-        !std::fs::read_to_string(&original_file)
+        !common::read_transcript(&original_file)
             .unwrap_or_default()
             .contains("message for the fork"),
         "the fork's message never reaches the original's file"

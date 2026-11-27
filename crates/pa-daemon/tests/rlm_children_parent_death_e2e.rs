@@ -466,16 +466,18 @@ fn a_parent_crash_closes_the_spawned_child_and_passivates_the_row() {
             .join("session-artifacts")
             .join(parent_session_id)
             .join(&child_id);
-        let file = std::fs::read_dir(&child_dir)
+        let file = common::transcripts(&child_dir)
+            .list(&child_dir)
             .expect("child session dir")
-            .filter_map(std::result::Result::ok)
-            .map(|entry| entry.path())
+            .transcripts
+            .into_iter()
+            .map(|transcript| transcript.locator)
             .find(|path| path.extension().and_then(|extension| extension.to_str()) == Some("jsonl"))
             .expect("one child session file");
         file
     };
     let child_session =
-        std::fs::read_to_string(&child_session_file).expect("read child session file");
+        common::read_transcript(&child_session_file).expect("read child session file");
     assert!(
         !child_session.contains("\"archived\""),
         "the parent-death close keeps the child's resume entry (no archive): {child_session}"
@@ -622,7 +624,7 @@ fn semantic_spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
 /// not exist yet reads as empty: the settle poll runs ahead of the
 /// parent's return recording.
 fn semantic_ledger(path: &Path) -> Vec<LedgerEvent> {
-    let Ok(contents) = std::fs::read_to_string(path) else {
+    let Ok(contents) = common::read_transcript(path) else {
         return Vec::new();
     };
     contents

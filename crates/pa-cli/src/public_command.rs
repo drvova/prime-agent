@@ -181,6 +181,9 @@ pub fn handle_public_command(args: &[String]) -> PublicCommandResult {
         "doctor" => run_doctor(&rest),
         "telemetry" => run_telemetry(&rest),
         "incident" => run_incident_command(&rest),
+        "export-jsonl" => {
+            handled_with_exit(crate::export_jsonl_command::run_export_jsonl_command(&rest))
+        }
         "import-sessions" => handled_with_exit(
             crate::import_sessions_command::run_import_sessions_command(&rest),
         ),

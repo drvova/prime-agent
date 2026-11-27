@@ -562,18 +562,20 @@ fn assert_unsuccessful_compaction_observed(run: &FailedCompactionRun) -> (String
 
     // The session file carries the row (TS `appendCustomMessageEntryWithRollback` shape)
     // and a session UUID, not the worker's active id.
-    let session_file = std::fs::read_dir(&run.session_dir)
+    let session_file = common::transcripts(&run.session_dir)
+        .list(&run.session_dir)
         .expect("list session dir")
-        .flatten()
-        .map(|entry| entry.path())
+        .transcripts
+        .into_iter()
+        .map(|transcript| transcript.locator)
         .find(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "jsonl")
-                && std::fs::read_to_string(path)
+                && common::read_transcript(path)
                     .is_ok_and(|content| content.contains("compaction_outcome"))
         })
         .expect("the durable outcome row in the session file");
-    let persisted = std::fs::read_to_string(&session_file).expect("read session file");
+    let persisted = common::read_transcript(&session_file).expect("read session file");
     let durable_row: Vec<&str> = persisted
         .lines()
         .filter(|line| line.contains("\"compaction_outcome\""))

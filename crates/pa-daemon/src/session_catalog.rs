@@ -139,8 +139,12 @@ mod tests {
             let archive = root.path().join("sessions-archive");
             std::fs::create_dir_all(&archive).unwrap();
             let (id, path) = write_session(&archive, "/work/a", Some("alpha"));
-            let bytes = std::fs::read(&path).unwrap();
-            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+            let bytes = pa_core::session::store::store().read(&path).unwrap();
+            let modified = pa_core::session::store::store()
+                .stat(&path)
+                .unwrap()
+                .modified
+                .unwrap();
             let mut expected = crate::session_store::read_session_info(&path).unwrap();
             expected.path = sessions.join(session_file_name(&id));
             let selector = [id.as_str(), &id[..8], "alpha"][selector_index];
@@ -149,21 +153,33 @@ mod tests {
                 .unwrap()
                 .expect("archived selector resolves");
             assert_eq!(restored, expected);
-            assert_eq!(std::fs::read(&restored.path).unwrap(), bytes);
             assert_eq!(
-                std::fs::metadata(&restored.path)
+                pa_core::session::store::store()
+                    .read(&restored.path)
+                    .unwrap(),
+                bytes
+            );
+            assert_eq!(
+                pa_core::session::store::store()
+                    .stat(&restored.path)
                     .unwrap()
-                    .modified()
+                    .modified
                     .unwrap(),
                 modified
             );
-            assert!(!path.exists(), "restored file leaves the archive");
+            assert!(
+                !pa_core::session::store::store().exists(&path),
+                "restored file leaves the archive"
+            );
             let again = resolve_saved_session(&sessions, &archive, selector, "/other")
                 .unwrap()
                 .expect("restored session resolves again");
             assert_eq!(again.id, id);
             assert_eq!(again.path, restored.path);
-            assert_eq!(std::fs::read(&again.path).unwrap(), bytes);
+            assert_eq!(
+                pa_core::session::store::store().read(&again.path).unwrap(),
+                bytes
+            );
         }
     }
 
@@ -175,14 +191,17 @@ mod tests {
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::create_dir_all(&archive).unwrap();
         let (id, path) = write_session(&archive, "/work/a", Some("alpha"));
-        let bytes = std::fs::read(&path).unwrap();
+        let bytes = pa_core::session::store::store().read(&path).unwrap();
         let live_path = sessions.join(session_file_name(&id));
         let live_bytes = b"unparseable live session bytes\n";
         std::fs::write(&live_path, live_bytes).unwrap();
         for _ in 0..2 {
             assert!(resolve_saved_session(&sessions, &archive, "alpha", "/work/a").is_err());
-            assert_eq!(std::fs::read(&live_path).unwrap(), live_bytes);
-            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(
+                pa_core::session::store::store().read(&live_path).unwrap(),
+                live_bytes
+            );
+            assert_eq!(pa_core::session::store::store().read(&path).unwrap(), bytes);
             let remaining: Vec<_> = std::fs::read_dir(&sessions)
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
@@ -200,12 +219,19 @@ mod tests {
         std::fs::create_dir_all(&archive).unwrap();
         let (live_id, _) = write_session(&sessions, "/other", Some("alpha"));
         let (_, archived_path) = write_session(&archive, "/work/a", Some("alpha"));
-        let bytes = std::fs::read(&archived_path).unwrap();
+        let bytes = pa_core::session::store::store()
+            .read(&archived_path)
+            .unwrap();
         let found = resolve_saved_session(&sessions, &archive, "alpha", "/work/a")
             .unwrap()
             .expect("live global match wins over archived local match");
         assert_eq!(found.id, live_id);
-        assert_eq!(std::fs::read(&archived_path).unwrap(), bytes);
+        assert_eq!(
+            pa_core::session::store::store()
+                .read(&archived_path)
+                .unwrap(),
+            bytes
+        );
     }
 
     #[test]
@@ -222,7 +248,10 @@ mod tests {
             .unwrap()
             .expect("local archived match wins");
         assert_eq!(found.id, local_id);
-        assert!(other_path.is_file(), "unselected archives stay in place");
+        assert!(
+            pa_core::session::store::store().exists(&other_path),
+            "unselected archives stay in place"
+        );
     }
 
     #[test]

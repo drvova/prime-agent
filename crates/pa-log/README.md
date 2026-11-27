@@ -3,9 +3,9 @@
 Prime Agent's SQLite store: the event log and the session transcripts, in one database file.
 It is the only crate that links SQLite (`rusqlite`, built from its bundled source).
 
-It is being built beside today's file stores as part of the move onto one event log. Nothing
-reads from it or writes to it yet: the storage cutover moves the transcript writers and readers
-onto it, together with the first-start import.
+It is being built beside today's file stores as part of the move onto one event log. The
+transcript store in `pa-core` (`session::store`, its SQLite store) keeps every session transcript
+in it; the event log has no user yet.
 
 ## Scope
 
@@ -38,6 +38,22 @@ onto it, together with the first-start import.
   - `append_entry` adds a line.
   - `sessions` and `entries` read them.
 
+- **Transcripts by locator, byte for byte** (the transcript store's tables, schema migration 2).
+  A transcript is the exact bytes of a JSONL session file, keyed by its canonical locator (the
+  `<sessions dir>/<id>.jsonl` path the caller resolves) and stored as its lines, each with its
+  newline and the byte offset it starts at, so whatever the bytes hold (a torn last write, a
+  line that is not JSON or not UTF-8) comes back unchanged.
+  - `put_transcript` stores a whole transcript, replacing one (`PutMode::Replace`, a new row id)
+    or only where none is (`PutMode::IfAbsent`, the import); `append_transcript` appends,
+    ending a torn last line first (`AppendMode::NewLine`) or finishing it (`AppendMode::AsIs`).
+  - `transcript_bytes` reads from any byte position: the offset index finds the line holding it,
+    so a read of a long transcript's tail never reads its start.
+  - A transcript's row id is its identity: appends keep it, every replace takes a new one, and
+    ids are never reused. With `store_id` (a random number minted with the database) and the
+    length, it names the bytes exactly: the store's generations are built from them.
+  - `move_transcript`, `remove_transcript`, `transcript`, `transcript_by_id`, `transcripts_in`,
+    `all_transcripts`; `meta`/`set_meta` keep the store's own facts (the import markers).
+
 ## Non-goals
 
 - What the lines mean: entry types, the branch tree, compaction. Those stay with the session
@@ -53,6 +69,11 @@ onto it, together with the first-start import.
   `DEFAULT_EVENT_RETENTION`.
 - Sessions: `import_session_file`, `export_session`, `append_entry`, `sessions`, `entries`;
   `ImportOutcome`, `SessionRow`, `EntryRow`.
-- `Receipt`: `wait` and `wait_blocking`.
+- Transcripts: `put_transcript`, `append_transcript`, `transcript_bytes`, `move_transcript`,
+  `remove_transcript`, `transcript`, `transcript_by_id`, `transcripts_in`, `all_transcripts`,
+  `store_id`, `meta`, `set_meta`; `TranscriptRow`, `TranscriptChunk`, `NewTranscript`,
+  `PutMode`, `AppendMode`, `MoveOutcome`.
+- `Receipt`: `wait` and `wait_blocking` (which parks the thread, and so may run on a runtime's
+  thread, as a blocking file write would).
 
 Dependencies: `pa-types` only, among workspace crates.
