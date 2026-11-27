@@ -1202,7 +1202,8 @@ impl TurnRunner {
         };
         if let Some(path) = session_path {
             let _ =
-                tokio::task::spawn_blocking(move || std::fs::File::open(&path)?.sync_all()).await;
+                tokio::task::spawn_blocking(move || pa_core::session::store::store().sync(&path))
+                    .await;
         }
         let _ = self.emit_action_update(&snapshot);
         self.idle_notify.notify_waiters();

@@ -122,7 +122,10 @@ fn cancel_scheduled_jobs_for_members(
 /// wrote the state, the supervisor appends it here.
 pub(crate) fn ensure_archived_state(root_session_file: &Path) -> Result<()> {
     let path = canonical_session_path(root_session_file);
-    if !path.is_file() {
+    if !pa_core::session::store::store()
+        .stat(&path)
+        .is_ok_and(|stat| stat.is_transcript)
+    {
         return Ok(());
     }
     if read_session_info(&path)

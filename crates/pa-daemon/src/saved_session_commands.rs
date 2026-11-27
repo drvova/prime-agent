@@ -2,8 +2,8 @@
 //! for `rename_saved_session`, `delete_saved_session`, and
 //! `list_agent_peers`; the worker arms the selector forms forward to.
 
+use pa_core::session::store::TranscriptRemoval;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
 use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
@@ -116,21 +116,15 @@ pub(crate) fn delete_session_file_after_file_removed(
     path: &Path,
     after_file_removed: &dyn Fn(&Path),
 ) -> Value {
-    let trash = StdCommand::new("trash").arg("--").arg(path).output();
-    let removed_by_trash = match trash {
-        Ok(output) => output.status.success() || !path.exists(),
-        Err(_) => false,
-    };
-    if removed_by_trash {
-        after_file_removed(path);
-        remove_session_artifacts(path);
-        return json!({ "ok": true, "method": "trash" });
-    }
-    match std::fs::remove_file(path) {
-        Ok(()) => {
+    match pa_core::session::store::store().remove(path) {
+        Ok(removal) => {
             after_file_removed(path);
             remove_session_artifacts(path);
-            json!({ "ok": true, "method": "unlink" })
+            let method = match removal {
+                TranscriptRemoval::Trash => "trash",
+                TranscriptRemoval::Unlink => "unlink",
+            };
+            json!({ "ok": true, "method": method })
         }
         Err(error) => json!({ "ok": false, "error": error.to_string() }),
     }
@@ -187,7 +181,9 @@ pub(crate) fn capture_saved_session_delete(
     // A non-regular file (a FIFO, a device, a directory) is never a
     // session, and opening one for reading BLOCKS indefinitely on Linux —
     // the capture reads nothing there.
-    let regular = std::fs::metadata(Path::new(session_path)).is_ok_and(|meta| meta.is_file());
+    let regular = pa_core::session::store::store()
+        .stat(Path::new(session_path))
+        .is_ok_and(|stat| stat.is_transcript);
     let canonical_path = canonical_session_path(Path::new(session_path))
         .to_string_lossy()
         .to_string();

@@ -179,7 +179,7 @@ fn session_label(hold: &HoldIdentity, session_path: Option<&Path>) -> String {
 fn session_name_of(session_path: Option<&Path>) -> Option<String> {
     use std::io::BufRead;
     let path = session_path?;
-    let file = std::fs::File::open(path).ok()?;
+    let file = pa_core::session::store::store().open(path).ok()?;
     let mut name = None;
     for line in std::io::BufReader::new(file).lines() {
         let Ok(line) = line else {

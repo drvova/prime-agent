@@ -397,12 +397,7 @@ pub fn rlm_child_session_dir(
 /// unreadable.
 pub fn persisted_rlm_max_depth(path: Option<&str>) -> Option<u64> {
     let path = std::path::Path::new(path?);
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(
-        &mut std::io::BufReader::new(std::fs::File::open(path).ok()?),
-        &mut bytes,
-    )
-    .ok()?;
+    let bytes = crate::session::store::store().read(path).ok()?;
     let content = std::str::from_utf8(&bytes).ok()?;
     content
         .lines()

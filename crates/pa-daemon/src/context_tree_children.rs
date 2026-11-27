@@ -324,15 +324,16 @@ fn child_session_dirs(dir: &Path) -> Vec<PathBuf> {
 /// The `.jsonl` files in a dir, newest first: opens keep the first
 /// readable session, skipping non-session siblings.
 fn newest_session_files(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let store = pa_core::session::store::store();
+    let Ok(listing) = store.list(dir) else {
         return Vec::new();
     };
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .filter_map(std::result::Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".jsonl"))
-        .filter_map(|entry| {
-            let mtime = entry.metadata().ok()?.modified().ok()?;
-            Some((mtime, entry.path()))
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = listing
+        .transcripts
+        .into_iter()
+        .filter_map(|transcript| {
+            let mtime = store.stat(&transcript.locator).ok()?.modified?;
+            Some((mtime, transcript.locator))
         })
         .collect();
     files.sort_by_key(|(mtime, _)| std::cmp::Reverse(*mtime));

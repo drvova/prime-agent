@@ -52,7 +52,8 @@ pub(crate) fn transcript_evidence(
         .as_ref()
         .map(|row| row.get("customType").cloned().unwrap_or(Value::Null));
     let mut verdict = RevivedTurn::Unstarted;
-    for line in std::io::BufReader::new(std::fs::File::open(session_file)?).lines() {
+    let transcript = pa_core::session::store::store().open(session_file)?;
+    for line in std::io::BufReader::new(transcript).lines() {
         // A torn or foreign line is no evidence either way.
         let Ok(entry) = serde_json::from_str::<Value>(&line?) else {
             continue;

@@ -327,8 +327,8 @@ fn prune_entry(entry: &Path, observed: &str, missing_session: Option<&Path>) {
         return;
     }
     if let Some(session) = missing_session {
-        match std::fs::metadata(session) {
-            Ok(meta) if meta.is_file() => return,
+        match crate::session::store::store().stat(session) {
+            Ok(stat) if stat.is_transcript => return,
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return,

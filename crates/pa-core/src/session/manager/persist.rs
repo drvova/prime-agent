@@ -1,6 +1,7 @@
 //! The persist concern: the entry index, the rewrite/flush/notify plumbing,
-//! the durable append arm, and the atomic session-file write
-//! (TS `writeFileAtomicSync`).
+//! the durable append arm, and the atomic session-file write (the store's
+//! [`create`](crate::session::store::TranscriptStore::create), TS
+//! `writeFileAtomicSync`).
 
 use super::{serialize_entry, AgentMessage, FileEntry, SessionManager, SessionPersistListener};
 
@@ -69,22 +70,9 @@ impl SessionManager {
             content.push_str(&serialize_entry(entry));
         }
         content.push('\n');
-        if let Some(parent) = session_file.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        // The session file write (TS `writeFileAtomicSync`): private temp,
-        // fsync, rename. The fsync is deliberate (TS passes none; a non-synced
-        // rename can zero the file on a hard crash); other sites are TS-default.
         pa_types::session_scope::ensure_live()?;
-        pa_types::platform::replace_file(
-            session_file,
-            content.as_bytes(),
-            pa_types::platform::ReplaceOptions {
-                durability: pa_types::platform::Durability::SyncFile,
-                mode: pa_types::platform::FileMode::Private,
-                symlinks: pa_types::platform::Symlinks::ReplaceLink,
-            },
-        )?;
+        crate::session::store::store()
+            .create(session_file, &mut |out| out.write_all(content.as_bytes()))?;
         self.notify_persist_listeners();
         Ok(())
     }
@@ -121,7 +109,13 @@ impl SessionManager {
         if !self.persist || self.session_file.is_none() {
             return Ok(());
         }
-        if self.flushed && self.session_file.as_ref().is_some_and(|path| path.exists()) {
+        let store = crate::session::store::store();
+        if self.flushed
+            && self
+                .session_file
+                .as_ref()
+                .is_some_and(|path| store.exists(path))
+        {
             return Ok(());
         }
         self.try_rewrite_file()?;
@@ -140,7 +134,10 @@ impl SessionManager {
             self.flushed = false;
             return Ok(());
         }
-        let file_exists = self.session_file.as_ref().is_some_and(|path| path.exists());
+        let file_exists = self
+            .session_file
+            .as_ref()
+            .is_some_and(|path| crate::session::store::store().exists(path));
         if self.window.is_none() && (!self.flushed || !file_exists) {
             // Recover from the session file disappearing under a live session:
             // append would recreate a headerless stub.

@@ -96,13 +96,18 @@ pub(super) async fn perform_agent_trace_upload(
     // Bound the read itself: an append racing the initial stat must not allocate
     // an arbitrarily large body or bypass the server's 20 MiB limit.
     let read_body = async {
-        use tokio::io::AsyncReadExt;
-        let file = tokio::fs::File::open(session_file).await?;
-        let mut body = String::new();
-        file.take(MAX_TRACE_BYTES + 1)
-            .read_to_string(&mut body)
-            .await?;
-        Ok::<_, std::io::Error>(body)
+        let path = session_file.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let mut body = String::new();
+            crate::session::store::store()
+                .open(&path)?
+                .take(MAX_TRACE_BYTES + 1)
+                .read_to_string(&mut body)?;
+            Ok::<_, std::io::Error>(body)
+        })
+        .await
+        .map_err(std::io::Error::other)?
     };
     let body = match read_body.await {
         Ok(body) => body,

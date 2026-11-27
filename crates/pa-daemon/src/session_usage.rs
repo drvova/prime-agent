@@ -2,7 +2,6 @@
 //! token/cost summary — assistant usage keyed by entry id, aggregates
 //! replacing raw blocks, child spend subtracted so rollups never double count.
 
-use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
@@ -379,7 +378,7 @@ impl ScanEntry {
 
 /// Whole-file scan over every parsable line; invalid lines contribute nothing.
 fn scan_file(path: &Path) -> Option<UsageScan> {
-    let file = fs::File::open(path).ok()?;
+    let file = pa_core::session::store::store().open(path).ok()?;
     let mut scan = UsageScan::default();
     let mut reader = BufReader::new(file);
     let mut line = String::new();

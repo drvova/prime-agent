@@ -169,7 +169,11 @@ impl Supervisor {
         let saved_cwd = if explicit_cwd.is_none() {
             session_path
                 .as_deref()
-                .filter(|path| Path::new(path).is_file())
+                .filter(|path| {
+                    pa_core::session::store::store()
+                        .stat(Path::new(path))
+                        .is_ok_and(|stat| stat.is_transcript)
+                })
                 .and_then(|path| pa_core::session::manager::read_session_header(Path::new(path)))
                 .map(|header| header.cwd)
                 .filter(|cwd| !cwd.is_empty())

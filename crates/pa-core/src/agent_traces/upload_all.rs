@@ -31,21 +31,14 @@ pub struct TraceUploadAllOptions<'a> {
 /// The recursive `.jsonl` walk that keeps files with a valid session
 /// header.
 fn find_session_files_under(root: &Path, files: &mut HashSet<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else {
+    let Ok(listing) = crate::session::store::store().list(root) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            find_session_files_under(&path, files);
-            continue;
-        }
-        if path.extension().is_none_or(|ext| ext != "jsonl") {
-            continue;
-        }
+    for dir in &listing.directories {
+        find_session_files_under(dir, files);
+    }
+    for transcript in listing.transcripts {
+        let path = transcript.locator;
         if read_trace_session_header(&path).is_some() {
             files.insert(resolve_path(&path));
         }

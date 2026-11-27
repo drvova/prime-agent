@@ -9,7 +9,7 @@
 //! that grew.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
+
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -142,7 +142,7 @@ fn observed_rate_limit(message: &ScanMessage, at_ms: i64) -> Option<ObservedRate
 /// Fold one session file. Unreadable lines are skipped (a torn tail never fails the page).
 fn scan_file(path: &Path) -> FileSpend {
     let mut spend = FileSpend::default();
-    let Ok(file) = fs::File::open(path) else {
+    let Ok(file) = pa_core::session::store::store().open(path) else {
         return spend;
     };
     // A later write of one assistant row replaces the earlier one in place (the session fold's
@@ -231,21 +231,19 @@ fn session_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut pending = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = pending.pop() {
-        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let path = entry.path();
-            match entry.file_type() {
-                Ok(kind) if kind.is_dir() && depth < MAX_WALK_DEPTH => {
-                    pending.push((path, depth + 1));
-                }
-                Ok(kind)
-                    if kind.is_file()
-                        && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") =>
-                {
-                    files.push(path);
-                }
-                Ok(_) | Err(_) => {}
-            }
+        let Ok(listing) = pa_core::session::store::store().list(&dir) else {
+            continue;
+        };
+        if depth < MAX_WALK_DEPTH {
+            pending.extend(listing.directories.into_iter().map(|dir| (dir, depth + 1)));
         }
+        files.extend(
+            listing
+                .transcripts
+                .into_iter()
+                .filter(|transcript| transcript.listed_as_transcript)
+                .map(|transcript| transcript.locator),
+        );
     }
     files.sort();
     files
@@ -267,14 +265,14 @@ pub(crate) fn spend_history(sessions_root: &Path, now_ms: i64) -> SpendHistory {
     let files = session_files(sessions_root);
     let mut folds: Vec<FileSpend> = Vec::with_capacity(files.len());
     for path in &files {
-        let stamp = fs::metadata(path).map_or(
+        let stamp = pa_core::session::store::store().stat(path).map_or(
             FileStamp {
                 len: 0,
                 modified: None,
             },
-            |meta| FileStamp {
-                len: meta.len(),
-                modified: meta.modified().ok(),
+            |stat| FileStamp {
+                len: stat.len(),
+                modified: stat.modified,
             },
         );
         let cached = file_cache()

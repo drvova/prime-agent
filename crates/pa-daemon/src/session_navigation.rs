@@ -243,7 +243,7 @@ impl SessionNavigation {
         if pa_types::platform::canonicalize(&target).ok()
             != pa_types::platform::canonicalize(resolved).ok()
         {
-            if let Err(error) = std::fs::copy(resolved, &target) {
+            if let Err(error) = pa_core::session::store::store().import(resolved, &target) {
                 return Err(response_failure(
                     None,
                     "import_jsonl",
@@ -280,7 +280,7 @@ impl SessionNavigation {
                 .map_err(|error| response_failure(None, command, &error.to_string(), None))?,
         };
         if lease.is_some() {
-            pa_core::session::manager::repair_jsonl_damage(std::path::Path::new(path));
+            pa_core::session::store::store().repair_tail(std::path::Path::new(path));
         }
         let mut file = SessionFile::open(std::path::Path::new(path))
             .map_err(|error| response_failure(None, command, &error.to_string(), None))?;

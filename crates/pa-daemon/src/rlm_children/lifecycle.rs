@@ -943,7 +943,7 @@ pub(super) fn should_mark_error(state: &ChildRecord) -> bool {
 /// wins; a file with no assistant rows (the prompt arm's never-started
 /// turn) answers nothing.
 pub(super) fn last_assistant_text_from_file(session_file: &str) -> Option<String> {
-    let content = std::fs::read_to_string(session_file).ok()?;
+    let content = pa_core::session::store::read_to_string(Path::new(session_file)).ok()?;
     for line in content.lines().rev() {
         let Ok(pa_types::session::FileEntry::Message {
             message: pa_types::session::AgentMessage::Assistant(assistant),
@@ -979,7 +979,7 @@ pub(super) fn last_assistant_text_from_file(session_file: &str) -> Option<String
 /// retry's outcome) are skipped.
 pub(super) fn final_turn_error_from_file(session_file: &str) -> Option<String> {
     use pa_types::session::{AgentMessage, FileEntry};
-    let content = std::fs::read_to_string(session_file).ok()?;
+    let content = pa_core::session::store::read_to_string(Path::new(session_file)).ok()?;
     for line in content.lines().rev() {
         let Ok(entry) = serde_json::from_str::<FileEntry>(line.trim()) else {
             continue;

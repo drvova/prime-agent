@@ -611,7 +611,7 @@ fn reverse_reader_preserves_long_lines_and_unterminated_tail() {
     let body = format!("first\n{long}\nlast");
     std::fs::write(&path, &body).unwrap();
     let mut reader = ReverseLines {
-        file: std::fs::File::open(path).unwrap(),
+        file: crate::session::store::store().open(&path).unwrap(),
         position: body.len() as u64,
         pending: Vec::new(),
         line_start: 0,

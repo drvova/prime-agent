@@ -3,9 +3,11 @@
 //! raw spans, the derived `SessionInfo`, and the most-recent-session
 //! lookup.
 
+use pa_core::session::store::{store as transcripts, TranscriptGeneration, TranscriptReader};
+
 use super::{
-    fs, info_sidecar, list_sessions, normalize_state_status, Cow, Deserialize, HashMap, Path,
-    PathBuf, Serialize, SessionHeader, Usage, Value,
+    info_sidecar, list_sessions, normalize_state_status, Cow, Deserialize, HashMap, Path, PathBuf,
+    Serialize, SessionHeader, Usage, Value,
 };
 
 /// The durable metadata the daemon list surfaces for one session file.
@@ -38,46 +40,6 @@ pub struct SessionInfo {
 /// The scan's read-buffer size: one 64 KiB fill reads the typical session in
 /// a single syscall; only the syscall chunking changes.
 const SESSION_SCAN_READ_BUF_BYTES: usize = 64 * 1024;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct SessionInfoGeneration {
-    pub(super) len: u64,
-    pub(super) dev: u64,
-    pub(super) ino: u64,
-    pub(super) mtime: i64,
-    pub(super) mtime_ns: i64,
-    pub(super) ctime: i64,
-    pub(super) ctime_ns: i64,
-}
-
-impl SessionInfoGeneration {
-    #[cfg(unix)]
-    pub(super) fn from_metadata(meta: &fs::Metadata) -> Self {
-        use std::os::unix::fs::MetadataExt;
-        Self {
-            len: meta.len(),
-            dev: meta.dev(),
-            ino: meta.ino(),
-            mtime: meta.mtime(),
-            mtime_ns: meta.mtime_nsec(),
-            ctime: meta.ctime(),
-            ctime_ns: meta.ctime_nsec(),
-        }
-    }
-
-    #[cfg(not(unix))]
-    pub(super) fn from_metadata(meta: &fs::Metadata) -> Self {
-        Self {
-            len: meta.len(),
-            dev: 0,
-            ino: 0,
-            mtime: 0,
-            mtime_ns: 0,
-            ctime: 0,
-            ctime_ns: 0,
-        }
-    }
-}
 
 /// The cross-file memory budget on retained assistant usage records and
 /// stable attribution IDs: keeps large families resident without unbounded retry history.
@@ -206,7 +168,7 @@ pub(super) struct SessionScanAccumulator {
 /// rebuilds the row through the fold and `store_state` recounts).
 #[derive(Serialize, Deserialize)]
 pub(super) struct SessionScanState {
-    generation: SessionInfoGeneration,
+    generation: TranscriptGeneration,
     pub(super) acc: SessionScanAccumulator,
     /// Bytes consumed through the end of the last complete line.
     offset: u64,
@@ -220,7 +182,7 @@ pub(super) struct SessionScanState {
 }
 
 impl SessionScanState {
-    pub(super) fn fresh(generation: SessionInfoGeneration) -> Self {
+    pub(super) fn fresh(generation: TranscriptGeneration) -> Self {
         Self {
             generation,
             acc: SessionScanAccumulator::default(),
@@ -258,26 +220,10 @@ impl SessionScanState {
     /// file (dev/ino) with a grown-or-equal length (the grown-or-equal
     /// length check itself lives at the call sites; this predicate is the
     /// same-file part only).
-    #[cfg_attr(
-        not(unix),
-        expect(
-            clippy::unused_self,
-            reason = "the not-unix arm has no dev/ino identity to read and always answers false"
-        )
-    )]
-    fn same_file_identity(&self, generation: &SessionInfoGeneration) -> bool {
-        #[cfg(unix)]
-        {
-            self.generation.dev == generation.dev && self.generation.ino == generation.ino
-        }
-        // No dev/ino from std on this platform: every grown file rescans
-        // whole (TS always has dev/ino); an mtime identity would instead
-        // certify an in-place rewrite as a resume.
-        #[cfg(not(unix))]
-        {
-            let _ = generation;
-            false
-        }
+    // Without a stable identity (non-unix) this always answers false: every
+    // grown file rescans whole.
+    fn same_file_identity(&self, generation: &TranscriptGeneration) -> bool {
+        self.generation.same_transcript(generation)
     }
 
     /// The consumed prefix's trailing window: a long line keeps only its
@@ -299,8 +245,8 @@ impl SessionScanState {
     /// The bytes just before the cursor match the cached window, proving the
     /// resume starts where the cached fold left off: a torn write or a
     /// rewrite that raced the scan is caught here.
-    fn prefix_intact(&self, file: &fs::File) -> bool {
-        use std::io::{Read, Seek, SeekFrom};
+    fn prefix_intact(&self, file: &mut dyn TranscriptReader) -> bool {
+        use std::io::SeekFrom;
         if self.offset == 0 {
             return true;
         }
@@ -308,7 +254,7 @@ impl SessionScanState {
         let start = self.offset.saturating_sub(window);
         let len = (self.offset - start) as usize;
         let mut read_back = vec![0u8; len];
-        let mut cursor = file;
+        let cursor = file;
         if cursor.seek(SeekFrom::Start(start)).is_err() {
             return false;
         }
@@ -377,8 +323,8 @@ pub(super) struct SessionInfoEntry<'a> {
 /// grown files fold ONLY their appended entries, rewritten files rescan from the top.
 #[must_use]
 pub fn read_session_info(path: &Path) -> Option<SessionInfo> {
-    let mut file = fs::File::open(path).ok()?;
-    read_session_info_from(&mut file, path).map(|(info, _)| info)
+    let mut file = transcripts().open(path).ok()?;
+    read_session_info_from(&mut *file, path).map(|(info, _)| info)
 }
 
 /// [`read_session_info`] over an already-open handle: the roster gate shares
@@ -387,10 +333,10 @@ pub fn read_session_info(path: &Path) -> Option<SessionInfo> {
 /// did not cover the whole file (absent, unloadable, or behind): the fold read
 /// bytes a sidecar would have spared.
 pub(crate) fn read_session_info_from(
-    file: &mut fs::File,
+    file: &mut dyn TranscriptReader,
     path: &Path,
 ) -> Option<(SessionInfo, bool)> {
-    let generation = SessionInfoGeneration::from_metadata(&file.metadata().ok()?);
+    let generation = file.stat().ok()?.generation;
 
     // The unchanged case answers from the cache; the grown case resumes.
     let state = {
@@ -403,9 +349,9 @@ pub(crate) fn read_session_info_from(
             }
             Some(cached)
                 if cached.same_file_identity(&generation)
-                    && generation.len > cached.generation.len =>
+                    && generation.len() > cached.generation.len() =>
             {
-                if cached.prefix_intact(file) {
+                if cached.prefix_intact(&mut *file) {
                     Some(cached.clone_for_resume())
                 } else {
                     None
@@ -431,8 +377,8 @@ pub(crate) fn read_session_info_from(
                 Some(cached) if cached.generation == generation => (cached, false),
                 Some(cached)
                     if cached.same_file_identity(&generation)
-                        && generation.len > cached.generation.len
-                        && cached.prefix_intact(file) =>
+                        && generation.len() > cached.generation.len()
+                        && cached.prefix_intact(&mut *file) =>
                 {
                     (cached, true)
                 }
@@ -447,14 +393,13 @@ pub(crate) fn read_session_info_from(
     }
     let torn_tail = {
         let mut reader = std::io::BufReader::with_capacity(SESSION_SCAN_READ_BUF_BYTES, &mut *file);
-        state.scan_from_cursor(&mut reader, generation.len)?
+        state.scan_from_cursor(&mut reader, generation.len())?
     };
     // The durable last-resort value for `modified`, read lazily: `None` keeps
     // unavailable (unreadable, pre-epoch) metadata distinct from a real epoch timestamp.
     let stats_mtime_ms = || {
-        file.metadata().ok().and_then(|meta| {
-            meta.modified()
-                .ok()
+        file.stat().ok().and_then(|stat| {
+            stat.modified
                 .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|duration| duration.as_millis() as u64)
         })
@@ -465,11 +410,10 @@ pub(crate) fn read_session_info_from(
     let modified_ms = state.acc.last_activity_ms.unwrap_or(0);
     if cfg!(unix)
         && modified_ms > 0
-        && file
-            .metadata()
-            .is_ok_and(|meta| SessionInfoGeneration::from_metadata(&meta) == generation)
-        && fs::metadata(path)
-            .is_ok_and(|meta| SessionInfoGeneration::from_metadata(&meta) == generation)
+        && file.stat().is_ok_and(|stat| stat.generation == generation)
+        && transcripts()
+            .stat(path)
+            .is_ok_and(|stat| stat.generation == generation)
     {
         state.generation = generation;
         state.info = Some(info.clone());
@@ -484,7 +428,7 @@ impl SessionScanState {
     /// in-progress append) and is returned as the torn tail. `None` = the abort arm.
     fn scan_from_cursor(
         &mut self,
-        reader: &mut std::io::BufReader<&mut fs::File>,
+        reader: &mut impl std::io::BufRead,
         size: u64,
     ) -> Option<String> {
         let mut line = String::new();
@@ -701,6 +645,7 @@ pub fn find_most_recent_session_for_cwd(session_dir: &Path, cwd: &str) -> Option
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn cached_prefix_resume_subtracts_a_duplicate_attribution_once() {
@@ -716,12 +661,12 @@ mod cache_tests {
         let prefix = format!("{assistant}\n{attribution}\n");
         fs::write(&path, &prefix).unwrap();
         let mut file = fs::File::open(&path).unwrap();
-        let generation = SessionInfoGeneration::from_metadata(&file.metadata().unwrap());
+        let generation = transcripts().stat(&path).unwrap().generation;
         let mut state = SessionScanState::fresh(generation);
         state
-            .scan_from_cursor(&mut BufReader::new(&mut file), generation.len)
+            .scan_from_cursor(&mut BufReader::new(&mut file), generation.len())
             .unwrap();
-        assert_eq!(state.offset, generation.len);
+        assert_eq!(state.offset, generation.len());
         let expected = state.acc.usage_scan.totals();
         let mut cache = SessionInfoScanCache::default();
         cache.store_state(&path, state);
@@ -747,15 +692,7 @@ mod cache_tests {
 
     #[test]
     fn attribution_ids_share_the_retained_usage_budget_and_trigger_lru_eviction() {
-        let generation = SessionInfoGeneration {
-            len: 0,
-            dev: 0,
-            ino: 0,
-            mtime: 0,
-            mtime_ns: 0,
-            ctime: 0,
-            ctime_ns: 0,
-        };
+        let generation = TranscriptGeneration::default();
         let mut cache = SessionInfoScanCache::default();
         let old_path = Path::new("old.jsonl");
         let new_path = Path::new("new.jsonl");

@@ -901,7 +901,7 @@ fn session_file_carries_spawn_kickoff(session_file: Option<&str>, spawn_row_id: 
     let Some(path) = session_file.filter(|path| !path.is_empty()) else {
         return false;
     };
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Ok(content) = pa_core::session::store::read_to_string(Path::new(path)) else {
         return false;
     };
     content

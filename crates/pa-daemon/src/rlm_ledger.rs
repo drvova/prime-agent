@@ -649,8 +649,13 @@ impl RlmSpawnLedger {
             .edges
             .iter()
             .filter(|edge| edge.deleted.is_some())
-            .map(|edge| file_identity(Path::new(&edge.child)))
-            .collect::<Result<Vec<_>>>()?;
+            .map(|edge| {
+                pa_core::session::store::store()
+                    .stat(Path::new(&edge.child))
+                    .ok()
+                    .map(|stat| stat.generation)
+            })
+            .collect::<Vec<_>>();
         let mut cached = state
             .deleted_bucket
             .lock()
@@ -781,7 +786,9 @@ impl RlmSpawnLedger {
             // keeps that transcript and no row anywhere bills it, so the
             // bucket is the only surface that keeps its spend.
             let child_file = Path::new(&child);
-            if child_file.is_file()
+            if pa_core::session::store::store()
+                .stat(child_file)
+                .is_ok_and(|stat| stat.is_transcript)
                 && child_file.parent() == Some(self.canonical_sessions_dir.as_path())
             {
                 continue;
@@ -1145,14 +1152,14 @@ impl RlmSpawnLedger {
         if self.path.exists() {
             return Ok(());
         }
-        let Ok(root_entries) = fs::read_dir(&self.canonical_sessions_dir) else {
+        let Ok(root_entries) = pa_core::session::store::store().list(&self.canonical_sessions_dir)
+        else {
             return Ok(());
         };
         let mut queue: Vec<(PathBuf, u32)> = root_entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
-            .map(|path| (path, 0))
+            .transcripts
+            .into_iter()
+            .map(|transcript| (transcript.locator, 0))
             .collect();
         queue.sort();
         let mut visited: Vec<PathBuf> = queue

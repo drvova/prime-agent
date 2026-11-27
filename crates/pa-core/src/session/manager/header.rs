@@ -6,7 +6,7 @@ use super::{Path, SessionHeader};
 #[must_use]
 pub fn read_session_header(file_path: &Path) -> Option<SessionHeader> {
     use std::io::BufRead;
-    let file = std::fs::File::open(file_path).ok()?;
+    let file = crate::session::store::store().open(file_path).ok()?;
     let mut first_line = String::new();
     std::io::BufReader::new(file)
         .read_line(&mut first_line)

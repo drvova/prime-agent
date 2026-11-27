@@ -541,8 +541,8 @@ pub(crate) fn session_summary(core: &SessionCore, inputs: SummaryInputs) -> Sess
     // `modified` is the session file mtime; `lastActivityAt` prefers the
     // newest message timestamp (port of `summaryForActiveSession`).
     let modified = store
-        .and_then(|store| std::fs::metadata(&store.path).ok())
-        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|store| pa_core::session::store::store().stat(&store.path).ok())
+        .and_then(|stat| stat.modified)
         .map(|time| {
             crate::util::iso_from_unix_ms(
                 time.duration_since(std::time::UNIX_EPOCH)

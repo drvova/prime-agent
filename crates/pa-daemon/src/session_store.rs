@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(test)]
 use std::fs;
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
@@ -42,9 +43,7 @@ pub use read::{
     is_valid_session_file, parse_session_entries, read_session_header, read_session_header_bounded,
     session_file_name, SESSION_LIST_HEADER_READ_MAX_BYTES,
 };
-pub(crate) use read::{
-    parse_session_header_line, read_first_line_bounded, read_first_line_bounded_from,
-};
+pub(crate) use read::{parse_session_header_line, read_first_line_bounded};
 
 // The write arm lives in session_store::write; the facade re-export keeps the API path stable.
 mod write;
@@ -72,7 +71,7 @@ pub use info::{find_most_recent_session_for_cwd, read_session_info, SessionInfo}
 #[cfg(test)]
 use info::{
     message_content_text, raw_string, raw_u64, session_info_cache, SessionInfoEntry,
-    SessionInfoGeneration, SessionInfoScanCache, SessionScanState, SESSION_SCAN_RESUME_TAIL_BYTES,
+    SessionInfoScanCache, SessionScanState, SESSION_SCAN_RESUME_TAIL_BYTES,
 };
 // Only the unix-only scan-cache cap test reads it.
 #[cfg(all(test, unix))]

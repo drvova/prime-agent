@@ -582,9 +582,10 @@ fn ledger_child_records(
             ),
             started_at_ms: display.as_ref().map_or_else(
                 || {
-                    std::fs::metadata(&child)
+                    pa_core::session::store::store()
+                        .stat(&child)
                         .ok()
-                        .and_then(|metadata| metadata.created().ok())
+                        .and_then(|stat| stat.created)
                         .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
                         .map_or(0, |duration| duration.as_millis() as u64)
                 },

@@ -3,8 +3,8 @@
 //! serializes writers onto the file.
 
 use super::{
-    fs, json, new_entry_id, Context, HashMap, PathBuf, Result, Serialize, SessionEntry,
-    SessionFile, SessionHeader, Value, Write,
+    json, new_entry_id, Context, HashMap, PathBuf, Result, Serialize, SessionEntry, SessionFile,
+    SessionHeader, Value, Write,
 };
 
 impl SessionEntry {
@@ -121,28 +121,16 @@ impl SessionFile {
         }) else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create session dir {}", parent.display()))?;
-        }
-        let mut file = pa_types::platform::AtomicFile::create(
-            path,
-            pa_types::platform::ReplaceOptions {
-                durability: pa_types::platform::Durability::SyncFile,
-                mode: pa_types::platform::FileMode::Private,
-                symlinks: pa_types::platform::Symlinks::ReplaceLink,
-            },
-        )
-        .with_context(|| format!("create a temp file beside {}", path.display()))?;
-        {
-            let mut writer = std::io::BufWriter::new(&mut file);
-            write_line(&mut writer, &session_header_line(&self.header))?;
-            for entry in &self.entries {
-                write_line(&mut writer, entry)?;
-            }
-            writer.flush()?;
-        }
-        file.commit()
+        pa_core::session::store::store()
+            .create(path, &mut |out| {
+                let mut writer = std::io::BufWriter::new(out);
+                write_line(&mut writer, &session_header_line(&self.header))
+                    .map_err(std::io::Error::other)?;
+                for entry in &self.entries {
+                    write_line(&mut writer, entry).map_err(std::io::Error::other)?;
+                }
+                writer.flush()
+            })
             .with_context(|| format!("persist {}", path.display()))?;
         if let Some(traces) = &self.trace_upload {
             traces.persisted(&self.path);
@@ -233,12 +221,13 @@ impl SessionFile {
         // A preflight recovery can advance the leaf after the caller built its
         // generic row. Preserve that recovered parent instead of branching it away.
         entry.parent_id.clone_from(&self.leaf_id);
+        let transcripts = pa_core::session::store::store();
         anyhow::ensure!(
-            self.window.is_none() || self.path.exists(),
+            self.window.is_none() || transcripts.exists(&self.path),
             "window-backed session file is missing"
         );
         let id = entry.id.clone();
-        if !self.path.as_os_str().is_empty() && self.path.exists() {
+        if !self.path.as_os_str().is_empty() && transcripts.exists(&self.path) {
             let mut bytes = Vec::new();
             write_line(&mut bytes, &entry)?;
             #[cfg(test)]
@@ -252,7 +241,7 @@ impl SessionFile {
                     self.lease.is_none() && cut < bytes.len(),
                     "invalid partial append fixture"
                 );
-                let mut file = fs::OpenOptions::new().append(true).open(&self.path)?;
+                let mut file = std::fs::OpenOptions::new().append(true).open(&self.path)?;
                 file.write_all(&bytes[..cut])?;
                 file.flush()?;
                 anyhow::bail!("injected partial attribution append error");
