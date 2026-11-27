@@ -19,7 +19,8 @@
 //!   recovery), under its catch-up rule: a job whose time passed while
 //!   nothing ran fires once, and its next run counts from that fire. A
 //!   timer's own claim (`lastFiredMs`) is cleared whenever it is defined,
-//!   so it never holds back a run the store owes.
+//!   so it never holds back a run the store owes. A pass the store refuses
+//!   (its lock held) runs again shortly.
 //! - **Changes.** A job made, changed or cancelled (by the kernel, or by
 //!   `schedule.add` and `schedule.cancel`) publishes `agent/<id>/schedules`
 //!   (`{"active": <its active jobs>}`) at the lane's next pass: the old
@@ -80,6 +81,9 @@ const SKIPPED: &str = "skipped";
 
 /// The prefix of a job's timer source's name.
 const TIMER_PREFIX: &str = "schedule-";
+
+/// How long a lane waits to run a pass the store refused again.
+const PASS_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Which jobs a listing shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,13 +201,22 @@ impl<B: SessionBuilder> Schedules<B> {
             async move {
                 loop {
                     pass.notified().await;
-                    if let Err(error) = scheduler.run_due().await {
+                    let ran = scheduler.run_due().await;
+                    if let Err(error) = &ran {
                         tracing::warn!("session {id}'s scheduled jobs did not run: {error:#}");
                     }
                     let Some(jobs) = jobs.upgrade() else {
                         return;
                     };
                     jobs.follow_store(&id).await;
+                    // A pass the store refused (its lock held, as a daemon
+                    // killed under it leaves it until it goes stale) runs
+                    // again: the timer that asked for it has fired, and
+                    // nothing else would.
+                    if ran.is_err() {
+                        tokio::time::sleep(PASS_RETRY).await;
+                        pass.notify_one();
+                    }
                 }
             }
         });
