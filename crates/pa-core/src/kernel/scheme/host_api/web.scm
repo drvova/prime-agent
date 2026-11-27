@@ -94,7 +94,7 @@
 ;; #:mode 'smart reads over HTTP and loads in the browser only a page that
 ;; needs JavaScript; #:timeout is the
 ;; whole crawl's deadline in seconds (default 60). Pages past the result's
-;; output budget carry 'handle for ctx-page instead of their markdown.
+;; output budget carry 'handle for output-read instead of their markdown.
 ;; Reach: #:budget (a hash of path prefix to pages, "*" for all),
 ;; #:external-domains (hosts crawled as part of the site), #:full-resources
 ;; #t (PDFs, JSON and text the pages link, not only HTML), #:normalize #t,

@@ -519,7 +519,7 @@ fn drive(counters: &SessionCounters) {
             skipped,
         });
     }
-    // A `ctx-*` read before the first preview is not a follow-up; the two after it are.
+    // A `output-*` read before the first preview is not a follow-up; the two after it are.
     counters.note_preview_followup();
     for (kept_lines, dropped_lines, repeats_collapsed, noise_lines, patterns_learned) in
         [(10, 1, 1, 11, 2), (7, 30, 4, 0, 0)]

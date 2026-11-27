@@ -1280,7 +1280,7 @@ async fn parent_renames_a_child_end_to_end() {
 }
 
 /// The cell that reads its own transcript (the count, the newest user rows, the
-/// head, then everything) and records what `rlm-session-messages` returned.
+/// head, then everything) and records what `history-read` returned.
 fn transcript_cell(receipts_dir: &Path) -> String {
     record_cell(
         r#"(let* ([role (lambda (row) (hash-ref (hash-ref row 'message) 'role))]
@@ -1293,10 +1293,10 @@ fn transcript_cell(receipts_dir: &Path) -> String {
                            content
                            (apply string-append
                                   (map (lambda (block) (hash-ref block 'text)) content)))))))]
-       [total (rlm-session-count)]
-       [users (rlm-session-messages #:start -3 #:limit 3 #:role "user")]
-       [head (rlm-session-messages #:start 0 #:limit 4)]
-       [rows (rlm-session-messages #:start 0 #:limit total)])
+       [total (hash-ref (history-read #:limit 0) 'total)]
+       [users (hash-ref (history-read #:start -3 #:limit 3 #:role "user") 'rows)]
+       [head (hash-ref (history-read #:start 0 #:limit 4) 'rows)]
+       [rows (hash-ref (history-read #:start 0 #:limit total) 'rows)])
   (hash 'total total
         'users (map (lambda (row) (list (hash-ref row 'index) (text row))) users)
         'head (map (lambda (row) (list (hash-ref row 'index) (hash-ref row 'id) (role row) (text row)))
@@ -1307,7 +1307,7 @@ fn transcript_cell(receipts_dir: &Path) -> String {
     )
 }
 
-/// `rlm-session-messages` end to end: a kernel cell in a windowed daemon
+/// `history-read` end to end: a kernel cell in a windowed daemon
 /// session reads its own transcript via the real host handler and supervisor
 /// route, into the rows its compaction summarized away (the summary in place),
 /// without the in-flight step, and the cell's tool result carries each read.

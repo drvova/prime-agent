@@ -1,5 +1,5 @@
 //! `agent previews` (v2): surprise-weighted previews of spilled and thinned
-//! outputs, what they chose, and the `ctx-*` reads that followed them (fewer
+//! outputs, what they chose, and the `output-*` reads that followed them (fewer
 //! follow-up reads means the previews chose well). Counts only: never a line,
 //! a pattern, or output. The `ctx` capability's rule file names the event; session end emits it
 //! through the generic capability counter.
@@ -29,7 +29,7 @@ impl SessionCounters {
         }
     }
 
-    /// One `ctx-*` read: a follow-up page once the session has shown a preview.
+    /// One `output-*` read: a follow-up page once the session has shown a preview.
     pub(crate) fn note_preview_followup(&self) {
         self.with(|values| {
             if values.capabilities.count("preview_count") > 0 {

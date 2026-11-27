@@ -194,13 +194,13 @@ impl Harness {
         entries
     }
 
-    /// Create or update one entry: `{action, kind, title, content, id?,
-    /// path?, reference?, arguments?, metadata?, global?}`. A field an
-    /// update omits keeps its stored value.
+    /// Create or update one entry: `{kind, id, content, title?, path?,
+    /// reference?, arguments?, metadata?, global?}`. An entry that is not
+    /// stored yet is created (titled after its id when no title is given);
+    /// a stored one keeps every field the write omits.
     fn write(&self, options: &Value) -> anyhow::Result<Value> {
         let (dir, scope, given_id) = self.store(options)?;
         let dir = Self::writable(dir)?;
-        let creating = options["action"] == "create";
         let (kind, kind_name) = match options["kind"].as_str() {
             Some("prompt") => (RefinementKind::Prompt, "prompt"),
             Some("memory") => (RefinementKind::Memory, "memory"),
@@ -222,28 +222,13 @@ impl Harness {
         {
             bail!(crate::refinement::FACTORY_DISABLED_MESSAGE);
         }
-        let shown = given_id
-            .filter(|id| !id.is_empty())
-            .or_else(|| options["title"].as_str().filter(|title| !title.is_empty()))
-            .unwrap_or("<unnamed>");
-        let title = required_text(kind_name, shown, "title", &options["title"])?;
-        let id = if options["id"].is_null() {
-            // An entry created without an id is named after its title.
-            let slug: Vec<String> = title
-                .trim()
-                .split(|letter: char| !letter.is_alphanumeric())
-                .filter(|part| !part.is_empty())
-                .map(str::to_lowercase)
-                .collect();
-            let slug: String = slug.join("_").chars().take(80).collect();
-            if slug.is_empty() {
-                kind_name.to_string()
-            } else {
-                slug
-            }
+        let shown = given_id.filter(|id| !id.is_empty()).unwrap_or("<unnamed>");
+        required_text(kind_name, shown, "name", &options["id"])?;
+        let id = given_id.unwrap_or_default().to_string();
+        let title = if options["title"].is_null() {
+            None
         } else {
-            required_text(kind_name, shown, "id", &options["id"])?;
-            given_id.unwrap_or_default().to_string()
+            Some(required_text(kind_name, &id, "title", &options["title"])?)
         };
         let content = required_text(kind_name, &id, "content", &options["content"])?;
         let path = if options["path"].is_null() {
@@ -259,75 +244,81 @@ impl Harness {
                 bail!("skill entry '{id}' rejected: {problem}");
             }
         }
+        // An invalid factory spec never reaches the store through any
+        // writer. A write that omits the arguments keeps the stored spec; a
+        // new factory needs one (checked below, once the store is read).
         if kind == RefinementKind::Factory {
-            // An invalid spec never reaches the store through any writer. A
-            // new factory needs its spec; an update that omits the
-            // arguments keeps the stored one.
-            let spec = arguments.as_ref().map(|arguments| {
+            if let Some(arguments) = &arguments {
                 let given = |key: &str| arguments.get(key).filter(|spec| !spec.is_null());
-                (given("dag"), given("machine"))
-            });
-            let problem = match spec {
-                None if creating => {
-                    Some("factory entries require a dag or machine object in arguments".to_string())
+                let problem = match (given("dag"), given("machine")) {
+                    (Some(_), Some(_)) => Some("pass either dag or machine, not both".to_string()),
+                    (dag, machine) => match machine.or(dag).filter(|spec| spec.is_object()) {
+                        None => Some(
+                            "factory entries require a dag or machine object in arguments"
+                                .to_string(),
+                        ),
+                        Some(spec) => {
+                            Some(crate::kernel::scheme::validate_factory_spec(spec).join("; "))
+                                .filter(|errors| !errors.is_empty())
+                        }
+                    },
+                };
+                if let Some(problem) = problem {
+                    bail!("factory entry '{id}' rejected: {problem}");
                 }
-                None => None,
-                Some((Some(_), Some(_))) => {
-                    Some("pass either dag or machine, not both".to_string())
-                }
-                Some((dag, machine)) => match machine.or(dag).filter(|spec| spec.is_object()) {
-                    None => Some(
-                        "factory entries require a dag or machine object in arguments".to_string(),
-                    ),
-                    Some(spec) => {
-                        Some(crate::kernel::scheme::validate_factory_spec(spec).join("; "))
-                            .filter(|errors| !errors.is_empty())
-                    }
-                },
-            };
-            if let Some(problem) = problem {
-                bail!("factory entry '{id}' rejected: {problem}");
             }
         }
+        let mut created = false;
         let (entry, _) = try_update_harness_state(&dir, scope, |state| {
             let records = state.entries.entry(kind).or_default();
-            let entry = match (records.get(&id), creating) {
-                (Some(_), true) => bail!("{kind_name} entry '{id}' already exists"),
-                (None, false) => bail!("{kind_name} entry '{id}' does not exist"),
-                (Some(stored), false) => HarnessEntry {
-                    title: title.to_string(),
+            let entry = if let Some(stored) = records.get(&id) {
+                HarnessEntry {
+                    title: title.map_or_else(|| stored.title.clone(), str::to_string),
                     content: content.to_string(),
                     path: path.map_or_else(|| stored.path.clone(), str::to_string),
-                    reference: reference.unwrap_or_else(|| stored.reference.clone()),
-                    arguments: arguments.unwrap_or_else(|| stored.arguments.clone()),
-                    metadata: metadata.unwrap_or_else(|| stored.metadata.clone()),
+                    reference: reference
+                        .clone()
+                        .unwrap_or_else(|| stored.reference.clone()),
+                    arguments: arguments
+                        .clone()
+                        .unwrap_or_else(|| stored.arguments.clone()),
+                    metadata: metadata.clone().unwrap_or_else(|| stored.metadata.clone()),
                     source: "agent".to_string(),
                     updated_at: format_iso_now(),
                     version: stored.version + 1,
                     ..stored.clone()
-                },
-                (None, true) => {
-                    if kind == RefinementKind::Skill && reference.is_none() {
-                        bail!(
-                            "skill entry '{id}' rejected: skill entries require a Scheme reference"
-                        );
-                    }
-                    let now = format_iso_now();
-                    HarnessEntry {
-                        id: id.clone(),
-                        kind,
-                        title: title.to_string(),
-                        content: content.to_string(),
-                        path: path.unwrap_or("general").to_string(),
-                        scope: Some(scope),
-                        reference: reference.unwrap_or_default(),
-                        arguments: arguments.unwrap_or_default(),
-                        metadata: metadata.unwrap_or_default(),
-                        source: "agent".to_string(),
-                        created_at: now.clone(),
-                        updated_at: now,
-                        version: 1,
-                    }
+                }
+            } else {
+                if kind == RefinementKind::Skill && reference.is_none() {
+                    bail!("skill entry '{id}' rejected: skill entries require a Scheme reference");
+                }
+                if kind == RefinementKind::Factory && arguments.is_none() {
+                    bail!(
+                        "factory entry '{id}' rejected: factory entries require a dag or machine object in arguments"
+                    );
+                }
+                created = true;
+                let now = format_iso_now();
+                HarnessEntry {
+                    id: id.clone(),
+                    kind,
+                    title: title.unwrap_or(&id).to_string(),
+                    content: content.to_string(),
+                    path: path
+                        .unwrap_or(if kind == RefinementKind::Prompt {
+                            "policy"
+                        } else {
+                            "general"
+                        })
+                        .to_string(),
+                    scope: Some(scope),
+                    reference: reference.clone().unwrap_or_default(),
+                    arguments: arguments.clone().unwrap_or_default(),
+                    metadata: metadata.clone().unwrap_or_default(),
+                    source: "agent".to_string(),
+                    created_at: now.clone(),
+                    updated_at: now,
+                    version: 1,
                 }
             };
             records.insert(id.clone(), entry.clone());
@@ -336,7 +327,7 @@ impl Harness {
         if let Some(reuse) = self
             .reuse
             .as_ref()
-            .filter(|_| creating && scope == HarnessScope::Global)
+            .filter(|_| created && scope == HarnessScope::Global)
         {
             // The entry is stored: a ledger that cannot be written is the
             // ledger's loss, not the call's.
@@ -748,9 +739,10 @@ mod tests {
   "refinements": []
 }"#;
 
-    /// An entry the Python kernel wrote is updated in place (its omitted
-    /// fields kept), new entries land in the store their scope names, and
-    /// the file stays the one `/refine`'s loader reads.
+    /// `harness-put` is an upsert: an entry the Python kernel wrote is
+    /// updated in place (its omitted fields kept), new entries land in the
+    /// store their scope names, and the file stays the one `/refine`'s
+    /// loader reads.
     #[tokio::test(flavor = "multi_thread")]
     async fn entries_are_written_to_the_store_the_other_writers_share() {
         let dir = tempfile::tempdir().unwrap();
@@ -765,15 +757,15 @@ mod tests {
         };
         let mut returned = Vec::new();
         for expression in [
-            seen(r#"(harness-update-memory "global:deploy_steps" "Deploy steps" "run make release")"#),
-            seen(r#"(harness-create-memory "Build notes!" "use make check" #:metadata (hash 'tag "ci"))"#),
-            seen(r#"(harness-create-prompt-note "Tone" "be brief" #:id "tone" #:global #t)"#),
+            seen(r#"(harness-put "memory" "global:deploy_steps" "run make release" #:title "Deploy steps")"#),
+            seen(r#"(harness-put "memory" "build_notes" "use make check" #:title "Build notes!" #:metadata (hash 'tag "ci"))"#),
+            seen(r#"(harness-put "prompt" "tone" "be brief" #:title "Tone" #:global #t)"#),
             seen(
-                r#"(harness-create-skill "Lint" "runs the linter" #:reference (hash 'type "scheme" 'skill "lint" 'callable "lint-run") #:arguments (hash 'path "str"))"#,
+                r#"(harness-put "skill" "lint" "runs the linter" #:title "Lint" #:reference (hash 'type "scheme" 'skill "lint" 'callable "lint-run") #:arguments (hash 'path "str"))"#,
             ),
-            r#"(harness-delete-memory "build_notes")"#.to_string(),
-            r#"(harness-delete-memory "build_notes")"#.to_string(),
-            r"(map symbol->string (hash-keys->list (hash-ref (hash-ref (harness-state) 'entries) 'skill)))"
+            r#"(harness-delete "memory" "build_notes")"#.to_string(),
+            r#"(harness-delete "memory" "build_notes")"#.to_string(),
+            r#"(map symbol->string (hash-keys->list (hash-ref (hash-ref (harness-query #:view "state") 'entries) 'skill)))"#
                 .to_string(),
         ] {
             returned.push(evaluate(kernel.as_ref(), &expression).await.map(|mut value| {
@@ -862,44 +854,34 @@ mod tests {
             .unwrap();
         let mut refused = Vec::new();
         for expression in [
-            r#"(harness-create-memory "Deploy steps" "again" #:global #t)"#,
-            r#"(harness-update-memory "missing" "Title" "text" #:global #t)"#,
-            r#"(harness-create-memory "Title" (list "not" "text") #:global #t)"#,
-            r#"(harness-create-skill "Lint" "runs the linter" #:global #t)"#,
-            r#"(harness-create-skill "Lint" "runs the linter" #:reference (hash 'type "shell") #:global #t)"#,
-            r#"(harness-record-refinement "" "a change" #:global #t)"#,
-            r#"(harness-delete-memory "missing" #:global #t)"#,
+            r#"(harness-put "memory" "title" (list "not" "text") #:global #t)"#,
+            r#"(harness-put "skill" "lint" "runs the linter" #:global #t)"#,
+            r#"(harness-put "skill" "lint" "runs the linter" #:reference (hash 'type "shell") #:global #t)"#,
+            r#"(refine-record "" "a change" #:global #t)"#,
+            r#"(harness-delete "memory" "missing" #:global #t)"#,
         ] {
             refused.push(evaluate(kernel.as_ref(), expression).await);
         }
-        refused.push(
-            evaluate(
-                unsaved.as_ref(),
-                r#"(harness-create-memory "Title" "text")"#,
-            )
-            .await,
-        );
+        refused.push(evaluate(unsaved.as_ref(), r#"(harness-put "memory" "title" "text")"#).await);
         let untouched = std::fs::read_to_string(get_harness_state_path(&global)).unwrap();
         std::fs::write(
             dir.path().join("agent").join("settings.json"),
             r#"{"harnessRefinements": false}"#,
         )
         .unwrap();
-        refused.push(evaluate(kernel.as_ref(), "(harness-overview)").await);
+        refused.push(evaluate(kernel.as_ref(), "(harness-query)").await);
         let raised = |reason: &str| Err(format!("Error: Generic:  {reason}"));
         assert_eq!(
             (refused, untouched),
             (
                 vec![
-                    raised("harness-create-memory: memory entry 'deploy_steps' already exists"),
-                    raised("harness-update-memory: memory entry 'missing' does not exist"),
-                    raised("harness-create-memory: memory entry 'title' rejected: content must be a non-empty string, got a list"),
-                    raised("harness-create-skill: skill entry 'lint' rejected: skill entries require a Scheme reference"),
-                    raised("harness-create-skill: skill entry 'lint' rejected: skill reference.type must be 'scheme'"),
-                    raised("harness-record-refinement: refinement event rejected: trigger must be a non-empty string, got an empty string"),
+                    raised("harness-put: memory entry 'title' rejected: content must be a non-empty string, got a list"),
+                    raised("harness-put: skill entry 'lint' rejected: skill entries require a Scheme reference"),
+                    raised("harness-put: skill entry 'lint' rejected: skill reference.type must be 'scheme'"),
+                    raised("refine-record: refinement event rejected: trigger must be a non-empty string, got an empty string"),
                     Ok(json!(false)),
-                    raised("harness-create-memory: this session is not saved, so it has no local harness store; pass #:global #t to persist across sessions"),
-                    raised("harness-overview: Harness refinements are disabled in /settings"),
+                    raised("harness-put: this session is not saved, so it has no local harness store; pass #:global #t to persist across sessions"),
+                    raised("harness-query: Harness refinements are disabled in /settings"),
                 ],
                 PYTHON_WRITTEN.to_string(),
             )
@@ -915,15 +897,15 @@ mod tests {
         let mut returned = Vec::new();
         for expression in [
             r#"(begin
-                 (harness-create-memory "Deploy checklist" "run the deploy script, then verify" #:path "ops")
-                 (harness-create-memory "Deploy rollback" "revert the deploy with the rollback script")
-                 (harness-create-subagent "Reviewer" "review the diff for 修复登录 regressions")
-                 (hash-ref (harness-record-refinement "the deploy failed twice" "create memory:deploy_rollback") 'id))"#,
-            r#"(map (lambda (entry) (hash-ref entry 'id)) (harness-search "rollback deploy?"))"#,
-            r#"(map (lambda (entry) (hash-ref entry 'id)) (harness-search "deploy" #:kind "subagent"))"#,
-            r#"(map (lambda (entry) (hash-ref entry 'id)) (harness-search "登录 to" #:limit 1))"#,
-            r#"(harness-plan-refinement "tests flake" #:failing-component "the retry skill" #:next-step "rerun twice")"#,
-            "(harness-overview #:max-entries-per-kind 1)",
+                 (harness-put "memory" "deploy_checklist" "run the deploy script, then verify" #:title "Deploy checklist" #:path "ops")
+                 (harness-put "memory" "deploy_rollback" "revert the deploy with the rollback script" #:title "Deploy rollback")
+                 (harness-put "subagent" "reviewer" "review the diff for 修复登录 regressions" #:title "Reviewer")
+                 (hash-ref (refine-record "the deploy failed twice" "create memory:deploy_rollback") 'id))"#,
+            r#"(map (lambda (entry) (hash-ref entry 'id)) (harness-query "rollback deploy?"))"#,
+            r#"(map (lambda (entry) (hash-ref entry 'id)) (harness-query "deploy" #:kind "subagent"))"#,
+            r#"(map (lambda (entry) (hash-ref entry 'id)) (harness-query "登录 to" #:limit 1))"#,
+            r#"(refine-run "tests flake" #:plan-only #t)"#,
+            "(harness-query #:limit 1)",
         ] {
             returned.push(evaluate(kernel.as_ref(), expression).await);
         }
@@ -944,10 +926,9 @@ mod tests {
                     Ok(json!([])),
                     Ok(json!(["reviewer"])),
                     Ok(json!([
-                        "Diagnose the repeated failure or opportunity for the retry skill: tests flake",
+                        "Diagnose the repeated failure or opportunity: tests flake",
                         "Update the smallest useful prompt note, memory item, skill, or subagent spec.",
                         "Run the next action with the changed harness state, then record the outcome.",
-                        "Immediate validation step: rerun twice",
                     ])),
                 ],
                 format!("Harness state (local): {}", file.display()).as_str(),

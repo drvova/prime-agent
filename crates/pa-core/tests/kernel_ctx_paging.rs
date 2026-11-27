@@ -143,7 +143,7 @@ async fn a_later_cell_pages_the_middle_of_a_huge_output_back_in() {
         ),
         (
             "call-2",
-            json!({ "code": format!("(displayln (hash-ref (ctx-page {handle:?} #:start 10000 #:lines 3) 'text))") }),
+            json!({ "code": format!("(displayln (hash-ref (output-read {handle:?} #:start 10000 #:lines 3) 'text))") }),
         ),
     ] {
         provider.push_turn(ScriptedTurn::Events(tool_call_turn_steps(
@@ -283,7 +283,7 @@ async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
             "call-00".to_string(),
             format!(
                 // Grouped digits; the result is a few thousand chars.
-                "{preview}\n[out:{id} · {},{:03} chars · {lines} lines · thinned from this request; ctx-page/ctx-grep read it whole]",
+                "{preview}\n[out:{id} · {},{:03} chars · {lines} lines · thinned from this request; output-read/output-grep read it whole]",
                 chars.len() / 1000,
                 chars.len() % 1000,
             )
@@ -297,7 +297,7 @@ async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
         vec![(
             "call-page",
             pa_types::ai::KERNEL_TOOL_NAME,
-            json!({ "code": format!("(display (hash-ref (ctx-page \"out:{id}\" #:lines {lines}) 'text))") }),
+            json!({ "code": format!("(display (hash-ref (output-read \"out:{id}\" #:lines {lines}) 'text))") }),
         )],
     )));
     provider.push_text_turn("paged");

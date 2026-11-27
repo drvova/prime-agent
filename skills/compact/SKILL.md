@@ -11,18 +11,18 @@ host (the same one behind the user's `/compact` command); these kernel
 functions are the interface to it:
 
 ```scheme
-(compact-status)
-(compact-run)
-(compact-run "keep the failing test names and the migration checklist")
+(compact #:status #t)
+(compact)
+(compact "keep the failing test names and the migration checklist")
 ```
 
 ## API
 
-- `(compact-status)` — current context usage as a hash: `tokens`,
+- `(compact #:status #t)` — current context usage as a hash: `tokens`,
   `context_window`, and `percent` (unset right after a compaction until the
   next model response), plus `scheduled` (whether a requested compaction is
   already pending).
-- `(compact-run [instructions])` — schedule compaction. Returns
+- `(compact [instructions])` — schedule compaction. Returns
   `{scheduled #t}`, or `{scheduled #f, reason}` when there is nothing to
   compact yet. Optional `instructions` focus the summary on what matters for
   the remaining work.
@@ -36,6 +36,6 @@ functions are the interface to it:
   remains available.
 - Compact at a natural boundary when context usage is high and substantial
   work remains, instead of becoming terse or returning to the user early.
-  Check `(compact-status)` when unsure.
-- One request per turn is enough; calling `compact-run` again before the turn
+  Check `(compact #:status #t)` when unsure.
+- One request per turn is enough; calling `compact` again before the turn
   ends only updates the instructions.

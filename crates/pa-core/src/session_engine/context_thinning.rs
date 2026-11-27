@@ -318,7 +318,7 @@ pub fn thin_context(
                         thinned.push_str(&text[..head_end]);
                         let _ = write!(
                             thinned,
-                            "\n[... {omitted} of {total} chars of this older result thinned from the request; full text: (rlm-session-tool-result {:?}) ...]\n",
+                            "\n[... {omitted} of {total} chars of this older result thinned from the request; full text: (history-read #:tool-call {:?}) ...]\n",
                             result.tool_call_id
                         );
                         thinned.push_str(&text[tail_start..]);

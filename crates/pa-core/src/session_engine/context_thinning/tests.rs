@@ -84,7 +84,7 @@ fn thinned_text(text: &str, call: &str) -> String {
     let head: String = chars[..240].iter().collect();
     let tail: String = chars[chars.len() - 120..].iter().collect();
     format!(
-        "{head}\n[... {} of {} chars of this older result thinned from the request; full text: (rlm-session-tool-result \"{call}\") ...]\n{tail}",
+        "{head}\n[... {} of {} chars of this older result thinned from the request; full text: (history-read #:tool-call \"{call}\") ...]\n{tail}",
         chars.len() - 360,
         chars.len(),
     )
@@ -283,7 +283,7 @@ async fn the_pointer_resolves_to_the_full_result_through_the_recall_path() {
     let view = thin_context(messages.clone(), 20_000, &on(), &ThinnedRecall::ToolResult);
     let pointer = result_text(&view.messages[2]);
     let call = pointer
-        .split("(rlm-session-tool-result \"")
+        .split("(history-read #:tool-call \"")
         .nth(1)
         .and_then(|rest| rest.split('"').next())
         .expect("pointer names a tool call id");
@@ -567,7 +567,7 @@ async fn with_a_spill_store_thinned_results_page_out_behind_their_handle() {
         .expect("a 4,000-char result previews")
         .text;
         let thinned = format!(
-            "{preview}\n[out:{} · {} chars · {} lines · thinned from this request; ctx-page/ctx-grep read it whole]",
+            "{preview}\n[out:{} · {} chars · {} lines · thinned from this request; output-read/output-grep read it whole]",
             content_id(&original),
             crate::kernel::spill::group_digits(chars.len()),
             original.lines().count(),

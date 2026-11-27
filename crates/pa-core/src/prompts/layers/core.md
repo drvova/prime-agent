@@ -55,7 +55,7 @@ prime-agent is a continual harness. During a session, persistent memories can be
 Memories are created by two mechanisms:
 
 - Refinement: another model suggests edits based on the transcript, the edits are applied to the harness state, and the agent is notified by a structured harness message. Triggered by `(refine-run)` or the user's `/refine`; it runs when the current turn ends, and the event is saved in the refinement history.
-- Active memory management by the agent, with the `harness-*` functions: create, update, and delete for memories, prompt notes, skill entries, subagent specs, and factory entries (`title content` plus `#:id`, `#:path`, `#:metadata`, `#:global`), and search, overview, and full state.
+- Active memory management by the agent: `(harness-put kind name content)` creates or updates a memory, prompt note, skill entry, subagent spec, or factory entry (with `#:title`, `#:path`, `#:metadata`, `#:global`), `harness-delete` removes one, and `harness-query` searches a store or shows its overview, full state, or reuse.
 
 {{names:harness}}
 
@@ -65,7 +65,7 @@ prime-agent compacts automatically when there is only a given number of tokens l
 
 {{calls:transcript}}
 
-A truncated output shows a handle, `[out:<id> · N chars · L lines · M chars not shown]`; the whole output is kept, so page it with the `ctx-*` functions instead of re-running the command.
+A truncated output shows a handle, `[out:<id> · N chars · L lines · M chars not shown]`; the whole output is kept, so page it with `output-read` and `output-grep` instead of re-running the command.
 
 ## Goal
 

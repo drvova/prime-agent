@@ -248,10 +248,10 @@ resolution and cross-language references.
 
 Neighbour prefetch (`prefetch`): an `fs.read` host request (the kernel's `fs-read`) pages the read
 file's likely next reads out to the spill store and names one handle each in its reply (`related`,
-and a last line of its text pointing at `(ctx-page handle)`), never their text: its test files, the
+and a last line of its text pointing at `(output-read handle)`), never their text: its test files, the
 workspace files it imports (Rust `mod`, Python imports, JS/TS relative imports, C `#include "…"`),
 and the files calling what it defines (from the symbol index, once that is built). A decaying
-per-project share of handles the model went on to use (a `ctx-*` read of the handle, or an
+per-project share of handles the model went on to use (a `output-*` read of the handle, or an
 `fs-read` of the file) sets how many each read gets, down to none with a one-handle probe every
 tenth read; it lives under `<agent dir>/prefetch/` and is shared by every session on the project in
 the process. The read waits at most 150 ms for it. Adoption counts ride the `agent prefetch` event.
@@ -412,7 +412,7 @@ tool's name. The estimator is per project and shared by that project's sessions 
 under `<agent dir>/preview-noise/`) so its request views stay a pure function of history, and
 saves what it learns fire-and-forget on a scope-propagating thread that writes nothing once its
 session lifetime has ended, and nothing over a store it could not read. Adoption counts, with the
-`ctx-*` reads that followed a preview, ride the `agent previews` event. Non-goals: encoding, any
+`output-*` reads that followed a preview, ride the `agent previews` event. Non-goals: encoding, any
 model or dependency, and previewing `bash`'s own `'output` (it is returned whole beside its
 handle; it is previewed when a cell prints it).
 

@@ -21,9 +21,9 @@
 //!   kernel's `fs-read`, when a `/skill:<name>` command expands it, or when
 //!   a cell names a function its Scheme source defines; it is created when
 //!   a cell writes its `SKILL.md` and the ledger has no record of it.
-//! - a global harness entry is created by `harness-create-*`, offered when a
-//!   digest shows it, used when `harness-search` returns it, and forgotten
-//!   when `harness-delete-*` removes it. Local entries belong to one session
+//! - a global harness entry is created by `harness-put`, offered when a
+//!   digest shows it, used when a `harness-query` search returns it, and
+//!   forgotten when `harness-delete` removes it. Local entries belong to one session
 //!   and are not tracked.
 //!
 //! Skills shipped with the product are not tracked: they are its surface,

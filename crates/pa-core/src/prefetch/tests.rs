@@ -70,7 +70,7 @@ async fn a_read_names_handles_to_its_tests_imports_and_callers() {
                 {"path": "src/main.rs", "why": "caller", "handle": handle("fn main() {\n    let _ = Store;\n}\n")},
             ]),
             format!(
-                "[related, paged out (read with (ctx-page handle)): test src/store/tests.rs {} · test tests/store.rs {} · import src/store/cache.rs {} · caller src/main.rs {}]",
+                "[related, paged out (read with (output-read handle)): test src/store/tests.rs {} · test tests/store.rs {} · import src/store/cache.rs {} · caller src/main.rs {}]",
                 handle("use super::Store;\n"),
                 handle("use app::Store;\n"),
                 handle("pub struct Cache;\n"),
@@ -115,7 +115,7 @@ async fn an_import_that_leaves_the_workspace_is_never_paged_out() {
     );
 }
 
-/// A handle read through `ctx-*`, or its file read, counts as used when the
+/// A handle read through `output-*`, or its file read, counts as used when the
 /// next read settles the batch.
 #[tokio::test]
 async fn used_handles_are_counted_when_the_next_read_settles() {

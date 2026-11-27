@@ -310,11 +310,11 @@ mod tests {
         let returned = values(
             kernel.as_ref(),
             &[
-                r#"(rlm-session-messages #:start -2 #:limit 1 #:role "user")"#,
-                r#"(rlm-session-count #:role (list "user" "assistant") #:agent (hash 'rlm_child_id "c1"))"#,
-                r#"(rlm-session-messages #:session (hash 'session_id "s9"))"#,
-                r#"(rlm-session-search "parser bug" #:limit 3)"#,
-                r#"(rlm-session-tool-result "call_1")"#,
+                r#"(history-read #:start -2 #:limit 1 #:role "user")"#,
+                r#"(hash-ref (history-read #:limit 0 #:role (list "user" "assistant") #:agent (hash 'rlm_child_id "c1")) 'total)"#,
+                r#"(hash-ref (history-read #:session (hash 'session_id "s9")) 'rows)"#,
+                r#"(history-search "parser bug" #:limit 3)"#,
+                r#"(history-read #:tool-call "call_1")"#,
             ],
         )
         .await;
@@ -322,7 +322,7 @@ mod tests {
             (returned, received.lock().unwrap().clone()),
             (
                 vec![
-                    Ok(rows.clone()),
+                    Ok(json!({"total": 5, "rows": rows.clone()})),
                     Ok(json!(5)),
                     Ok(rows),
                     Ok(json!([hit])),
@@ -332,7 +332,7 @@ mod tests {
                     json!({"type": "rlm.session.messages", "start": -2, "limit": 1, "roles": ["user"]}),
                     json!({
                         "type": "agent_observe.session_messages",
-                        "start": 0,
+                        "start": -10,
                         "limit": 0,
                         "roles": ["user", "assistant"],
                         "target": "c1",
@@ -475,9 +475,9 @@ mod tests {
         let returned = values(
             kernel.as_ref(),
             &[
-                "(compact-status)",
-                "(compact-run)",
-                r#"(compact-run "keep the failing test")"#,
+                "(compact #:status #t)",
+                "(compact)",
+                r#"(compact "keep the failing test")"#,
                 "(refine-status)",
                 r#"(refine-run "the retry loop" #:global #t)"#,
                 "(goal-get)",
@@ -706,11 +706,11 @@ mod tests {
         let returned = values(
             kernel.as_ref(),
             &[
-                &format!(r#"(ctx-info "{handle}")"#),
-                &format!(r#"(ctx-page "{handle}" #:start 1 #:lines 2)"#),
-                &format!(r#"(ctx-tail "{handle}" 1)"#),
-                &format!(r#"(ctx-grep "{handle}" "^beta" #:context 0 #:max-matches 1)"#),
-                r#"(ctx-page "out:0000000000")"#,
+                &format!(r#"(output-read "{handle}" #:info #t)"#),
+                &format!(r#"(output-read "{handle}" #:start 1 #:lines 2)"#),
+                &format!(r#"(output-read "{handle}" #:tail 1)"#),
+                &format!(r#"(output-grep "{handle}" "^beta" #:context 0 #:max-matches 1)"#),
+                r#"(output-read "out:0000000000")"#,
             ],
         )
         .await;
@@ -735,7 +735,7 @@ mod tests {
                 stored(json!({"start": 1, "end": 3, "text": "beta one\ngamma\n", "truncated": false})),
                 stored(json!({"start": 4, "end": 5, "text": "omega\n", "truncated": false})),
                 stored(json!({"pattern": "^beta", "matches": 2, "shown": 1, "text": "1:beta one\n", "truncated": true})),
-                Err("Error: Generic:  ctx-page: out:0000000000 is unknown; re-run the command to see its output".to_string()),
+                Err("Error: Generic:  output-read: out:0000000000 is unknown; re-run the command to see its output".to_string()),
             ]
         );
     }
@@ -833,8 +833,8 @@ mod tests {
         let returned = values(
             kernel.as_ref(),
             &[
-                r#"(rlm-session-tool-result "call_30")"#,
-                r#"(rlm-session-tool-result "call_500")"#,
+                r#"(history-read #:tool-call "call_30")"#,
+                r#"(history-read #:tool-call "call_500")"#,
             ],
         )
         .await;
@@ -843,7 +843,7 @@ mod tests {
             (
                 vec![
                     Ok(json!("output 30\nits last line")),
-                    Err("Error: Generic:  rlm-session-tool-result: no tool result in this session has the id call_500".to_string()),
+                    Err("Error: Generic:  history-read: no tool result in this session has the id call_500".to_string()),
                 ],
                 vec![
                     json!([0, 0]),

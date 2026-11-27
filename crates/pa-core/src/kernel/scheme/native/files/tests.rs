@@ -881,7 +881,7 @@ async fn fs_write_creates_and_replaces_files_through_the_session_handler() {
     );
 }
 
-/// A read's reply names the file's neighbours as handles, `(ctx-page ...)`
+/// A read's reply names the file's neighbours as handles, `(output-read ...)`
 /// reads one, and both that read and an `fs-read` of the other neighbour
 /// count as uses when the next read settles them.
 #[tokio::test(flavor = "multi_thread")]
@@ -927,7 +927,7 @@ async fn a_read_carries_related_handles_that_ctx_page_reads() {
         "(let* ([view (fs-read \"src/store.rs\")]
                 [related (hash-ref view 'related)])
            (list related
-                 (hash-ref (ctx-page (hash-ref (car related) 'handle)) 'text)
+                 (hash-ref (output-read (hash-ref (car related) 'handle)) 'text)
                  (hash-ref view 'text)))",
     )
     .await
@@ -954,7 +954,7 @@ async fn a_read_carries_related_handles_that_ctx_page_reads() {
             ]),
             json!("use super::Store;\n"),
             Some(format!(
-                "[related, paged out (read with (ctx-page handle)): test src/store/tests.rs {tests} · import src/store/cache.rs {cache}]"
+                "[related, paged out (read with (output-read handle)): test src/store/tests.rs {tests} · import src/store/cache.rs {cache}]"
             )),
             Ok(json!(false)),
             vec![

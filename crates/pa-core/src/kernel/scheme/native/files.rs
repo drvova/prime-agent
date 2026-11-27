@@ -20,11 +20,11 @@
 //!   also returns `'related`: the file's likely next reads (its tests, the
 //!   workspace files it imports, the files calling what it defines), each a
 //!   hash of `'path`, `'why` (`"test"`, `"import"`, `"caller"`) and `'handle`
-//!   (the whole file, for `ctx-page`), named in the last line of `'text`.
+//!   (the whole file, for `output-read`), named in the last line of `'text`.
 //! - `(fs-symbol name [options])` returns where one identifier is defined and
 //!   used: `'name`, `'definitions` and `'references` (each a hash of `'path`,
 //!   `'line`, `'text`; a definition also `'kind` and `'handle`, its source for
-//!   `ctx-page`), `'truncated`, `'partial` (the index is still building),
+//!   `output-read`), `'truncated`, `'partial` (the index is still building),
 //!   `'text`. Option: `'max-references` (default 50).
 //! - `(fs-edit path edits [options])` also takes a row of `fs-read`'s
 //!   `'lines` (or of a hunk) wherever it takes an anchor, and with the option

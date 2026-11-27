@@ -1,13 +1,13 @@
 ---
 name: factory
-description: Run state-machine workflows of spawned child agents: store a validated machine or dag spec as a continual-harness factory entry (harness-create-factory), then run, watch, stop, and resume it through the factory-* functions. For the full authoring reference and API guide, call (factory-help) in the kernel.
+description: Run state-machine workflows of spawned child agents: store a validated machine or dag spec as a continual-harness factory entry (harness-put "factory" ...), then run, watch, stop, and resume it through the factory-* functions. For the full authoring reference and API guide, call (factory-help) in the kernel.
 ---
 
 # Factory
 
 The factory runs state-machine workflows of spawned child agents. A stored
 factory entry — harness kind `factory`, written with
-`harness-create-factory` — declares the machine: states, each backed by
+`(harness-put "factory" name content #:machine spec)` — declares the machine: states, each backed by
 a subagent spec, plus guarded transitions between them. The spec validates
 at write time (`#:machine` form, or `#:dag` sugar that compiles to one; pass
 exactly one), and an invalid spec is never stored.

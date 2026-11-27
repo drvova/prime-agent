@@ -173,7 +173,7 @@ async fn a_cells_host_calls_show_on_its_result_and_end_turn_marks_it() {
            (ask "Which store?" (list "sqlite" "postgres") #:default "sqlite")
            (agent-message-send "status?" #:receiver-role "child" #:receiver-name "worker")
            (agent-message-broadcast "status?")
-           (rlm-session-messages #:limit 1 #:role "user")
+           (history-read #:limit 1 #:role "user")
            (fs-edit "notes.txt" (hash 'old "two" 'new "three"))
            (bash "true")
            (hash-ref (rlm-end-turn) 'endedTurn)"#,
@@ -816,7 +816,7 @@ async fn a_lifetime_that_ends_under_a_running_cell_stops_it_and_its_writes() {
         PATIENCE,
         kernel.execute(
             "(displayln \"spinning\")
-             (with-handler (lambda (stopped) (harness-create-memory \"left\" \"behind\"))
+             (with-handler (lambda (stopped) (harness-put \"memory\" \"left\" \"behind\"))
                (let spin () (spin)))",
             KernelExecuteOptions {
                 signal: None,
@@ -932,7 +932,7 @@ fn a_thread_left_over_from_an_ended_lifetime_cannot_change_the_workspace() {
 }
 
 /// A kernel of a saved session: its cut output pages out to the store under
-/// `dir`, which the `ctx-*` functions read.
+/// `dir`, which the `output-*` functions read.
 async fn paging_kernel(
     dir: &std::path::Path,
 ) -> (Box<dyn KernelExecutor>, crate::kernel::spill::SpillStore) {
@@ -990,7 +990,7 @@ async fn a_cut_cells_output_is_previewed_by_information_and_pages_back_whole() {
     .await;
     let paged = run(
         kernel.as_ref(),
-        &format!("(display (hash-ref (ctx-page \"out:{id}\" #:start 1500 #:lines 3) 'text))"),
+        &format!("(display (hash-ref (output-read \"out:{id}\" #:start 1500 #:lines 3) 'text))"),
     )
     .await;
     let preview =

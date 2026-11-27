@@ -22,7 +22,7 @@ from lifecycle_lib import OwnedProcesses, TAG, finish
 from check_restore_notice import texts
 
 MARKER = 'FACTORY_RECOVERY_RESULT='
-CELL = '''(harness-create-factory "Recovery fixture" "Actual factory output recovery" #:id "recovery-fixture"
+CELL = '''(harness-put "factory" "recovery-fixture" "Actual factory output recovery" #:title "Recovery fixture"
   #:machine (hash
     'states (list (hash 'id "work" 'entry #t 'max_entries 1
                         'subagent (hash 'prompt "FACTORY_RECOVERY_CHILD")

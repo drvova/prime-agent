@@ -20,7 +20,7 @@ from check_restore_notice import texts
 
 MARKER = 'FACTORY_VALIDATION_RESULT='
 CELL = '''(define (fixture-stored id)
-  (let ([kind (hash-try-get (hash-ref (harness-state) 'entries) 'factory)])
+  (let ([kind (hash-try-get (hash-ref (harness-query #:view "state") 'entries) 'factory)])
     (and kind (hash-contains? kind (string->symbol id)) #t)))
 (define fixture-results
   (map (lambda (fixture)
@@ -28,7 +28,7 @@ CELL = '''(define (fixture-stored id)
            (with-handler
              (lambda (e) (hash 'case label 'error (to-string e) 'stored (fixture-stored id)))
              (begin
-               (harness-create-factory "Validation fixture" "Production harness write" #:id id
+               (harness-put "factory" id "Production harness write" #:title "Validation fixture"
                  #:dag (hash 'nodes (list (hash 'id "watcher" 'lifecycle "resident"
                                                 'subagent (hash 'prompt "Watch fixture")
                                                 'retries (cadr fixture)))))

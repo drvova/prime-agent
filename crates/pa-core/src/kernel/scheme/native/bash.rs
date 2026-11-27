@@ -10,7 +10,7 @@
 //!   stderr together, in the order written), `'truncated`, `'timed-out`,
 //!   `'duration-ms`, `'cached`, `'job`, `'pid`, `'handle` (the output's
 //!   `out:<id>` spill handle when it is large and the session keeps a store,
-//!   for the `ctx-*` readers), and `'tests` (a test run's summary, also
+//!   for the `output-*` readers), and `'tests` (a test run's summary, also
 //!   printed). A failing command is a result, not an error.
 //!
 //!   In a session that delivers `[bash-done]` notices the wait has a window
