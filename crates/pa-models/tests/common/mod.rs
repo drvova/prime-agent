@@ -263,6 +263,10 @@ impl CaBundleEnv {
     }
 }
 
+/// Point `env_var` at a bundle holding `ca_pem` in the PROCESS environment. Its one caller
+/// passes `SSL_CERT_FILE`, which the native trust store reads once per process by itself
+/// (process-wide by design, not per session), so a session scope cannot stand in; the caller
+/// is a single-test binary, so nothing else in the process races the change.
 pub fn ca_bundle_env(env_var: &str, ca_pem: &str) -> CaBundleEnv {
     let bundle = tempfile::NamedTempFile::new().expect("ca bundle");
     std::fs::write(bundle.path(), ca_pem).expect("write ca bundle");
