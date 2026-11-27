@@ -672,6 +672,22 @@ SQLite implementations over `pa-log`.
   `daemon.shutdown` does, its `system/closing` carrying the old `daemon_closing`'s update payload
   (`reason: "update"`, `payload: {updateId, resume, estSeconds, sessions}`); the runtime's stop
   never refuses, so a commit is never abandoned.
+  **The update boot** (`daemon/handlers/restore.rs`, on pa-core's `update::restart::restore`):
+  the embedder reads the coordinator's roster (`PRIME_AGENT_UPDATE_ROSTER`) into
+  `DaemonOptions::update` before the boot sweeps this socket's update scratch; after the revival,
+  pa-core's restore pass walks the roster with the daemon as its `RestoreHost`. A row whose
+  transcript is open already is found; any other is opened as `session.create {path, cwd}`
+  opens it. A row mid-turn gets the continuation prompt, unless the revival opened its session
+  for unfinished tasks (the runtime predecessor's stop queued it). A TS roster's replay runs on
+  the session: the input pause is a lane hold, the update-complete notice an appended row, the
+  next-turn rows steered to its agent, the queued actions checked as the old worker checks them
+  (`validate_actions`) and published (`next_turn_boundary` a steer, else a follow-up; one
+  carrying a custom message is refused), the continuation a steer. `daemon.update_restore_status`
+  answers the old `update_restore_status` body; `session.create` and `session.attach` of a
+  roster row wait for its row to settle (and a failed one, not open, is refused with the old
+  typed message); `daemon.identity` answers the old hello's identity fields (`supervisorPid`,
+  its start id, `supervisorGeneration`, `keeperPid`, `appVersion`, `schemaId`,
+  `updateResume`), which the update coordinator greets the daemon with.
   **Scheduled jobs** (`daemon/schedules.rs`): a daemon session's kernel serves `schedule.*` and
   `rlm_heartbeat.*` on pa-core's job store (the session's `session-artifacts/<id>` partition,
   the old daemon's rows), bound through `SessionSeams::scheduled_jobs`. Each active job has a

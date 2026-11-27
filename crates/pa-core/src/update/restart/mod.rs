@@ -24,6 +24,7 @@ use serde_json::{json, Map, Value};
 use crate::session::manager::iso_from_unix_ms;
 
 mod prepare;
+pub mod restore;
 pub mod roster;
 
 use prepare::{marker_expires_at_iso, update_gate_refuses, write_prepared_artifacts};

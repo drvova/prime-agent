@@ -117,7 +117,8 @@ impl Worker {
                 core.steering.push_front(QueuedItem {
                     priority: QueuePriority::Human,
                     preview: None,
-                    message: crate::update_restore::UPDATE_RESTART_CONTINUATION_PROMPT.to_string(),
+                    message: pa_core::session::revival::UPDATE_RESTART_CONTINUATION_PROMPT
+                        .to_string(),
                     custom_message: None,
                     agent_message: None,
                     queue_key: None,

@@ -44,14 +44,14 @@ pub fn identity_from_hello(hello: &Value) -> UpdateProcessIdentity {
 /// Returns an error when the successor supervisor cannot be spawned.
 pub fn spawn_supervisor(
     exe: &Path,
-    socket_path: &Path,
+    endpoint: &super::endpoint::Endpoint,
     roster_path: Option<&Path>,
     cwd: &Path,
 ) -> Result<u64> {
     let mut command = std::process::Command::new(exe);
     command
         .args(["--mode", "daemon", "--daemon-socket"])
-        .arg(socket_path)
+        .arg(endpoint.daemon_socket())
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -59,9 +59,13 @@ pub fn spawn_supervisor(
     if let Some(roster_path) = roster_path {
         command.env(UPDATE_ROSTER_ENV, roster_path);
     }
-    // The coordinator waits for the successor's hello on the supervisor's socket: the
-    // runtime-daemon opt-in must not make it the runtime daemon.
-    command.env(crate::daemon_mode::SUPERVISOR_ENV, "1");
+    // The successor is the daemon the update drives: the runtime daemon when it is the
+    // selected one, else the supervisor, whatever the successor's own settings say.
+    if endpoint.is_runtime() {
+        command.env(crate::daemon_mode::RUNTIME_DAEMON_ENV, "1");
+    } else {
+        command.env(crate::daemon_mode::SUPERVISOR_ENV, "1");
+    }
     // The successor runs under its own restart owner (see `pa_daemon::keeper`); a rollback
     // binary that predates the owner ignores the variable and runs unkept.
     #[cfg(unix)]
@@ -78,12 +82,13 @@ pub fn spawn_supervisor(
 
 /// Connect and complete the `daemon_hello` handshake, bounded by `budget_ms`
 /// (spec §9 `Booting`): `true` identity on hello, `false` on budget expiry.
-pub async fn wait_for_hello(socket_path: &Path, budget_ms: u64) -> Option<UpdateProcessIdentity> {
+pub async fn wait_for_hello(
+    endpoint: &super::endpoint::Endpoint,
+    budget_ms: u64,
+) -> Option<UpdateProcessIdentity> {
     let deadline = Instant::now() + Duration::from_millis(budget_ms.max(1));
     loop {
-        if let Ok((client, _events)) =
-            pa_tui::daemon_client::DaemonClient::connect(socket_path).await
-        {
+        if let Ok(client) = endpoint.connect().await {
             let identity = identity_from_hello(client.hello());
             client.close();
             return Some(identity);
@@ -188,7 +193,11 @@ mod tests {
         let started = Instant::now();
         // The budget spans at least one poll: the loop gives up when the next
         // poll would overshoot, so the elapsed time is poll-granular.
-        let identity = wait_for_hello(&socket, (BOOT_POLL * 2).as_millis() as u64).await;
+        let identity = wait_for_hello(
+            &crate::update_flow::endpoint::Endpoint::Supervisor(socket),
+            (BOOT_POLL * 2).as_millis() as u64,
+        )
+        .await;
         assert!(identity.is_none());
         assert!(started.elapsed() >= BOOT_POLL);
     }

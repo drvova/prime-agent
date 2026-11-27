@@ -72,7 +72,9 @@
 //!   [`keeper`].
 //! - The update restart's prepare and commit (the gate, the roster, the
 //!   update's closing), as the old daemon answers and writes them (phase
-//!   8d-5b): [`update`].
+//!   8d-5b), and the next daemon's restore of the roster (8d-5b2):
+//!   [`update`]; a TS updater's restart handoff restored on the selected
+//!   daemon (8d-5b2): [`legacy_update`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -87,6 +89,7 @@ mod heartbeats;
 mod info;
 mod keeper;
 mod kernel_activity;
+mod legacy_update;
 mod lifecycle;
 mod questions;
 mod queue_edit;

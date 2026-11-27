@@ -15,19 +15,22 @@ use serde_json::Value;
 /// The prepare-poll and restore-poll interval.
 const PHASE_POLL: Duration = Duration::from_millis(500);
 
+/// How long one restore-status poll may take to be answered.
+const RESTORE_STATUS_TIMEOUT_MS: u64 = 30_000;
+
 /// Poll `prepare_update_restart` (idempotent on `update_id`) until the old
 /// supervisor reports `prepared` (spec §4), bounded by the prepare budget. A
 /// typed refusal is the spec's `Join` case: another update owns the
 /// transaction - the update aborts for a later retry.
 pub(super) async fn prepare_to_prepared(
-    client: &pa_tui::daemon_client::DaemonClient,
+    client: &super::endpoint::Connection,
     update_id: &UpdateId,
     budget: &UpdateTimeoutBudget,
 ) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(budget.prepare_ms.max(1));
     loop {
         let response = client
-            .request_with_timeout(
+            .request(
                 pa_types::daemon::DaemonCommand::PrepareUpdateRestart {
                     id: None,
                     update_id: Some(update_id.to_string()),
@@ -65,12 +68,12 @@ pub(super) async fn prepare_to_prepared(
 /// Consume the prepared artifact: `commit_update_restart` (spec §5). The RPC
 /// budget spans the graceful stops (a stop that exceeds its budget refuses).
 pub(super) async fn commit_update(
-    client: &pa_tui::daemon_client::DaemonClient,
+    client: &super::endpoint::Connection,
     update_id: &UpdateId,
     budget: &UpdateTimeoutBudget,
 ) -> Result<()> {
     let response = client
-        .request_with_timeout(
+        .request(
             pa_types::daemon::DaemonCommand::CommitUpdateRestart {
                 id: None,
                 update_id: Some(update_id.to_string()),
@@ -113,23 +116,28 @@ pub(super) fn check_marker_fresh(prepared_dir: &Path) -> Result<()> {
 /// The restore report: poll the successor's `update_restore_status` RPC (spec
 /// §6/§9) until the boot restore pass completes or the budget expires.
 pub(super) async fn restore_report(
-    socket_path: &Path,
+    endpoint: &super::endpoint::Endpoint,
     budget: &UpdateTimeoutBudget,
 ) -> (UpdateStatusCounts, Vec<UpdateStatusFailure>) {
     let deadline =
         tokio::time::Instant::now() + Duration::from_millis(budget.restore_overall_ms.max(1));
     loop {
-        if let Ok((client, _events)) =
-            pa_tui::daemon_client::DaemonClient::connect(socket_path).await
-        {
+        if let Ok(client) = endpoint.connect().await {
             let response = client
-                .request_ok(pa_types::daemon::DaemonCommand::UpdateRestoreStatus {
-                    id: None,
-                    update_id: None,
-                    rest: serde_json::Map::default(),
-                })
+                .request(
+                    pa_types::daemon::DaemonCommand::UpdateRestoreStatus {
+                        id: None,
+                        update_id: None,
+                        rest: serde_json::Map::default(),
+                    },
+                    RESTORE_STATUS_TIMEOUT_MS,
+                )
                 .await;
-            if let Ok(data) = response {
+            if let Some(data) = response
+                .ok()
+                .filter(|response| response.success)
+                .and_then(|response| response.data)
+            {
                 let complete = data
                     .get("complete")
                     .and_then(Value::as_bool)

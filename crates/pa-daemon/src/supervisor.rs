@@ -207,7 +207,7 @@ pub struct Supervisor {
     update: pa_core::update::restart::UpdateRestart,
     /// The boot-time restore pass (spec §6): sweep + roster restore + scheduled-work
     /// re-arm; read by the hello resume contract and the `update_restore_status` RPC.
-    pub(crate) restore: crate::update_restore::RestoreProgress,
+    pub(crate) restore: pa_core::update::restart::restore::RestoreProgress,
     /// The session input-pause leases: pause id -> lease, the bookkeeping
     /// behind `acquire`/`release_session_input_pause`.
     pub(crate) input_pauses: crate::input_pause_lease::SupervisorPauseTable,
@@ -331,7 +331,7 @@ impl Supervisor {
             log,
             rlm_ledger: tokio::sync::Mutex::new(None),
             update,
-            restore: crate::update_restore::RestoreProgress::new(),
+            restore: pa_core::update::restart::restore::RestoreProgress::new(),
             input_pauses: crate::input_pause_lease::SupervisorPauseTable::default(),
             passive_catalog: std::sync::Mutex::new(None),
             passive_scan_gate: tokio::sync::Mutex::new(()),
@@ -476,7 +476,7 @@ impl Supervisor {
         // Update boot (spec §6): consume the roster from the spawn env BEFORE the sweep deletes
         // the file it points at, then run the restore + re-arm pass concurrently with serving —
         // reconnecting clients must see the resume contract (§10.3), which the hello carries.
-        let roster = crate::update_restore::consume_roster_env();
+        let roster = pa_core::update::restart::restore::consume_roster_env();
         self.restore.begin(roster.as_ref());
 
         // The boot reap (the operator's same-socket predecessor rule): leftover workers of a
@@ -495,7 +495,7 @@ impl Supervisor {
                 let socket_path = supervisor.options.socket_path.clone();
                 drop(
                     tokio::task::spawn_blocking(move || {
-                        crate::update_restore::boot_sweep(&agent_dir, &socket_path);
+                        pa_core::update::restart::restore::boot_sweep(&agent_dir, &socket_path);
                     })
                     .await,
                 );

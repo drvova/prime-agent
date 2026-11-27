@@ -152,7 +152,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     pub(super) async fn prepare_update_restart(&self, args: &Value) -> anyhow::Result<Value> {
         let update_id = optional_string_arg(args, "updateId")?;
         let to_version = optional_string_arg(args, "toVersion")?
-            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+            .unwrap_or_else(|| self.boot.app_version.clone());
         self.update
             .prepare(update_id, |update_id, _deadline| {
                 self.update_roster(update_id, to_version)
@@ -190,6 +190,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             .collect();
         let agent_dir = self.agent_dir.clone();
         let socket = self.update.socket_path().to_string_lossy().into_owned();
+        let from_version = self.boot.app_version.clone();
         let build = move |ledger: &pa_core::session_engine::rlm_ledger::RlmSpawnLedger| {
             let child_parents = live_child_parents(ledger)?;
             let mut resident_files = std::collections::HashSet::new();
@@ -210,7 +211,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                     socket_path: &socket,
                     agent_dir: &agent_dir,
                     supervisor: process_identity(format!("runtime:{}", std::process::id())),
-                    from_version: env!("CARGO_PKG_VERSION"),
+                    from_version: &from_version,
                     to_version: &to_version,
                     created_at_ms: now_ms(),
                     ledger,

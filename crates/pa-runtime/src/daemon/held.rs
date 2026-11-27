@@ -179,6 +179,15 @@ impl OpenSessions {
             .collect()
     }
 
+    /// The dormant sessions' transcripts.
+    pub(super) fn dormant_paths(&self) -> Vec<PathBuf> {
+        lock(&self.open)
+            .dormant
+            .values()
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
     /// Every open session's id and transcript.
     pub(super) fn paths(&self) -> HashMap<String, PathBuf> {
         lock(&self.open)
@@ -299,13 +308,14 @@ impl OpenSessions {
 }
 
 /// Revives the sessions a daemon that died held (see the module
-/// documentation); each one revived is held in `open`.
+/// documentation); each one revived is held in `open`. The ids of those
+/// opened again for unfinished tasks.
 pub(super) async fn revive<B: SessionBuilder>(
     runtime: &Runtime<B>,
     open: &OpenSessions,
     schedules: &Schedules<B>,
     agent_dir: &Path,
-) {
+) -> std::collections::HashSet<String> {
     let log = std::sync::Arc::clone(runtime.log());
     let held: BTreeMap<String, Held> = match log.value(SCOPE, KEY) {
         Ok(Some(held)) => serde_json::from_str::<serde_json::Map<String, Value>>(&held)
@@ -319,11 +329,14 @@ pub(super) async fn revive<B: SessionBuilder>(
             BTreeMap::new()
         }
     };
+    let mut revived = std::collections::HashSet::new();
     for (id, session) in held {
-        if let Err(error) =
-            revive_one(runtime, open, schedules, agent_dir, &log, &id, session).await
-        {
-            tracing::warn!("session {id} was not revived: {error:#}");
+        match revive_one(runtime, open, schedules, agent_dir, &log, &id, session).await {
+            Ok(true) => {
+                revived.insert(id);
+            }
+            Ok(false) => {}
+            Err(error) => tracing::warn!("session {id} was not revived: {error:#}"),
         }
     }
     // What is held now is what was revived.
@@ -331,9 +344,11 @@ pub(super) async fn revive<B: SessionBuilder>(
     if let Err(error) = kept.wait().await {
         tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
     }
+    revived
 }
 
-/// Revives session `id`, which `session` says a dead daemon held.
+/// Revives session `id`, which `session` says a dead daemon held: whether it
+/// was opened again for its unfinished tasks.
 async fn revive_one<B: SessionBuilder>(
     runtime: &Runtime<B>,
     open: &OpenSessions,
@@ -342,7 +357,7 @@ async fn revive_one<B: SessionBuilder>(
     log: &std::sync::Arc<Log>,
     id: &str,
     session: Held,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let journal = orphan_journal(agent_dir, id);
     let owner = session.daemon_pid;
     let reaped_programs =
@@ -359,7 +374,7 @@ async fn revive_one<B: SessionBuilder>(
             open.insert_dormant(id.to_string(), session.path, session.cwd)
                 .await;
         }
-        return Ok(());
+        return Ok(false);
     }
     let lease = {
         let (path, agent_dir) = (session.path.clone(), agent_dir.to_path_buf());
@@ -421,5 +436,5 @@ async fn revive_one<B: SessionBuilder>(
         },
     )
     .await;
-    Ok(())
+    Ok(true)
 }

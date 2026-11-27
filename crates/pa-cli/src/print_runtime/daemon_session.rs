@@ -213,6 +213,13 @@ pub(crate) fn run_runtime_daemon(
             listener,
             pa_runtime::daemon::DaemonOptions {
                 socket: socket.clone(),
+                // An update's successor: the roster the coordinator spawned it
+                // with, read before its boot sweep deletes the file.
+                update: pa_runtime::daemon::UpdateBoot {
+                    roster: pa_core::update::restart::restore::consume_roster_env(),
+                    keeper_pid: pa_daemon::keeper::keeper_pid(),
+                    app_version: crate::config::version().to_string(),
+                },
                 session_dir: super::replacement_session_dir(options),
                 cwd: options.config.cwd.clone(),
                 selected: {

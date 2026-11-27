@@ -25,7 +25,8 @@ pub const UPDATE_CANDIDATE_DIR_ENV: &str = "PRIME_AGENT_UPDATE_CANDIDATE_DIR";
 /// One coordinator run's fixed inputs.
 pub struct CoordinatorOptions {
     pub agent_dir: PathBuf,
-    pub socket_path: PathBuf,
+    /// The daemon the update drives (the selected one).
+    pub endpoint: super::endpoint::Endpoint,
     pub status_path: PathBuf,
     pub budget: UpdateTimeoutBudget,
 }
@@ -73,7 +74,7 @@ pub async fn run(options: &CoordinatorOptions) -> Result<UpdateStatus> {
         );
     }
     let update_id = existing.update_id.clone();
-    let socket_lossy = options.socket_path.to_string_lossy().to_string();
+    let socket_lossy = options.endpoint.socket().to_string_lossy().to_string();
     let socket_dir = super::intent::socket_update_directory(&options.agent_dir, &socket_lossy);
     let writer = Arc::new(Mutex::new(StatusWriter::adopt(
         &options.status_path,
@@ -109,13 +110,10 @@ async fn drive(
     let budget = &options.budget;
     // `Preparing`: connect the old supervisor. An unreachable daemon means a
     // daemon-less update: the successor boots without a roster.
-    let daemon = match pa_tui::daemon_client::DaemonClient::connect(&options.socket_path).await {
-        Ok((client, _events)) => Some(client),
-        Err(_) => None,
-    };
+    let daemon = options.endpoint.connect().await.ok();
     let mut predecessor: Option<UpdateProcessIdentity> = None;
     let mut roster_path: Option<PathBuf> = None;
-    if let Some(client) = &daemon {
+    if let Some(client) = daemon {
         let identity = identity_from_hello(client.hello());
         writer
             .lock()
@@ -128,7 +126,7 @@ async fn drive(
             .await
             .set_state(UpdateState::Preparing)
             .map_err(PhaseFailure::before_stop)?;
-        prepare_to_prepared(client, update_id, budget)
+        prepare_to_prepared(&client, update_id, budget)
             .await
             .map_err(PhaseFailure::before_stop)?;
         let prepared_dir = update_prepared_dir(socket_dir, update_id);
@@ -148,7 +146,7 @@ async fn drive(
             .await
             .set_state(UpdateState::Stopping)
             .map_err(PhaseFailure::before_stop)?;
-        commit_update(client, update_id, budget)
+        commit_update(&client, update_id, budget)
             .await
             .map_err(PhaseFailure::after_stop)?;
         client.close();
@@ -214,12 +212,12 @@ async fn drive(
     let spawn_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     spawn_supervisor(
         &candidate.executable,
-        &options.socket_path,
+        &options.endpoint,
         roster_path.as_deref(),
         &spawn_cwd,
     )
     .map_err(PhaseFailure::after_stop)?;
-    let successor = wait_for_hello(&options.socket_path, budget.boot_ms)
+    let successor = wait_for_hello(&options.endpoint, budget.boot_ms)
         .await
         .ok_or_else(|| {
             PhaseFailure::after_stop(
@@ -238,7 +236,7 @@ async fn drive(
         .await
         .set_state(UpdateState::Restoring)
         .map_err(PhaseFailure::after_stop)?;
-    let (counts, failures) = restore_report(&options.socket_path, budget).await;
+    let (counts, failures) = restore_report(&options.endpoint, budget).await;
     writer
         .lock()
         .await
@@ -340,22 +338,18 @@ async fn finish_failure(
     }
     writer.lock().await.set_state(UpdateState::Booting)?;
     let spawn_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    if let Err(error) = spawn_supervisor(
-        previous.executable(),
-        &options.socket_path,
-        None,
-        &spawn_cwd,
-    ) {
+    if let Err(error) = spawn_supervisor(previous.executable(), &options.endpoint, None, &spawn_cwd)
+    {
         writer.lock().await.set_state(UpdateState::Failed)?;
         writer.lock().await.set_message(Some(format!(
             "The rollback supervisor could not spawn ({error}); the update failed ({reason}). Sessions persist on disk - prime-agent attach recovers them."
         )))?;
         return Ok(());
     }
-    if let Some(identity) = wait_for_hello(&options.socket_path, options.budget.boot_ms).await {
+    if let Some(identity) = wait_for_hello(&options.endpoint, options.budget.boot_ms).await {
         writer.lock().await.set_successor(identity)?;
         writer.lock().await.set_state(UpdateState::Restoring)?;
-        let (counts, _failures) = restore_report(&options.socket_path, &options.budget).await;
+        let (counts, _failures) = restore_report(&options.endpoint, &options.budget).await;
         writer.lock().await.set_counts(counts)?;
         writer.lock().await.set_state(UpdateState::Complete)?;
         writer.lock().await.set_message(Some(format!(

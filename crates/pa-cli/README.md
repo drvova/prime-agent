@@ -36,7 +36,7 @@ scheduled job (`daemon_mode::settings_select_runtime_daemon`; the environment sw
 once). A kept launch still splits into the keeper
 first; the runtime daemon has no keeper of its own yet (phase 7c). A launcher that waits on the
 supervisor's socket (the interactive TUI's `ensure_daemon_running`, the update coordinator's
-successor) sets `PRIME_AGENT_DAEMON_SUPERVISOR=1` on the daemon it spawns
+successor while the supervisor is the selected daemon) sets `PRIME_AGENT_DAEMON_SUPERVISOR=1` on the daemon it spawns
 (`daemon_mode::SUPERVISOR_ENV`): that process and the daemon its keeper keeps are the supervisor
 whatever the opt-in says, until the TUI speaks wire2 (phase 8e). `tests/runtime_opt_in_launch_tmux_e2e.rs`
 is its verifier.
@@ -116,10 +116,17 @@ live holder, dead-holder steal), the status file keeps the TS schema plus
 `updateId`/`state`/`epoch`, and the activation owns the bin-symlink swap
 (`bin/previous` rollback pointer, `.activation-state` recovery record).
 Mechanism support (version/channel policy, install-root layout, manifest
-fetch, archive staging) lives in pa-core's `update` module; the daemon-side
-prepare/commit/stop drivers and the boot restore pass are pa-daemon
-(slices 2-3 and 5): the coordinator's `Restoring` phase polls the
+fetch, archive staging) lives in pa-core's `update` module, and so do the
+daemon side's prepare transaction and boot restore pass (`update::restart`),
+which both daemons serve: the coordinator's `Restoring` phase polls the
 successor's `update_restore_status` RPC for the real per-session counts.
+The daemon the update drives is the selected one (`update_flow/endpoint.rs`):
+the supervisor on its socket, or, with the runtime daemon selected, the
+runtime daemon on `daemon2.sock`, greeted with `daemon.identity` and sent the
+update commands through pa-tui's `wire2_compat` (a connection per request),
+its successor spawned with `PRIME_AGENT_RUNTIME_DAEMON=1`; the update's lock
+and status are keyed by that daemon's socket. The legacy TS handoff below
+restores the TS sessions on the selected daemon the same way.
 The legacy restart adapter accepts the fresh status path supplied by shipped
 TypeScript updaters after they activate a release. It reports the original
 `requestId`/`phase` status schema, translates their session checkpoint to a

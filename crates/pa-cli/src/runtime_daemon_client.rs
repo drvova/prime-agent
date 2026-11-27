@@ -117,6 +117,39 @@ impl RuntimeDaemonClient {
         self.reply(&id, method)
     }
 
+    /// Sends request `frame` (a publish, query or call) and reads its reply
+    /// within `timeout`, as the wire's outcome: an error reply's message and
+    /// `info` both kept.
+    ///
+    /// # Errors
+    ///
+    /// The connection failed or the reply did not arrive in time.
+    pub(crate) fn request(&mut self, frame: &ClientFrame, timeout: Duration) -> Result<Outcome> {
+        let (ClientFrame::Publish { id, .. }
+        | ClientFrame::Query { id, .. }
+        | ClientFrame::Call { id, .. }) = frame
+        else {
+            anyhow::bail!("only a publish, query or call is answered");
+        };
+        let id = id.clone();
+        self.send(frame)?;
+        let deadline = Instant::now() + timeout;
+        let waiting = format!("waiting for the Prime Agent daemon response to \"{id}\"");
+        loop {
+            match self.frame(deadline, timeout, &waiting)? {
+                ServerFrame::Reply {
+                    id: replied,
+                    outcome,
+                } if replied == id => return Ok(outcome),
+                ServerFrame::Closing { reason } => return Err(self.closed(Some(&reason))),
+                ServerFrame::Reply { .. }
+                | ServerFrame::Welcome { .. }
+                | ServerFrame::Event { .. }
+                | ServerFrame::Backfilled { .. } => {}
+            }
+        }
+    }
+
     fn id(&mut self) -> String {
         self.next_id += 1;
         format!("cli_{}", self.next_id)

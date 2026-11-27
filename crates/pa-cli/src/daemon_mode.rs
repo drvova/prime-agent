@@ -11,7 +11,7 @@ use crate::config;
 use crate::mode::RunOptions;
 
 /// The environment switch that selects the runtime daemon.
-const RUNTIME_DAEMON_ENV: &str = "PRIME_AGENT_RUNTIME_DAEMON";
+pub(crate) const RUNTIME_DAEMON_ENV: &str = "PRIME_AGENT_RUNTIME_DAEMON";
 
 /// The internal override a launcher that waits on the supervisor's socket
 /// (`daemon.sock`) sets on the `--mode daemon` process it spawns: that process

@@ -104,6 +104,13 @@ pub enum Query {
     SessionRlmMaxDepth,
     /// `session.heartbeat`: a session's live or paused heartbeat.
     SessionHeartbeat,
+    /// `daemon.update_restore_status`: the old daemon's
+    /// `update_restore_status`, the update boot's restore progress.
+    DaemonUpdateRestoreStatus,
+    /// `daemon.identity`: the old `daemon_hello`'s identity fields (the
+    /// process, its restart owner, the release), which an update coordinator
+    /// checks the daemon it drives by.
+    DaemonIdentity,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -152,6 +159,8 @@ impl FromStr for Query {
             "agent_messages" => Query::AgentMessages,
             "session.rlm_max_depth" => Query::SessionRlmMaxDepth,
             "session.heartbeat" => Query::SessionHeartbeat,
+            "daemon.update_restore_status" => Query::DaemonUpdateRestoreStatus,
+            "daemon.identity" => Query::DaemonIdentity,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",

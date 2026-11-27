@@ -1314,7 +1314,7 @@ fn the_daemon_stops_are_calls_and_its_closing_comes_back() {
 }
 
 /// The update restart: `prepare_update_restart` and `commit_update_restart` are calls on no
-/// session whose results are the old `data`, a refusal keeps its `errorInfo`, and an update's
+/// session, `update_restore_status` a query, whose results are the old `data`, a refusal keeps its `errorInfo`, and an update's
 /// `system/closing` comes back as the old `daemon_closing` whole, its payload included.
 #[test]
 fn the_update_calls_map_and_the_update_closing_comes_back_whole() {
@@ -1322,6 +1322,7 @@ fn the_update_calls_map_and_the_update_closing_comes_back_whole() {
     let frames: Vec<Outgoing> = [
         json!({ "type": "prepare_update_restart", "updateId": "u-1", "toVersion": "9.9.9" }),
         json!({ "type": "commit_update_restart", "updateId": "u-1" }),
+        json!({ "type": "update_restore_status" }),
     ]
     .into_iter()
     .map(|value| outgoing("i".to_string(), command(value)).unwrap())
@@ -1385,6 +1386,11 @@ fn the_update_calls_map_and_the_update_closing_comes_back_whole() {
                     json!({ "updateId": "u-1", "toVersion": "9.9.9" })
                 ),
                 call("daemon.commit_update_restart", json!({ "updateId": "u-1" })),
+                Outgoing::Query(ClientFrame::Query {
+                    id: "i".to_string(),
+                    name: "daemon.update_restore_status".to_string(),
+                    args: json!({}),
+                }),
             ],
             json!({ "type": "response", "command": "commit_update_restart", "success": true,
                     "data": { "updateId": "u-1", "state": "stopping", "stopped": 1 } }),

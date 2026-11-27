@@ -4,6 +4,7 @@
 //! status file and owns the FSM to a terminal state.
 
 pub mod coordinator;
+pub mod endpoint;
 pub mod intent;
 mod legacy_admission;
 mod legacy_restart;

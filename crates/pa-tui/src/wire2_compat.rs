@@ -129,6 +129,9 @@
 //! | `prepare_update_restart` | `daemon.prepare_update_restart` (`updateId`, `toVersion`; no session) | `{updateId, state, acceptedAt, expiresAt?}` |
 //! | `commit_update_restart` | `daemon.commit_update_restart` (`updateId`; no session) | `{updateId, state, stopped}` |
 //!
+//! `update_restore_status` is the query `daemon.update_restore_status` (no session), whose result
+//! is the old response's `data`: `{updateId, inFlight, complete, counts, failures}`.
+//!
 //! `attach` is the call `session.attach` with `session` (the command's `activeSessionId`),
 //! `clientId`, `capabilities` and `resumeCursor` (those it carries), whose reply's result is the
 //! old attach response's `data`: the connection's client is attached to the session until its
@@ -960,6 +963,9 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 method: "daemon.prepare_update_restart".to_string(),
                 args: command_args(&command, None)?,
             }));
+        }
+        DaemonCommand::UpdateRestoreStatus { .. } => {
+            return command_query(request_id, "daemon.update_restore_status", None, &command);
         }
         DaemonCommand::CommitUpdateRestart { .. } => {
             return Ok(Outgoing::Call(ClientFrame::Call {

@@ -14,20 +14,33 @@ use pa_types::daemon::DaemonCommand;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
+use super::endpoint::Endpoint;
 use super::successor::{identity_from_hello, spawn_supervisor, wait_for_exit, wait_for_hello};
 
 pub(super) async fn run(
     socket: &Path,
+    successor: &Endpoint,
     status_path: &Path,
     agent_dir: &Path,
     origin: Option<&str>,
 ) -> Result<i32> {
     let directories = super::legacy_admission::Admission::directories()?;
-    run_in(socket, status_path, agent_dir, origin, &directories).await
+    run_in(
+        socket,
+        successor,
+        status_path,
+        agent_dir,
+        origin,
+        &directories,
+    )
+    .await
 }
 
+/// The handoff from the TS daemon on `socket` to `successor`, the selected
+/// daemon, which restores the TS sessions.
 async fn run_in(
     socket: &Path,
+    successor: &Endpoint,
     status_path: &Path,
     agent_dir: &Path,
     origin: Option<&str>,
@@ -60,7 +73,15 @@ async fn run_in(
     }
     let result = async {
         let mut admission = super::legacy_admission::Admission::acquire(directories).await?;
-        let operation = restart(socket, status_path, agent_dir, &id, origin, &status);
+        let operation = restart(
+            socket,
+            successor,
+            status_path,
+            agent_dir,
+            &id,
+            origin,
+            &status,
+        );
         tokio::pin!(operation);
         let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
         let outcome = loop {
@@ -97,6 +118,7 @@ async fn run_in(
 
 async fn restart(
     socket: &Path,
+    successor: &Endpoint,
     status_path: &Path,
     agent_dir: &Path,
     id: &UpdateId,
@@ -133,7 +155,7 @@ async fn restart(
                         "the checkpoint predecessor has not verifiably exited"
                     );
                     return boot_roster(
-                        socket,
+                        successor,
                         status_path,
                         &roster_path,
                         &roster,
@@ -278,7 +300,15 @@ async fn restart(
         wait_for_exit(&predecessor, budget.predecessor_exit_ms).await,
         "previous daemon did not stop: {shutdown:?}"
     );
-    boot_roster(socket, status_path, &roster_path, &roster, status, &budget).await
+    boot_roster(
+        successor,
+        status_path,
+        &roster_path,
+        &roster,
+        status,
+        &budget,
+    )
+    .await
 }
 
 // A source TS manifest contains no owner identity. Only adopt one written
@@ -377,7 +407,7 @@ fn validate_recovery(roster: &UpdateRoster, socket: &Path, version: &str) -> Res
 }
 
 async fn boot_roster(
-    socket: &Path,
+    successor_daemon: &Endpoint,
     status_path: &Path,
     roster_path: &Path,
     roster: &UpdateRoster,
@@ -391,14 +421,14 @@ async fn boot_roster(
     }
     let spawned_pid = spawn_supervisor(
         &std::env::current_exe()?,
-        socket,
+        successor_daemon,
         Some(roster_path),
         &std::env::current_dir()?,
     )?;
-    let successor = wait_for_hello(socket, budget.boot_ms)
+    let successor = wait_for_hello(successor_daemon, budget.boot_ms)
         .await
         .context("replacement daemon did not start")?;
-    let (replacement, _events) = pa_tui::daemon_client::DaemonClient::connect(socket).await?;
+    let replacement = successor_daemon.connect().await?;
     let replacement_hello = replacement.hello().clone();
     replacement.close();
     validate_successor(&replacement_hello, spawned_pid, crate::config::version())?;
@@ -408,7 +438,7 @@ async fn boot_roster(
         value["successor"] = json!(successor);
         persist(status_path, &value)?;
     }
-    let (counts, failures) = super::phases::restore_report(socket, budget).await;
+    let (counts, failures) = super::phases::restore_report(successor_daemon, budget).await;
     anyhow::ensure!(
         counts.total == roster.sessions.len() as u64,
         "replacement daemon did not finish restoring all migrated sessions"
@@ -524,6 +554,7 @@ mod tests {
         let operation = tokio::spawn(async move {
             run_in(
                 &task_socket,
+                &Endpoint::Supervisor(task_socket.clone()),
                 &task_dir.join("status.json"),
                 &task_dir,
                 None,
@@ -621,6 +652,7 @@ mod tests {
         assert_eq!(
             run_in(
                 &socket,
+                &Endpoint::Supervisor(socket.clone()),
                 &status_path,
                 directory.path(),
                 None,
@@ -682,6 +714,7 @@ mod tests {
         assert_eq!(
             run_in(
                 &socket,
+                &Endpoint::Supervisor(socket.clone()),
                 &status_path,
                 directory.path(),
                 None,
@@ -720,6 +753,7 @@ mod tests {
         assert_eq!(
             run_in(
                 &socket,
+                &Endpoint::Supervisor(socket.clone()),
                 &status_path,
                 directory.path(),
                 None,

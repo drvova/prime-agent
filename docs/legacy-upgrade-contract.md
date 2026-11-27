@@ -222,6 +222,33 @@ responses' `data`, message and `errorInfo`, verbatim:
   queued at the front of its session's queue. The held sessions stay in the
   agent database for the next daemon. The runtime's stop never refuses, so
   a commit is never abandoned.
+- The successor's boot restores the roster with the supervisor's restore
+  pass (`pa_core::update::restart::restore`). The roster is read from
+  `PRIME_AGENT_UPDATE_ROSTER` before the boot sweep. A session the revival
+  already opened for its queued continuation is not prompted a second time.
+  `daemon.update_restore_status` answers the `update_restore_status` body,
+  and a client that creates or attaches to a roster row waits for that row.
+- When the runtime daemon is the selected daemon, the update drives it
+  instead of the supervisor (`update_flow/endpoint.rs`):
+  - the Rust coordinator's prepare, commit, successor and restore report go
+    to `daemon2.sock`, which is greeted with `daemon.identity` (the hello's
+    identity fields);
+  - the successor is spawned with `PRIME_AGENT_RUNTIME_DAEMON=1`;
+  - the update's lock and status are keyed by `daemon2.sock`.
+- The TS handoff (`--internal-update-restart-coordinator` from a shipped
+  updater) still prepares and stops the TS daemon on its own socket. It then
+  restores the TS checkpoint on the selected daemon. On the runtime daemon
+  that replay works as follows:
+  - the input pause holds the session's queue;
+  - the update-complete notice is appended to the transcript;
+  - the next-turn rows are steered to the session's agent;
+  - queued `turn` actions are checked as the worker checks them and queued
+    as input, and an action carrying a custom message fails that row's
+    restore;
+  - the continuation is queued as a steer.
+- With the runtime daemon selected, only it is restarted. A supervisor still
+  running, which the interactive TUI uses until it speaks wire2, keeps the
+  old binary until it restarts.
 
 ## Storage migration
 

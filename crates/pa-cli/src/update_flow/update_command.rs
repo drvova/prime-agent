@@ -43,7 +43,13 @@ pub struct UpdateCommandOptions {
 /// the lock, a status write, or the coordinator spawn fails.
 pub async fn run_update_command(options: &UpdateCommandOptions) -> Result<i32> {
     let agent_dir = crate::config::get_agent_dir();
-    let socket_path = pa_daemon::socket::default_daemon_socket_path();
+    // The daemon the update restarts: the selected one (its socket keys the update's lock and
+    // status).
+    let endpoint = super::endpoint::Endpoint::selected(
+        &pa_daemon::socket::default_daemon_socket_path(),
+        &agent_dir,
+    );
+    let socket_path = endpoint.socket().to_path_buf();
     let install_root = super::activation_root().map_err(|_| {
         anyhow::anyhow!(
             "This compiled application is not owned by the Prime Agent installer. Update it using its original installer."
@@ -180,7 +186,7 @@ pub async fn run_update_command(options: &UpdateCommandOptions) -> Result<i32> {
             crate::public_command::DAEMON_UPDATE_RESTART_COORDINATOR_FLAG,
             "--daemon-socket",
         ])
-        .arg(&socket_path)
+        .arg(endpoint.daemon_socket())
         .arg(crate::public_command::DAEMON_UPDATE_RESTART_STATUS_FLAG)
         .arg(&status_path)
         .env(super::coordinator::UPDATE_CANDIDATE_DIR_ENV, &candidate_dir)
@@ -638,12 +644,21 @@ pub async fn run_coordinator_mode(
                 && value.get("phase").and_then(serde_json::Value::as_str) == Some("starting")
         }
     };
+    // The daemon the update drives: the selected one beside the daemon socket.
+    let endpoint = super::endpoint::Endpoint::selected(&socket_path, &agent_dir);
     if legacy_handoff {
-        return super::legacy_restart::run(&socket_path, &status_path, &agent_dir, origin).await;
+        return super::legacy_restart::run(
+            &socket_path,
+            &endpoint,
+            &status_path,
+            &agent_dir,
+            origin,
+        )
+        .await;
     }
     let options = super::coordinator::CoordinatorOptions {
         agent_dir,
-        socket_path,
+        endpoint,
         status_path,
         budget: UpdateTimeoutBudget::from_env(),
     };

@@ -157,6 +157,8 @@ pub struct DaemonOptions<B> {
     /// The socket the daemon serves ([`socket_path`]): an update's prepared
     /// roster is kept under its update dir (`daemon.prepare_update_restart`).
     pub socket: PathBuf,
+    /// What an update's boot is started with (`handlers/restore.rs`).
+    pub update: UpdateBoot,
     /// Where new sessions' transcripts go (`<sessions dir>/<id>.jsonl`).
     pub session_dir: PathBuf,
     /// Where a session created without a `cwd` runs.
@@ -172,6 +174,19 @@ pub struct DaemonOptions<B> {
     /// the embedder records the stop intent its restart owner reads, so a
     /// stop that ends in a kill is not restarted either.
     pub stopping: Box<dyn FnOnce() + Send>,
+}
+
+/// What the runtime daemon's update boot is started with.
+pub struct UpdateBoot {
+    /// The update roster the coordinator spawned the daemon with
+    /// (`pa_core::update::restart::restore::consume_roster_env`, read before
+    /// the boot sweep deletes its file): its sessions are restored, and the
+    /// restore reported on `daemon.update_restore_status`.
+    pub roster: Option<pa_types::daemon::UpdateRoster>,
+    /// The restart owner keeping the daemon, if any.
+    pub keeper_pid: Option<u32>,
+    /// The release the daemon runs, as `daemon.identity` and the roster name it.
+    pub app_version: String,
 }
 
 /// Runs the runtime daemon on `listener` until `shutdown` resolves or a
@@ -197,7 +212,7 @@ pub struct DaemonOptions<B> {
 )]
 pub async fn run<B: SessionBuilder>(
     listener: Box<dyn TransportListener>,
-    options: DaemonOptions<B>,
+    mut options: DaemonOptions<B>,
     shutdown: impl Future<Output = ()> + Send,
 ) -> anyhow::Result<()> {
     // No session may block on whatever this process was given as standard
@@ -324,7 +339,20 @@ pub async fn run<B: SessionBuilder>(
             }
         })
     };
-    held::revive(&runtime, &open, &schedules, &options.agent_dir).await;
+    // An update's boot (spec §6): this socket's update scratch and the stale
+    // TS names are swept (the roster was read before), then the sessions the
+    // revival did not bring up are restored from the roster once serving.
+    {
+        let (agent_dir, socket) = (options.agent_dir.clone(), options.socket.clone());
+        let _ = tokio::task::spawn_blocking(move || {
+            pa_core::update::restart::restore::boot_sweep(&agent_dir, &socket);
+        })
+        .await;
+    }
+    let restore = Arc::new(pa_core::update::restart::restore::RestoreProgress::new());
+    let roster = options.update.roster.take();
+    restore.begin(roster.as_ref());
+    let revived = held::revive(&runtime, &open, &schedules, &options.agent_dir).await;
     let attached = Arc::new(Attached::default());
     let stop = Arc::new(handlers::DaemonStop::default());
     let update = Arc::new(pa_core::update::restart::UpdateRestart::new(
@@ -346,11 +374,22 @@ pub async fn run<B: SessionBuilder>(
         feeds,
         Arc::clone(&stop),
         update,
+        Arc::clone(&restore),
+        options.update,
         options.agent_dir.clone(),
         options.session_dir,
         options.cwd,
     ));
     let feed_tasks = handlers.spawn_feeds();
+    let restore_pass = {
+        let host = handlers::RuntimeRestore {
+            handlers: Arc::clone(&handlers),
+            revived,
+        };
+        tokio::spawn(async move {
+            pa_core::update::restart::restore::restore_pass(&host, &restore, roster).await;
+        })
+    };
     let server = runtime.wire_server(Arc::clone(&handlers), WireConfig::default(), attached);
     let mut connections = JoinSet::new();
     let mut shutdown = std::pin::pin!(shutdown);
@@ -374,6 +413,10 @@ pub async fn run<B: SessionBuilder>(
         }
     }
     drop(listener);
+    // A restore still running ends with the daemon: its rows are the next
+    // boot's to revive.
+    restore_pass.abort();
+    let _ = restore_pass.await;
     stop.begin();
     (options.stopping)();
     let closing = NewEvent {
@@ -411,6 +454,7 @@ pub async fn run<B: SessionBuilder>(
     let _ = given_up.await;
     update_watchdog.abort();
     let _ = update_watchdog.await;
+
     schedules.stop();
     drop(schedules);
     if let Ok(runtime) = Arc::try_unwrap(runtime) {

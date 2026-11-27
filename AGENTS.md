@@ -268,7 +268,9 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   daemons share (`pa_core::update::restart`): the prepare drains the commands in flight and writes
   the sessions' roster durably, every mutating command is refused while it is active, an expired
   transaction aborts on its own, and the commit stops the daemon as above with the update's
-  `daemon_closing` payload. At
+  `daemon_closing` payload. The successor's boot restores the roster's sessions with one pass both
+  daemons share (`pa_core::update::restart::restore`), reported over `update_restore_status` (on
+  the runtime daemon `daemon.update_restore_status`); the update drives the selected daemon. At
   boot a session that was mid-turn is revived, its interrupted turn continued or settled by
   what the transcript shows was saved, a command its kernel left running is reaped and
   reported to the model, and an idle session with an armed scheduled job is woken when the

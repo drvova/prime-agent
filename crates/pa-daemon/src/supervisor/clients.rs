@@ -861,7 +861,7 @@ impl Supervisor {
             DaemonCommand::UpdateRestoreStatus { .. } => {
                 // The boot restore pass's live snapshot (spec §6/§9): the successor
                 // coordinator's `Restoring` report polls this for real counts and failures.
-                let data = self.restore_status_body();
+                let data = self.restore.status_body();
                 (
                     vec![response_line(&response_success(
                         Some(&command_id),

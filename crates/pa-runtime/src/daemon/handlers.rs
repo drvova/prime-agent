@@ -32,6 +32,7 @@ use crate::wire::{Attached, Call, ConnectionId, Handlers, Query};
 pub(super) use bash::UserBashes;
 pub(super) use feeds::Feeds;
 pub(super) use lifecycle::DaemonStop;
+pub(super) use restore::RuntimeRestore;
 
 mod agent_controls;
 mod attach;
@@ -52,6 +53,7 @@ mod questions;
 mod queue;
 mod queue_edit;
 mod replace;
+mod restore;
 mod saved;
 mod side_runs;
 mod state;
@@ -93,6 +95,11 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     /// The update restart's transaction (`handlers/update.rs`): its gate is
     /// in front of every call and publish.
     update: Arc<pa_core::update::restart::UpdateRestart>,
+    /// The update boot's restore progress (`handlers/restore.rs`).
+    restore: Arc<pa_core::update::restart::restore::RestoreProgress>,
+    /// What the update boot was started with, and who keeps this daemon
+    /// (`daemon.identity`).
+    boot: super::UpdateBoot,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -111,6 +118,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         feeds: Arc<Feeds>,
         stop: Arc<DaemonStop>,
         update: Arc<pa_core::update::restart::UpdateRestart>,
+        restore: Arc<pa_core::update::restart::restore::RestoreProgress>,
+        boot: super::UpdateBoot,
         agent_dir: PathBuf,
         session_dir: PathBuf,
         cwd: PathBuf,
@@ -127,6 +136,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             side_runs: side_runs::SessionSideRuns::default(),
             stop,
             update,
+            restore,
+            boot,
             agent_dir,
             session_dir,
             cwd,
@@ -534,6 +545,8 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::AgentMessages => self.agent_messages(&args),
             Query::SessionRlmMaxDepth => self.rlm_max_depth(&args).await,
             Query::SessionHeartbeat => self.heartbeat(&args).await,
+            Query::DaemonUpdateRestoreStatus => Ok(self.restore.status_body()),
+            Query::DaemonIdentity => Ok(self.identity()),
         }
     }
 
@@ -549,6 +562,10 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Some(command) => update::admit(&self.update, command)?,
             None => None,
         };
+        // A roster row's session waits behind the update boot's restore of it.
+        if matches!(call, Call::SessionCreate | Call::SessionAttach) {
+            self.await_restored(&args).await?;
+        }
         match call {
             Call::SessionCreate => self.create(args, connection).await,
             Call::SessionStop => self.stop(&args).await,
