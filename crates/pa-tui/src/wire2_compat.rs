@@ -115,6 +115,11 @@
 //! | `kill_kernel_bash` | `session.kill_kernel_bash` | `{id, killed}` |
 //! | `factory_activity` | `session.factory_activity` | the kernel factory's reply (the unscoped graph with `factorySpecs`) |
 //! | `kill_persistent_shell` | `persistent_shells.kill` (no session) | `{shellId}` |
+//! | `agent_messages_pause` | `agent_messages.pause` (every running session without one) | the safety status |
+//! | `agent_messages_resume` | `agent_messages.resume` (every running session without one) | the safety status |
+//! | `agent_messages_clear` | `agent_messages.clear` | `{steering, followUp}` |
+//! | `set_rlm_max_depth` | `session.set_rlm_max_depth` | `{maxDepth, source, globalSaved, globalError?}` |
+//! | `delete_rlm_subagent` | `session.delete_child` (`childId` as `child`) | `{deleted, reason?}` |
 //!
 //! `attach` is the call `session.attach` with `session` (the command's `activeSessionId`),
 //! `clientId`, `capabilities` and `resumeCursor` (those it carries), whose reply's result is the
@@ -140,6 +145,8 @@
 //! | `tail_kernel_bash` | `session.kernel_bash_tail` | `{id, tail}` |
 //! | `list_persistent_shells` | `persistent_shells` (no session) | `{activities}` |
 //! | `tail_persistent_shell` | `persistent_shells.tail` (no session) | `{shellId, tail}` |
+//! | `agent_messages_status` | `agent_messages` (the first running session's without one) | the safety status |
+//! | `get_rlm_max_depth_status` | `session.rlm_max_depth` | `{maxDepth, source}` |
 //!
 //! `model_catalog_changed`, a broadcast on the old wire, is the live-only `runtime/models`: a
 //! transport follows it for the connection's life (subscription `compat:models`, `Since::Now`).
@@ -152,12 +159,10 @@
 //!   not ask for them), `session_attached`, `session_resynced`, `session_replaced`, `settings`
 //!   (`get_settings`), `models` (`get_available_models`), `subscriptions` and `tasks`
 //!   (`heartbeats_list`, `heartbeats_changed`),
-//!   `get_session_stats`, `get_rlm_children`, `get_rlm_max_depth_status`,
-//!   `agent_messages_status`, `heartbeat_get`.
+//!   `get_session_stats`, `get_rlm_children`, `heartbeat_get`.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
 //!   `fork` of the whole saved session, `label`, `export`, the auth
 //!   commands, `abort`/`abort_and_send_queued`, `compact`, a `detach` that names no session,
-//!   `delete_rlm_subagent`, `set_rlm_max_depth`, `agent_messages_pause`/`resume`/`clear`,
 //!   `heartbeat_manage`/`set`/`update`.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
 //! - Connection frames: `daemon_hello` from `welcome`, `daemon_closing` from `closing`, the
@@ -803,6 +808,77 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 args: command_args(&command, None)?,
             }));
         }
+        DaemonCommand::AgentMessagesStatus {
+            active_session_id, ..
+        } => {
+            return command_query(
+                request_id,
+                "agent_messages",
+                active_session_id.as_deref(),
+                &command,
+            )
+        }
+        DaemonCommand::AgentMessagesPause {
+            active_session_id, ..
+        } => {
+            return ingest_call(
+                request_id,
+                "agent_messages.pause",
+                active_session_id.as_deref(),
+                &command,
+            )
+        }
+        DaemonCommand::AgentMessagesResume {
+            active_session_id, ..
+        } => {
+            return ingest_call(
+                request_id,
+                "agent_messages.resume",
+                active_session_id.as_deref(),
+                &command,
+            )
+        }
+        DaemonCommand::AgentMessagesClear {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "agent_messages.clear",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::GetRlmMaxDepthStatus {
+            active_session_id, ..
+        } => {
+            return command_query(
+                request_id,
+                "session.rlm_max_depth",
+                Some(active_session_id),
+                &command,
+            )
+        }
+        DaemonCommand::SetRlmMaxDepth {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.set_rlm_max_depth",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::DeleteRlmSubagent {
+            active_session_id,
+            child_id,
+            ..
+        } => {
+            return Ok(Outgoing::Call(ClientFrame::Call {
+                id: request_id,
+                method: "session.delete_child".to_string(),
+                args: serde_json::json!({ "session": active_session_id, "child": child_id }),
+            }));
+        }
         DaemonCommand::RosterSubscribe { .. } => return follow(request_id, ROSTER_FEED),
         DaemonCommand::AgentTrafficSubscribe { .. } => return follow(request_id, TRAFFIC_FEED),
         DaemonCommand::RosterUnsubscribe { .. } => {
@@ -862,6 +938,21 @@ fn session_call(
         id: request_id,
         method: method.to_string(),
         args: command_args(command, Some(session))?,
+    }))
+}
+
+/// The call `method` that an agent-message pause or resume becomes: on its session, or on every
+/// running one when it names none.
+fn ingest_call(
+    request_id: String,
+    method: &str,
+    session: Option<&str>,
+    command: &DaemonCommand,
+) -> Result<Outgoing> {
+    Ok(Outgoing::Call(ClientFrame::Call {
+        id: request_id,
+        method: method.to_string(),
+        args: command_args(command, session)?,
     }))
 }
 

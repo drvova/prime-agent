@@ -32,6 +32,7 @@ use crate::wire::{Attached, Call, ConnectionId, Handlers, Query};
 pub(super) use bash::UserBashes;
 pub(super) use feeds::Feeds;
 
+mod agent_controls;
 mod attach;
 mod bash;
 mod bus;
@@ -515,6 +516,8 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::SessionKernelBashTail => self.kernel_bash(&args, KernelBashAction::Tail).await,
             Query::PersistentShells => self.persistent_shells().await,
             Query::PersistentShellTail => self.persistent_shell_tail(&args).await,
+            Query::AgentMessages => self.agent_messages(&args),
+            Query::SessionRlmMaxDepth => self.rlm_max_depth(&args).await,
         }
     }
 
@@ -585,6 +588,11 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionKillKernelBash => self.kernel_bash(&args, KernelBashAction::Kill).await,
             Call::SessionFactoryActivity => self.factory_activity(&args).await,
             Call::PersistentShellKill => self.kill_persistent_shell(&args).await,
+            Call::AgentMessagesPause => self.pause_agent_messages(&args, /*paused*/ true),
+            Call::AgentMessagesResume => self.pause_agent_messages(&args, /*paused*/ false),
+            Call::AgentMessagesClear => self.clear_agent_messages(&args),
+            Call::SessionSetRlmMaxDepth => self.set_rlm_max_depth(&args).await,
+            Call::SessionDeleteChild => self.delete_child(&args).await,
         }
     }
 

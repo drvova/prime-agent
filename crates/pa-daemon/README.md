@@ -317,6 +317,11 @@ the runtime daemon shares. The agents view's kernel activity: the worker's `list
 `tail_kernel_bash`, `kill_kernel_bash` (`user_bash.rs`) and `factory_activity`
 (`factory_activity.rs`) arms and the supervisor's persistent-shell commands, over pa-core's
 `session_engine::kernel_activity` and `kernel::persistent_shells`, which the runtime daemon shares.
+The agents view's session controls: the worker's `agent_messages_*` arms
+(`agent_message_ingest.rs`, the supervisor's selector-less broadcast in
+`agent_message_broadcast.rs`), `get_rlm_max_depth_status`, `set_rlm_max_depth` and
+`delete_rlm_subagent` (`rlm_surface.rs`), over pa-core's `session_engine::agent_controls`, which the
+runtime daemon shares.
 
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.

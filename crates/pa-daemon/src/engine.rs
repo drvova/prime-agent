@@ -540,9 +540,11 @@ pub trait SessionEngine: Send + Sync {
     /// # Errors
     ///
     /// Never errors: the global write failure rides `globalError` instead.
-    fn set_rlm_max_depth(&self, max_depth: u64, global: bool) -> Result<Value> {
-        let _ = global;
-        Ok(json!({ "maxDepth": max_depth, "source": "chat", "globalSaved": false }))
+    fn set_rlm_max_depth(
+        &self,
+        set: pa_core::session_engine::agent_controls::SetRlmMaxDepth,
+    ) -> Result<Value> {
+        Ok(set.reply(None))
     }
 }
 

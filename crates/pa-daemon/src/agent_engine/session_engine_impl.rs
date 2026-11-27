@@ -1250,30 +1250,21 @@ impl SessionEngine for AgentSessionEngine {
         })
     }
 
-    fn set_rlm_max_depth(&self, max_depth: u64, global: bool) -> anyhow::Result<Value> {
+    fn set_rlm_max_depth(
+        &self,
+        set: pa_core::session_engine::agent_controls::SetRlmMaxDepth,
+    ) -> anyhow::Result<Value> {
         if let Some(children) = &self.children {
-            children.set_rlm_max_depth(max_depth.min(u64::from(u32::MAX)) as u32);
+            children.set_rlm_max_depth(set.bound());
         }
         *self.rlm_max_depth_source.lock().expect("depth source lock") = "chat";
         // The durable `rlm_max_depth_state` entry: a resumed session
         // re-seeds from it; an unbuilt session parks it (the
         // `pending_branch` pattern).
-        self.persist_max_depth_state(max_depth);
+        self.persist_max_depth_state(set.max_depth);
         // The global settings write: errors join the `globalError` field,
         // they do not fail the command.
-        let mut result = json!({
-            "maxDepth": max_depth,
-            "source": "chat",
-            "globalSaved": false,
-        });
-        if global {
-            if let Some(error) = self.write_global_rlm_max_depth(max_depth) {
-                result["globalError"] = json!(error);
-            } else {
-                result["globalSaved"] = json!(true);
-            }
-        }
-        Ok(result)
+        Ok(set.reply(set.write_global(&self.cwd(), &self.config.agent_dir)))
     }
 
     fn run_prompt(

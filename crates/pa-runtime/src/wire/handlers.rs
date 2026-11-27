@@ -96,6 +96,12 @@ pub enum Query {
     /// `persistent_shells.tail`: the newest output lines of one persistent
     /// shell.
     PersistentShellTail,
+    /// `agent_messages`: a session's agent-message safety status (the first
+    /// running session's without one).
+    AgentMessages,
+    /// `session.rlm_max_depth`: a session's delegation depth bound and its
+    /// source.
+    SessionRlmMaxDepth,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -141,6 +147,8 @@ impl FromStr for Query {
             "session.kernel_bash_tail" => Query::SessionKernelBashTail,
             "persistent_shells" => Query::PersistentShells,
             "persistent_shells.tail" => Query::PersistentShellTail,
+            "agent_messages" => Query::AgentMessages,
+            "session.rlm_max_depth" => Query::SessionRlmMaxDepth,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",
@@ -305,6 +313,20 @@ pub enum Call {
     /// `persistent_shells.kill`: ends one persistent kernel shell's process
     /// group.
     PersistentShellKill,
+    /// `agent_messages.pause`: refuses the messages delivered to a session
+    /// (every running one without one) and takes its waiting ones out.
+    AgentMessagesPause,
+    /// `agent_messages.resume`: lets a session's (every running one's)
+    /// agent messages in again.
+    AgentMessagesResume,
+    /// `agent_messages.clear`: takes the agent messages waiting on a session
+    /// out.
+    AgentMessagesClear,
+    /// `session.set_rlm_max_depth`: fixes a session's delegation depth bound
+    /// (and the global default).
+    SessionSetRlmMaxDepth,
+    /// `session.delete_child`: deletes one of a session's settled subagents.
+    SessionDeleteChild,
 }
 
 impl FromStr for Call {
@@ -366,6 +388,11 @@ impl FromStr for Call {
             "session.kill_kernel_bash" => Call::SessionKillKernelBash,
             "session.factory_activity" => Call::SessionFactoryActivity,
             "persistent_shells.kill" => Call::PersistentShellKill,
+            "agent_messages.pause" => Call::AgentMessagesPause,
+            "agent_messages.resume" => Call::AgentMessagesResume,
+            "agent_messages.clear" => Call::AgentMessagesClear,
+            "session.set_rlm_max_depth" => Call::SessionSetRlmMaxDepth,
+            "session.delete_child" => Call::SessionDeleteChild,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

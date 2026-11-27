@@ -1,8 +1,11 @@
 //! The RLM child-management surface: the worker arms for
 //! `cancel_rlm_child`, `delete_rlm_subagent`, and `set_rlm_max_depth`.
-//! Each handler answers the exact TS wire shape; the behavior lives in
-//! the engine seams and the supervisor-backed children registry.
+//! Each handler answers the exact TS wire shape (pa-core's
+//! `session_engine::agent_controls`, which the runtime daemon shares); the
+//! behavior lives in the engine seams and the supervisor-backed children
+//! registry.
 
+use pa_core::session_engine::agent_controls::{SetRlmMaxDepth, SubagentDeleteOutcome};
 use serde_json::{json, Value};
 
 use crate::protocol::{response_failure, response_success, DaemonResponse};
@@ -46,24 +49,15 @@ impl Worker {
                 None,
             );
         };
-        match self.engine.delete_rlm_subagent(child_id).await {
-            Ok("deleted") => response_success(
-                None,
-                "delete_rlm_subagent",
-                Some(json!({ "deleted": true })),
-            ),
-            Ok("running") => response_success(
-                None,
-                "delete_rlm_subagent",
-                Some(json!({ "deleted": false, "reason": "running" })),
-            ),
-            Ok(_) => response_success(
-                None,
-                "delete_rlm_subagent",
-                Some(json!({ "deleted": false })),
-            ),
-            Err(error) => response_failure(None, "delete_rlm_subagent", &error.to_string(), None),
-        }
+        let outcome = match self.engine.delete_rlm_subagent(child_id).await {
+            Ok("deleted") => SubagentDeleteOutcome::Deleted,
+            Ok("running") => SubagentDeleteOutcome::Running,
+            Ok(_) => SubagentDeleteOutcome::NotFound,
+            Err(error) => {
+                return response_failure(None, "delete_rlm_subagent", &error.to_string(), None)
+            }
+        };
+        response_success(None, "delete_rlm_subagent", Some(outcome.reply()))
     }
 
     /// `set_rlm_max_depth`: set the session's recursion bound, optionally persisting it as the
@@ -72,24 +66,18 @@ impl Worker {
         if let Err(response) = self.require_created("set_rlm_max_depth") {
             return response;
         }
-        let Some(max_depth) = payload.get("maxDepth").and_then(Value::as_u64) else {
-            return response_failure(
-                None,
-                "set_rlm_max_depth",
-                "RLM max depth must be a non-negative integer.",
-                None,
-            );
+        let set = match SetRlmMaxDepth::parse(payload) {
+            Ok(set) => set,
+            Err(refusal) => return response_failure(None, "set_rlm_max_depth", refusal, None),
         };
-        let global = payload.get("global").and_then(Value::as_bool) == Some(true);
         // The engine call blocks on the engine runtime (the durable
         // `rlm_max_depth_state` write takes the engine session lock), so it
         // runs on a blocking thread — a direct call would `block_on` from
         // inside the worker's runtime and die.
         let engine = std::sync::Arc::clone(&self.engine);
-        let result =
-            tokio::task::spawn_blocking(move || engine.set_rlm_max_depth(max_depth, global))
-                .await
-                .unwrap_or_else(|error| Err(anyhow::anyhow!("RLM max depth task failed: {error}")));
+        let result = tokio::task::spawn_blocking(move || engine.set_rlm_max_depth(set))
+            .await
+            .unwrap_or_else(|error| Err(anyhow::anyhow!("RLM max depth task failed: {error}")));
         match result {
             Ok(result) => response_success(None, "set_rlm_max_depth", Some(result)),
             Err(error) => response_failure(None, "set_rlm_max_depth", &error.to_string(), None),

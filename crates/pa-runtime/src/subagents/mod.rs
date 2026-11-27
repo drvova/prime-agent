@@ -22,11 +22,12 @@
 //! until it is. A subagent's task ends there, so its `done` follows its whole
 //! subtree.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use pa_core::session_engine::agent_controls::AgentMessagePause;
 use pa_core::session_engine::agent_messaging::AgentMessageWaits;
 use pa_core::session_engine::engine::SessionEngine;
 use pa_core::session_engine::goal_boundary::custom_message_to_loop_row;
@@ -50,6 +51,7 @@ use crate::subscriptions::{MemorySessionTree, Registry};
 use crate::trust::TaskTrust;
 use crate::turn::boundary::TurnBoundary;
 
+mod controls;
 mod family;
 mod host;
 mod inbox;
@@ -590,6 +592,15 @@ pub(crate) struct Node {
     pub(crate) interaction: Arc<SessionInteraction>,
     /// The wakes each sender has spent on this session.
     wakes: inbox::WakeBudget,
+    /// The agents view's pause of the messages delivered to it.
+    pub(crate) agent_messages: AgentMessagePause,
+    /// Where its delegation bound comes from (`get_rlm_max_depth_status`'s
+    /// `source`): a root's resolves with its bound, a child's is inherited,
+    /// and a chat override's is `chat`.
+    depth_source: Mutex<&'static str>,
+    /// The handles of the children deleted under it: a delete of one again
+    /// answers deleted, as the old daemon's did.
+    deleted_children: Mutex<HashSet<String>>,
     /// The outcome of the session's first engine build; `None` until then.
     built: watch::Sender<Option<Result<(), String>>>,
     /// The session's `agent_message.wait`s: the receiving side every
@@ -628,6 +639,13 @@ impl Node {
         parent: Option<Weak<Node>>,
     ) -> Self {
         let trust = TaskTrust::default();
+        // A child's bound is its parent's, fixed at spawn; a root's resolves
+        // as its engine is built.
+        let depth_source = if parent.is_some() {
+            "inherited"
+        } else {
+            "default"
+        };
         let stream = Arc::new(SessionStream::new(
             tree.outbox.clone(),
             &session_id,
@@ -664,6 +682,9 @@ impl Node {
             disposed: AtomicBool::new(false),
             trust,
             wakes: inbox::WakeBudget::default(),
+            agent_messages: AgentMessagePause::default(),
+            depth_source: Mutex::new(depth_source),
+            deleted_children: Mutex::new(HashSet::new()),
             built: watch::Sender::new(None),
             waits: Arc::new(AgentMessageWaits::default()),
         }
@@ -694,6 +715,7 @@ impl Node {
             );
             self.delegation
                 .configure(0, DepthBound::resolved(max_depth, source));
+            *lock(&self.depth_source) = source;
         }
         // A message waiting in the backlog counts while its row still waits
         // on the agent, not once a turn has taken it into the context.

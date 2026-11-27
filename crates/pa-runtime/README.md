@@ -544,6 +544,22 @@ SQLite implementations over `pa-log`.
   (`kill_persistent_shell`), off the runtime on a blocking thread. Each answers the old
   response's `data` or refusal text. `sessions.list {shape: "saved"}` rows carry their live
   persistent shells and, with the factory lane on, their stored factory specs.
+  The agents view's session controls (8d-4b, `daemon/handlers/agent_controls.rs` and
+  `subagents/controls.rs`, over pa-core's `session_engine::agent_controls`): `agent_messages`
+  (`agent_messages_status`: the safety status), `agent_messages.pause` and
+  `agent_messages.resume` (the pause, which refuses every inbox delivery to the session with
+  `Agent messaging is paused`; a pause also takes its waiting agent messages out) and
+  `agent_messages.clear` (`{steering, followUp}`, the taken rows' prompts, under the session's
+  delivery gate; client prompts stay), on any session the runtime runs, a subagent's included,
+  and without `session` on every running one (the status the first by id, `{paused: false,
+  limits: {}}` while none runs); `session.rlm_max_depth` (`{maxDepth, source}`) and
+  `session.set_rlm_max_depth` (a chat override of the node's bound, the session's
+  `rlm_max_depth_state` row on its runtime, the global settings write on a blocking thread,
+  `{maxDepth, source, globalSaved, globalError?}`); `session.delete_child {session, child}`
+  (`delete_rlm_subagent`: a settled subagent deleted as `rlm.delete_subagent` deletes it,
+  `{deleted: false, reason: "running"}` for one with live work, deleted again for a handle
+  deleted before, `{deleted: false}` for an unknown one). Each answers the old response's
+  `data` or refusal text.
   A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
@@ -733,7 +749,10 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `session.record_better_outcome`, and the live-only topic `agent/<id>/side_question`. (8d-4a)
   the queries `session.kernel_bash`, `session.kernel_bash_tail`, `persistent_shells` and
   `persistent_shells.tail`, and the calls `session.kill_kernel_bash`,
-  `session.factory_activity` and `persistent_shells.kill`.
+  `session.factory_activity` and `persistent_shells.kill`. (8d-4b) the queries
+  `agent_messages` and `session.rlm_max_depth`, and the calls `agent_messages.pause`,
+  `agent_messages.resume`, `agent_messages.clear`, `session.set_rlm_max_depth` and
+  `session.delete_child`.
 - `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
   engine streams from, which the runtime daemon's model and tier switches write.
 

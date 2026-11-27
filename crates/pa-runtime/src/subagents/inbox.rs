@@ -4,6 +4,8 @@
 //! ([`Subagents::deliver_inbox`]) the way the daemon's receiving worker
 //! does:
 //!
+//! - refused while the receiver's agent messaging is paused (`Agent
+//!   messaging is paused`, the agents view's pause);
 //! - refused while the receiver holds
 //!   [`DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION`] undelivered rows;
 //! - a receiver in a turn takes it queued, and no wake is spent;
@@ -153,6 +155,8 @@ impl Subagents {
             let engine = receiver
                 .engine()
                 .ok_or_else(|| anyhow::anyhow!("the target session is not running"))?;
+            // The agents view's pause refuses every delivery.
+            receiver.agent_messages.admit()?;
             let agent = engine.session.agent();
             assert_agent_message_queue_capacity(
                 agent.steering_previews().len() + agent.follow_up_previews().len(),

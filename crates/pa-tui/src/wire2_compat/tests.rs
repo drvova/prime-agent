@@ -1127,3 +1127,70 @@ fn the_kernel_activity_queries_and_calls_carry_their_commands() {
         )
     );
 }
+
+/// The agents view's session controls: the agent-message ingest's status, pause, resume and
+/// clear (on every running session when the command names none), and the RLM depth bound and
+/// the subagent delete on the session, each answered with the old response's `data`.
+#[test]
+fn the_agent_controls_queries_and_calls_carry_their_commands() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "agent_messages_status", "activeSessionId": "s1" }),
+        json!({ "type": "agent_messages_status" }),
+        json!({ "type": "agent_messages_pause", "activeSessionId": "s1" }),
+        json!({ "type": "agent_messages_resume" }),
+        json!({ "type": "agent_messages_clear", "activeSessionId": "s1" }),
+        json!({ "type": "get_rlm_max_depth_status", "activeSessionId": "s1" }),
+        json!({ "type": "set_rlm_max_depth", "activeSessionId": "s1", "maxDepth": 3,
+                "global": true }),
+        json!({ "type": "delete_rlm_subagent", "activeSessionId": "s1", "childId": "c1" }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let query = |name: &str, args: Value| {
+        Outgoing::Query(ClientFrame::Query {
+            id: "i".to_string(),
+            name: name.to_string(),
+            args,
+        })
+    };
+    let call = |method: &str, args: Value| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args,
+        })
+    };
+    let deleted = serde_json::to_value(response_from_reply(
+        "delete_rlm_subagent",
+        None,
+        Outcome::Ok {
+            result: json!({ "deleted": false, "reason": "running" }),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        (frames, deleted),
+        (
+            vec![
+                query("agent_messages", json!({ "session": "s1" })),
+                query("agent_messages", json!({})),
+                call("agent_messages.pause", json!({ "session": "s1" })),
+                call("agent_messages.resume", json!({})),
+                call("agent_messages.clear", json!({ "session": "s1" })),
+                query("session.rlm_max_depth", json!({ "session": "s1" })),
+                call(
+                    "session.set_rlm_max_depth",
+                    json!({ "session": "s1", "maxDepth": 3, "global": true })
+                ),
+                call(
+                    "session.delete_child",
+                    json!({ "session": "s1", "child": "c1" })
+                ),
+            ],
+            json!({ "type": "response", "command": "delete_rlm_subagent", "success": true,
+                    "data": { "deleted": false, "reason": "running" } }),
+        )
+    );
+}

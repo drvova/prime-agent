@@ -183,7 +183,7 @@ impl OldClient {
     }
 
     /// Reads frames until `done` holds for what has arrived.
-    fn until(&mut self, done: impl Fn(&[Value]) -> bool) {
+    pub(super) fn until(&mut self, done: impl Fn(&[Value]) -> bool) {
         while !done(&self.seen) {
             let frame = self
                 .frames

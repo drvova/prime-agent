@@ -364,6 +364,17 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `session.factory_activity`, `persistent_shells`, `persistent_shells.tail` and
   `persistent_shells.kill` (`pa-runtime` `daemon/handlers/kernel_activity.rs`) apply them; none
   starts a kernel, and the shell reads and kills run on a blocking thread.
+- One set of agents-view session controls (`pa_core::session_engine::agent_controls`): the
+  agent-message ingest's pause and its `Agent messaging is paused` delivery refusal, the
+  safety status and the clear's `{steering, followUp}` (an agent message's prompt, never a
+  client prompt), the RLM depth bound's status, `set_rlm_max_depth`'s parse, its durable
+  `rlm_max_depth_state` row and the `globalSaved`/`globalError` report of its settings write,
+  and `delete_rlm_subagent`'s outcomes. The old worker and the runtime daemon's
+  `agent_messages`, `agent_messages.pause`/`.resume`/`.clear`, `session.rlm_max_depth`,
+  `session.set_rlm_max_depth` and `session.delete_child` (`pa-runtime`
+  `daemon/handlers/agent_controls.rs`, `subagents/controls.rs`) apply them; on the runtime the
+  pause gates every inbox delivery to the session, the clear takes the rows under the
+  session's delivery gate, and only a settled subagent is deleted.
 - One set of whole-session replacement rules: where a `fork {entryId, position}` starts and the
   text it hands back, where an `import_jsonl` copies its file, and the working directory a
   replaced session runs in with its refusals and their `errorInfo`

@@ -176,7 +176,7 @@ fn old_kernel_activity(bed: &Bed) -> Vec<Value> {
 
 /// What the compat layer hands the TUI for `command` (with the session's id)
 /// on the runtime daemon.
-async fn runtime_answer(session: &mut Attached, command: &Value) -> Value {
+pub(super) async fn runtime_answer(session: &mut Attached, command: &Value) -> Value {
     let mut command = command.clone();
     command["activeSessionId"] = json!(session.id);
     let kind = command["type"].as_str().unwrap().to_string();

@@ -264,6 +264,7 @@ impl RlmSubagentHost for SessionSubagents {
                 .lock()
                 .await
                 .retain(|other| !Arc::ptr_eq(other, &child));
+            lock(&node.deleted_children).insert(child.rlm_child_id.clone());
             let child_file = lock(&child.node.adopted).session_file.clone();
             if let (Some(family), Some(child_file)) = (
                 node.tree.upgrade().as_ref().and_then(|tree| tree.daemon()),

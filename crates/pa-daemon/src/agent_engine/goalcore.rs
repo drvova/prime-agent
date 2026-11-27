@@ -13,7 +13,7 @@ impl AgentSessionEngine {
                     .runtime
                     .block_on(async { handles.goal.session.lock().await });
                 if let Err(error) = manager.append_custom_entry(
-                    "rlm_max_depth_state",
+                    pa_core::session_engine::agent_controls::RLM_MAX_DEPTH_STATE_CUSTOM_TYPE,
                     Some(json!({ "maxDepth": max_depth })),
                 ) {
                     eprintln!("pa-daemon: failed to persist rlm_max_depth_state: {error:#}");
@@ -25,18 +25,6 @@ impl AgentSessionEngine {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(max_depth);
             }
-        }
-    }
-
-    /// The global settings write behind `set_rlm_max_depth { global: true }`:
-    /// `Some(message)` when the write failed, mirroring the TS `globalError`
-    /// field.
-    pub(super) fn write_global_rlm_max_depth(&self, max_depth: u64) -> Option<String> {
-        let mut settings =
-            pa_core::settings::SettingsManager::create(self.cwd(), &self.config.agent_dir);
-        match settings.set_rlm_max_depth(max_depth) {
-            Ok(()) => None,
-            Err(error) => Some(error.to_string()),
         }
     }
 
@@ -52,7 +40,7 @@ impl AgentSessionEngine {
             .take();
         if let Some(max_depth) = pending {
             if let Err(error) = manager.append_custom_entry(
-                "rlm_max_depth_state",
+                pa_core::session_engine::agent_controls::RLM_MAX_DEPTH_STATE_CUSTOM_TYPE,
                 Some(json!({ "maxDepth": max_depth })),
             ) {
                 eprintln!("pa-daemon: failed to flush pending rlm_max_depth_state: {error:#}");

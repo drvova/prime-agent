@@ -58,9 +58,14 @@
 //!   its factory lane, the persistent shells and their catalog rows),
 //!   answered as the old daemon answers it (phase 8d-4a):
 //!   [`kernel_activity`].
+//! - The agents view's session controls (the agent-message ingest's status,
+//!   pause, resume and clear, the RLM depth bound, the subagent delete),
+//!   answered as the old daemon answers them (phase 8d-4b):
+//!   [`agent_controls`].
 #![cfg(unix)]
 
 mod acp_calls;
+mod agent_controls;
 mod agents_view;
 mod bash;
 mod checkpoints;

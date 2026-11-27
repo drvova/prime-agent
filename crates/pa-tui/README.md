@@ -259,7 +259,13 @@ and the agents view's kernel activity (`list_kernel_bash`, `tail_kernel_bash`,
 `list_persistent_shells` and `tail_persistent_shell` as the queries `session.kernel_bash`,
 `session.kernel_bash_tail`, `persistent_shells` and `persistent_shells.tail`;
 `kill_kernel_bash`, `factory_activity` and `kill_persistent_shell` as the calls
-`session.kill_kernel_bash`, `session.factory_activity` and `persistent_shells.kill`);
+`session.kill_kernel_bash`, `session.factory_activity` and `persistent_shells.kill`),
+and the agents view's session controls (`agent_messages_status` and `get_rlm_max_depth_status`
+as the queries `agent_messages` and `session.rlm_max_depth`; `agent_messages_pause`,
+`agent_messages_resume`, `agent_messages_clear`, `set_rlm_max_depth` and `delete_rlm_subagent`
+as the calls `agent_messages.pause`, `agent_messages.resume`, `agent_messages.clear`,
+`session.set_rlm_max_depth` and `session.delete_child`, a pause, resume or status that names no
+session reaching every running one);
 its module docs state the contract the runtime honours (the stream is live
 only, so the session's event counter rides in the payload's `meta.sequence`) and list what is left
 to map. Every recorded frame round-trips through it. A session's stored fault topics
