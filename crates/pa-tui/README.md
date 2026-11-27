@@ -228,7 +228,9 @@ the supervisor on the faux engine with a debug build's `PA_TUI_RECORD_INBOUND` t
 `tests/inbound_goldens_headless.rs` replays them through the real client decode and event pump.
 `src/wire2_compat.rs` maps wire2 events (`agent/<id>/stream`, `side_question`, `closed`,
 `runtime/roster`, `runtime/traffic`, `runtime/session_list/<request>`, and the live-only
-`system/closing` as `daemon_closing`) to the `DaemonOutbound` frames they stand for, the daemon's
+`system/closing` as `daemon_closing` and `system/history_import` as `history_import`, with the
+`system.history_import` query a transport asks once connected for an import already running) to
+the `DaemonOutbound` frames they stand for, the daemon's
 own `shutdown` and `restart` to the `daemon.shutdown` and `daemon.restart` calls (answered without
 `data`), the input
 commands to a publish on `agent/<id>/input`, `attach` to the `session.attach` call (it attaches

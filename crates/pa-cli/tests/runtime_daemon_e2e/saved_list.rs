@@ -38,7 +38,14 @@ fn usage(cost: f64, billing: &Value) -> Value {
 /// the type, id, time and cwd, then `rows`, each given an id, a parent and a
 /// time) and dates it `age_secs` ago, so the walk's newest-first order is
 /// fixed.
-fn transcript(dir: &Path, id: &str, cwd: &str, header: &Value, rows: &[Value], age_secs: u64) {
+pub(super) fn transcript(
+    dir: &Path,
+    id: &str,
+    cwd: &str,
+    header: &Value,
+    rows: &[Value],
+    age_secs: u64,
+) {
     let mut lines = vec![json!({
         "type": "session", "version": 3, "id": id, "timestamp": "2026-09-23T00:00:00.000Z",
         "cwd": cwd,
@@ -146,7 +153,7 @@ fn store(dir: &Path) {
 
 /// `frame` in the shape the TUI's client reads it in, its `nextCursor` by
 /// its form.
-fn read_as_the_tui_does(frame: &Value) -> Value {
+pub(super) fn read_as_the_tui_does(frame: &Value) -> Value {
     let typed: DaemonOutbound = serde_json::from_value(frame.clone())
         .unwrap_or_else(|error| panic!("{frame} is not an old frame: {error}"));
     let mut frame = serde_json::to_value(typed).unwrap();

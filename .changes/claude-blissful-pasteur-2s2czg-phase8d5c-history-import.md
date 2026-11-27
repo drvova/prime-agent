@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now imports a distribution build's official-build chats at boot as the default daemon does, in the background, and tells connected windows when the import starts and finishes, including a window that connects while it runs.

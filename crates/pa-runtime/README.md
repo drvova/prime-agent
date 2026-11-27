@@ -658,6 +658,17 @@ SQLite implementations over `pa-log`.
   ephemeral one), the connections get 5 s to send what they hold, then the sessions close and the
   process exits 0. The held sessions stay in the database, so the next daemon revives a session
   with that queued continuation as one the daemon died between turns of (no crash recorded).
+  **Boot imports** (`daemon/handlers/history_import.rs`, the old supervisor's, shared through
+  `pa_core::session::boot_import`): once the daemon serves, on their own task and the blocking
+  pool, so neither readiness nor a client's first frame waits on them, a distribution build's
+  one-time history import (the official build's chats into its own agent dir), then the agent
+  dir's JSONL session files into the transcript store, then the agent's other state files with
+  this daemon's event bus and crash log. The history import's `history_import` frames, without
+  `type`, go out in order on the live-only `system/history_import` (started before the first
+  file is copied, finished after the marker); `system.history_import` answers the running one's
+  started frame (`null` while none runs) for a client that connects mid-import, as the old
+  supervisor sends it after the hello. The drain aborts an import still running; it resumes on
+  the next boot.
   **Scheduled jobs** (`daemon/schedules.rs`): a daemon session's kernel serves `schedule.*` and
   `rlm_heartbeat.*` on pa-core's job store (the session's `session-artifacts/<id>` partition,
   the old daemon's rows), bound through `SessionSeams::scheduled_jobs`. Each active job has a

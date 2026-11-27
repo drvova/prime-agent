@@ -104,6 +104,10 @@ pub enum Query {
     SessionRlmMaxDepth,
     /// `session.heartbeat`: a session's live or paused heartbeat.
     SessionHeartbeat,
+    /// `system.history_import`: the boot's history import running now (its
+    /// started frame without `type`), `null` while none runs; its frames
+    /// follow on `system/history_import`.
+    HistoryImport,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -152,6 +156,7 @@ impl FromStr for Query {
             "agent_messages" => Query::AgentMessages,
             "session.rlm_max_depth" => Query::SessionRlmMaxDepth,
             "session.heartbeat" => Query::SessionHeartbeat,
+            "system.history_import" => Query::HistoryImport,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",

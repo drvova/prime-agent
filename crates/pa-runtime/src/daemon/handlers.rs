@@ -39,6 +39,7 @@ mod bash;
 mod bus;
 mod children;
 mod feeds;
+mod history_import;
 mod info;
 mod input;
 mod jobs;
@@ -89,6 +90,9 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     /// embedder's stop signal): once it is begun, every query and call is
     /// refused.
     stop: Arc<DaemonStop>,
+    /// The boot's imports: the history import's started frame while it
+    /// copies (`system.history_import`).
+    boot_import: Arc<pa_core::session::boot_import::BootImport>,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -121,6 +125,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             branch_summaries: tree::BranchSummaries::default(),
             side_runs: side_runs::SessionSideRuns::default(),
             stop,
+            boot_import: Arc::default(),
             agent_dir,
             session_dir,
             cwd,
@@ -528,6 +533,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::AgentMessages => self.agent_messages(&args),
             Query::SessionRlmMaxDepth => self.rlm_max_depth(&args).await,
             Query::SessionHeartbeat => self.heartbeat(&args).await,
+            Query::HistoryImport => Ok(self.history_import()),
         }
     }
 

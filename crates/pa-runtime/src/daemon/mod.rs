@@ -55,6 +55,11 @@
 //!   and fired by the runtime's timer sources while this daemon is the
 //!   selected one ([`DaemonOptions::selected`]); a job due in an idle
 //!   session the daemon holds down wakes it ([`schedules`]).
+//! - **Boot imports.** The old daemon's, shared (`pa_core::session::boot_import`):
+//!   a distribution build's history import, announced on the live-only
+//!   `system/history_import` (`system.history_import` reads a running one),
+//!   then the transcript and agent-state imports, on their own task once the
+//!   daemon serves (`handlers/history_import.rs`).
 //! - **Telemetry.** One `daemon event` (kind `catalog_refresh`,
 //!   `daemon_kind: runtime`) once the startup catalog refresh settles, off
 //!   the accept path; nothing the daemon serves waits on the network.
@@ -239,6 +244,7 @@ pub async fn run<B: SessionBuilder>(
     // Every panic is accounted for: a session's is that session's crash, any
     // other the daemon's own, appended to the crash log.
     pa_core::session::crash::install_panic_hook(crash_log.clone());
+    let boot_crash_log = crash_log.clone();
     let runtime = Arc::new(
         Runtime::open_with(
             &options.agent_dir,
@@ -336,6 +342,11 @@ pub async fn run<B: SessionBuilder>(
         options.cwd,
     ));
     let feed_tasks = handlers.spawn_feeds();
+    // The boot's imports, off every path a client waits on.
+    let import_tasks = {
+        let client = telemetry.clone();
+        handlers.spawn_boot_import(boot_crash_log, Box::new(move || client.clone()))
+    };
     let server = runtime.wire_server(Arc::clone(&handlers), WireConfig::default(), attached);
     let mut connections = JoinSet::new();
     let mut shutdown = std::pin::pin!(shutdown);
@@ -385,7 +396,8 @@ pub async fn run<B: SessionBuilder>(
     }
     connections.shutdown().await;
     drop(server);
-    for task in feed_tasks {
+    // An import still copying resumes on the next boot.
+    for task in feed_tasks.into_iter().chain(import_tasks) {
         task.abort();
         let _ = task.await;
     }

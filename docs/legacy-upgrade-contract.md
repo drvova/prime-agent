@@ -204,7 +204,7 @@ per session. The JSONL files of earlier builds and of the TypeScript product
 are brought in without a migration step the user runs.
 
 - **Trigger.** Two paths, neither on a path a client waits on:
-  - **Background.** The daemon imports `<agent dir>/sessions/` and
+  - **Background.** The daemon (either one: `pa_core::session::boot_import`) imports `<agent dir>/sessions/` and
     `<agent dir>/sessions-archive/` (recursively; also a `sessionDir` that the
     global settings or `PRIME_AGENT_SESSION_DIR` name) on the blocking pool
     after its boot. This runs after a distribution build's own history import,
