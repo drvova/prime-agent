@@ -17,6 +17,10 @@ use super::saved_list::old_list;
 use super::switches::{models, read_as_the_tui_does};
 use super::{ok, Bed, Client};
 
+/// Both daemons run offline: the model catalog is the one each carries,
+/// never one a background refresh fetched while the other ran.
+const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
+
 /// The reads and changes before the reload, in order, without their
 /// session: a mark twice (the second writes nothing).
 fn before_reload() -> Vec<Value> {
@@ -97,7 +101,7 @@ fn late_template(agent_dir: &Path) -> std::path::PathBuf {
 /// The old daemon's responses on a session it creates on `battery/mock-1`,
 /// and the session's id.
 fn old_answers(bed: &Bed) -> (Vec<Value>, String) {
-    let _daemon = bed.old_daemon();
+    let _daemon = bed.old_daemon_with(OFFLINE);
     let socket = bed.old_socket();
     let created = old_list(
         &socket,
@@ -178,7 +182,7 @@ async fn the_session_info_reads_answer_as_the_old_daemons_do() {
     resources(&bed.agent_dir(), bed.dir.path());
     let (old, old_id) = old_answers(&bed);
 
-    let _daemon = bed.runtime_daemon(&json!({ "responses": ["hi"] }));
+    let _daemon = bed.runtime_daemon_with(&json!({ "responses": ["hi"] }), OFFLINE);
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
     let created = ok(client.call("session.create", json!({})).await);
     let id = created["session"].as_str().unwrap().to_string();

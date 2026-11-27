@@ -192,6 +192,11 @@ impl Bed {
     /// The old daemon (the `pa-daemon` supervisor binary built beside
     /// `prime-agent`), listening on `daemon.sock`.
     fn old_daemon(&self) -> Daemon {
+        self.old_daemon_with(&[])
+    }
+
+    /// The old daemon with `env` over the bed's, listening.
+    fn old_daemon_with(&self, env: &[(&str, &str)]) -> Daemon {
         let binary = Path::new(env!("CARGO_BIN_EXE_prime-agent"))
             .parent()
             .expect("the profile dir")
@@ -208,7 +213,8 @@ impl Bed {
             .arg("--socket")
             .arg(self.old_socket())
             .arg("--agent-dir")
-            .arg(self.agent_dir());
+            .arg(self.agent_dir())
+            .envs(env.iter().copied());
         let mut child = command.spawn().expect("spawn the old daemon");
         support::await_listening(&self.old_socket(), &mut child);
         Daemon(child)
