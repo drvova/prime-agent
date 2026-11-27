@@ -129,8 +129,8 @@ impl Topic {
         match (levels.next(), levels.next(), levels.next(), levels.next()) {
             (Some("agent"), Some(_), Some(kind), None) => LIVE_ONLY_KINDS.contains(&kind),
             (Some("runtime"), Some(feed), None, None) => LIVE_ONLY_FEEDS.contains(&feed),
-            (Some("runtime"), Some("session_list"), Some(_), None) => true,
-            (Some("system"), Some("closing"), None, None) => true,
+            (Some("runtime"), Some("session_list"), Some(_), None)
+            | (Some("system"), Some("closing"), None, None) => true,
             _ => false,
         }
     }
