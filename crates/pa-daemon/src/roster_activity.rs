@@ -11,6 +11,16 @@ use crate::worker::{EventPump, OutboundFrame};
 /// that spin workers without a supervisor).
 pub(crate) const ROSTER_PUSH_DISABLE_ENV: &str = "PA_WORKER_DISABLE_ROSTER_PUSH";
 
+/// The roster-push gap seam (debug builds only, the `PA_DAEMON_BIND_CAPTURE_GAP_MS` seam
+/// family): the consumer sleeps this long before composing each flush, so a test can hold the
+/// supervisor's roster behind the worker's state instead of racing microseconds. Production
+/// leaves it unset.
+pub(crate) const ROSTER_PUSH_GAP_ENV: &str = "PA_WORKER_ROSTER_PUSH_GAP_MS";
+
+/// The longest [`RosterPushQueue::flush`] waits for the supervisor: well inside the 15 s the
+/// peer transport gives a delivery's acknowledgement, which a delivery's flush holds back.
+const FLUSH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The session event types that trigger a roster flush: each edge moves
 /// a summary field the roster consumers render (`thinking_level_changed`
 /// has no Rust frame yet; it stays listed for when it does).
@@ -73,10 +83,39 @@ pub(crate) struct RosterPushQueue {
 }
 
 /// The shared hand-off: one pending flag (the whole backlog) and the
-/// notify that wakes the consumer when the flag turns true.
+/// notify that wakes the consumer when the flag turns true; every request
+/// takes a generation, and the consumer publishes the newest generation
+/// each finished flush covered.
 struct PushState {
     notify: tokio::sync::Notify,
     pending: std::sync::atomic::AtomicBool,
+    requested: std::sync::atomic::AtomicU64,
+    flushed: tokio::sync::watch::Sender<u64>,
+}
+
+impl PushState {
+    fn new() -> Self {
+        Self {
+            notify: tokio::sync::Notify::new(),
+            pending: std::sync::atomic::AtomicBool::new(false),
+            requested: std::sync::atomic::AtomicU64::new(0),
+            flushed: tokio::sync::watch::Sender::new(0),
+        }
+    }
+
+    /// Take the next generation, then raise the pending flag (waking the
+    /// consumer on the first request of a burst). A flush that reads the
+    /// counter after this composes its summary after the caller's change.
+    fn request(&self) -> u64 {
+        let generation = self
+            .requested
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        if !self.pending.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            self.notify.notify_one();
+        }
+        generation
+    }
 }
 
 impl Clone for RosterPushQueue {
@@ -97,10 +136,7 @@ impl RosterPushQueue {
     /// Observe command-triggered publication without an asynchronous consumer.
     #[cfg(test)]
     pub(crate) fn observed_for_test() -> (Self, impl Fn() -> bool) {
-        let state = Arc::new(PushState {
-            notify: tokio::sync::Notify::new(),
-            pending: std::sync::atomic::AtomicBool::new(false),
-        });
+        let state = Arc::new(PushState::new());
         let observed = Arc::clone(&state);
         (Self { inner: Some(state) }, move || {
             observed.pending.load(std::sync::atomic::Ordering::SeqCst)
@@ -110,15 +146,26 @@ impl RosterPushQueue {
     /// Enqueue one flush request: the first request of a burst wakes
     /// the consumer, every later one only keeps the flag set.
     pub(crate) fn push(&self) {
+        if let Some(state) = &self.inner {
+            state.request();
+        }
+    }
+
+    /// Enqueue one flush request and wait until a flush composed after it
+    /// has been answered by the supervisor, so the caller's change is in the
+    /// supervisor's roster when this returns. A supervisor that answers
+    /// nothing within [`FLUSH_WAIT`] leaves the push in flight; the queue
+    /// with no consumer returns at once.
+    pub(crate) async fn flush(&self) {
         let Some(state) = &self.inner else {
             return;
         };
-        if !state
-            .pending
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            state.notify.notify_one();
-        }
+        let generation = state.request();
+        let mut flushed = state.flushed.subscribe();
+        // The consumer outlives every caller (it holds the sender), so a closed
+        // channel only means the runtime is shutting down: nothing is left to wait for.
+        let _ =
+            tokio::time::timeout(FLUSH_WAIT, flushed.wait_for(|done| *done >= generation)).await;
     }
 
     /// Spawn the flush consumer: flushes serialize here, so a wedged
@@ -130,10 +177,7 @@ impl RosterPushQueue {
         {
             return Self::disabled();
         }
-        let state = Arc::new(PushState {
-            notify: tokio::sync::Notify::new(),
-            pending: std::sync::atomic::AtomicBool::new(false),
-        });
+        let state = Arc::new(PushState::new());
         let consumer = Arc::clone(&state);
         tokio::spawn(async move {
             loop {
@@ -143,7 +187,17 @@ impl RosterPushQueue {
                 consumer
                     .pending
                     .store(false, std::sync::atomic::Ordering::SeqCst);
+                // Every request up to here changed its state before it took its
+                // generation: the summary composed below carries all of them.
+                let generation = consumer.requested.load(std::sync::atomic::Ordering::SeqCst);
+                #[cfg(debug_assertions)]
+                if let Ok(raw) = pa_types::session_scope::var(ROSTER_PUSH_GAP_ENV) {
+                    if let Ok(ms @ 1..=2_000) = raw.parse::<u64>() {
+                        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                    }
+                }
                 crate::worker::push_roster_delta(&context).await;
+                consumer.flushed.send_replace(generation);
             }
         });
         Self { inner: Some(state) }
