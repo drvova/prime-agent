@@ -2,6 +2,7 @@ use pa_ai::responses_transport::{discover_endpoints, DiscoveryTarget, DiscoveryW
 use pa_ai::types::{SimpleStreamOptions, StreamOptions};
 use pa_ai::utils::prewarm::NetworkMode;
 use pa_types::ai::{Context, Model, StopReason};
+use pa_types::session_scope::{self, ScopeGuard, SessionScope};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -37,6 +38,20 @@ async fn capture_request_line() -> (std::net::SocketAddr, tokio::task::JoinHandl
     (address, server)
 }
 
+/// Enter a session scope that sets `set` and hides `hidden`: the placeholders are read through
+/// the session's scope, so the process environment stays untouched. The test runs on a
+/// current-thread runtime, so the background probe it spawns runs on this thread, in this scope.
+fn scope(set: &[(&str, &str)], hidden: &[&str]) -> ScopeGuard {
+    session_scope::enter(Some(SessionScope::new(
+        "cloudflare-placeholders".to_string(),
+        std::path::PathBuf::new(),
+        set.iter()
+            .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+            .collect(),
+        hidden.iter().map(|name| (*name).to_string()).collect(),
+    )))
+}
+
 async fn settled(server: tokio::task::JoinHandle<String>) -> String {
     tokio::time::timeout(std::time::Duration::from_secs(10), server)
         .await
@@ -68,8 +83,13 @@ async fn complete(api: &str, base_url: String) -> pa_ai::types::AssistantMessage
 /// the network.
 #[tokio::test]
 async fn cloudflare_placeholders_resolve_from_the_environment_on_every_outbound_path() {
-    std::env::set_var("CLOUDFLARE_ACCOUNT_ID", "acct123");
-    std::env::set_var("CLOUDFLARE_GATEWAY_ID", "gw-1");
+    let both = scope(
+        &[
+            ("CLOUDFLARE_ACCOUNT_ID", "acct123"),
+            ("CLOUDFLARE_GATEWAY_ID", "gw-1"),
+        ],
+        &[],
+    );
     for (api, endpoint) in [
         ("openai-completions", "/chat/completions"),
         ("openai-responses", "/responses"),
@@ -99,7 +119,11 @@ async fn cloudflare_placeholders_resolve_from_the_environment_on_every_outbound_
         "POST /v1/acct123/gw-1/gw/responses HTTP/1.1"
     );
 
-    std::env::remove_var("CLOUDFLARE_GATEWAY_ID");
+    drop(both);
+    let _account_only = scope(
+        &[("CLOUDFLARE_ACCOUNT_ID", "acct123")],
+        &["CLOUDFLARE_GATEWAY_ID"],
+    );
     // Nothing listens on the discard port: a request that escaped would fail as a connection
     // error instead of naming the variable.
     let message = complete(
@@ -107,7 +131,6 @@ async fn cloudflare_placeholders_resolve_from_the_environment_on_every_outbound_
         format!("http://127.0.0.1:9{PLACEHOLDER_PATH}"),
     )
     .await;
-    std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
     assert_eq!(
         (message.stop_reason, message.error_message),
         (
