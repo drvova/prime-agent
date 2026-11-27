@@ -4,10 +4,10 @@
 //! frames are checked against the TS capture corpus
 //! (`crates/pa-runtime/testdata/acp`).
 //!
-//! The tests listed in `on_the_runtime_daemon!` run a second time with the
-//! runtime daemon selected (`PRIME_AGENT_RUNTIME_DAEMON=1`): the child spawns
-//! the runtime daemon on `daemon2.sock` and drives it over wire2, and the
-//! same assertions hold.
+//! Each test runs with the supervisor selected (`PRIME_AGENT_RUNTIME_DAEMON=0`),
+//! and those listed in `on_the_runtime_daemon!` run a second time on the
+//! default, the runtime daemon: the child spawns it on `daemon2.sock` and
+//! drives it over wire2, and the same assertions hold.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
@@ -265,8 +265,9 @@ fn daemon_attached_command(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if daemon() == Daemon::Runtime {
-        command.env("PRIME_AGENT_RUNTIME_DAEMON", "1");
+    // The runtime daemon is the default; the supervisor is selected by name.
+    if daemon() == Daemon::Supervisor {
+        command.env("PRIME_AGENT_RUNTIME_DAEMON", "0");
     }
     command
 }
@@ -1936,32 +1937,14 @@ fn daemon_pid(socket: &std::path::Path) -> u64 {
     hello["supervisorPid"].as_u64().expect("supervisor pid")
 }
 
-/// Stop the sandboxed runtime daemon beside `socket`: its restart owner
-/// (or, unkept, the daemon) named in the agent dir's runtime-daemon lock
-/// is sent the deliberate stop, then the test waits for `daemon2.sock` to
-/// stop answering.
+/// Stop the sandboxed runtime daemon beside `socket`, and wait until its
+/// restart owner and the daemon are gone ([`support::stop_runtime_daemon`]).
 fn shutdown_sandboxed_runtime_daemon(socket: &std::path::Path) {
     let home = socket.parent().expect("the socket's sandbox");
-    let lock = home.join(".prime/agent/runtime-daemon.lock");
-    let Some(holder) = std::fs::read_to_string(lock)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-    else {
-        return;
-    };
-    let Some(pid) = holder["keeper"].as_u64().or(holder["pid"].as_u64()) else {
-        return;
-    };
-    let _ = Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .status();
-    let runtime_socket = home.join("daemon2.sock");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline
-        && pa_types::platform::transport::connect_blocking(&runtime_socket).is_ok()
-    {
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    #[cfg(unix)]
+    support::stop_runtime_daemon(&home.join(".prime/agent"));
+    #[cfg(not(unix))]
+    let _ = home;
 }
 
 #[test]

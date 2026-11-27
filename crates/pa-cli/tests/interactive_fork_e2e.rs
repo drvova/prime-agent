@@ -240,6 +240,9 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, session_dir: &Path) -> Supe
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
+        // The supervisor (selected by name: the runtime daemon is the default), which this
+        // suite drives on the old wire.
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
         .arg(socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in the
@@ -517,6 +520,8 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
         .env("PRIME_AGENT_SESSION_DIR", &session_dir)
         .env("PI_OFFLINE", "1")
         .env("PRIME_AGENT_FAUX_SCRIPT", fork_script.display().to_string())
+        // The launch reaches the supervisor this test started (the runtime daemon is the default).
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
         .env_remove("TMUX")
         .env_remove("RLM_DEPTH")
         .stdin(slave.try_clone().expect("clone pty slave"))

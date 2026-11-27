@@ -221,4 +221,4 @@ fn better_fills_the_composer_and_nothing_is_sent() {
     );
 }
 
-support::on_the_runtime_daemon!(better_fills_the_composer_and_nothing_is_sent,);
+support::on_the_supervisor!(better_fills_the_composer_and_nothing_is_sent,);

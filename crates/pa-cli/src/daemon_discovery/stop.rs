@@ -1,6 +1,8 @@
 //! Stopping the discovered daemons: the pure action planners, the safe
 //! re-probing executors, and the three command drivers (`status`/`doctor`/
-//! `shutdown`).
+//! `shutdown`). Each daemon is probed and asked to stop on its own wire
+//! ([`super::socket_kind`]): `status` lists the runtime daemon and `doctor --fix`
+//! reaps it as it does the supervisor.
 //!
 //! Deliberate TS divergences: the `stopHiddenSupervisors` duplicate-kill loop
 //! is not ported (the socket lease makes two owners of one path impossible);
@@ -22,6 +24,7 @@ use super::plan::{
     ShutdownConfirmationPlan,
 };
 use super::{discover_daemons, is_daemon_process_listening, probe_daemon, DaemonStateRoot};
+use crate::daemon_mode::DaemonKind;
 
 /// `status`: the daemons discovered in the given state root as JSON or
 /// as the table.
@@ -148,7 +151,7 @@ fn apply(
 /// `shutdown`. Returns the process exit code: 1 when anything failed
 /// (or the JSON confirmation error), 0 otherwise.
 pub(crate) fn run_shutdown_all(json: bool, force: bool, root: &DaemonStateRoot) -> i32 {
-    let daemons = discover_daemons(root);
+    let daemons = supervisors(root);
     let runtime = runtime_daemon(root);
     match plan_shutdown_confirmation(
         daemons.len() + usize::from(runtime.is_some()),
@@ -209,7 +212,7 @@ fn run_shutdown_converging(json: bool, force: bool, root: &DaemonStateRoot) -> i
         );
     }
 
-    let daemons = discover_daemons(root);
+    let daemons = supervisors(root);
     let action_order = |kind: &ReapActionKind| match kind {
         ReapActionKind::Shutdown => 0,
         ReapActionKind::RemoveFile => 1,
@@ -332,6 +335,17 @@ fn run_shutdown_converging(json: bool, force: bool, root: &DaemonStateRoot) -> i
     }
     print_shutdown_report(&stopped, &failed);
     i32::from(!failed.is_empty())
+}
+
+/// The root's daemons `shutdown` stops by discovery: every one but the
+/// root's runtime daemon, which it stops first through its own lock and wire
+/// ([`stop_runtime_daemon`]).
+fn supervisors(root: &DaemonStateRoot) -> Vec<super::DaemonInfo> {
+    let runtime_socket = pa_runtime::daemon::socket_path(&root.default_socket_path);
+    discover_daemons(root)
+        .into_iter()
+        .filter(|daemon| daemon.socket_path != runtime_socket)
+        .collect()
 }
 
 fn apply_stop(
@@ -485,20 +499,35 @@ fn stop_runtime_daemon(
     }
 }
 
-/// Ask the daemon to stop and confirm it actually stopped listening: the ack
-/// alone is not proof; success only once the socket stops accepting.
+/// Ask the daemon to stop on its own wire (the supervisor's `shutdown`, the
+/// runtime daemon's `daemon.shutdown`) and confirm it actually stopped
+/// listening: the ack alone is not proof; success only once the socket stops
+/// accepting.
 fn shutdown_daemon(socket_path: &Path, force: bool) -> bool {
-    let Ok(mut client) = crate::daemon_client::DaemonClient::connect_probe(socket_path) else {
-        return false;
-    };
-    let shutdown = DaemonCommand::Shutdown {
-        id: None,
-        force: Some(force),
-        rest: serde_json::Map::default(),
-    };
     // The daemon may still stop; the connectivity check below is the source
     // of truth.
-    let _ = client.request_with_timeout(shutdown, 1_500);
+    match super::socket_kind(socket_path) {
+        DaemonKind::Supervisor => {
+            let Ok(mut client) = crate::daemon_client::DaemonClient::connect_probe(socket_path)
+            else {
+                return false;
+            };
+            let shutdown = DaemonCommand::Shutdown {
+                id: None,
+                force: Some(force),
+                rest: serde_json::Map::default(),
+            };
+            let _ = client.request_with_timeout(shutdown, 1_500);
+        }
+        DaemonKind::Runtime => {
+            let Ok(mut client) =
+                crate::runtime_daemon_client::RuntimeDaemonClient::connect(socket_path)
+            else {
+                return false;
+            };
+            let _ = client.call("daemon.shutdown", serde_json::json!({ "force": force }));
+        }
+    }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {

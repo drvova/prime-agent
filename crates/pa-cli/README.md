@@ -15,8 +15,10 @@ The `prime-agent` executable surface (flags, subcommands, exit codes). Internal 
 pa-types, pa-ai, pa-agent, pa-core, pa-daemon, pa-runtime, pa-tui (one-way, composition root).
 
 ## Runtime daemon
-`--mode daemon` starts the supervisor, or, with `PRIME_AGENT_RUNTIME_DAEMON=1` or the global
-setting `"daemon": "runtime"`, the runtime daemon (`print_runtime/daemon_session.rs`): the agent
+`--mode daemon` starts the runtime daemon, the default, or the supervisor when the global
+setting `"daemon": "supervisor"` or `PRIME_AGENT_RUNTIME_DAEMON=0` selects it (kept for one
+release; `PRIME_AGENT_RUNTIME_DAEMON=1` selects the runtime daemon over the settings;
+`daemon_mode::DaemonKind::selected`). The runtime daemon (`print_runtime/daemon_session.rs`): the agent
 dir's lock (`pa_core::platform::RuntimeDaemonLock`), then `daemon2.sock` beside the resolved daemon
 socket through the supervisor's socket lifecycle (`pa_daemon::socket`: stale-socket cleanup,
 owner-only permissions, the exit cleanup that spares a successor) and `pa_runtime::daemon::run`
@@ -37,21 +39,30 @@ subagent runs `PRIME_AGENT_FAUX_CHILD_SCRIPT` when the script names none for it,
 supervisor's `childScript`); a session's engine binds its kernel's
 `schedule.*` and `rlm_heartbeat.*` to the seams' `scheduled_jobs` (a print run has none, so its
 `schedule.*` still refuses). The daemon's `selected` re-reads the global settings before each
-scheduled job (`daemon_mode::settings_select_runtime_daemon`; the environment switch is read
+scheduled job (`daemon_mode::DaemonKind::from_settings`; the environment switch is read
 once). A kept launch still splits into the keeper
-first; the runtime daemon has no keeper of its own yet (phase 7c). The update coordinator's
-successor, while the supervisor is the daemon the update drives, sets
-`PRIME_AGENT_DAEMON_SUPERVISOR=1` on the daemon it spawns (`daemon_mode::SUPERVISOR_ENV`): that
-process and the daemon its keeper keeps are the supervisor whatever the successor's settings say.
-The interactive launch under the opt-in runs the TUI on the runtime daemon (phase 8e):
+first; the runtime daemon has no keeper of its own yet (phase 7c). A launcher that waits on the supervisor's socket sets `PRIME_AGENT_DAEMON_SUPERVISOR=1` on the
+daemon it spawns (`daemon_mode::SUPERVISOR_ENV`): the update coordinator's successor or rollback
+while the supervisor is the daemon it drives, and a launch that selected the supervisor. That
+process and the daemon its keeper keeps are the supervisor whatever its settings say. The update
+coordinator prepares and stops the daemon it finds holding the sessions
+(`update_flow::endpoint::Endpoint::running`: the selected one, else the other one if only it
+answers) and starts and restores on the selected one, so a user whose supervisor an earlier
+release started is moved onto the runtime daemon by the update; it adopts the staged status by
+the socket the invoking update keyed it by.
+The interactive launch runs the TUI on the runtime daemon by default (phase 8f):
 `interactive_mode` ensures it (`ensure_runtime_daemon_running`), declares `daemon2.sock` a wire2
 socket (`pa_tui::daemon_client::use_transport`), hands the TUI and its agents view that socket,
 and installs the TUI's `DaemonLauncher` (`interactive_mode::daemon::RuntimeDaemonLauncher`, the
-same ensure) for a window whose daemon nothing brought back; without the opt-in it ensures the
-supervisor as before. A session the TUI creates carries `executionMode: "interactive"`, stamped on
-its telemetry as the supervisor's are. `tests/runtime_opt_in_launch_tmux_e2e.rs` is the launch's
-verifier, and the tmux verifiers that run the real binary under `env -i` run on both daemons
-(`support::on_the_runtime_daemon!`).
+same ensure) for a window whose daemon nothing brought back; with the supervisor selected it
+ensures the supervisor. The runtime ensure also stops an idle supervisor it finds on the sibling
+socket (no session running a turn, none with a window attached), on its own task, so the
+runtime daemon can lease those sessions; a busy one is left for a later launch. A session the TUI creates carries `executionMode: "interactive"`, stamped on
+its telemetry as the supervisor's are. `tests/runtime_default_launch_tmux_e2e.rs` is the launch's
+verifier (the default, and the idle supervisor's retirement), and the tmux verifiers that run the
+real binary under `env -i` run on the default and again on the supervisor
+(`support::on_the_supervisor!`). `prime-agent status` lists the runtime daemon and `doctor --fix`
+reaps it as it does the supervisor (`daemon_discovery`, each probed and stopped on its own wire).
 `tests/runtime_daemon_e2e/` drives it over wire2 against the real binary; `turns.rs` there ports
 the supervisor's steer batching, queue order and abort tests (`steer_boundary_batch_e2e`,
 `queue_delivery_e2e`, `abort_kernel_e2e`) onto it, with withdraw, restore, compaction and the

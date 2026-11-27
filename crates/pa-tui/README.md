@@ -226,7 +226,8 @@ the supervisor's `daemon.sock`, and wire2 to the runtime daemon's `daemon2.sock`
 (`src/daemon_client/wire2.rs`), which carries every command the TUI sends through the compat
 layer below and maps the runtime's topics back to `DaemonClientEvent`. A socket speaks the
 transport the composition root declared for it (`daemon_client::use_transport`; undeclared, the
-old wire), so the views, the reconnect driver and the agents view are the same on both. On wire2
+old wire; since phase 8f pa-cli declares the runtime daemon's socket unless the supervisor is
+selected), so the views, the reconnect driver and the agents view are the same on both. On wire2
 the hello is the runtime's `welcome` and `daemon.identity` (its `serverCapabilities`, never the
 direct worker link's); an attach follows the session's `agent/<id>/#` first (its stream live, its
 stored topics after the last stored event this process saw on the socket, so a reconnect replays a

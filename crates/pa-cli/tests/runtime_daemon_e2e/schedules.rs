@@ -353,8 +353,8 @@ async fn a_scheduled_job_runs_its_prompt_as_a_turn() {
 async fn a_runtime_daemon_the_settings_stop_selecting_skips_its_jobs() {
     let bed = Bed::new();
     let settings = bed.agent_dir().join("settings.json");
-    std::fs::write(&settings, json!({ "daemon": "runtime" }).to_string()).unwrap();
-    // Selected by the settings alone, not the environment.
+    std::fs::write(&settings, json!({}).to_string()).unwrap();
+    // Selected by the settings (the default), not the environment.
     let mut command = bed.runtime_daemon_command(&script(HEARTBEAT), &bed.old_socket());
     command.env_remove("PRIME_AGENT_RUNTIME_DAEMON");
     let mut child = command.spawn().expect("spawn the runtime daemon");
@@ -373,7 +373,7 @@ async fn a_runtime_daemon_the_settings_stop_selecting_skips_its_jobs() {
     })
     .await;
     // The old daemon is selected again: the next fire is a skip.
-    std::fs::write(&settings, json!({}).to_string()).unwrap();
+    std::fs::write(&settings, json!({ "daemon": "supervisor" }).to_string()).unwrap();
     let job = until(FIRE_WAIT, "the skipped fire", async || {
         let job = session.job(&bed);
         job.last_skipped_at.is_some().then_some(job)

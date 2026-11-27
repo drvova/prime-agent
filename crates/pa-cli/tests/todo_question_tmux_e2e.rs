@@ -286,6 +286,6 @@ fn todos_and_a_question_are_driven_from_the_kernel_and_answered_by_keyboard() {
     assert!(!cleared.contains("Todos 7/7"), "{cleared}");
 }
 
-support::on_the_runtime_daemon!(
+support::on_the_supervisor!(
     todos_and_a_question_are_driven_from_the_kernel_and_answered_by_keyboard,
 );

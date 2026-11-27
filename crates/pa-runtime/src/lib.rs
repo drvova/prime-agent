@@ -42,8 +42,8 @@
 //!   composition root assembles, and its responses and events go to stdout.
 //!
 //! - [`daemon`]: the runtime daemon, serving wire2 to the clients of its
-//!   socket over a [`Runtime`] of the agent dir, opt-in beside the old
-//!   daemon.
+//!   socket over a [`Runtime`] of the agent dir, beside the old daemon:
+//!   the default daemon, the old one selected only by name.
 //!
 //! The `Memory*` implementations are for tests and headless use.
 

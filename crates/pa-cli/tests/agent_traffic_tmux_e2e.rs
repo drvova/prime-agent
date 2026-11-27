@@ -216,4 +216,4 @@ fn two_children_messaging_each_other_show_in_the_traffic_pane() {
     assert!(open.contains("M hide traffic"), "{open}");
 }
 
-support::on_the_runtime_daemon!(two_children_messaging_each_other_show_in_the_traffic_pane,);
+support::on_the_supervisor!(two_children_messaging_each_other_show_in_the_traffic_pane,);

@@ -198,8 +198,12 @@ continuation is admitted, so follow-up input cannot run ahead of that turn.
 
 ### The runtime daemon
 
-The opt-in runtime daemon (`daemon2.sock`) serves the same Rust update
-transaction as the supervisor; both run `pa_core::update::restart`. Its
+The runtime daemon (`daemon2.sock`) is the default daemon from this release:
+`prime-agent --mode daemon`, the interactive TUI, the session commands, ACP
+and the update run on it unless the global setting `"daemon": "supervisor"`
+or `PRIME_AGENT_RUNTIME_DAEMON=0` selects the supervisor (both kept for one
+release; `PRIME_AGENT_RUNTIME_DAEMON=1` selects the runtime daemon over the
+settings). It serves the same Rust update transaction as the supervisor; both run `pa_core::update::restart`. Its
 wire2 calls are `daemon.prepare_update_restart {updateId, toVersion?}` and
 `daemon.commit_update_restart {updateId}`, whose results and refusals are
 the supervisor's `prepare_update_restart` and `commit_update_restart`
@@ -228,13 +232,26 @@ responses' `data`, message and `errorInfo`, verbatim:
   already opened for its queued continuation is not prompted a second time.
   `daemon.update_restore_status` answers the `update_restore_status` body,
   and a client that creates or attaches to a roster row waits for that row.
-- When the runtime daemon is the selected daemon, the update drives it
-  instead of the supervisor (`update_flow/endpoint.rs`):
-  - the Rust coordinator's prepare, commit, successor and restore report go
-    to `daemon2.sock`, which is greeted with `daemon.identity` (the hello's
-    identity fields);
-  - the successor is spawned with `PRIME_AGENT_RUNTIME_DAEMON=1`;
-  - the update's lock and status are keyed by `daemon2.sock`.
+- The update drives the daemons through `update_flow/endpoint.rs`:
+  - the Rust coordinator prepares and commits on the daemon it finds holding
+    the sessions (`Endpoint::running`): the selected daemon when it answers,
+    else the other one when only it answers. A user whose supervisor a
+    release from before this one started is therefore moved by the update:
+    the supervisor is prepared and stopped as before, its roster (session
+    rows only; the runtime daemon has no workers) is handed to the
+    successor, and the successor is the selected daemon, the runtime daemon,
+    which restores the rows with the shared restore pass;
+  - the successor's spawn, its greeting and the restore report go to the
+    selected daemon: on `daemon2.sock` greeted with `daemon.identity` (the
+    hello's identity fields), the successor spawned with
+    `PRIME_AGENT_RUNTIME_DAEMON=1`; with the supervisor selected, on its
+    socket, spawned with `PRIME_AGENT_DAEMON_SUPERVISOR=1`;
+  - a rollback starts the previous binary as the daemon the update stopped;
+  - the update's lock and status are keyed by the socket of the daemon the
+    invoking release selected (`daemon2.sock` from this release on), and the
+    coordinator adopts the staged status by that socket, so an update an
+    earlier release invokes, keyed by `daemon.sock`, still completes; the
+    prepared roster lives under the stopped daemon's own socket.
 - The TS handoff (`--internal-update-restart-coordinator` from a shipped
   updater) still prepares and stops the TS daemon on its own socket. It then
   restores the TS checkpoint on the selected daemon. On the runtime daemon
@@ -246,9 +263,22 @@ responses' `data`, message and `errorInfo`, verbatim:
     as input, and an action carrying a custom message fails that row's
     restore;
   - the continuation is queued as a steer.
-- With the runtime daemon selected, only it is restarted. A supervisor still
-  running, which the interactive TUI uses until it speaks wire2, keeps the
-  old binary until it restarts.
+- With both daemons running, the update restarts the selected one only. An
+  upgrade that did not go through the coordinator (an installer run by
+  hand) leaves the supervisor running on the old binary: the first launch
+  on the runtime daemon stops it once it is idle (no session running a
+  turn, none with a window attached), off the launch path, and the runtime
+  daemon opens its sessions from their transcripts; a busy supervisor is
+  left for a later launch to stop.
+- A session created with `--api-key` keeps its key in the runtime daemon's
+  memory only (the supervisor wrote it into its worker's durable create).
+  A session the runtime daemon revives after a death or an update, or wakes
+  for a scheduled job, without a client giving the key again fails its build
+  with the reason `session <id> was created with an API key, which the
+  daemon keeps in memory only: open it again from a client that gives the
+  key`; opening it again from a client that passes `--api-key` runs it on
+  that key. Keys from the auth store, the environment or a credential pin are
+  unaffected.
 
 ## Storage migration
 

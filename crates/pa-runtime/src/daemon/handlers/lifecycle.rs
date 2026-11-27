@@ -113,16 +113,23 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     /// front of its lane for the next daemon, which revives the session for
     /// it (the old worker's daemon-wide `shutdown`). An ephemeral session's
     /// turn is aborted and nothing is queued: no daemon revives it.
+    ///
+    /// Then every subagent below them is cut off the same way, without a
+    /// continuation, as the old worker closes its children at a daemon-wide
+    /// stop: the drain's close of the sessions would otherwise wait for a
+    /// child's turn to end on its own, however long it runs.
     pub(in crate::daemon) async fn cut_off_turns(&self) {
-        for id in self.open.paths().into_keys() {
-            self.runtime.hold_input(&id, DRAIN_HOLD);
-            if self.runtime.lane(&id).running.is_none() {
+        let roots: Vec<String> = self.open.paths().into_keys().collect();
+        for id in &roots {
+            let id = id.as_str();
+            self.runtime.hold_input(id, DRAIN_HOLD);
+            if self.runtime.lane(id).running.is_none() {
                 continue;
             }
-            if let Err(error) = self.runtime.interrupt(&id).await {
+            if let Err(error) = self.runtime.interrupt(id).await {
                 tracing::warn!("session {id}'s turn was not cut off cleanly: {error:#}");
             }
-            if self.open.ephemeral(&id) {
+            if self.open.ephemeral(id) {
                 continue;
             }
             let continuation = AgentInput {
@@ -130,8 +137,22 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 images: Vec::new(),
                 priority: Some(Priority::Steer),
             };
-            if let Err(error) = self.publish_input(&id, continuation).await {
+            if let Err(error) = self.publish_input(id, continuation).await {
                 tracing::warn!("session {id}'s continuation was not queued: {error:#}");
+            }
+        }
+        let mut family = Vec::new();
+        for id in &roots {
+            family.extend(self.runtime.subagents().family_of(id).await);
+        }
+        while let Some(member) = family.pop() {
+            let id = member.session_id;
+            family.extend(member.children);
+            self.runtime.hold_input(&id, DRAIN_HOLD);
+            if self.runtime.lane(&id).running.is_some() {
+                if let Err(error) = self.runtime.interrupt(&id).await {
+                    tracing::warn!("subagent {id}'s turn was not cut off cleanly: {error:#}");
+                }
             }
         }
     }

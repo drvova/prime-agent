@@ -98,7 +98,12 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 let rows = transcript_rows(path, true)?;
                 sessions.push(row(id, path, &rows, Some(activity)));
             }
-            anyhow::Ok(json!({ "sessions": sessions }))
+            // `spareKernels`, as on the old daemon's `list`: how many built engines wait for
+            // the next sessions.
+            anyhow::Ok(json!({
+                "sessions": sessions,
+                "spareKernels": pa_core::kernel::spare_scheme_kernels(),
+            }))
         })
         .await
         .context("the session list's thread panicked")?

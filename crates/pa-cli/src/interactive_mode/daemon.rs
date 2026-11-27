@@ -3,6 +3,8 @@
 
 use anyhow::Context as _;
 
+use crate::daemon_mode::DaemonKind;
+
 use super::{anyhow, Command, Duration, Instant, Path, Result, Stdio};
 
 const DAEMON_STARTUP_TIMEOUT_MS: u64 = 30_000;
@@ -85,7 +87,7 @@ pub async fn ensure_daemon_running_with(
         }
         DaemonProbe::Absent => {}
     }
-    spawn_daemon_detached(socket_path, spawn_cwd, exe)?;
+    spawn_daemon_detached(socket_path, spawn_cwd, exe, DaemonKind::Supervisor)?;
     let deadline = Instant::now() + Duration::from_millis(DAEMON_STARTUP_TIMEOUT_MS);
     loop {
         match probe_daemon(socket_path).await {
@@ -111,7 +113,8 @@ pub async fn ensure_daemon_running_with(
 /// `daemon2.sock`), spawning this executable in `--mode daemon` on
 /// `daemon_socket` when it is not: the spawned process inherits this one's
 /// environment, so it is the runtime daemon the environment or the
-/// settings selected. Answers the runtime daemon's socket.
+/// settings selected. Answers the runtime daemon's socket. An idle supervisor on
+/// `daemon_socket` is stopped on a task of its own ([`retire_idle_supervisor`]).
 ///
 /// # Errors
 /// Returns an error when the executable path cannot be resolved, the daemon
@@ -122,12 +125,14 @@ pub async fn ensure_runtime_daemon_running(
     spawn_cwd: &Path,
 ) -> Result<std::path::PathBuf> {
     let socket = pa_runtime::daemon::socket_path(daemon_socket);
+    // Off the launch path: nothing here waits for it.
+    tokio::spawn(retire_idle_supervisor(daemon_socket.to_path_buf()));
     let probe = Duration::from_millis(250);
     if pa_daemon::socket::can_connect(&socket, probe).await {
         return Ok(socket);
     }
     let exe = std::env::current_exe().context("resolve the prime-agent executable")?;
-    spawn_daemon_detached(daemon_socket, spawn_cwd, &exe)?;
+    spawn_daemon_detached(daemon_socket, spawn_cwd, &exe, DaemonKind::Runtime)?;
     let deadline = Instant::now() + Duration::from_millis(DAEMON_STARTUP_TIMEOUT_MS);
     loop {
         if pa_daemon::socket::can_connect(&socket, probe).await {
@@ -141,6 +146,53 @@ pub async fn ensure_runtime_daemon_running(
         }
         tokio::time::sleep(Duration::from_millis(DAEMON_PROBE_INTERVAL_MS)).await;
     }
+}
+
+/// Stop the supervisor on `daemon_socket` once it is idle, when a launch reaches the runtime
+/// daemon beside it: a supervisor an earlier release started (from before the runtime daemon was
+/// the default) holds its sessions' leases, which the runtime daemon needs to open them. Idle is
+/// no session running a turn and none with a window attached; a busy supervisor is left alone
+/// for a later launch to stop. Its sessions persist on disk, so the runtime daemon opens them
+/// from their transcripts. Nothing answering is nothing to do.
+async fn retire_idle_supervisor(daemon_socket: std::path::PathBuf) {
+    let Ok((client, _events)) = pa_tui::daemon_client::DaemonClient::connect(&daemon_socket).await
+    else {
+        return;
+    };
+    let sessions = client
+        .request_ok(pa_types::daemon::DaemonCommand::List {
+            id: None,
+            all: None,
+            cwd: None,
+            session_dir: None,
+            include_client_owned: None,
+            rest: serde_json::Map::default(),
+        })
+        .await;
+    let idle = sessions.is_ok_and(|data| {
+        data.get("sessions")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|rows| {
+                rows.iter().all(|row| {
+                    row.get("isSessionActive") != Some(&serde_json::json!(true))
+                        && row
+                            .get("attachedClients")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or_default()
+                            == 0
+                })
+            })
+    });
+    if idle {
+        let _ = client
+            .request_ok(pa_types::daemon::DaemonCommand::Shutdown {
+                id: None,
+                force: None,
+                rest: serde_json::Map::default(),
+            })
+            .await;
+    }
+    client.close();
 }
 
 /// Shut a stale daemon down when no session is busy; a busy one refuses
@@ -223,9 +275,16 @@ impl pa_tui::daemon_reconnect::DaemonLauncher for RuntimeDaemonLauncher {
     }
 }
 
-/// Spawn a detached daemon on `socket_path` (the child outlives this CLI): the daemon the
-/// environment or the settings select, which the caller waits for on that daemon's socket.
-fn spawn_daemon_detached(socket_path: &Path, spawn_cwd: &Path, exe: &Path) -> Result<()> {
+/// Spawn a detached daemon on `socket_path` (the child outlives this CLI): `kind`, the daemon
+/// the caller waits for on its socket. The supervisor is named to the child
+/// ([`crate::daemon_mode::SUPERVISOR_ENV`]); the runtime daemon is the child's own default,
+/// which its environment or settings selected for this launch too.
+fn spawn_daemon_detached(
+    socket_path: &Path,
+    spawn_cwd: &Path,
+    exe: &Path,
+    kind: DaemonKind,
+) -> Result<()> {
     let mut command = Command::new(exe);
     command
         .args(["--mode", "daemon", "--daemon-socket"])
@@ -234,8 +293,14 @@ fn spawn_daemon_detached(socket_path: &Path, spawn_cwd: &Path, exe: &Path) -> Re
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // The update successor's override is never passed on to a daemon this launch selects.
-    command.env_remove(crate::daemon_mode::SUPERVISOR_ENV);
+    match kind {
+        DaemonKind::Supervisor => {
+            command.env(crate::daemon_mode::SUPERVISOR_ENV, "1");
+        }
+        DaemonKind::Runtime => {
+            command.env_remove(crate::daemon_mode::SUPERVISOR_ENV);
+        }
+    }
     // The spawned process is the daemon's restart owner: it starts the daemon with these same
     // arguments and starts it again when it dies abnormally. Unix only: the owner forwards
     // signals and reads the daemon's terminating signal, neither of which exists on Windows,

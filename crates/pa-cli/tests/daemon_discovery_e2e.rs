@@ -75,10 +75,25 @@ impl Drop for Daemon {
     }
 }
 
+/// Which daemon a test spawns: `--mode daemon` is the runtime daemon (on
+/// `daemon2.sock` beside the socket it is given) unless the supervisor is
+/// selected by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Supervisor,
+    Runtime,
+}
+
 /// Spawn the real supervisor on a fixture socket the way production does
 /// (`prime-agent --mode daemon --daemon-socket`), with agent dir and TMPDIR
 /// pinned inside the fixture root so every socket it ever makes stays there.
 fn spawn_daemon(socket: &Path, agent_dir: &Path, tmp_dir: &Path) -> Daemon {
+    spawn_daemon_of(Kind::Supervisor, socket, agent_dir, tmp_dir)
+}
+
+/// [`spawn_daemon`] for `kind`; it listens on the socket [`daemon_socket`]
+/// names.
+fn spawn_daemon_of(kind: Kind, socket: &Path, agent_dir: &Path, tmp_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     std::fs::create_dir_all(tmp_dir).expect("tmp dir");
     let mut command = Command::new(cli_binary());
@@ -100,9 +115,24 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, tmp_dir: &Path) -> Daemon {
         pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
         "15000",
     );
+    command.env(
+        "PRIME_AGENT_RUNTIME_DAEMON",
+        match kind {
+            Kind::Supervisor => "0",
+            Kind::Runtime => "1",
+        },
+    );
     let mut child = command.spawn().expect("spawn daemon supervisor");
-    support::await_listening(socket, &mut child);
+    support::await_listening(&daemon_socket(kind, socket), &mut child);
     Daemon { child }
+}
+
+/// The socket `kind` listens on when it is started with `--daemon-socket socket`.
+fn daemon_socket(kind: Kind, socket: &Path) -> PathBuf {
+    match kind {
+        Kind::Supervisor => socket.to_path_buf(),
+        Kind::Runtime => socket.with_file_name("daemon2.sock"),
+    }
 }
 
 /// Run the CLI with its state root pinned inside `root`: agent dir and TMPDIR
@@ -328,10 +358,27 @@ fn reported_socket_paths(report: &Value) -> Vec<String> {
 
 #[test]
 fn doctor_lists_and_then_reaps_an_idle_root_owned_daemon() {
+    doctor_lists_and_then_reaps_an_idle_root_owned(Kind::Supervisor);
+}
+
+/// `status` lists the runtime daemon and `doctor --fix` reaps it, as it does the supervisor.
+#[test]
+fn doctor_lists_and_then_reaps_an_idle_root_owned_runtime_daemon() {
+    doctor_lists_and_then_reaps_an_idle_root_owned(Kind::Runtime);
+}
+
+fn doctor_lists_and_then_reaps_an_idle_root_owned(kind: Kind) {
     let fixture = fixture_dir();
     let agent_dir = fixture.path().join("agent");
-    let socket = agent_dir.join("daemon.sock"); // non-default: not <socket-dir>/daemon.sock
-    let mut daemon = spawn_daemon(&socket, &agent_dir, &fixture.path().join("tmp"));
+    // Non-default: not <socket-dir>/daemon.sock (or the runtime daemon's daemon2.sock beside it).
+    let daemon_socket_arg = agent_dir.join("daemon.sock");
+    let mut daemon = spawn_daemon_of(
+        kind,
+        &daemon_socket_arg,
+        &agent_dir,
+        &fixture.path().join("tmp"),
+    );
+    let socket = daemon_socket(kind, &daemon_socket_arg);
 
     // Inspect-only doctor: the daemon shows up in the table and survives.
     let inspect = run_cli(fixture.path(), &["doctor"]);
@@ -1045,6 +1092,8 @@ fn a_daemon_launched_with_an_inherited_worker_env_comes_up_as_a_supervisor() {
             fixture.path().join("recovery.jsonl"),
         )
         .env(pa_daemon::worker::WORKER_TELEMETRY_DISABLED_ENV, "1")
+        // The supervisor, selected by name (the runtime daemon is the default).
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
         .env(
             pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
             "inherited-session",

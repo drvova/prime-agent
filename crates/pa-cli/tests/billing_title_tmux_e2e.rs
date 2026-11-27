@@ -362,7 +362,7 @@ fn the_usage_details_keep_the_overview_card_and_esc_returns_to_it() {
     );
 }
 
-support::on_the_runtime_daemon!(
+support::on_the_supervisor!(
     a_subscription_session_titles_its_plan_without_a_dollar_figure,
     the_usage_page_splits_plan_spend_and_the_title_shows_the_cached_quota,
     the_usage_details_keep_the_overview_card_and_esc_returns_to_it,

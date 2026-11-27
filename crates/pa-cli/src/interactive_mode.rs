@@ -1,5 +1,5 @@
 //! Interactive mode wiring: resolve the daemon socket, ensure the selected daemon is
-//! listening (the supervisor, or the runtime daemon on wire2 under its opt-in), pick the
+//! listening (the runtime daemon on wire2, or the supervisor when it is selected), pick the
 //! session from the CLI session flags, and hand off to the pa-tui interactive loop; the
 //! session keeps running in the daemon after exit.
 
@@ -101,12 +101,11 @@ pub fn run_interactive_mode(options: &RunOptions) -> Result<i32> {
         }
         let attach_started = std::time::Instant::now();
         // The daemon the UI runs on: the runtime daemon on its own socket (`daemon2.sock`,
-        // wire2) under the opt-in (`PRIME_AGENT_RUNTIME_DAEMON=1`, `"daemon": "runtime"`), else
-        // the supervisor. A runtime window that loses its daemon gets it started again the way
-        // this launch started it, when its restart owner does not bring it back.
-        let runtime_selected = crate::daemon_mode::env_selects_runtime_daemon()
-            || crate::daemon_mode::settings_select_runtime_daemon(&options.config.agent_dir);
-        let tui_options = if runtime_selected {
+        // wire2) unless the supervisor is selected (`"daemon": "supervisor"`,
+        // `PRIME_AGENT_RUNTIME_DAEMON=0`). A runtime window that loses its daemon gets it started
+        // again the way this launch started it, when its restart owner does not bring it back.
+        let selected = crate::daemon_mode::DaemonKind::selected(&options.config.agent_dir);
+        let tui_options = if selected == crate::daemon_mode::DaemonKind::Runtime {
             let socket =
                 ensure_runtime_daemon_running(&tui_options.socket_path, &tui_options.cwd).await?;
             pa_tui::daemon_client::use_transport(&socket, pa_tui::daemon_client::Transport::Wire2);

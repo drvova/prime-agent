@@ -657,8 +657,9 @@ pub async fn run_coordinator_mode(
         .await;
     }
     let options = super::coordinator::CoordinatorOptions {
+        predecessor: super::endpoint::Endpoint::running(&socket_path, &agent_dir).await,
         agent_dir,
-        endpoint,
+        successor: endpoint,
         status_path,
         budget: UpdateTimeoutBudget::from_env(),
     };

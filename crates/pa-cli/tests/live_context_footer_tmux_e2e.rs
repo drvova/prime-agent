@@ -221,4 +221,4 @@ fn the_footer_context_moves_while_the_reply_streams() {
     });
 }
 
-support::on_the_runtime_daemon!(the_footer_context_moves_while_the_reply_streams,);
+support::on_the_supervisor!(the_footer_context_moves_while_the_reply_streams,);

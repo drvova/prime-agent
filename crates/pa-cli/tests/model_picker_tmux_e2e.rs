@@ -327,4 +327,4 @@ fn the_picker_filters_by_billing_favorites_and_switches_the_session() {
     );
 }
 
-support::on_the_runtime_daemon!(the_picker_filters_by_billing_favorites_and_switches_the_session,);
+support::on_the_supervisor!(the_picker_filters_by_billing_favorites_and_switches_the_session,);

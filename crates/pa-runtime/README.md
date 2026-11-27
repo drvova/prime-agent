@@ -310,9 +310,9 @@ SQLite implementations over `pa-log`.
   into the next prompt's run) are the agent's own queue's, not a lane's.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
-- **Runtime daemon** (`daemon`, opt-in until phase 8: `PRIME_AGENT_RUNTIME_DAEMON=1` or the global
-  setting `"daemon": "runtime"` makes `prime-agent --mode daemon` start it instead of the
-  supervisor). `daemon::run(listener, DaemonOptions, shutdown)` opens a `Runtime` over the agent
+- **Runtime daemon** (`daemon`, the default daemon since phase 8f: `prime-agent --mode daemon`
+  starts it unless the global setting `"daemon": "supervisor"` or `PRIME_AGENT_RUNTIME_DAEMON=0`
+  selects the supervisor, kept for one release). `daemon::run(listener, DaemonOptions, shutdown)` opens a `Runtime` over the agent
   dir and serves one `WireServer::serve` per connection on the listener the embedder bound at
   `daemon::socket_path` (`daemon2.sock` beside the old daemon's socket; on Windows the old pipe
   name with `2` appended), through `pa_types::platform::transport` as the old daemon's socket is.
@@ -323,7 +323,7 @@ SQLite implementations over `pa-log`.
   A holder that does not answer a wire2 hello on the same socket within 3 s is a wedged
   predecessor: `take_lock` stops it (`RuntimeDaemonLock::reap_holder`) and then takes the lock. Its
   `Handlers`: `sessions.list` (the sessions dir's saved sessions and the open ones, or
-  `{"open": true}` the open ones only; each row in the old daemon's session-summary shape,
+  `{"open": true}` the open ones only, with the old `list`'s `spareKernels`; each row in the old daemon's session-summary shape,
   `daemon/handlers/summary.rs`: the session's id as `id`, `activeSessionId` and `sessionId`, its
   name, model, times and message count from its transcript, and for an open one its lane's
   activity, waiting prompts and `attachedClients`, the connections whose subscriptions match its
@@ -665,7 +665,9 @@ SQLite implementations over `pa-log`.
   only; each connection's feed delivers it to the subscriptions that follow it, then sends
   `closing` and ends), every open session's lane is held and its running turn aborted with
   `UPDATE_RESTART_CONTINUATION_PROMPT` queued as a steer for the next daemon (none for an
-  ephemeral one), the connections get 5 s to send what they hold, then the sessions close and the
+  ephemeral one), every subagent below them is held and cut off the same way without a
+  continuation (the old worker closes its children at a daemon-wide stop; the close would
+  otherwise wait for a child's turn to end on its own), the connections get 5 s to send what they hold, then the sessions close and the
   process exits 0. The held sessions stay in the database, so the next daemon revives a session
   with that queued continuation as one the daemon died between turns of (no crash recorded).
   **The update restart** (`daemon/handlers/update.rs`, on pa-core's `update::restart`, the old
@@ -735,7 +737,7 @@ SQLite implementations over `pa-log`.
   code. Every daemon request goes through a command-level transport (`acp/transport.rs`:
   `DaemonTransport`, the old wire's `DaemonLink`), whose one frame stream delivers each response
   after the events sent before it. The TS capture corpus it is checked against is
-  `testdata/acp/`. With the runtime daemon selected it drives that daemon on wire2 instead
+  `testdata/acp/`. On the runtime daemon (the default) it drives that daemon on wire2 instead
   (`acp/wire2_link.rs`, `Wire2Link`): `create` is `session.create {path, cwd, sessionDir,
   launchEnv, options}` (the command's telemetry opt-out among the options; `--no-session` an
   `ephemeral` one), `attach`/`detach` subscribe to and unsubscribe from

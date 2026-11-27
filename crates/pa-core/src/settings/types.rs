@@ -473,12 +473,13 @@ pub struct Settings {
     /// the database; kept for one release as the way back). Read once when
     /// the process starts. Only global settings select it.
     pub transcript_store: Option<String>,
-    /// Which daemon `prime-agent --mode daemon` starts: `"runtime"` (the
-    /// event-driven runtime daemon, serving wire2 on `daemon2.sock` beside the
-    /// old daemon's socket; opt-in until the TUI moves onto it) or anything
-    /// else, unset included (the supervisor). `PRIME_AGENT_RUNTIME_DAEMON=1`
-    /// selects the runtime daemon too. Read once when the daemon starts. Only
-    /// global settings select it.
+    /// Which daemon `prime-agent --mode daemon` starts, and every
+    /// daemon-backed mode runs on: `"supervisor"` (the old daemon, on the
+    /// daemon socket; kept for one release as the way back) or anything else,
+    /// unset included (the runtime daemon, serving wire2 on `daemon2.sock`
+    /// beside it). `PRIME_AGENT_RUNTIME_DAEMON=0` selects the supervisor and
+    /// `=1` the runtime daemon, over this setting. Read when a daemon or a
+    /// client starts. Only global settings select it.
     pub daemon: Option<String>,
     pub quiet_startup: Option<bool>,
     pub shell_command_prefix: Option<String>,

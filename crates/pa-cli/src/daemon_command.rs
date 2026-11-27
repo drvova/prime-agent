@@ -3,10 +3,11 @@
 //! request shaping, and output rendering. `schedule` maps to the internal
 //! `cron` command and `stop` to `kill`.
 //!
-//! With the runtime daemon selected (`PRIME_AGENT_RUNTIME_DAEMON=1`, or
-//! `"daemon": "runtime"` in the global settings) each command speaks wire2
-//! to it on `daemon2.sock` beside the socket it was given, and renders its
-//! answers the same way:
+//! On the runtime daemon (the default; the supervisor is selected with
+//! `"daemon": "supervisor"` in the global settings or
+//! `PRIME_AGENT_RUNTIME_DAEMON=0`) each command speaks wire2 to it on
+//! `daemon2.sock` beside the socket it was given, and renders its answers
+//! the same way as the supervisor's:
 //!
 //! | command | wire2 |
 //! | --- | --- |
@@ -70,9 +71,8 @@ pub(crate) fn run_daemon_command(command: &str, args: &[String]) -> Result<()> {
     if parsed.help {
         return Ok(());
     }
-    let runtime_selected = crate::daemon_mode::env_selects_runtime_daemon()
-        || crate::daemon_mode::settings_select_runtime_daemon(&crate::config::get_agent_dir());
-    let mut daemon = if runtime_selected {
+    let selected = crate::daemon_mode::DaemonKind::selected(&crate::config::get_agent_dir());
+    let mut daemon = if selected == crate::daemon_mode::DaemonKind::Runtime {
         Daemon::Runtime(RuntimeDaemonClient::connect(
             &pa_runtime::daemon::socket_path(&parsed.socket_path),
         )?)

@@ -359,7 +359,7 @@ fn print_mode_with_a_credential_sends_only_that_key() {
     );
 }
 
-support::on_the_runtime_daemon!(
+support::on_the_supervisor!(
     a_session_pinned_to_a_named_credential_sends_only_that_key,
     a_new_session_under_a_profile_uses_the_profiles_credential,
     print_mode_with_a_credential_sends_only_that_key,

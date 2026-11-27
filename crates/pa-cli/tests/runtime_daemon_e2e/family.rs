@@ -16,7 +16,9 @@
 //! - `agent_message.wait` ends on the awaited sibling's message, answers a
 //!   wait that would close a cycle at once, and times out;
 //! - a kernel timer source keeps firing for its subscription after the
-//!   daemon restarts.
+//!   daemon restarts;
+//! - a stop cuts off a subagent's running turn, as the old worker closes its
+//!   children at a daemon-wide stop, so the daemon exits at once.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -392,6 +394,35 @@ async fn waiting_for_idle_waits_for_the_subagents_to_settle() {
         ),
         (json!("completed"), true)
     );
+}
+
+/// The drain cuts off a subagent's running turn (the old worker closes its
+/// children at a daemon-wide stop): the daemon exits at once, not when the
+/// child's held turn would have ended.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_cuts_off_a_running_subagents_turn() {
+    let bed = Bed::new();
+    let records = bed.dir.path().join("records");
+    std::fs::create_dir_all(&records).unwrap();
+    let spawn = record(r#"(rlm-spawn "hold on" #:name "kid")"#, "spawn", &records);
+    let mut daemon = bed.runtime_daemon(&json!({
+        "responses": [cell("spawning", &spawn), "spawn turn done"],
+        "children": { "kid": { "responses": [{ "text": "kid done", "delayMs": 600_000 }] } },
+    }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = ok(client.call("session.create", json!({})).await);
+    let id = created["session"].as_str().unwrap().to_string();
+    client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
+    run_turn(&mut client, &id, "spawn the kid").await;
+    recorded(&records, "spawn").await;
+    assert_eq!(
+        ok(client
+            .query("session.context_tree", json!({ "session": id }))
+            .await)["children"][0]["status"],
+        json!("running")
+    );
+    ok(client.call("daemon.shutdown", json!({})).await);
+    assert_eq!(super::lifecycle::exit_code(&mut daemon), Some(0));
 }
 
 #[tokio::test(flavor = "multi_thread")]

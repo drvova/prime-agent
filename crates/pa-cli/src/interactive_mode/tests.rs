@@ -1054,7 +1054,7 @@ async fn startup_flush_never_blocks_the_first_frame() {
 }
 
 /// The runtime launch path under a hanging sink: with the startup batch stuck in the sink, the
-/// steps the opt-in adds before the UI's first frame (the runtime daemon ensured on
+/// steps the runtime daemon (the default) adds before the UI's first frame (the runtime daemon ensured on
 /// `daemon2.sock`, its transport declared, the UI's wire2 connect and hello) all complete, and
 /// delivery is still pending when they have.
 #[cfg(unix)]

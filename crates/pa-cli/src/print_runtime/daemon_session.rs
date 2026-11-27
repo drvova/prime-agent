@@ -273,12 +273,11 @@ pub(crate) fn run_runtime_daemon(
                 session_dir: super::replacement_session_dir(options),
                 cwd: options.config.cwd.clone(),
                 selected: {
-                    let (by_env, agent_dir) = (
-                        crate::daemon_mode::env_selects_runtime_daemon(),
-                        agent_dir.clone(),
-                    );
+                    use crate::daemon_mode::DaemonKind;
+                    let (by_env, agent_dir) = (DaemonKind::from_env(), agent_dir.clone());
                     Arc::new(move || {
-                        by_env || crate::daemon_mode::settings_select_runtime_daemon(&agent_dir)
+                        by_env.unwrap_or_else(|| DaemonKind::from_settings(&agent_dir))
+                            == DaemonKind::Runtime
                     })
                 },
                 // A stop on purpose is not restarted by the restart owner,

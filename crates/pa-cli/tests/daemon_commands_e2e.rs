@@ -10,8 +10,8 @@
 //! temp socket, drive `prime-agent` list/stop/rename against it, and diff the
 //! output against goldens captured from the installed TS `prime-agent` binary.
 //! The same scenario runs against the runtime daemon (`prime-agent --mode
-//! daemon` with `PRIME_AGENT_RUNTIME_DAEMON=1`, on `daemon2.sock`), the
-//! commands speaking wire2 to it: the same outputs, except where the runtime
+//! daemon`, the default, on `daemon2.sock`), the commands speaking wire2 to
+//! it (and selecting the old daemon with `PRIME_AGENT_RUNTIME_DAEMON=0`): the same outputs, except where the runtime
 //! daemon addresses a session by its durable id (see [`Kind`]).
 //!
 //! Goldens (captured from the live TS binary, protocol 7):
@@ -366,9 +366,10 @@ fn run_cli_for(
     for key in SCRUB_ENV {
         command.env_remove(key);
     }
+    // The runtime daemon is the default; the old daemon is selected by name.
     match kind {
-        Kind::Old => command.env_remove("PRIME_AGENT_RUNTIME_DAEMON"),
-        Kind::Runtime => command.env("PRIME_AGENT_RUNTIME_DAEMON", "1"),
+        Kind::Old => command.env("PRIME_AGENT_RUNTIME_DAEMON", "0"),
+        Kind::Runtime => command.env_remove("PRIME_AGENT_RUNTIME_DAEMON"),
     };
     command.output().expect("spawn CLI binary")
 }
