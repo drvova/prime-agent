@@ -108,11 +108,6 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "the session-info scan sidecar write",
     ),
     (
-        "pa-daemon/src/stop_cleanup.rs",
-        ".is_file()",
-        "the session's `scheduled-jobs.json` artifact (a file of its own, not the transcript)",
-    ),
-    (
         "pa-daemon/src/context_tree_children.rs",
         "let Ok(entries) = std::fs::read_dir(dir) else {",
         "`child_session_dirs` lists the `sub-*` child-session directories by their own mtimes \

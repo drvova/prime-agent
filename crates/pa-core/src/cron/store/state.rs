@@ -11,6 +11,7 @@ use super::{
     iso_from_millis, AgentCronDispatch, AgentCronDispatchRecord, AgentCronJob, AgentCronJobStore,
     CronJobsState,
 };
+use crate::agent_state::StateFile;
 use crate::cron::{
     is_due_job, next_run_at_for_schedule, parse_iso_millis, JobStatus, ScheduleKind,
 };
@@ -55,7 +56,7 @@ impl AgentCronJobStore {
         let dispatches = with_state_locks(&paths, || {
             let mut dispatches = Vec::new();
             for path in &paths {
-                let mut state = read_jobs_state(path);
+                let mut state = load_jobs_state(path)?;
                 let before = serde_json::to_string(&state).unwrap_or_default();
                 dispatches.extend(mutator(&mut state));
                 if serde_json::to_string(&state).unwrap_or_default() != before {
@@ -294,13 +295,66 @@ pub(crate) fn with_state_locks<T>(paths: &[PathBuf], action: impl FnOnce() -> T)
     Some(result)
 }
 
+/// The jobs state of the file at `path`, for a read that degrades: a state
+/// that cannot be read reads as no jobs, as an unreadable file always did.
 pub(crate) fn read_jobs_state(path: &Path) -> CronJobsState {
+    load_jobs_state(path).unwrap_or_else(|error| {
+        tracing::warn!(
+            error = %format!("{error:#}"),
+            path = %path.display(),
+            "cron jobs state unreadable; read as empty"
+        );
+        CronJobsState::default()
+    })
+}
+
+/// The jobs state of the file at `path`, for a change: from the process's
+/// database once it holds it, else from the file (a missing or unparseable
+/// file is no jobs).
+///
+/// # Errors
+///
+/// The database could not be read.
+pub(crate) fn load_jobs_state(path: &Path) -> anyhow::Result<CronJobsState> {
+    load_jobs_state_in(crate::agent_state::process_log(), path)
+}
+
+/// [`load_jobs_state`] from `log`.
+fn load_jobs_state_in(log: Option<&pa_log::Log>, path: &Path) -> anyhow::Result<CronJobsState> {
+    if let Some(log) = log {
+        let scope = StateFile::ScheduledJobs.scope(path);
+        if log.partition(&scope)?.is_some() {
+            let mut state = CronJobsState::default();
+            for row in log.sources(&scope)?.sources {
+                // A row this build cannot read is skipped, as a file's is.
+                let Ok(job) = serde_json::from_str::<AgentCronJob>(&row.spec) else {
+                    continue;
+                };
+                if let Some(claim) = row.claim {
+                    if let Ok(dispatch) = serde_json::from_str(&claim) {
+                        state.dispatches.push(dispatch);
+                    }
+                }
+                state.jobs.push(job);
+            }
+            return Ok(state);
+        }
+    }
     let Ok(raw) = std::fs::read_to_string(path) else {
-        return CronJobsState::default();
+        return Ok(CronJobsState::default());
     };
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return CronJobsState::default();
-    };
+    Ok(serde_json::from_str::<serde_json::Value>(&raw)
+        .map_or_default(|parsed| jobs_state_from(&parsed)))
+}
+
+/// [`read_jobs_state`] from `log` (another process's database).
+pub(crate) fn read_jobs_state_in(log: Option<&pa_log::Log>, path: &Path) -> CronJobsState {
+    load_jobs_state_in(log, path).unwrap_or_default()
+}
+
+/// The jobs state a parsed `scheduled-jobs.json` holds: its jobs and
+/// dispatches that parse (others are skipped).
+pub(crate) fn jobs_state_from(parsed: &serde_json::Value) -> CronJobsState {
     CronJobsState {
         jobs: parsed
             .get("jobs")
@@ -324,8 +378,45 @@ pub(crate) fn read_jobs_state(path: &Path) -> CronJobsState {
     }
 }
 
+/// The rows that keep `state`: one timer source per job, in order, holding
+/// the job's claimed dispatch. A dispatch of no job in the state is not
+/// kept: claiming and recovery only ever act on a dispatch through its job.
+///
+/// # Errors
+///
+/// Two jobs share an id, a job has two dispatches, or a row does not
+/// serialize.
+pub(crate) fn jobs_state_rows(state: &CronJobsState) -> anyhow::Result<pa_log::SourceSet> {
+    let mut claims: HashMap<&str, &AgentCronDispatchRecord> = HashMap::new();
+    for dispatch in &state.dispatches {
+        if claims.insert(&dispatch.job_id, dispatch).is_some() {
+            anyhow::bail!("job {} has two dispatches in flight", dispatch.job_id);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut sources = Vec::with_capacity(state.jobs.len());
+    for job in &state.jobs {
+        if !seen.insert(job.id.as_str()) {
+            anyhow::bail!("two jobs have the id {}", job.id);
+        }
+        sources.push(pa_log::SourceRow {
+            id: job.id.clone(),
+            kind: pa_log::SourceKind::Timer,
+            spec: serde_json::to_string(job)?,
+            claim: claims
+                .get(job.id.as_str())
+                .map(serde_json::to_string)
+                .transpose()?,
+        });
+    }
+    Ok(pa_log::SourceSet {
+        sources,
+        subscriptions: Vec::new(),
+    })
+}
+
 fn write_jobs_file(path: &Path, jobs: &[AgentCronJob], merge_current: bool) -> anyhow::Result<()> {
-    let current = read_jobs_state(path);
+    let current = load_jobs_state(path)?;
     let jobs = if merge_current {
         merge_fresh_jobs(current.jobs, jobs.to_vec())
     } else {
@@ -340,7 +431,29 @@ fn write_jobs_file(path: &Path, jobs: &[AgentCronJob], merge_current: bool) -> a
     )
 }
 
+/// Replace the jobs state of the file at `path`: in the process's database
+/// when it keeps one, else in the file.
+///
+/// # Errors
+///
+/// The write did not commit, or the file could not be written.
 pub(crate) fn write_jobs_state(path: &Path, state: &CronJobsState) -> anyhow::Result<()> {
+    match crate::agent_state::process_log() {
+        Some(log) => {
+            log.replace_sources(
+                &StateFile::ScheduledJobs.scope(path),
+                jobs_state_rows(state)?,
+                pa_log::Origin::Written,
+            )
+            .wait_blocking()?;
+            Ok(())
+        }
+        None => write_jobs_state_file(path, state),
+    }
+}
+
+/// [`write_jobs_state`] to the file (the file transcript store).
+fn write_jobs_state_file(path: &Path, state: &CronJobsState) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -363,7 +476,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("jobs.json");
         std::fs::create_dir(&path).unwrap();
-        assert!(write_jobs_state(&path, &CronJobsState::default()).is_err());
+        assert!(write_jobs_state_file(&path, &CronJobsState::default()).is_err());
     }
 
     /// The cron state write opts in (the TS test pins `{ fsync: true, mode: 0o600 }`)
@@ -375,7 +488,7 @@ mod tests {
         let state = CronJobsState::default();
         let expected = format!("{}\n", serde_json::to_string_pretty(&state).unwrap());
         let before = crate::settings::storage::opt_in_fsync_calls();
-        write_jobs_state(&path, &state).unwrap();
+        write_jobs_state_file(&path, &state).unwrap();
         assert_eq!(
             crate::settings::storage::opt_in_fsync_calls(),
             before + 1,

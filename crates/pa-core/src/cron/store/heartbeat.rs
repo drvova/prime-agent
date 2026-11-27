@@ -303,12 +303,18 @@ mod tests {
         let heartbeat = store
             .create_heartbeat(&input("continue", "every 5m", now))
             .unwrap();
-        let before = std::fs::read(&path).unwrap();
+        let before =
+            crate::agent_state::kept_bytes(crate::agent_state::StateFile::ScheduledJobs, &path)
+                .unwrap();
         let held =
             crate::platform::lock_dir::LockDir::acquire(&path, std::time::Duration::from_secs(30))
                 .unwrap();
         assert!(store.pause_heartbeat("live-1", now + 1).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            crate::agent_state::kept_bytes(crate::agent_state::StateFile::ScheduledJobs, &path)
+                .unwrap(),
+            before
+        );
         drop(held);
         assert_eq!(store.get_heartbeat("live-1"), Some(heartbeat));
     }

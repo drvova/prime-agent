@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::state::{
-    merge_fresh_jobs, read_jobs_state, recover_interrupted_in_state, with_state_locks,
-    write_jobs_state,
+    load_jobs_state, merge_fresh_jobs, read_jobs_state, recover_interrupted_in_state,
+    with_state_locks, write_jobs_state,
 };
 use super::{
     AgentCronDispatchRecord, AgentCronJobStore, CronJobsState, SESSION_SCHEDULED_JOBS_FILENAME,
@@ -61,7 +61,7 @@ impl AgentCronJobStore {
         with_state_locks(
             std::slice::from_ref(&path),
             || -> anyhow::Result<Vec<AgentCronJob>> {
-                let mut state = read_jobs_state(&path);
+                let mut state = load_jobs_state(&path)?;
                 let mut recovered = Vec::new();
                 if !state.dispatches.is_empty() {
                     recover_interrupted_in_state(&mut state, now, &mut recovered, None);
@@ -92,8 +92,8 @@ impl AgentCronJobStore {
         let with_locks = with_state_locks(&paths, || -> anyhow::Result<()> {
             let current_by_session_id: HashMap<String, CronJobsState> = artifact_files
                 .iter()
-                .map(|(session_id, path)| (session_id.clone(), read_jobs_state(path)))
-                .collect();
+                .map(|(session_id, path)| Ok((session_id.clone(), load_jobs_state(path)?)))
+                .collect::<anyhow::Result<_>>()?;
             let incoming_by_id: HashMap<&str, &AgentCronJob> =
                 jobs.iter().map(|job| (job.id.as_str(), job)).collect();
             let mut merged_by_session_id: HashMap<String, Vec<AgentCronJob>> = HashMap::new();
@@ -158,11 +158,23 @@ impl AgentCronJobStore {
     }
 }
 
-/// Read one scheduled-jobs artifact file's job rows. A missing or
-/// unparseable file reads as no jobs.
+/// Read one scheduled-jobs artifact's job rows (from the agent database once
+/// it holds them, else from the file). A missing or unparseable file reads
+/// as no jobs.
 #[must_use]
 pub fn read_scheduled_jobs_artifact(path: &Path) -> Vec<AgentCronJob> {
     read_jobs_state(path).jobs
+}
+
+/// Whether a scheduled-jobs state is kept for the artifact file `path`: the
+/// agent database holds one for it, or the file exists.
+#[must_use]
+pub fn scheduled_jobs_kept(path: &Path) -> bool {
+    let held = crate::agent_state::process_log().is_some_and(|log| {
+        log.partition(&crate::agent_state::StateFile::ScheduledJobs.scope(path))
+            .is_ok_and(|partition| partition.is_some())
+    });
+    held || path.is_file()
 }
 
 #[cfg(test)]

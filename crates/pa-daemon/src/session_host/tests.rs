@@ -75,10 +75,10 @@ fn a_panic_is_the_sessions_or_the_daemons_and_a_caught_one_is_neither() {
             .unwrap();
 
     let recorded = daemon_crashes();
-    let logged: Vec<SessionCrash> = std::fs::read_to_string(&log)
+    let logged: Vec<SessionCrash> = pa_core::agent_state::crash_records(&log)
         .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+        .into_iter()
+        .map(|record| serde_json::from_value(record).unwrap())
         .collect();
     let attributed: Vec<SessionCrash> = control
         .crash

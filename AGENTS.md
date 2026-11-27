@@ -192,7 +192,7 @@ The table summarizes each crate's current direct workspace dependencies:
 | `pa-telemetry` | Events and sinks | none |
 | `pa-agent` | Provider-independent agent loop | none |
 | `pa-shell` | Built-in bash-compatible shell and its utilities | `pa-types` |
-| `pa-log` | SQLite store: the event log and session transcripts (the transcript store's database) | `pa-types` |
+| `pa-log` | SQLite store: the event log, session transcripts and the agent's other state (the transcript store's database) | `pa-types` |
 | `pa-ai` | Providers, model registry, streaming | `pa-types` |
 | `pa-models` | Live model catalog and transport | `pa-ai`, `pa-types` |
 | `pa-core` | Session engine, tools, skills, Scheme kernel, settings, transcript store | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-shell`, `pa-telemetry`, `pa-log` |
@@ -229,7 +229,8 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
 - Containment: a panic on a session's thread ends that session only. Every panic is either
   attributed to a session or recorded as a daemon-level crash; none goes to the default hook
   unrecorded. Locks shared between sessions tolerate poisoning.
-- Visibility: a session crash is appended to `session-crashes.jsonl`, stamped on the session
+- Visibility: a session crash is appended to the crash log (`session-crashes.jsonl`, kept in the
+  agent database), stamped on the session
   (`lastCrash`), sent to attached clients (`session_crashed`, then `session_recovered` or
   `session_failed`), saved in the session file as a display-only row, and shown in the TUI.
 - Self-heal: a crashed session is rebuilt from its transcript with a fresh kernel (250 ms
@@ -264,7 +265,12 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   background, or whole on their first write) and left in place, read-only, as the rollback;
   `prime-agent export-jsonl` writes the JSONL format back (`docs/legacy-upgrade-contract.md`,
   "Storage migration"). The global setting `"transcriptStore": "file"` keeps one JSONL file per
-  session for one release.
+  session for one release. The agent's other state lives in the same database
+  (`pa_core::agent_state`): schedules and heartbeats (`scheduled-jobs.json`), the harness
+  stores, the reuse ledger, the event bus and the crash log, each still addressed by its file's
+  path. A store reads its file until the database holds it; its first write, or the daemon's
+  background import, brings it in whole, and the file is never written again. With the file
+  transcript store they stay files.
 - Fault-injection seams for tests (`panicOn`, `(%test-block marker)`, the export hold) exist
   in debug builds only.
 - No stubs, no `todo!()`, no swallowed errors (`anyhow` bubbling to UI is fine).

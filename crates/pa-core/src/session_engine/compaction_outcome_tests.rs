@@ -1174,7 +1174,11 @@ async fn closing_session_cancels_background_planning_without_committing() {
         .unwrap()
         .unwrap_err();
     assert!(pa_agent::abort::is_abort_error(&error));
-    assert!(!crate::refinement::get_harness_state_path(&global_dir).exists());
+    assert!(crate::agent_state::kept_bytes(
+        crate::agent_state::StateFile::HarnessState,
+        &crate::refinement::get_harness_state_path(&global_dir)
+    )
+    .is_none());
 }
 
 /// The background funnel (the auto-refine and requested-refinement paths)
@@ -1210,7 +1214,11 @@ async fn disabled_background_refinement_refuses_before_planning() {
     .await
     .unwrap_err();
     assert!(error.to_string().contains("disabled"));
-    assert!(!crate::refinement::get_harness_state_path(&global_dir).exists());
+    assert!(crate::agent_state::kept_bytes(
+        crate::agent_state::StateFile::HarnessState,
+        &crate::refinement::get_harness_state_path(&global_dir)
+    )
+    .is_none());
 }
 
 #[tokio::test]
@@ -1271,7 +1279,8 @@ async fn prepared_refinement_cannot_change_harness_during_an_active_run() {
     })
     .await;
     assert!(
-        !state_path.exists(),
+        crate::agent_state::kept_bytes(crate::agent_state::StateFile::HarnessState, &state_path)
+            .is_none(),
         "no harness mutation is allowed mid-run"
     );
     assert!(session.agent().prompt("competing prompt").await.is_err());
@@ -1279,7 +1288,11 @@ async fn prepared_refinement_cannot_change_harness_during_an_active_run() {
     release.send(()).unwrap();
     session.agent().wait_for_idle().await;
     commit.await.unwrap();
-    assert!(state_path.exists());
+    assert!(crate::agent_state::kept_bytes(
+        crate::agent_state::StateFile::HarnessState,
+        &state_path
+    )
+    .is_some());
 }
 
 #[tokio::test]
@@ -1340,10 +1353,18 @@ async fn contended_harness_lock_does_not_reserve_the_next_provider_run() {
     .unwrap()
     .unwrap();
     assert_eq!(provider.calls().len(), 1);
-    assert!(!state_path.exists());
+    assert!(crate::agent_state::kept_bytes(
+        crate::agent_state::StateFile::HarnessState,
+        &state_path
+    )
+    .is_none());
     drop(lock);
     commit.await.unwrap();
-    assert!(state_path.exists());
+    assert!(crate::agent_state::kept_bytes(
+        crate::agent_state::StateFile::HarnessState,
+        &state_path
+    )
+    .is_some());
 }
 
 #[tokio::test]
@@ -1425,7 +1446,11 @@ async fn branch_change_discards_prepared_plan_but_allows_new_refinements() {
     session.discard_compact_auto_refine();
     let error = commit.await.unwrap_err();
     assert!(pa_agent::abort::is_abort_error(&error));
-    assert!(!crate::refinement::get_harness_state_path(&global_dir).exists());
+    assert!(crate::agent_state::kept_bytes(
+        crate::agent_state::StateFile::HarnessState,
+        &crate::refinement::get_harness_state_path(&global_dir)
+    )
+    .is_none());
     drop(guard);
     session
         .refine_with_refiner(

@@ -49,6 +49,7 @@ mod sqlite;
 pub use export::{export_jsonl, ExportReport, ExportSelection};
 
 use file::FileTranscriptStore;
+pub(crate) use sqlite::freeze_original;
 use sqlite::{OriginalImport, SqliteTranscriptStore};
 
 /// The database file in the agent dir.
@@ -76,16 +77,26 @@ pub fn database_path(agent_dir: &Path) -> PathBuf {
     let Some(dir) = isolated else {
         return agent_dir.join(DATABASE_FILE);
     };
-    // One spelling for every process: the nearest existing ancestor
-    // canonicalized (links resolved, Windows short names expanded) and the
-    // missing tail rejoined, so a dir named before it exists hashes as it
-    // does once created.
-    let absolute = std::path::absolute(agent_dir).unwrap_or_else(|_| agent_dir.to_path_buf());
+    let digest = sha2::Sha256::digest(spelled(agent_dir).to_string_lossy().as_bytes());
+    let name = digest.iter().fold(String::new(), |mut name, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(name, "{byte:02x}");
+        name
+    });
+    PathBuf::from(dir).join(format!("{name}.db"))
+}
+
+/// One spelling of `path` for every process: the nearest existing ancestor
+/// canonicalized (links resolved, Windows short names expanded) and the
+/// missing tail rejoined, so a path named before it exists is spelled as it
+/// is once created.
+pub(crate) fn spelled(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut missing = Vec::new();
     let mut existing = absolute.as_path();
-    let spelled = loop {
+    loop {
         if let Ok(canonical) = pa_types::platform::canonicalize(existing) {
-            break missing
+            return missing
                 .iter()
                 .rev()
                 .fold(canonical, |joined, part| joined.join(part));
@@ -95,16 +106,9 @@ pub fn database_path(agent_dir: &Path) -> PathBuf {
                 missing.push(name);
                 existing = parent;
             }
-            _ => break absolute.clone(),
+            _ => return absolute.clone(),
         }
-    };
-    let digest = sha2::Sha256::digest(spelled.to_string_lossy().as_bytes());
-    let name = digest.iter().fold(String::new(), |mut name, byte| {
-        use std::fmt::Write as _;
-        let _ = write!(name, "{byte:02x}");
-        name
-    });
-    PathBuf::from(dir).join(format!("{name}.db"))
+    }
 }
 
 /// The store the process uses.
@@ -212,6 +216,25 @@ pub fn database() -> Option<&'static Path> {
     }
 }
 
+/// The database the process's [`store`] keeps (none for the file store):
+/// the agent's other state ([`crate::agent_state`]) is kept in it too.
+pub(crate) fn database_log() -> Option<&'static pa_log::Log> {
+    match selected() {
+        Selected::Files(..) => None,
+        Selected::Sqlite(store, ..) => Some(store.log()),
+    }
+}
+
+/// [`database_log`] when the process opened the database of `agent_dir`.
+pub(crate) fn database_log_of(agent_dir: &Path) -> Option<&'static pa_log::Log> {
+    let Selected::Sqlite(store, opened, _) = selected() else {
+        return None;
+    };
+    let resolved =
+        |dir: &Path| pa_types::platform::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    (resolved(opened) == resolved(agent_dir)).then(|| store.log())
+}
+
 /// Why the process's [`store`] is the file store although the settings asked
 /// for the SQLite one: the database that could not be opened, and the error.
 /// `None` when the database is in use or the settings chose the file store.
@@ -258,14 +281,10 @@ pub struct TranscriptImportReport {
 /// on a path a client waits on (until then, the files are read as they are).
 #[must_use]
 pub fn import_session_trees(agent_dir: &Path) -> Option<TranscriptImportReport> {
-    let Selected::Sqlite(store, opened, _) = selected() else {
+    let Selected::Sqlite(store, ..) = selected() else {
         return None;
     };
-    let resolved =
-        |dir: &Path| pa_types::platform::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    if resolved(opened) != resolved(agent_dir) {
-        return None;
-    }
+    database_log_of(agent_dir)?;
     import_trees(store, &session_trees(agent_dir))
 }
 

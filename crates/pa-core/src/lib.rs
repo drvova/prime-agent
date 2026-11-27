@@ -52,6 +52,7 @@ pub use tools::kernel_cell::{
     sent_agent_message_json, ExecuteResult, ExecuteStatus, KernelAttachment, KernelErrorInfo,
     KernelExecutor, KernelProvisioner, KernelToolOptions, LateSentAgentMessageHandler,
 };
+pub mod agent_state;
 pub mod agent_traces;
 pub mod auth;
 pub mod autonomous;

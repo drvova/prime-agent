@@ -488,12 +488,18 @@ mod tests {
         let store = AgentCronJobStore::new(path.clone());
         let now = 1_700_000_000_000;
         let job = store.create(&input("tick", "every 10m", now)).unwrap();
-        let before = std::fs::read(&path).unwrap();
+        let before =
+            crate::agent_state::kept_bytes(crate::agent_state::StateFile::ScheduledJobs, &path)
+                .unwrap();
         let held =
             crate::platform::lock_dir::LockDir::acquire(&path, std::time::Duration::from_secs(30))
                 .unwrap();
         assert!(store.cancel(&job.id, now + 1).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            crate::agent_state::kept_bytes(crate::agent_state::StateFile::ScheduledJobs, &path)
+                .unwrap(),
+            before
+        );
         drop(held);
         assert_eq!(store.list(), vec![job]);
     }
@@ -584,7 +590,9 @@ mod tests {
         let now = 1_700_000_000_000;
         let job = store.create(&input("tick", "every 10m", now)).unwrap();
         let path = store.require_file_path();
-        let before = std::fs::read(&path).unwrap();
+        let before =
+            crate::agent_state::kept_bytes(crate::agent_state::StateFile::ScheduledJobs, &path)
+                .unwrap();
         {
             let _held = crate::platform::lock_dir::LockDir::acquire(
                 &path,
@@ -592,7 +600,11 @@ mod tests {
             )
             .unwrap();
             assert!(store.claim_due(now + 600_000, now + 600_000).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(
+                crate::agent_state::kept_bytes(crate::agent_state::StateFile::ScheduledJobs, &path)
+                    .unwrap(),
+                before
+            );
         }
         let dispatches = store.claim_due(now + 600_000, now + 600_000).unwrap();
         assert_eq!(dispatches.len(), 1);

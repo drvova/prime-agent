@@ -383,10 +383,26 @@ pub fn ledger_path(agent_dir: &Path) -> PathBuf {
 #[must_use]
 pub fn load(agent_dir: &Path) -> Ledger {
     let path = ledger_path(agent_dir);
-    let readable = std::fs::metadata(&path).is_ok_and(|meta| meta.len() <= MAX_LEDGER_BYTES);
+    let log = crate::agent_state::process_log();
+    let held = log.is_some_and(|log| {
+        log.partition(&crate::agent_state::StateFile::ReuseLedger.scope(&path))
+            .is_ok_and(|partition| partition.is_some())
+    });
+    // A file is checked for its size before it is read.
+    let readable =
+        held || std::fs::metadata(&path).is_ok_and(|meta| meta.len() <= MAX_LEDGER_BYTES);
     readable
-        .then(|| std::fs::read_to_string(&path).ok())
+        .then(|| {
+            crate::agent_state::read_document(
+                log,
+                crate::agent_state::StateFile::ReuseLedger,
+                &path,
+            )
+            .ok()
+            .flatten()
+        })
         .flatten()
+        .filter(|raw| raw.len() as u64 <= MAX_LEDGER_BYTES)
         .and_then(|raw| serde_json::from_str::<Ledger>(&raw).ok())
         .unwrap_or_default()
 }
@@ -412,9 +428,10 @@ fn update<R>(agent_dir: &Path, change: impl FnOnce(&mut Ledger) -> R) -> anyhow:
     ledger.schema = 1;
     ledger.bound();
     lock.ensure_owned()?;
-    crate::settings::storage::atomic_write_with(
+    crate::agent_state::write_document(
+        crate::agent_state::StateFile::ReuseLedger,
         &path,
-        &serde_json::to_string(&ledger)?,
+        serde_json::to_string(&ledger)?,
         // Advisory counts: losing the last write to a power cut is cheaper
         // than a disk sync on every use.
         crate::settings::storage::AtomicWriteOptions { fsync: false },

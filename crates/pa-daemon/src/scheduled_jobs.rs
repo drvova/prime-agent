@@ -453,10 +453,9 @@ impl Worker {
         let Some(dir) = session_artifact_dir(session_file, session_id) else {
             return;
         };
-        if !dir
-            .join(pa_core::cron::store::SESSION_SCHEDULED_JOBS_FILENAME)
-            .is_file()
-        {
+        if !pa_core::cron::store::scheduled_jobs_kept(
+            &dir.join(pa_core::cron::store::SESSION_SCHEDULED_JOBS_FILENAME),
+        ) {
             return;
         }
         self.scheduled

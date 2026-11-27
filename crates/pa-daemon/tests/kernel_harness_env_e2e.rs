@@ -198,7 +198,11 @@ fn assert_stored_memory(state: &Value, id: &str, title: &str, content: &str, sco
 }
 
 fn read_state(path: &Path) -> Value {
-    let content = common::read_transcript(path).expect("read harness state");
+    let content = common::agent_state(path)
+        .expect("the daemon's database")
+        .document(pa_core::agent_state::StateFile::HarnessState, path)
+        .expect("read harness state")
+        .expect("a harness state");
     serde_json::from_str(&content).expect("parse harness state")
 }
 

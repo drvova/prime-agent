@@ -242,6 +242,47 @@ are brought in without a migration step the user runs.
   daemon's hello (`transcriptStoreFallback`), which every attached window
   shows as a warning.
 
+### The agent's other state
+
+The same database keeps the stores that were files besides transcripts
+(schema migration 3; `pa_core::agent_state`):
+
+| File | Kept as |
+| --- | --- |
+| `session-artifacts/<id>/scheduled-jobs.json` (schedules, heartbeats) | timer sources, with each job's claimed run |
+| `harness/harness_state.json`, global and per session | a key-value document |
+| `reuse/ledger.json` | a key-value document |
+| `daemon-workers/<socket>/event-bus.json` | bus sources and subscriptions |
+| `daemon-workers/<socket>/session-crashes.jsonl` | crash records, in order |
+
+- **Trigger.** Each store keeps addressing its state by its file's path. Until
+  the database holds that path, the store reads the file as it is, so nothing
+  waits on the import. The store's first write stores its whole state in the
+  database (a crash log's earlier records are imported first). After the
+  transcript import, the daemon imports the agent dir's files and its own bus
+  and crash log on the blocking pool, off any path a client waits on.
+- **Idempotency.** A file is held by the path it was found at, spelled one way
+  for every process (links resolved). A path the database holds is never
+  imported again, and the import never overwrites what a store has written:
+  a second pass changes nothing. The database records the file and the
+  SHA-256 of its bytes.
+- **Originals.** An imported file stays where it was, byte for byte, made
+  read-only, and is never written again; a file that was skipped stays as it
+  was, writable. A downgrade reads them as they were when they were imported;
+  what changed after that exists only in the database, and `prime-agent
+  export-jsonl --all --out <dir>` writes it back in the files' own layout
+  (beside the session files, at each file's path under the agent dir). To
+  let an older build write an imported original again, make it writable
+  again (`chmod u+w`).
+- **Failure reporting.** A file that cannot be read or does not parse (a crash
+  log may end in one torn line, which is not a record) is skipped whole, in
+  one transaction or not at all. The daemon log names it and the next boot
+  retries it; until the store's next write, the store reads the file as it
+  always did. A `scheduled-jobs.json` that lists one job id more than once
+  imports keeping the last job with that id, as the file store's merging
+  write keeps it, and the daemon log names the id. With `"transcriptStore":
+  "file"` every store stays on its file.
+
 ## Platform limits and release claims
 
 The old native distribution supports Darwin arm64/x64 and Linux arm64/x64,

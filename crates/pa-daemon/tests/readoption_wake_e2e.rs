@@ -347,7 +347,7 @@ fn a_heartbeat_that_came_due_while_the_daemon_was_down_fires_once_at_the_next_bo
         .join(&session_id)
         .join("scheduled-jobs.json");
     let next_run = || {
-        pa_core::cron::store::read_scheduled_jobs_artifact(&jobs_file)
+        common::scheduled_jobs(&jobs_file)
             .first()
             .and_then(|job| job.next_run_at.as_deref())
             .and_then(pa_daemon::util::iso_to_unix_ms)

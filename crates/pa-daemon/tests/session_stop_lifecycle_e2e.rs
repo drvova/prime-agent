@@ -260,9 +260,13 @@ impl Session {
     }
 
     fn job_status(&self) -> Option<String> {
-        let content = std::fs::read_to_string(self.scheduled_jobs_path()).ok()?;
-        let value: Value = serde_json::from_str(&content).ok()?;
-        value["jobs"][0]["status"].as_str().map(str::to_string)
+        let job = common::scheduled_jobs(&self.scheduled_jobs_path())
+            .into_iter()
+            .next()?;
+        serde_json::to_value(job.status)
+            .ok()?
+            .as_str()
+            .map(str::to_string)
     }
 }
 

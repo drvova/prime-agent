@@ -203,11 +203,11 @@ fn crashable_script(panic: &str) -> Value {
 fn crash_log(agent_dir: &Path, socket: &Path) -> Vec<Value> {
     let path =
         pa_daemon::descriptor::descriptor_dir(agent_dir, socket).join("session-crashes.jsonl");
-    common::read_transcript(&path)
-        .unwrap_or_default()
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("crash record json"))
-        .collect()
+    match common::agent_state(&path) {
+        Some(state) => state.crash_records(&path),
+        None => pa_core::agent_state::crash_records(&path),
+    }
+    .expect("crash records")
 }
 
 /// A cell that enters a native call no interrupt reaches (the kernel's test

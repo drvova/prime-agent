@@ -14,7 +14,7 @@ import tempfile
 import threading
 
 from check_restore_notice import invoke, texts, Server
-from lifecycle_lib import digest, session_transcripts
+from lifecycle_lib import digest, session_transcripts, state_file_text
 
 MARKER = 'LOCAL_HARNESS_PARITY='
 READ = """(define (memory-rows state)
@@ -98,8 +98,8 @@ def current_probe(requests, phase):
     return probes[0]
 
 
-def stored(path):
-    state = json.loads(path.read_text())
+def stored(agent, path):
+    state = json.loads(state_file_text(agent, path))
     rows = state['entries']['memory']
     for row in rows.values():
         for key in ('created_at', 'updated_at'):
@@ -157,8 +157,8 @@ def run_case(binary, root, observation):
             assert probe['deleted'] is None, probe
             assert (probe['local'] is None) == (phase == 'other'), probe
             if phase != 'other':
-                assert stored(artifact / 'harness' / 'harness_state.json') == {'parity-local': probe['local']}
-            assert stored(agent / 'harness' / 'harness_state.json') == {'parity-global': probe['global']}
+                assert stored(agent, artifact / 'harness' / 'harness_state.json') == {'parity-local': probe['local']}
+            assert stored(agent, agent / 'harness' / 'harness_state.json') == {'parity-global': probe['global']}
             for scope in ('local', 'global'):
                 row = probe[scope]
                 if row is not None:

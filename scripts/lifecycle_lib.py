@@ -581,7 +581,7 @@ def env_agent_dir(env):
     return Path(env["HOME"]) / ".prime/agent"
 
 
-def saved_transcripts(agent_dir, binary=None, timeout=60):
+def saved_transcripts(agent_dir, binary=None, timeout=60, pattern="*.jsonl"):
     """The session transcripts the product keeps for `agent_dir`, by locator
     (resolved), as text. Sessions live in the agent dir's database (`agent.db`),
     not in JSONL files: `prime-agent export-jsonl --all` writes them out under the
@@ -596,7 +596,7 @@ def saved_transcripts(agent_dir, binary=None, timeout=60):
         subprocess.run([str(binary), "export-jsonl", "--all", "--out", out], env=env,
                        stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=timeout)
         found = {}
-        for path in sorted(Path(out).rglob("*.jsonl")):
+        for path in sorted(Path(out).rglob(pattern)):
             relative = path.relative_to(out)
             if relative.parts[0] == "other":
                 locator = Path("/", *relative.parts[1:])
@@ -641,6 +641,20 @@ def transcript_text(agent_dir, locator, binary=None):
     if wanted not in transcripts:
         raise FileNotFoundError("no saved session at %s: %s" % (locator, sorted(transcripts)))
     return transcripts[wanted]
+
+
+def state_file_text(agent_dir, locator, binary=None):
+    """The agent state file at `locator` (a harness store, `scheduled-jobs.json`,
+    the event bus) as text: the database's copy, which `export-jsonl --all`
+    writes in the file's layout, or the file itself without a database."""
+    wanted = Path(locator)
+    if not has_database(agent_dir):
+        return wanted.read_text()
+    wanted = wanted.parent.resolve() / wanted.name
+    files = saved_transcripts(agent_dir, binary, pattern="*.json")
+    if wanted not in files:
+        raise FileNotFoundError("no saved state at %s: %s" % (locator, sorted(files)))
+    return files[wanted]
 
 
 def finish(scope, client, daemon, observation):
