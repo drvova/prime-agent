@@ -350,7 +350,7 @@ impl TreeNavigation {
     pub(crate) async fn prepare_fork(
         &self,
         payload: &Value,
-    ) -> Result<(SessionFile, Option<String>), DaemonResponse> {
+    ) -> Result<(SessionFile, pa_core::session::replacement::ForkPoint), DaemonResponse> {
         let entry_id = payload
             .get("entryId")
             .and_then(Value::as_str)
@@ -359,7 +359,7 @@ impl TreeNavigation {
         // A fork interrupts the running turn first, like the TS replacement lease path.
         self.wait_turn_end().await;
 
-        let (target_leaf, selected_text, store, cwd) = {
+        let (point, store, cwd) = {
             let core = self.core.lock().unwrap();
             let Some(store) = core.store.as_ref() else {
                 return Err(response_failure(
@@ -369,31 +369,13 @@ impl TreeNavigation {
                     None,
                 ));
             };
-            let Some(target) = store.entry(entry_id) else {
-                return Err(response_failure(
-                    None,
-                    "fork",
-                    "Invalid entry ID for forking",
-                    None,
-                ));
-            };
-            let (target_leaf, selected_text) = if let Some("at") = position {
-                (Some(entry_id.to_string()), None)
-            } else {
-                let Some(text) = session_tree::user_entry_text(target) else {
-                    return Err(response_failure(
-                        None,
-                        "fork",
-                        "Invalid entry ID for forking",
-                        None,
-                    ));
-                };
-                (target.parent_id.clone(), Some(text))
-            };
-            (target_leaf, selected_text, store.clone(), core.cwd.clone())
+            let target = store.entry(entry_id).map(session_tree::entry_json);
+            let point = pa_core::session::replacement::ForkPoint::of(target.as_ref(), position)
+                .map_err(|refused| response_failure(None, "fork", &refused.message, None))?;
+            (point, store.clone(), core.cwd.clone())
         };
 
-        let forked = match target_leaf.as_deref() {
+        let forked = match point.leaf.as_deref() {
             None => {
                 // Fork at the root: a fresh empty session (TS `newSession` with
                 // the source as parent).
@@ -444,7 +426,7 @@ impl TreeNavigation {
             }
         };
 
-        Ok((forked, selected_text))
+        Ok((forked, point))
     }
 
     /// `fork`'s swap phase (TS `buildAndApplyReplacement`): the store, the engine's session
@@ -561,7 +543,7 @@ impl Worker {
         // The pause spans settle and replacement: no steer admits on the
         // branch being left.
         let _queued_work = self.hold_queued_work_pause("fork");
-        let (forked, selected_text) = match self.tree_navigation.prepare_fork(payload).await {
+        let (forked, point) = match self.tree_navigation.prepare_fork(payload).await {
             Ok(prepared) => prepared,
             Err(response) => return response,
         };
@@ -602,11 +584,7 @@ impl Worker {
                     .lock()
                     .unwrap()
                     .session_started(active, session_ref);
-                let mut data = json!({ "cancelled": false });
-                if let Some(selected_text) = selected_text {
-                    data["selectedText"] = json!(selected_text);
-                }
-                response_success(None, "fork", Some(data))
+                response_success(None, "fork", Some(point.reply()))
             }
             Err(error) => {
                 // A failed fork tore the old session down without

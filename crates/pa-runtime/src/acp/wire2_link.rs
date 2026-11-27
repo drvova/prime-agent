@@ -745,13 +745,13 @@ fn transport_frame(frame: ServerFrame, dones: &std::sync::Mutex<Dones>) -> Optio
                 error: None,
                 error_info: None,
             },
-            Outcome::Error { message } => DaemonResponse {
+            Outcome::Error { message, info } => DaemonResponse {
                 id: Some(id),
                 command: String::new(),
                 success: false,
                 data: None,
                 error: Some(message),
-                error_info: None,
+                error_info: info.and_then(|info| serde_json::from_value(info).ok()),
             },
         })),
         ServerFrame::Backfilled { sub_id, .. } => Some(TransportFrame::Response(DaemonResponse {

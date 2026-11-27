@@ -44,6 +44,7 @@ mod messaging;
 mod model;
 mod owned;
 mod queue;
+mod replace;
 mod saved;
 mod state;
 mod summary;
@@ -289,7 +290,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 OpenSession {
                     path: path.clone(),
                     cwd: cwd.clone(),
-                    _lease: lease,
+                    lease,
                     owner,
                     scoped_models: Vec::new(),
                 },
@@ -555,6 +556,8 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionNavigateTree => self.navigate_tree(&args).await,
             Call::SessionAbortBranchSummary => self.abort_branch_summary(&args),
             Call::SessionExportHtml => self.export_html(&args).await,
+            Call::SessionForkEntry => self.fork_entry(&args).await,
+            Call::SessionImportJsonl => self.import_jsonl(&args).await,
         }
     }
 

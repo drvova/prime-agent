@@ -245,6 +245,12 @@ pub enum Call {
     /// `session.export_html`: writes an open session as a standalone HTML
     /// file.
     SessionExportHtml,
+    /// `session.fork_entry`: an open session goes on from a new transcript
+    /// holding its path to an entry, under the same id.
+    SessionForkEntry,
+    /// `session.import_jsonl`: an open session goes on from a copy of a
+    /// transcript file, under the same id.
+    SessionImportJsonl,
 }
 
 impl FromStr for Call {
@@ -292,6 +298,8 @@ impl FromStr for Call {
             "session.navigate_tree" => Call::SessionNavigateTree,
             "session.abort_branch_summary" => Call::SessionAbortBranchSummary,
             "session.export_html" => Call::SessionExportHtml,
+            "session.fork_entry" => Call::SessionForkEntry,
+            "session.import_jsonl" => Call::SessionImportJsonl,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",
@@ -301,6 +309,23 @@ impl FromStr for Call {
         })
     }
 }
+
+/// A handler's error with what a client can act on beyond its message
+/// (`Outcome::Error`'s `info`, the old daemon's `errorInfo`): the reply
+/// carries `info` when this is anywhere in the error's chain.
+#[derive(Debug)]
+pub(crate) struct ErrorWithInfo {
+    pub(crate) message: String,
+    pub(crate) info: Value,
+}
+
+impl std::fmt::Display for ErrorWithInfo {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ErrorWithInfo {}
 
 /// One client connection of the wire server, as its calls and its end name
 /// it: what a call makes a connection hold (an input hold) is let go when

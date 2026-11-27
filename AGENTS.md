@@ -335,6 +335,17 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   navigation holds the session's lane for the move and aborts a running turn first, rebuilds
   the context onto the new branch and publishes a changed goal as the old `goal_update`; the
   runtime keeps no workspace checkpoints, so its `restoreFiles` restores nothing yet.
+- One set of whole-session replacement rules: where a `fork {entryId, position}` starts and the
+  text it hands back, where an `import_jsonl` copies its file, and the working directory a
+  replaced session runs in with its refusals and their `errorInfo`
+  (`pa_core::session::replacement`); the old worker and the runtime daemon's
+  `session.fork_entry` and `session.import_jsonl` (`pa-runtime` `daemon/handlers/replace.rs`)
+  apply them. A runtime replacement holds the session's lane and aborts a running turn, holds
+  the new transcript's lease before it lets the old one go, and goes on under the same id: the
+  session's host ends its lifetime and builds the engine and a fresh kernel from the new
+  transcript as a crash's rebuild does, without the crash (`Runtime::replace_session`), so its
+  topics' subscribers, its stream and its tasks are kept. A wire2 error reply carries the
+  refusal's `errorInfo` as its `info` (`ErrorWithInfo` in the chain).
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

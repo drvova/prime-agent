@@ -114,8 +114,18 @@ pub enum ServerFrame {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Outcome {
-    Ok { result: Value },
-    Error { message: String },
+    Ok {
+        result: Value,
+    },
+    Error {
+        message: String,
+        /// What a client can act on beyond the message, when the error
+        /// carries it: the old daemon's `errorInfo` (a
+        /// `pa_types::daemon::DaemonErrorInfo`), such as the missing working
+        /// directory a session import offers to replace.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        info: Option<Value>,
+    },
 }
 
 #[cfg(test)]
@@ -141,7 +151,8 @@ mod tests {
                 serde_json::to_value(ServerFrame::Reply {
                     id: "q1".to_string(),
                     outcome: Outcome::Error {
-                        message: "no such session".to_string()
+                        message: "no such session".to_string(),
+                        info: None,
                     },
                 })
                 .unwrap(),

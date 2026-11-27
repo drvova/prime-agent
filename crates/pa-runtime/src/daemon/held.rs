@@ -102,7 +102,7 @@ pub(super) struct OpenSession {
     pub(super) path: PathBuf,
     pub(super) cwd: PathBuf,
     /// `None` for an ephemeral session, which has no transcript to lease.
-    pub(super) _lease: Option<SessionLease>,
+    pub(super) lease: Option<SessionLease>,
     /// The client (its `hello` name) an ephemeral session ends with; `None`
     /// for a session that keeps its transcript. An ephemeral session is not
     /// kept in the database: no daemon revives it.
@@ -199,6 +199,42 @@ impl OpenSessions {
         if let Err(error) = kept.wait().await {
             tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
         }
+    }
+
+    /// Whether open session `id` is ephemeral: it keeps no transcript.
+    pub(super) fn ephemeral(&self, id: &str) -> bool {
+        lock(&self.open)
+            .open
+            .get(id)
+            .is_some_and(|session| session.lease.is_none())
+    }
+
+    /// Open session `id` goes on from the transcript at `path` in `cwd`
+    /// (a replacement), held by `lease` (`None` keeps the one it holds,
+    /// for a transcript it holds already), kept in the database; the lease
+    /// it held before is released. `false` when it is not open.
+    pub(super) async fn replace(
+        &self,
+        id: &str,
+        path: PathBuf,
+        cwd: PathBuf,
+        lease: Option<SessionLease>,
+    ) -> bool {
+        let (replaced, kept) = {
+            let mut open = lock(&self.open);
+            let Some(session) = open.open.get_mut(id) else {
+                return false;
+            };
+            session.path = path;
+            session.cwd = cwd;
+            let replaced = lease.map(|lease| session.lease.replace(lease));
+            (replaced, self.keep(&open))
+        };
+        drop(replaced);
+        if let Err(error) = kept.wait().await {
+            tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
+        }
+        true
     }
 
     /// Holds session `id` dormant, down on `path` in `cwd`, kept in the
@@ -379,7 +415,7 @@ async fn revive_one<B: SessionBuilder>(
         OpenSession {
             path: session.path,
             cwd: session.cwd,
-            _lease: Some(lease),
+            lease: Some(lease),
             owner: None,
             scoped_models: Vec::new(),
         },

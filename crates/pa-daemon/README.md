@@ -269,7 +269,9 @@ attached UIs daemon-wide).
 Tree moves (`branch_navigation.rs`): `navigate_tree`'s landing point, the fork list, the copy
 text (`get_last_assistant_text`), the branch summary run and the export's tool renderer are
 pa-core's (`session::navigation`, `branch_summarization::run_branch_summary`,
-`export_html::RegistryToolRenderer`), shared with the runtime daemon.
+`export_html::RegistryToolRenderer`), shared with the runtime daemon. The whole-session
+replacements' rules (`fork`'s starting point, `import_jsonl`'s copy target, the replaced session's
+working directory and their refusals) are pa-core's `session::replacement`, shared with it too.
 
 Workspace checkpoints (`workspace_checkpoints.rs`): a shadow git store per
 workspace (own git dir, one index per session, user git config shut out)

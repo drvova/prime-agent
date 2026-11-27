@@ -257,7 +257,7 @@ async fn roster_settled(session: &mut Attached, followed: &Value) {
             .await
         {
             pa_types::wire2::Outcome::Ok { result } => result["roster"].clone(),
-            pa_types::wire2::Outcome::Error { message } => panic!("runtime.roster: {message}"),
+            pa_types::wire2::Outcome::Error { message, .. } => panic!("runtime.roster: {message}"),
         };
         let events = session.feed_events("runtime/roster");
         let kept = kept_roster(followed, events.iter().map(|event| &event.event.payload));

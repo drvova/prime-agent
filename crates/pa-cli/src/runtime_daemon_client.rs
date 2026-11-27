@@ -145,7 +145,7 @@ impl RuntimeDaemonClient {
                 } if replied == id => {
                     return match outcome {
                         Outcome::Ok { result } => Ok(result),
-                        Outcome::Error { message } => Err(anyhow!(message)),
+                        Outcome::Error { message, .. } => Err(anyhow!(message)),
                     }
                 }
                 ServerFrame::Closing { reason } => return Err(self.closed(Some(&reason))),

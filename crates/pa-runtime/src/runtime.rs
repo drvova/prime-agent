@@ -608,6 +608,33 @@ impl<B: SessionBuilder> Runtime<B> {
         cancelled
     }
 
+    /// Open session `session` goes on from the transcript at `transcript` in
+    /// `cwd`: once the work before it has ended, its engine is built again
+    /// from that transcript in a new lifetime, as a crash's rebuild is but
+    /// without the crash (`crate::session::SessionHost::replace`); it keeps
+    /// its id, its topics' subscribers, its stream and its tasks. Answers
+    /// once the new engine is built. The caller holds its lane, so nothing
+    /// queued starts on the transcript being left.
+    ///
+    /// # Errors
+    ///
+    /// The session is not open, or its new engine could not be built (it
+    /// runs on from the new transcript all the same).
+    pub(crate) async fn replace_session(
+        &self,
+        session: &str,
+        transcript: PathBuf,
+        cwd: PathBuf,
+    ) -> anyhow::Result<()> {
+        let host = self
+            .sessions
+            .host(session)
+            .with_context(|| format!("session {session} is not open"))?;
+        host.replace(transcript, cwd)
+            .await
+            .map_err(anyhow::Error::msg)
+    }
+
     /// Queues each payload it is given on `session`'s stream
     /// (`agent/<id>/stream`, live only) as the owner's, in the stream's
     /// shape: in order with what the session's turns stream.

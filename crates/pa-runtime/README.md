@@ -485,7 +485,17 @@ SQLite implementations over `pa-log`.
   `session.navigate_tree` (`navigate_tree`: the lane held for the move and a running turn aborted
   first, the abandoned branch summarized on the session's model when asked, the context rebuilt
   onto the new branch and a changed goal published as `goal_update`; no workspace checkpoints, so
-  `restoreFiles` restores nothing), `session.abort_branch_summary` and `session.export_html`. A root session stopped and opened again waits for its new engine's
+  `restoreFiles` restores nothing), `session.abort_branch_summary` and `session.export_html`.
+  The whole-session replacements (`daemon/handlers/replace.rs`, pa-core's
+  `session::replacement` rules): `session.fork_entry` (`fork {entryId, position}`: the path to the
+  entry copied into a new transcript beside the session's, `{cancelled, selectedText?}`; an
+  ephemeral session's context cut back in place) and `session.import_jsonl` (`import_jsonl`: the
+  file copied into the sessions dir, run in its own or the overridden working directory,
+  refusals with the old `errorInfo` as the reply's `info`). The lane is held and a running turn
+  aborted first, the new transcript's lease is taken before the old one goes, and the session
+  goes on under the same id (`Runtime::replace_session`: its host ends the lifetime and builds
+  the next from the new transcript, as a crash's rebuild does, keeping its subscribers, stream
+  and tasks). A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
@@ -664,7 +674,9 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `session.set_auto_compaction`, `session.set_auto_retry`, `session.reload`,
   `session.mark_anthropic_warning_shown`, and (8d-2) the queries `session.fork_messages` and
   `session.last_assistant_text` and the calls `session.navigate_tree`,
-  `session.abort_branch_summary` and `session.export_html`.
+  `session.abort_branch_summary` and `session.export_html`, and (8d-2b) the calls
+  `session.fork_entry` and `session.import_jsonl`. pa-types `wire2::Outcome::Error` gains
+  `info` (the old `errorInfo`).
 - `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
   engine streams from, which the runtime daemon's model and tier switches write.
 

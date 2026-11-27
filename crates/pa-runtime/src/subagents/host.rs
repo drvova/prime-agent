@@ -52,7 +52,7 @@ impl RlmSubagentHost for SessionSubagents {
                 .tree
                 .upgrade()
                 .ok_or_else(|| anyhow::anyhow!("the runtime is not running"))?;
-            let cwd = resolve_child_cwd(&node.cwd, request.cwd.as_deref(), "rlm.spawn")?;
+            let cwd = resolve_child_cwd(&node.cwd(), request.cwd.as_deref(), "rlm.spawn")?;
             let child_id = format!("sub-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
             let name = request.name.clone().unwrap_or_else(|| {
                 pa_core::kernel::rlm_runtime::create_default_rlm_subagent_session_name(
@@ -522,7 +522,7 @@ impl Subagents {
                 continue;
             }
             let cwd = pa_core::session::manager::read_session_header(&child_file)
-                .map_or_else(|| node.cwd.clone(), |header| header.cwd.into());
+                .map_or_else(|| node.cwd(), |header| header.cwd.into());
             let spec = SessionSpec {
                 id: Some(session_id.clone()),
                 name: Some(edge.name.clone()),

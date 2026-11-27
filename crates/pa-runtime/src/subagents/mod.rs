@@ -535,8 +535,9 @@ pub(crate) struct Node {
     pub(crate) session_id: String,
     /// Its handle under its parent, when it is a spawned child.
     rlm_child_id: Option<String>,
-    /// Where it runs, and its environment: a child inherits both.
-    cwd: PathBuf,
+    /// Where it runs (a replaced session moves it), and its environment: a
+    /// child inherits both.
+    cwd: Mutex<PathBuf>,
     env: BTreeMap<String, String>,
     /// What its built engine says about it.
     adopted: Mutex<Adopted>,
@@ -592,6 +593,16 @@ struct Adopted {
 }
 
 impl Node {
+    /// Where the session runs.
+    pub(crate) fn cwd(&self) -> PathBuf {
+        lock(&self.cwd).clone()
+    }
+
+    /// The session goes on in `cwd` (a replacement's).
+    pub(crate) fn set_cwd(&self, cwd: &std::path::Path) {
+        *lock(&self.cwd) = cwd.to_path_buf();
+    }
+
     fn new(
         tree: &Arc<Subagents>,
         session_id: String,
@@ -613,7 +624,7 @@ impl Node {
                 .subagent
                 .as_ref()
                 .map(|subagent| subagent.child_id.clone()),
-            cwd: spec.cwd.clone(),
+            cwd: Mutex::new(spec.cwd.clone()),
             env: spec.env.clone(),
             adopted: Mutex::new(Adopted {
                 engine: Weak::new(),
@@ -660,7 +671,7 @@ impl Node {
             let (max_depth, source) = pa_core::session_engine::rlm_host::resolve_rlm_max_depth(
                 session_file.as_deref(),
                 /*inherited*/ None,
-                &self.cwd,
+                &self.cwd(),
                 agent_dir,
             );
             self.delegation

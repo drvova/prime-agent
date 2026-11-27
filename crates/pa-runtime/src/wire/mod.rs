@@ -64,6 +64,7 @@ mod handlers;
 pub(crate) use attached::Attached;
 pub use feed::MAX_TAIL;
 use feed::{last_seq, Control, Feed};
+pub(crate) use handlers::ErrorWithInfo;
 pub use handlers::{Call, ConnectionId, Handlers, Query, UnknownOperation};
 
 /// The topics a client may publish on: `agent/<id>/input`, a session's
@@ -328,6 +329,7 @@ where
                             }
                             Err(error) => Outcome::Error {
                                 message: format!("the event was not published: {error:#}"),
+                                info: None,
                             },
                         }
                     } else {
@@ -336,6 +338,7 @@ where
                                 "clients may publish only on {}, not {topic}",
                                 CLIENT_TOPICS.join(", ")
                             ),
+                            info: None,
                         }
                     };
                     out.send(ServerFrame::Reply { id, outcome })
@@ -383,6 +386,10 @@ async fn answering(
     let outcome = match answer.await {
         Ok(result) => Outcome::Ok { result },
         Err(error) => Outcome::Error {
+            info: error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<ErrorWithInfo>())
+                .map(|answer| answer.info.clone()),
             message: format!("{error:#}"),
         },
     };

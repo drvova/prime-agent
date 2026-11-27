@@ -13,6 +13,13 @@
 //! see it. Under the runtime daemon's supervision a panic on any of the
 //! session's threads, or a stuck cell, ends the lifetime the same way, and
 //! the crash is recorded and healed ([`super::faults`]).
+//!
+//! A session replaced by another transcript ([`SessionHost::replace`]: the
+//! runtime daemon's `fork` onto an entry and `import_jsonl`) goes the same
+//! way without a crash: once the work before it ends, the lifetime ends and
+//! the next one builds its engine (and a fresh kernel) from the new
+//! transcript in the new working directory. The session keeps its id, its
+//! topics and their subscribers, its stream and its tasks.
 
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
@@ -88,6 +95,41 @@ enum Work {
     Finish(oneshot::Sender<Result<Finished, String>>),
 }
 
+/// What the session's thread is sent: work for its lifetime, or the end of
+/// the lifetime in a replacement.
+enum Request {
+    Work(Work),
+    /// The session goes on from another transcript in a new lifetime.
+    Replace(Replacement),
+}
+
+impl From<Work> for Request {
+    fn from(work: Work) -> Self {
+        Request::Work(work)
+    }
+}
+
+impl Request {
+    /// Answers the request with `reason` as its failure, without running it.
+    fn fail(self, reason: &str) {
+        match self {
+            Request::Work(work) => work.fail(reason),
+            Request::Replace(replacement) => {
+                let _ = replacement.built.send(Err(reason.to_string()));
+            }
+        }
+    }
+}
+
+/// The transcript and working directory a replaced session goes on from,
+/// and where the answer goes once its new engine is built (or failed to
+/// be).
+pub(crate) struct Replacement {
+    pub(crate) transcript: PathBuf,
+    pub(crate) cwd: PathBuf,
+    built: oneshot::Sender<Result<(), String>>,
+}
+
 /// Where a settle's answer goes: how the run ended, or `None` when the task
 /// it was to follow stopped the run.
 type SettleAnswer = oneshot::Sender<Result<Option<Settled>, String>>;
@@ -140,7 +182,7 @@ pub(crate) struct LiveEngine {
 
 /// One session's host thread, as the runtime holds it.
 pub(crate) struct SessionHost {
-    work: Mutex<Option<mpsc::UnboundedSender<Work>>>,
+    work: Mutex<Option<mpsc::UnboundedSender<Request>>>,
     control: Arc<TurnControl>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -224,7 +266,7 @@ impl SessionHost {
                 let control = Arc::clone(&control);
                 move || {
                     serve(
-                        &Lifetime {
+                        &mut Lifetime {
                             id,
                             spec,
                             node,
@@ -329,6 +371,29 @@ impl SessionHost {
             .unwrap_or_else(|_| Err("the session's host ended before the finish did".to_string()))
     }
 
+    /// Ends the session's lifetime once the work before it has, and goes on
+    /// from `transcript` in `cwd` in a new one (see the module
+    /// documentation); answers once its engine is built.
+    ///
+    /// # Errors
+    ///
+    /// The session is closed, or its new engine could not be built (the
+    /// session runs on from the new transcript all the same, building again
+    /// for its next work).
+    pub(crate) async fn replace(&self, transcript: PathBuf, cwd: PathBuf) -> Result<(), String> {
+        let (built, answer) = oneshot::channel();
+        if !self.send(Request::Replace(Replacement {
+            transcript,
+            cwd,
+            built,
+        })) {
+            return Err(self.closed_reason());
+        }
+        answer
+            .await
+            .unwrap_or_else(|_| Err("the session's host ended before its replacement".to_string()))
+    }
+
     /// Why work sent to the session's thread is refused.
     fn closed_reason(&self) -> String {
         lock(&self.control.turn)
@@ -337,11 +402,11 @@ impl SessionHost {
             .unwrap_or_else(|| "the session is closed".to_string())
     }
 
-    /// Queues `work` for the session's thread; whether it is still open.
-    fn send(&self, work: Work) -> bool {
+    /// Queues `request` for the session's thread; whether it is still open.
+    fn send(&self, request: impl Into<Request>) -> bool {
         lock(&self.work)
             .as_ref()
-            .is_some_and(|sender| sender.send(work).is_ok())
+            .is_some_and(|sender| sender.send(request.into()).is_ok())
     }
 
     /// Hands `steer`'s prompt to `running`'s turn while it still reads
@@ -487,6 +552,8 @@ struct Lifetime<B> {
 enum Ended {
     /// The session was closed.
     Closed,
+    /// It goes on from another transcript in a new lifetime.
+    Replaced(Replacement),
     /// It crashed; the session goes on in a new lifetime (or, supervised and
     /// crashing too often, is given up).
     Crashed(SessionCrash),
@@ -494,9 +561,14 @@ enum Ended {
 
 /// The host thread: one lifetime after another until the session closes
 /// (or, supervised, is given up).
+#[expect(
+    clippy::too_many_lines,
+    reason = "a lifetime's end reads in the order it is handled: closed, replaced, crashed, \
+              recorded, given up or rebuilt"
+)]
 fn serve<B: SessionBuilder>(
-    lifetime: &Lifetime<B>,
-    mut queued: mpsc::UnboundedReceiver<Work>,
+    lifetime: &mut Lifetime<B>,
+    mut queued: mpsc::UnboundedReceiver<Request>,
     opening: Opening,
 ) {
     let mut rebuild = match opening {
@@ -510,6 +582,8 @@ fn serve<B: SessionBuilder>(
         }
     };
     let mut failures = rebuild.as_ref().map_or(0, |rebuild| rebuild.failures);
+    // The replacement whose new engine the next lifetime answers.
+    let mut replaced = None;
     loop {
         let scope = lifetime.scope();
         let faults = Arc::new(LifetimeFaults::default());
@@ -541,7 +615,13 @@ fn serve<B: SessionBuilder>(
             }
         };
         let started = Instant::now();
-        let ended = lifetime.run(&runtime, &mut queued, &faults, rebuild.take());
+        let ended = lifetime.run(
+            &runtime,
+            &mut queued,
+            &faults,
+            rebuild.take(),
+            replaced.take(),
+        );
         {
             let mut turn = lock(&lifetime.control.turn);
             turn.agent = None;
@@ -553,6 +633,13 @@ fn serve<B: SessionBuilder>(
         runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
         let crash = match ended {
             Ended::Closed => return,
+            Ended::Replaced(replacement) => {
+                lifetime.spec.transcript = Some(replacement.transcript);
+                lifetime.node.set_cwd(&replacement.cwd);
+                lifetime.spec.cwd = replacement.cwd;
+                replaced = Some(replacement.built);
+                continue;
+            }
             Ended::Crashed(crash) => crash,
         };
         let supervision = match &lifetime.faults {
@@ -664,13 +751,15 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// Serves work on `runtime` until the session closes or the lifetime
     /// crashes. A rebuild after a crash first keeps the fault in the
     /// transcript and answers the calls it cut off, then builds; once the
-    /// engine is built the session's clients hear it recovered.
+    /// engine is built the session's clients hear it recovered. A lifetime
+    /// that follows a replacement answers it (`replaced`) once it built.
     fn run(
         &self,
         runtime: &tokio::runtime::Runtime,
-        queued: &mut mpsc::UnboundedReceiver<Work>,
+        queued: &mut mpsc::UnboundedReceiver<Request>,
         faults: &LifetimeFaults,
         rebuild: Option<Rebuild>,
+        replaced: Option<oneshot::Sender<Result<(), String>>>,
     ) -> Ended {
         let mut recovering = rebuild.map(|rebuild| {
             let recovered = SessionFaultEvent::SessionRecovered {
@@ -681,6 +770,9 @@ impl<B: SessionBuilder> Lifetime<B> {
             recovered
         });
         let mut hosted = self.build(runtime);
+        if let Some(replaced) = replaced {
+            let _ = replaced.send(hosted.as_ref().map(|_| ()).map_err(Clone::clone));
+        }
         loop {
             if hosted.is_ok() {
                 if let Some(recovered) = recovering.take() {
@@ -696,7 +788,12 @@ impl<B: SessionBuilder> Lifetime<B> {
                 }
             });
             let work = match next {
-                Ok(Some(work)) => work,
+                Ok(Some(Request::Work(work))) => work,
+                Ok(Some(Request::Replace(replacement))) => {
+                    // Dropped on its runtime, as a close drops it.
+                    runtime.block_on(async move { drop(hosted) });
+                    return Ended::Replaced(replacement);
+                }
                 Ok(None) => {
                     // Dropped on its runtime: what the engine spawns as it
                     // goes down still has one to run on.

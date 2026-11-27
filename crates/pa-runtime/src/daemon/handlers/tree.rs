@@ -55,8 +55,9 @@ use crate::session::SessionBuilder;
 pub(super) type BranchSummaries =
     std::sync::Mutex<std::collections::HashMap<String, Arc<AbortController>>>;
 
-/// A hold on a session's lane for one tree move, released when it ends.
-struct MoveHold<B: SessionBuilder> {
+/// A hold on a session's lane for one tree move or replacement, released
+/// when it ends.
+pub(super) struct MoveHold<B: SessionBuilder> {
     runtime: Arc<Runtime<B>>,
     session: String,
     hold: String,
@@ -69,6 +70,23 @@ impl<B: SessionBuilder> Drop for MoveHold<B> {
 }
 
 impl<B: SessionBuilder> RuntimeHandlers<B> {
+    /// Holds open session `id`'s lane for a `kind` move (nothing queued
+    /// starts on the branch being left) and ends its running turn first.
+    ///
+    /// # Errors
+    ///
+    /// The database failed to save a steer the ended turn put back.
+    pub(super) async fn hold_for_move(&self, id: &str, kind: &str) -> anyhow::Result<MoveHold<B>> {
+        let hold = MoveHold {
+            runtime: Arc::clone(&self.runtime),
+            session: id.to_string(),
+            hold: format!("{kind}:{}", uuid::Uuid::new_v4()),
+        };
+        self.runtime.hold_input(&hold.session, &hold.hold);
+        self.runtime.interrupt(id).await?;
+        Ok(hold)
+    }
+
     /// `session.fork_messages` (see the module documentation).
     pub(super) async fn fork_messages(&self, args: &Value) -> anyhow::Result<Value> {
         let (_, path, open) = self.session(args)?;
@@ -159,15 +177,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         if old_leaf.as_deref() == Some(request.target_id.as_str()) {
             return Ok(json!({ "cancelled": false }));
         }
-        // Nothing queued starts on the branch being left, and a running turn
-        // ends first.
-        let hold = MoveHold {
-            runtime: Arc::clone(&self.runtime),
-            session: id.clone(),
-            hold: format!("navigate:{}", uuid::Uuid::new_v4()),
-        };
-        self.runtime.hold_input(&hold.session, &hold.hold);
-        self.runtime.interrupt(&id).await?;
+        let hold = self.hold_for_move(&id, "navigate").await?;
         let (new_leaf, editor_text) = navigation::navigation_point(&target);
 
         let mut summary = None;

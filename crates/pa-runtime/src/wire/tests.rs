@@ -478,7 +478,8 @@ async fn a_publish_is_the_owners_on_a_session_input_and_refused_elsewhere() {
                     id: "p2".to_string(),
                     outcome: Outcome::Error {
                         message: "clients may publish only on agent/+/input, not agent/s1/stream"
-                            .to_string()
+                            .to_string(),
+                        info: None,
                     },
                 },
             ],
@@ -550,7 +551,8 @@ async fn queries_and_calls_reach_their_handler_and_an_unknown_name_is_refused() 
             (
                 "q2".to_string(),
                 Outcome::Error {
-                    message: "this runtime has no query \"transcripts\"".to_string()
+                    message: "this runtime has no query \"transcripts\"".to_string(),
+                    info: None,
                 }
             ),
         ]

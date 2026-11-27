@@ -48,7 +48,8 @@
 //! command type (`prompt`, `steer`, `follow_up`).
 //!
 //! The session reads become one query each, whose reply's result is the old response's `data`
-//! verbatim ([`response_from_reply`]; an error reply is the old failure with its message):
+//! verbatim ([`response_from_reply`]; an error reply is the old failure with its message, and its
+//! `info` as the failure's `errorInfo`):
 //!
 //! | command | query | arguments |
 //! | --- | --- | --- |
@@ -102,6 +103,8 @@
 //! | `navigate_tree` | `session.navigate_tree` | `{cancelled, aborted?, editorText?, summaryEntry?}` |
 //! | `abort_branch_summary` | `session.abort_branch_summary` | none |
 //! | `export_html` | `session.export_html` | `{path}` |
+//! | `fork` | `session.fork_entry` | `{cancelled, selectedText?}` |
+//! | `import_jsonl` | `session.import_jsonl` | `{cancelled}` |
 //!
 //! What the TUI reads beside a session's turns becomes one query each, built the same way (the
 //! command's members, plus `session` for a session's), whose reply's result is the old response's
@@ -129,7 +132,7 @@
 //!   (`heartbeats_list`, `heartbeats_changed`, `list_kernel_bash`, `factory_activity`),
 //!   `get_session_stats`, `get_rlm_children`.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
-//!   `fork` (the whole session's and an entry's), `label`, `export`, `import_jsonl`, the auth
+//!   `fork` of the whole saved session, `label`, `export`, the auth
 //!   commands, `abort`/`abort_and_send_queued`, `abort_compaction`, `abort_retry`, `compact`,
 //!   the queue mutations (`mutate_queued_message`), `answer_question`, `detach`.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
@@ -617,6 +620,26 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 &command,
             )
         }
+        DaemonCommand::Fork {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.fork_entry",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::ImportJsonl {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.import_jsonl",
+                active_session_id,
+                &command,
+            )
+        }
         DaemonCommand::GetUsage { .. } => {
             return command_query(request_id, "usage", None, &command);
         }
@@ -754,7 +777,7 @@ fn member<T: serde::Serialize>(value: Option<&T>) -> Option<Value> {
 
 /// The old response to the `command` a mapped query or call stood for (request `id`), from its
 /// reply: its result is the response's `data` (none for a command the old daemon answered without
-/// one), its error the failure's message.
+/// one), its error the failure's message and its `info` the failure's `errorInfo`.
 pub(crate) fn response_from_reply(
     command: &str,
     id: Option<String>,
@@ -765,7 +788,14 @@ pub(crate) fn response_from_reply(
             result: Value::Null,
         } if ANSWERED_WITHOUT_DATA.contains(&command) => (true, None, None),
         Outcome::Ok { result } => (true, Some(result), None),
-        Outcome::Error { message } => (false, None, Some(message)),
+        Outcome::Error { message, info } => (
+            false,
+            None,
+            Some((
+                message,
+                info.and_then(|info| serde_json::from_value(info).ok()),
+            )),
+        ),
     };
     DaemonOutbound::Response {
         response: DaemonResponse {
@@ -773,8 +803,8 @@ pub(crate) fn response_from_reply(
             command: command.to_string(),
             success,
             data,
-            error,
-            error_info: None,
+            error_info: error.as_ref().and_then(|(_, info)| info.clone()),
+            error: error.map(|(message, _)| message),
         },
     }
 }

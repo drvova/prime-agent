@@ -452,6 +452,7 @@ fn session_reads_query_and_their_replies_round_trip() {
         None,
         Outcome::Error {
             message: "History branch changed".to_string(),
+            info: None,
         },
     );
     actual.push(serde_json::to_value(failed).unwrap());
@@ -839,6 +840,55 @@ fn the_tree_reads_query_and_the_tree_moves_call() {
                 ),
             ],
             json!({ "type": "response", "command": "abort_branch_summary", "success": true }),
+        )
+    );
+}
+
+#[test]
+fn the_replacements_call_and_their_refusal_keeps_its_error_info() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "fork", "activeSessionId": "s1", "entryId": "e1", "position": "at" }),
+        json!({ "type": "import_jsonl", "activeSessionId": "s1", "inputPath": "/tmp/in.jsonl",
+                "cwdOverride": "/tmp" }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let call = |method: &str, args: Value| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args,
+        })
+    };
+    let refused = serde_json::to_value(response_from_reply(
+        "import_jsonl",
+        None,
+        Outcome::Error {
+            message: "File not found: /tmp/in.jsonl".to_string(),
+            info: Some(json!({ "code": "session_import_file_not_found",
+                               "filePath": "/tmp/in.jsonl" })),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        (frames, refused),
+        (
+            vec![
+                call(
+                    "session.fork_entry",
+                    json!({ "session": "s1", "entryId": "e1", "position": "at" })
+                ),
+                call(
+                    "session.import_jsonl",
+                    json!({ "session": "s1", "inputPath": "/tmp/in.jsonl", "cwdOverride": "/tmp" })
+                ),
+            ],
+            json!({ "type": "response", "command": "import_jsonl", "success": false,
+                    "error": "File not found: /tmp/in.jsonl",
+                    "errorInfo": { "code": "session_import_file_not_found",
+                                   "filePath": "/tmp/in.jsonl" } }),
         )
     );
 }

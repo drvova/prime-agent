@@ -54,6 +54,7 @@ mod goldens;
 mod info;
 mod keeper;
 mod reliability;
+mod replace;
 mod saved_list;
 mod schedules;
 mod stream;
@@ -367,14 +368,14 @@ impl Client {
 fn ok(outcome: Outcome) -> Value {
     match outcome {
         Outcome::Ok { result } => result,
-        Outcome::Error { message } => panic!("expected ok, got the error {message}"),
+        Outcome::Error { message, .. } => panic!("expected ok, got the error {message}"),
     }
 }
 
 /// The message of an `error` outcome.
 fn refused(outcome: Outcome) -> String {
     match outcome {
-        Outcome::Error { message } => message,
+        Outcome::Error { message, .. } => message,
         Outcome::Ok { result } => panic!("expected a refusal, got {result}"),
     }
 }

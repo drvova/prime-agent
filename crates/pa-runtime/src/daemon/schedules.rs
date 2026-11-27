@@ -573,7 +573,7 @@ impl<B: SessionBuilder> Schedules<B> {
                 OpenSession {
                     path: path.to_path_buf(),
                     cwd: cwd.to_path_buf(),
-                    _lease: Some(lease),
+                    lease: Some(lease),
                     owner: None,
                     scoped_models: Vec::new(),
                 },

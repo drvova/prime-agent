@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 
 use crate::engine::SessionEngine;
-use crate::protocol::{response_failure, response_success, DaemonErrorInfo, DaemonResponse};
+use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::session_store::{session_file_name, SessionFile};
 use crate::worker::{SessionCore, Worker};
 
@@ -206,16 +206,6 @@ impl SessionNavigation {
             .and_then(Value::as_str)
             .map(str::to_string);
         let resolved = std::path::Path::new(input_path);
-        if !resolved.is_file() {
-            return Err(response_failure(
-                None,
-                "import_jsonl",
-                &format!("File not found: {}", resolved.display()),
-                Some(DaemonErrorInfo::SessionImportFileNotFound {
-                    file_path: resolved.display().to_string(),
-                }),
-            ));
-        }
         // The destination is the session dir's copy; an in-place import skips the copy.
         let destination = {
             let core = self.core.lock().unwrap();
@@ -223,20 +213,10 @@ impl SessionNavigation {
                 .as_ref()
                 .and_then(|store| store.path.parent().map(std::path::Path::to_path_buf))
         };
-        let target = match destination {
-            Some(dir) => dir.join(resolved.file_name().map_or_else(
-                || session_file_name("imported"),
-                |name| name.to_string_lossy().to_string(),
-            )),
-            None => {
-                return Err(response_failure(
-                    None,
-                    "import_jsonl",
-                    "Session is still initializing",
-                    None,
-                ))
-            }
-        };
+        let target = pa_core::session::replacement::import_target(resolved, destination.as_deref())
+            .map_err(|refused| {
+                response_failure(None, "import_jsonl", &refused.message, refused.info)
+            })?;
         std::fs::create_dir_all(target.parent().unwrap_or(std::path::Path::new(".")))
             .map_err(|error| error.to_string())
             .ok();
@@ -288,32 +268,14 @@ impl SessionNavigation {
         let mut file = SessionFile::open(std::path::Path::new(path))
             .map_err(|error| response_failure(None, command, &error.to_string(), None))?;
         file.lease = lease;
-        let cwd =
-            cwd_override.or_else(|| (!file.header.cwd.is_empty()).then(|| file.header.cwd.clone()));
-        if let Some(cwd) = cwd.as_deref() {
-            if !std::path::Path::new(cwd).is_dir() {
-                let fallback = {
-                    let core = self.core.lock().unwrap();
-                    core.cwd.clone()
-                };
-                // The typed error info lets clients render the TS missing-cwd prompt (the issue
-                // carries the fallback cwd).
-                return Err(response_failure(
-                    None,
-                    command,
-                    &format!(
-                        "Stored session working directory does not exist: {cwd}\nSession file: {path}\nCurrent working directory: {fallback}"
-                    ),
-                    Some(DaemonErrorInfo::MissingSessionCwd {
-                        issue: json!({
-                            "sessionFile": path,
-                            "sessionCwd": cwd,
-                            "fallbackCwd": fallback,
-                        }),
-                    }),
-                ));
-            }
-        }
+        let fallback = std::path::PathBuf::from(self.core.lock().unwrap().cwd.clone());
+        let cwd = pa_core::session::replacement::replacement_cwd(
+            std::path::Path::new(path),
+            &file.header.cwd,
+            cwd_override,
+            &fallback,
+        )
+        .map_err(|refused| response_failure(None, command, &refused.message, refused.info))?;
         Ok(PreparedReplacement {
             file,
             cwd,
@@ -462,6 +424,7 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::DaemonErrorInfo;
     use serde_json::json;
     use std::sync::Arc;
 

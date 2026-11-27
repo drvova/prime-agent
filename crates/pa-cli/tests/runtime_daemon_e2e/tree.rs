@@ -18,7 +18,7 @@ use super::switches::read_as_the_tui_does;
 use super::{ok, Bed, Client};
 
 /// The seeded rows' ids: two questions and their answers.
-const SEEDED: [&str; 4] = ["u1", "a1", "u2", "a2"];
+pub(super) const SEEDED: [&str; 4] = ["u1", "a1", "u2", "a2"];
 
 /// The loopback provider is local: no proxy between it and the daemons.
 const LOCAL: &[(&str, &str)] = &[("NO_PROXY", "127.0.0.1"), ("no_proxy", "127.0.0.1")];
@@ -91,7 +91,7 @@ fn models(agent_dir: &Path, port: u16) {
 
 /// A saved session `id` under the agent dir's sessions: two questions and
 /// their answers (the second answer in two text blocks).
-fn seed(agent_dir: &Path, cwd: &Path, id: &str) -> PathBuf {
+pub(super) fn seed(agent_dir: &Path, cwd: &Path, id: &str) -> PathBuf {
     let at = "2026-11-01T00:00:00.000Z";
     let message = |id: &str, parent: Option<&str>, role: &str, content: Value| {
         let mut message = json!({ "role": role, "content": content, "timestamp": 1_000 });
