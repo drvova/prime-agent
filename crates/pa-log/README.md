@@ -1,6 +1,7 @@
 # pa-log
 
-Prime Agent's SQLite store: the event log and the session transcripts, in one database file.
+Prime Agent's SQLite store: the event log, the session transcripts and the agent's other state
+(schedules, the event bus, the harness store, the crash log), in one database file.
 It is the only crate that links SQLite (`rusqlite`, built from its bundled source).
 
 It is being built beside today's file stores as part of the move onto one event log. The
@@ -54,12 +55,27 @@ in it; the event log has no user yet.
   - `move_transcript`, `remove_transcript`, `transcript`, `transcript_by_id`, `transcripts_in`,
     `all_transcripts`; `meta`/`set_meta` keep the store's own facts (the import markers).
 
+- **The agent's other state, by partition** (schema migration 3). A partition is named by a
+  scope the caller chooses (one per file it replaces) and counts once the `partitions` table
+  holds it; from then on its rows are the truth.
+  - `sources` (timer and bus sources, with a timer's claimed run) and `subscriptions`:
+    `replace_sources` stores a partition's whole `SourceSet` in order, `sources` reads it.
+  - `kv`: `put_value` and `value`, one value per key in a partition.
+  - `crashes`: `append_crashes` adds records in order, `crashes` reads them; records are never
+    rewritten.
+  - `Origin::Written` always stores and holds the partition; `Origin::Imported` (the file and
+    its SHA-256) stores only while the partition is not held, so a second import or one racing
+    a write changes nothing. Each write is one transaction: a partition is never half-imported.
+  - `partition` and `partitions` (by scope prefix) say what is held and where it came from.
+
 ## Non-goals
 
 - What the lines mean: entry types, the branch tree, compaction. Those stay with the session
   code that reads them.
 - Which events are stored and which are live-only, and what a subscription does with an event.
   Those belong to the runtime.
+- What a partition's rows mean (a job, a schedule, a harness entry), and which file a partition
+  replaces. Those stay with the code that owns each store.
 - Settings, auth, models, skills, the spill store and checkpoints, which stay files.
 
 ## Public API
@@ -73,6 +89,9 @@ in it; the event log has no user yet.
   `remove_transcript`, `transcript`, `transcript_by_id`, `transcripts_in`, `all_transcripts`,
   `store_id`, `meta`, `set_meta`; `TranscriptRow`, `TranscriptChunk`, `NewTranscript`,
   `PutMode`, `AppendMode`, `MoveOutcome`.
+- Partitions: `partition`, `partitions`, `sources`, `replace_sources`, `value`, `put_value`,
+  `crashes`, `append_crashes`; `Partition`, `Origin`, `SourceSet`, `SourceRow`, `SourceKind`,
+  `SubscriptionRow`, `CrashRow`.
 - `Receipt`: `wait` and `wait_blocking` (which parks the thread, and so may run on a runtime's
   thread, as a blocking file write would).
 

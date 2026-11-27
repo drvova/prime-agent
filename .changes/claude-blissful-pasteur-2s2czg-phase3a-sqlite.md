@@ -1,0 +1,1 @@
+- The agent database (`agent.db`) moves to schema version 3, adding the tables that schedules, heartbeats, the event bus, the harness store, the reuse ledger and the crash log move into next; a build without them refuses the newer database rather than writing it.
