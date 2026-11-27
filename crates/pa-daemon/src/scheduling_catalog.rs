@@ -82,7 +82,7 @@ impl Supervisor {
     /// afterward, when workers registered during the scan are visible.
     fn scan_passive_candidates(agent_dir: &Path, include_inactive: bool) -> Vec<PassiveJob> {
         let mut out = Vec::new();
-        for job in crate::update_roster::scan_scheduled_jobs(agent_dir) {
+        for job in pa_core::update::restart::roster::scan_scheduled_jobs(agent_dir) {
             if !include_inactive && !matches!(job.status, JobStatus::Active | JobStatus::Paused) {
                 continue;
             }

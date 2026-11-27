@@ -154,6 +154,9 @@ fn session_options(log: &pa_log::Log, id: &str) -> crate::SessionOptions {
 pub struct DaemonOptions<B> {
     /// The agent dir: its database, settings and session leases.
     pub agent_dir: PathBuf,
+    /// The socket the daemon serves ([`socket_path`]): an update's prepared
+    /// roster is kept under its update dir (`daemon.prepare_update_restart`).
+    pub socket: PathBuf,
     /// Where new sessions' transcripts go (`<sessions dir>/<id>.jsonl`).
     pub session_dir: PathBuf,
     /// Where a session created without a `cwd` runs.
@@ -324,6 +327,17 @@ pub async fn run<B: SessionBuilder>(
     held::revive(&runtime, &open, &schedules, &options.agent_dir).await;
     let attached = Arc::new(Attached::default());
     let stop = Arc::new(handlers::DaemonStop::default());
+    let update = Arc::new(pa_core::update::restart::UpdateRestart::new(
+        options.agent_dir.clone(),
+        options.socket,
+        pa_types::daemon::UpdateTimeoutBudget::from_env(),
+        Box::new(|line: &str| tracing::info!("{line}")),
+    ));
+    // Aborts an update transaction whose budget passes with no call to see it.
+    let update_watchdog = {
+        let update = Arc::clone(&update);
+        tokio::spawn(async move { update.watchdog().await })
+    };
     let handlers = Arc::new(RuntimeHandlers::new(
         Arc::clone(&runtime),
         Arc::clone(&open),
@@ -331,6 +345,7 @@ pub async fn run<B: SessionBuilder>(
         Arc::clone(&attached),
         feeds,
         Arc::clone(&stop),
+        update,
         options.agent_dir.clone(),
         options.session_dir,
         options.cwd,
@@ -365,7 +380,7 @@ pub async fn run<B: SessionBuilder>(
         topic: Topic::new(SYSTEM_CLOSING)?,
         source: "runtime".to_string(),
         session: None,
-        payload: serde_json::json!({ "reason": "shutdown" }),
+        payload: stop.closing(),
         trust: Trust::Owner,
         cause: None,
         reply: None,
@@ -394,6 +409,8 @@ pub async fn run<B: SessionBuilder>(
     open.bashes.close_all().await;
     given_up.abort();
     let _ = given_up.await;
+    update_watchdog.abort();
+    let _ = update_watchdog.await;
     schedules.stop();
     drop(schedules);
     if let Ok(runtime) = Arc::try_unwrap(runtime) {

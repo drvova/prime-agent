@@ -196,6 +196,33 @@ state has been adopted. A definitive preparation refusal with no new manifest
 must allow another attempt. Queued actions must remain paused while the resumed
 continuation is admitted, so follow-up input cannot run ahead of that turn.
 
+### The runtime daemon
+
+The opt-in runtime daemon (`daemon2.sock`) serves the same Rust update
+transaction as the supervisor; both run `pa_core::update::restart`. Its
+wire2 calls are `daemon.prepare_update_restart {updateId, toVersion?}` and
+`daemon.commit_update_restart {updateId}`, whose results and refusals are
+the supervisor's `prepare_update_restart` and `commit_update_restart`
+responses' `data`, message and `errorInfo`, verbatim:
+
+- The prepare drains the calls in flight and writes `roster.json` and
+  `marker.json` under `daemon2.sock`'s own update dir. Its session rows are
+  the open sessions that keep a transcript (a running turn is `streaming`;
+  queued input is `steering`/`followUps`); it has no worker rows, because
+  the runtime's sessions run in its own process. Subagent and heartbeat rows
+  are the same as the supervisor's.
+- While the transaction is active, every mutating call and every input
+  publish is refused with `Daemon is preparing an update restart`
+  (`update_restarting`). The abort family still passes while the prepare
+  drains.
+- The commit answers `stopping` and then stops the daemon as
+  `daemon.shutdown` does. Its `system/closing` carries the update's
+  `daemon_closing` payload, and the compat layer gives it to old clients
+  unchanged. Each running turn is cut off, with the continuation prompt
+  queued at the front of its session's queue. The held sessions stay in the
+  agent database for the next daemon. The runtime's stop never refuses, so
+  a commit is never abandoned.
+
 ## Storage migration
 
 From this release, session transcripts are kept in one SQLite database,

@@ -60,7 +60,7 @@ struct Stopped {
 }
 
 /// The process's exit code, once it exits.
-fn exit_code(daemon: &mut Daemon) -> Option<i32> {
+pub(super) fn exit_code(daemon: &mut Daemon) -> Option<i32> {
     let deadline = Instant::now() + FRAME_WAIT;
     loop {
         if let Some(status) = daemon.0.try_wait().expect("poll the daemon") {
@@ -95,7 +95,7 @@ fn stop_frames(frames: &[Value]) -> Vec<Value> {
 
 /// The old daemon's scripted session in the bed's dir: its id and
 /// transcript.
-fn old_session(bed: &Bed, responses: &Value) -> (String, PathBuf) {
+pub(super) fn old_session(bed: &Bed, responses: &Value) -> (String, PathBuf) {
     let script = bed.dir.path().join("old-script.json");
     std::fs::write(
         &script,
@@ -148,7 +148,7 @@ fn old_stop(bed: &Bed, stop: Stop) -> Stopped {
 
 /// A compat client of the runtime daemon: it follows `system/closing` for
 /// the connection's life, as the compat layer's transport does.
-async fn closing_follower(socket: &Path) -> Client {
+pub(super) async fn closing_follower(socket: &Path) -> Client {
     let (mut client, _) = Client::connect(socket).await;
     client
         .send(&ClientFrame::Subscribe {
@@ -268,7 +268,7 @@ async fn a_stop_answers_tells_every_client_and_exits_as_on_the_old_daemon() {
 
 /// The turn the restart cuts off: its cell touches `started`, then waits on
 /// a program that outlasts the test.
-fn cut_off_turn() -> Value {
+pub(super) fn cut_off_turn() -> Value {
     json!([cell(
         "Running the long command.",
         "(bash \"touch started; /bin/sleep 600\")"
@@ -288,7 +288,7 @@ fn texts(page: &Value) -> Vec<String> {
 }
 
 /// Waits until `started` exists in the bed's dir: the cell runs.
-fn await_started(bed: &Bed) {
+pub(super) fn await_started(bed: &Bed) {
     let started = bed.dir.path().join("started");
     let deadline = Instant::now() + FRAME_WAIT;
     while !started.exists() {

@@ -230,7 +230,9 @@ the supervisor on the faux engine with a debug build's `PA_TUI_RECORD_INBOUND` t
 `runtime/roster`, `runtime/traffic`, `runtime/session_list/<request>`, and the live-only
 `system/closing` as `daemon_closing`) to the `DaemonOutbound` frames they stand for, the daemon's
 own `shutdown` and `restart` to the `daemon.shutdown` and `daemon.restart` calls (answered without
-`data`), the input
+`data`), the update coordinator's `prepare_update_restart` and `commit_update_restart` to the
+`daemon.prepare_update_restart` and `daemon.commit_update_restart` calls (their results the old
+`data`, an update's `system/closing` the old `daemon_closing` with its `payload`), the input
 commands to a publish on `agent/<id>/input`, `attach` to the `session.attach` call (it attaches
 the connection's client, and one declaring `user_questions` makes the session's kernel questions
 wait for it) and the session reads (`get_state`, `get_messages`) to the `session.snapshot` and

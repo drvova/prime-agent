@@ -262,7 +262,13 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   (`daemon_closing`; on wire2 the live-only `system/closing`, after which each connection is
   closed), cuts each session's running turn off with the continuation prompt
   (`pa_core::session::revival::UPDATE_RESTART_CONTINUATION_PROMPT`) queued at the front of its
-  queue, and exits 0; the next daemon revives the session for it. At
+  queue, and exits 0; the next daemon revives the session for it. The update coordinator's
+  prepare and commit (`prepare_update_restart`, `commit_update_restart`; on the runtime daemon
+  `daemon.prepare_update_restart` and `daemon.commit_update_restart`) are one transaction both
+  daemons share (`pa_core::update::restart`): the prepare drains the commands in flight and writes
+  the sessions' roster durably, every mutating command is refused while it is active, an expired
+  transaction aborts on its own, and the commit stops the daemon as above with the update's
+  `daemon_closing` payload. At
   boot a session that was mid-turn is revived, its interrupted turn continued or settled by
   what the transcript shows was saved, a command its kernel left running is reaped and
   reported to the model, and an idle session with an armed scheduled job is woken when the

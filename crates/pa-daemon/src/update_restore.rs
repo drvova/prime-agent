@@ -773,7 +773,7 @@ async fn continuation_treatment(
 /// whose session has no live worker — never wake them. A session that went down with the
 /// previous daemon is not dormant: its wake is armed (`supervisor/scheduled_wake.rs`).
 async fn report_dormant_scheduled_jobs(supervisor: &std::sync::Arc<Supervisor>) {
-    let jobs = crate::update_roster::scan_scheduled_jobs(&supervisor.options.agent_dir);
+    let jobs = pa_core::update::restart::roster::scan_scheduled_jobs(&supervisor.options.agent_dir);
     let now = crate::util::now_ms();
     let mut live = supervisor.live_session_files().await;
     live.extend(

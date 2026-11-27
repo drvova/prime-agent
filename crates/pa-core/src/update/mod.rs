@@ -10,10 +10,14 @@
 //! `PATH`-resolved interpreter), kept beside the staged flow the
 //! `package update` self target still serves. The `homebrew` detector
 //! lets CLI and TUI refuse package-manager installs before that funnel.
+//! The `restart` module is the daemon side of the update restart (the
+//! prepare transaction, its gate and commit, the roster), shared by the
+//! supervisor and the runtime daemon.
 
 pub mod download;
 pub mod homebrew;
 pub mod install;
 pub mod installer;
 pub mod release;
+pub mod restart;
 pub mod version;

@@ -70,6 +70,9 @@
 //!   and the next daemon's continuation), as the old daemon ends (phase
 //!   8d-5a): [`lifecycle`]; a kept daemon's `shutdown` is not restarted:
 //!   [`keeper`].
+//! - The update restart's prepare and commit (the gate, the roster, the
+//!   update's closing), as the old daemon answers and writes them (phase
+//!   8d-5b): [`update`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -98,6 +101,7 @@ mod support;
 mod switches;
 mod tree;
 mod turns;
+mod update;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

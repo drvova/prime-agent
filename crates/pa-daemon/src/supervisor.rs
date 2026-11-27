@@ -77,9 +77,9 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use futures::future::join_all;
 use pa_types::daemon::{
-    DaemonCommand, DaemonErrorInfo, DaemonOutbound, DaemonSessionLifecycle, DaemonWorkerDescriptor,
+    DaemonCommand, DaemonOutbound, DaemonSessionLifecycle, DaemonWorkerDescriptor,
     DaemonWorkerLifecycle, DurableDaemonCreateCommand, SnapshotPurpose, UpdateId,
-    UpdatePreparedMarker, UpdateTimeoutBudget,
+    UpdateTimeoutBudget,
 };
 use pa_types::platform::transport::{bind_transport, connect_transport, TransportStream};
 use serde_json::{json, Map, Value};
@@ -108,19 +108,10 @@ use crate::registry::{
 };
 use crate::saved_session_commands::{name_unavailable_error, reservation_key, NameScope};
 use crate::snapshot_stream::{attach_client_capabilities, stream_attach, wants_chunked};
-use crate::update_prepare::{
-    marker_expires_at_iso, update_gate_refuses, write_prepared_artifacts, AbortOutcome,
-    BeginOutcome, MutationDrainLatch, PrepareCoordinator, PrepareOp, UPDATE_PREPARING_MESSAGE,
-};
-use pa_core::session::catalog::list_sessions;
-// The drain-state machine that names it is the unix signal path.
-#[cfg(unix)]
-use crate::update_prepare::PrepareState;
-use crate::update_roster::{
-    build_update_roster, supervisor_identity, UpdateRosterInputs, WorkerSnapshot,
-};
+use crate::update_roster::{build_update_roster, WorkerSnapshot};
 use crate::update_stop::{stop_workers_gracefully, WorkerStopVerdict, WORKER_REQUEST_TIMEOUT_MS};
 use crate::{socket, util};
+use pa_core::session::catalog::list_sessions;
 
 pub struct Supervisor {
     pub(crate) options: SupervisorOptions,
@@ -209,14 +200,11 @@ pub struct Supervisor {
     rlm_ledger: tokio::sync::Mutex<
         Option<std::sync::Arc<pa_core::session_engine::rlm_ledger::RlmSpawnLedger>>,
     >,
-    /// The update-prepare transaction: at most one per supervisor;
-    /// empty = `Serving`.
-    update_prepare: PrepareCoordinator,
-    /// In-flight mutating-command counter feeding the prepare transaction's `Draining` wait.
-    mutation_drain: MutationDrainLatch,
-    /// Timeout budget of the update flow (`PRIME_AGENT_UPDATE_*_MS`
+    /// The update transaction (pa-core's, shared with the runtime daemon): at
+    /// most one prepare per supervisor, empty = `Serving`; its admission gate
+    /// and mutation drain, and the update budget (`PRIME_AGENT_UPDATE_*_MS`
     /// overridable for CI).
-    update_budget: UpdateTimeoutBudget,
+    update: pa_core::update::restart::UpdateRestart,
     /// The boot-time restore pass (spec §6): sweep + roster restore + scheduled-work
     /// re-arm; read by the hello resume contract and the `update_restore_status` RPC.
     pub(crate) restore: crate::update_restore::RestoreProgress,
@@ -301,6 +289,20 @@ impl Supervisor {
             descriptor_dir.join(crate::event_bus::EVENT_BUS_FILE_NAME),
             &log,
         );
+        let update = pa_core::update::restart::UpdateRestart::new(
+            options.agent_dir.clone(),
+            options.socket_path.clone(),
+            UpdateTimeoutBudget::from_env(),
+            {
+                let log = paths::RotatingLog::new(paths::daemon_log_path(
+                    &options.socket_path,
+                    &options.agent_dir,
+                ));
+                Box::new(move |line: &str| {
+                    log.append(&format!("[{}] {line}", util::now_iso()));
+                })
+            },
+        );
         Ok(Supervisor {
             admission,
             options,
@@ -328,9 +330,7 @@ impl Supervisor {
             shutdown_notify: tokio::sync::Notify::new(),
             log,
             rlm_ledger: tokio::sync::Mutex::new(None),
-            update_prepare: PrepareCoordinator::new(),
-            mutation_drain: MutationDrainLatch::new(),
-            update_budget: UpdateTimeoutBudget::from_env(),
+            update,
             restore: crate::update_restore::RestoreProgress::new(),
             input_pauses: crate::input_pause_lease::SupervisorPauseTable::default(),
             passive_catalog: std::sync::Mutex::new(None),
@@ -614,7 +614,7 @@ impl Supervisor {
         {
             let supervisor = Arc::clone(&self);
             tokio::spawn(async move {
-                supervisor.update_prepare_watchdog().await;
+                supervisor.update.watchdog().await;
             });
         }
 

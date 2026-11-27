@@ -126,6 +126,8 @@
 //! | `heartbeat_manage` | `session.manage_heartbeat` (an open or saved session) | `{heartbeat}` |
 //! | `shutdown` | `daemon.shutdown` (`force`; no session) | none |
 //! | `restart` | `daemon.restart` (no session) | none |
+//! | `prepare_update_restart` | `daemon.prepare_update_restart` (`updateId`, `toVersion`; no session) | `{updateId, state, acceptedAt, expiresAt?}` |
+//! | `commit_update_restart` | `daemon.commit_update_restart` (`updateId`; no session) | `{updateId, state, stopped}` |
 //!
 //! `attach` is the call `session.attach` with `session` (the command's `activeSessionId`),
 //! `clientId`, `capabilities` and `resumeCursor` (those it carries), whose reply's result is the
@@ -159,8 +161,10 @@
 //! transport follows it for the connection's life (subscription `compat:models`, `Since::Now`).
 //! So is `daemon_closing`, the live-only `system/closing` (subscription `compat:closing`,
 //! `Since::Now`): the runtime publishes it to every connection when it stops (its stop signal,
-//! `shutdown`, `restart`), after the reply to the call that stopped it, and then ends each
-//! connection with the wire's `closing`.
+//! `shutdown`, `restart`, an update's `commit_update_restart`), after the reply to the call that
+//! stopped it, and then ends each connection with the wire's `closing`. An update's closing is
+//! the old one whole: `reason: "update"` and its `payload` (`updateId`, `resume`, `estSeconds`,
+//! `sessions`).
 //!
 //! Every other command stays on the old wire.
 //!
@@ -947,6 +951,20 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
             return Ok(Outgoing::Call(ClientFrame::Call {
                 id: request_id,
                 method: "daemon.restart".to_string(),
+                args: command_args(&command, None)?,
+            }));
+        }
+        DaemonCommand::PrepareUpdateRestart { .. } => {
+            return Ok(Outgoing::Call(ClientFrame::Call {
+                id: request_id,
+                method: "daemon.prepare_update_restart".to_string(),
+                args: command_args(&command, None)?,
+            }));
+        }
+        DaemonCommand::CommitUpdateRestart { .. } => {
+            return Ok(Outgoing::Call(ClientFrame::Call {
+                id: request_id,
+                method: "daemon.commit_update_restart".to_string(),
                 args: command_args(&command, None)?,
             }));
         }

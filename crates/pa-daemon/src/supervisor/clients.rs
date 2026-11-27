@@ -4,11 +4,10 @@ use super::{
     app_version, broadcast, command_type_name, current_protocol_info,
     daemon_closing_shutdown_event, input_admission_id, json, parse_supervisor_command_line,
     response_failure, response_line, response_success, salvage_command_type, salvage_id,
-    subscribers, update_gate_refuses, util, Arc, AsyncBufReadExt, AsyncWriteExt, BufReader,
-    ClientRouting, DaemonCommand, DaemonOutbound, DaemonRuntimeIdentity, Duration,
-    EnvelopeParseError, Map, Ordering, Outbound, ResidentWorker, Result, RouteAdmission,
-    Supervisor, TransportStream, TypedCreateRejection, Value, DAEMON_SCHEMA_ID,
-    DAEMON_SCHEMA_REVISION, ROUTE_TIMEOUT_MS, UPDATE_PREPARING_MESSAGE,
+    subscribers, util, Arc, AsyncBufReadExt, AsyncWriteExt, BufReader, ClientRouting,
+    DaemonCommand, DaemonOutbound, DaemonRuntimeIdentity, Duration, EnvelopeParseError, Map,
+    Ordering, Outbound, ResidentWorker, Result, RouteAdmission, Supervisor, TransportStream,
+    TypedCreateRejection, Value, DAEMON_SCHEMA_ID, DAEMON_SCHEMA_REVISION, ROUTE_TIMEOUT_MS,
 };
 
 /// TS `OWNED_WORKER_DISCONNECT_GRACE_MS`: how long a client-owned worker
@@ -577,40 +576,32 @@ impl Supervisor {
                 false,
             );
         }
-        // Update-prepare watchdog on any later command (spec §5): an expired marker
-        // returns the supervisor to Serving before the command is served.
-        if let Some(abort) = self.update_prepare.abort_if_expired(util::now_ms()) {
-            self.finish_update_abort(&abort);
-        }
-        // Admission gate: mutating commands are refused while a prepare transaction is
-        // active, except the drain commands during `Draining`.
+        // The update gate (pa-core's, spec §5): an expired transaction returns the
+        // supervisor to Serving first; mutating commands are refused while a prepare
+        // transaction is active, except the drain commands during `Draining`, and the
+        // admitted ones count against its drain until they are answered.
         let is_update_driver = matches!(
             &envelope.command,
             DaemonCommand::PrepareUpdateRestart { .. } | DaemonCommand::CommitUpdateRestart { .. }
         );
-        if !is_update_driver {
-            if let Some(state) = self.update_prepare.active_state() {
-                if update_gate_refuses(state, &type_name) {
+        let _mutation = if is_update_driver {
+            None
+        } else {
+            match self.update.admit(&type_name) {
+                Ok(guard) => guard,
+                Err(refusal) => {
                     return (
                         vec![Outbound::Line(response_line(&response_failure(
                             Some(&command_id),
                             &type_name,
-                            UPDATE_PREPARING_MESSAGE,
-                            // The typed `update_restarting` info rides beside the plain message,
-                            // so clients can recognize the transient state and wait through it.
-                            Some(pa_types::daemon::DaemonErrorInfo::UpdateRestarting),
+                            &refusal.message,
+                            refusal.info,
                         )))],
                         false,
                     );
                 }
             }
-        }
-        // Mutating commands count against the prepare transaction's drain.
-        let mutating =
-            !is_update_driver && pa_types::daemon::is_daemon_mutating_command(&type_name);
-        if mutating {
-            self.mutation_drain.begin();
-        }
+        };
         let outcome = self
             .execute_parsed_command(
                 &envelope.command,
@@ -625,9 +616,6 @@ impl Supervisor {
                 stream,
             )
             .await;
-        if mutating {
-            self.mutation_drain.end();
-        }
         (
             outcome
                 .0

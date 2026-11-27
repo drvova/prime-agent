@@ -1312,3 +1312,86 @@ fn the_daemon_stops_are_calls_and_its_closing_comes_back() {
         )
     );
 }
+
+/// The update restart: `prepare_update_restart` and `commit_update_restart` are calls on no
+/// session whose results are the old `data`, a refusal keeps its `errorInfo`, and an update's
+/// `system/closing` comes back as the old `daemon_closing` whole, its payload included.
+#[test]
+fn the_update_calls_map_and_the_update_closing_comes_back_whole() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "prepare_update_restart", "updateId": "u-1", "toVersion": "9.9.9" }),
+        json!({ "type": "commit_update_restart", "updateId": "u-1" }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let call = |method: &str, args: Value| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args,
+        })
+    };
+    let payload = json!({
+        "reason": "update",
+        "payload": { "updateId": "u-1", "resume": true, "estSeconds": 75,
+                     "sessions": [{ "sessionId": "s-1", "name": "" }] },
+    });
+    let closing = Event {
+        id: EventId("live-9".to_string()),
+        seq: 0,
+        ts: 0,
+        event: NewEvent {
+            topic: Topic::new("system/closing").unwrap(),
+            source: "runtime".to_string(),
+            session: None,
+            payload: payload.clone(),
+            trust: Trust::Owner,
+            cause: None,
+            reply: None,
+        },
+    };
+    let committed = serde_json::to_value(response_from_reply(
+        "commit_update_restart",
+        None,
+        Outcome::Ok {
+            result: json!({ "updateId": "u-1", "state": "stopping", "stopped": 1 }),
+        },
+    ))
+    .unwrap();
+    let refused = serde_json::to_value(response_from_reply(
+        "prepare_update_restart",
+        None,
+        Outcome::Error {
+            message: "Daemon is already preparing an update restart".to_string(),
+            info: Some(json!({ "code": "update_prepare_refused", "activeUpdateId": "u-0" })),
+        },
+    ))
+    .unwrap();
+    let mut expected_closing = payload;
+    expected_closing["type"] = json!("daemon_closing");
+    assert_eq!(
+        (
+            frames,
+            committed,
+            refused,
+            serde_json::to_value(outbound_from_event(&closing, Delivery::Live).unwrap()).unwrap(),
+        ),
+        (
+            vec![
+                call(
+                    "daemon.prepare_update_restart",
+                    json!({ "updateId": "u-1", "toVersion": "9.9.9" })
+                ),
+                call("daemon.commit_update_restart", json!({ "updateId": "u-1" })),
+            ],
+            json!({ "type": "response", "command": "commit_update_restart", "success": true,
+                    "data": { "updateId": "u-1", "state": "stopping", "stopped": 1 } }),
+            json!({ "type": "response", "command": "prepare_update_restart", "success": false,
+                    "error": "Daemon is already preparing an update restart",
+                    "errorInfo": { "code": "update_prepare_refused", "activeUpdateId": "u-0" } }),
+            expected_closing,
+        )
+    );
+}

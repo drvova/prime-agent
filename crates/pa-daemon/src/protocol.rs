@@ -398,10 +398,7 @@ pub fn parse_supervisor_command_line(
 /// `None` when the platform has no procfs identity.
 #[must_use]
 pub fn process_start_id(pid: u32) -> Option<String> {
-    if pa_core::session::hosted::is_hosted_pid(pid) {
-        return pa_core::session::hosted::hosted_generation(pid);
-    }
-    pa_types::platform::process::process_start_id(pid)
+    pa_core::session::hosted::process_start_id(pid)
 }
 
 /// Build the daemon event meta (TS `createDaemonEventMeta`).
@@ -1243,7 +1240,7 @@ mod tests {
         let failure = response_failure(
             Some("k3"),
             "create",
-            crate::update_prepare::UPDATE_PREPARING_MESSAGE,
+            pa_types::daemon::UPDATE_RESTART_PREPARING_MESSAGE,
             Some(DaemonErrorInfo::UpdateRestarting),
         );
         assert_eq!(

@@ -764,14 +764,11 @@ async fn an_abandoned_updates_failed_relaunch_arms_supervision_again() {
     // snapshot phase: the update state machine is driven directly.
     let update_id = UpdateId::from("u-abandon".to_string());
     let budget = UpdateTimeoutBudget::from_env();
-    supervisor
-        .update_prepare
-        .begin(update_id.clone(), util::now_ms(), &budget);
-    supervisor.update_prepare.drain_complete(&update_id);
-    supervisor
-        .update_prepare
-        .snapshot_written(&update_id, util::now_ms(), &budget);
-    supervisor.update_prepare.prepare_acked(&update_id);
+    let coordinator = supervisor.update.coordinator();
+    coordinator.begin(update_id.clone(), util::now_ms(), &budget);
+    coordinator.drain_complete(&update_id);
+    coordinator.snapshot_written(&update_id, util::now_ms(), &budget);
+    coordinator.prepare_acked(&update_id);
     let command = DaemonCommand::CommitUpdateRestart {
         id: None,
         update_id: Some("u-abandon".to_string()),
@@ -1859,18 +1856,15 @@ async fn a_signal_during_an_in_flight_shutdown_forces() {
     let supervisor = Arc::new(Supervisor::new(options).expect("supervisor"));
     let update_id = UpdateId::from("u-signal".to_string());
     let budget = UpdateTimeoutBudget::from_env();
-    supervisor
-        .update_prepare
-        .begin(update_id.clone(), util::now_ms(), &budget);
-    supervisor.update_prepare.drain_complete(&update_id);
-    supervisor
-        .update_prepare
-        .snapshot_written(&update_id, util::now_ms(), &budget);
-    supervisor.update_prepare.prepare_acked(&update_id);
-    supervisor.update_prepare.commit(&update_id);
+    let coordinator = supervisor.update.coordinator();
+    coordinator.begin(update_id.clone(), util::now_ms(), &budget);
+    coordinator.drain_complete(&update_id);
+    coordinator.snapshot_written(&update_id, util::now_ms(), &budget);
+    coordinator.prepare_acked(&update_id);
+    coordinator.commit(&update_id);
     assert_eq!(
-        supervisor.update_prepare.active_state(),
-        Some(PrepareState::Stopping),
+        coordinator.active_state(),
+        Some(pa_core::update::restart::PrepareState::Stopping),
         "the transaction reached the committed stop window"
     );
     assert!(

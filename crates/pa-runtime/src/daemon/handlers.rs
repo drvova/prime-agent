@@ -58,6 +58,7 @@ mod state;
 mod summary;
 mod switches;
 mod tree;
+mod update;
 
 /// The most entries one `transcript.page` returns, and how many it returns
 /// when the client names no `limit`.
@@ -85,10 +86,13 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     branch_summaries: tree::BranchSummaries,
     /// The side runs (`/btw`, `/better`) of the open sessions.
     side_runs: side_runs::SessionSideRuns,
-    /// The daemon's own end (`daemon.shutdown`, `daemon.restart`, or the
-    /// embedder's stop signal): once it is begun, every query and call is
-    /// refused.
+    /// The daemon's own end (`daemon.shutdown`, `daemon.restart`,
+    /// `daemon.commit_update_restart`, or the embedder's stop signal): once
+    /// it is begun, every query and call is refused.
     stop: Arc<DaemonStop>,
+    /// The update restart's transaction (`handlers/update.rs`): its gate is
+    /// in front of every call and publish.
+    update: Arc<pa_core::update::restart::UpdateRestart>,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -106,6 +110,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         attached: Arc<Attached>,
         feeds: Arc<Feeds>,
         stop: Arc<DaemonStop>,
+        update: Arc<pa_core::update::restart::UpdateRestart>,
         agent_dir: PathBuf,
         session_dir: PathBuf,
         cwd: PathBuf,
@@ -121,6 +126,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             branch_summaries: tree::BranchSummaries::default(),
             side_runs: side_runs::SessionSideRuns::default(),
             stop,
+            update,
             agent_dir,
             session_dir,
             cwd,
@@ -538,6 +544,11 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
         connection: ConnectionId,
     ) -> anyhow::Result<Value> {
         anyhow::ensure!(!self.stop.stopping(), "{}", lifecycle::SHUTTING_DOWN);
+        // The update gate: held until the call is answered.
+        let _mutation = match update::gated_as(call) {
+            Some(command) => update::admit(&self.update, command)?,
+            None => None,
+        };
         match call {
             Call::SessionCreate => self.create(args, connection).await,
             Call::SessionStop => self.stop(&args).await,
@@ -609,6 +620,8 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionManageHeartbeat => self.manage_heartbeat(&args).await,
             Call::DaemonShutdown => self.stop_daemon(&args, "shutdown", connection),
             Call::DaemonRestart => self.stop_daemon(&args, "restart", connection),
+            Call::DaemonPrepareUpdateRestart => self.prepare_update_restart(&args).await,
+            Call::DaemonCommitUpdateRestart => self.commit_update_restart(&args),
         }
     }
 
@@ -620,6 +633,10 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
         }
         self.abort_connection_side_runs(connection);
         self.end_owned_sessions(connection).await;
+    }
+
+    fn admit_publish(&self, topic: &pa_types::event_log::Topic) -> anyhow::Result<()> {
+        self.admit_input(topic)
     }
 }
 

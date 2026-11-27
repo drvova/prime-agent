@@ -658,6 +658,20 @@ SQLite implementations over `pa-log`.
   ephemeral one), the connections get 5 s to send what they hold, then the sessions close and the
   process exits 0. The held sessions stay in the database, so the next daemon revives a session
   with that queued continuation as one the daemon died between turns of (no crash recorded).
+  **The update restart** (`daemon/handlers/update.rs`, on pa-core's `update::restart`, the old
+  supervisor's transaction): `daemon.prepare_update_restart {updateId, toVersion?}` and
+  `daemon.commit_update_restart {updateId}` answer the old `data` and refusals verbatim. The
+  prepare drains the calls in flight, then writes the roster of every open session that keeps a
+  transcript (its transcript and working directory, a running turn as `streaming`, its queued
+  tasks as `steering`/`followUps`, its live subagents; pa-core's subagent and heartbeat rows; no
+  worker rows) and the marker under `daemon2.sock`'s update dir. While a transaction is active the
+  gate refuses every mutating call (each call gated as the old command it is) and every input
+  publish (`Handlers::admit_publish`) with `Daemon is preparing an update restart` and
+  `update_restarting`, the abort family excepted while it drains; the watchdog aborts an expired
+  transaction. The commit answers `{updateId, state: "stopping", stopped}` and stops the daemon as
+  `daemon.shutdown` does, its `system/closing` carrying the old `daemon_closing`'s update payload
+  (`reason: "update"`, `payload: {updateId, resume, estSeconds, sessions}`); the runtime's stop
+  never refuses, so a commit is never abandoned.
   **Scheduled jobs** (`daemon/schedules.rs`): a daemon session's kernel serves `schedule.*` and
   `rlm_heartbeat.*` on pa-core's job store (the session's `session-artifacts/<id>` partition,
   the old daemon's rows), bound through `SessionSeams::scheduled_jobs`. Each active job has a

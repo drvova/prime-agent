@@ -90,6 +90,16 @@ pub fn hosted_generation(pid: u32) -> Option<String> {
         .cloned()
 }
 
+/// The start identity of `pid`: a hosted lifetime's generation while it runs
+/// here, else the process's start id (the TS `getProcessStartId` contract).
+#[must_use]
+pub fn process_start_id(pid: u32) -> Option<String> {
+    if is_hosted_pid(pid) {
+        return hosted_generation(pid);
+    }
+    pa_types::platform::process::process_start_id(pid)
+}
+
 /// The id the calling session records as its owner pid: its hosted id inside
 /// a hosted session, the process id anywhere else.
 #[must_use]

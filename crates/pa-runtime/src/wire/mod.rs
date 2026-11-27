@@ -27,7 +27,9 @@
 //!   `admission` when the publish's routes announced its task on
 //!   `agent/<id>/accepted` (an `AgentAccepted`, as the runtime's input route
 //!   does): a client that publishes a prompt and waits for it waits for that
-//!   task's `agent/<id>/done`. Publishes are handled in the order sent.
+//!   task's `agent/<id>/done`. Publishes are handled in the order sent, each
+//!   admitted first by the handlers (`Handlers::admit_publish`: the runtime
+//!   daemon's update gate refuses input while an update prepares).
 //! - **Attached.** While one of a connection's subscriptions matches a
 //!   session's `agent/<id>/done`, the connection is one of the session's
 //!   attached clients (`attached`), as the session list counts them.
@@ -305,7 +307,23 @@ where
                 }
                 ClientFrame::Publish { id, topic, payload } => {
                     let session = topic.levels().nth(1).map(str::to_string);
-                    let outcome = if self.client_topics.iter().any(|f| f.matches(&topic)) {
+                    let outcome = if !self.client_topics.iter().any(|f| f.matches(&topic)) {
+                        Outcome::Error {
+                            message: format!(
+                                "clients may publish only on {}, not {topic}",
+                                CLIENT_TOPICS.join(", ")
+                            ),
+                            info: None,
+                        }
+                    } else if let Err(error) = self.handlers.admit_publish(&topic) {
+                        Outcome::Error {
+                            info: error
+                                .chain()
+                                .find_map(|cause| cause.downcast_ref::<ErrorWithInfo>())
+                                .map(|answer| answer.info.clone()),
+                            message: format!("{error:#}"),
+                        }
+                    } else {
                         let event = NewEvent {
                             topic,
                             source: client.clone(),
@@ -331,14 +349,6 @@ where
                                 message: format!("the event was not published: {error:#}"),
                                 info: None,
                             },
-                        }
-                    } else {
-                        Outcome::Error {
-                            message: format!(
-                                "clients may publish only on {}, not {topic}",
-                                CLIENT_TOPICS.join(", ")
-                            ),
-                            info: None,
                         }
                     };
                     out.send(ServerFrame::Reply { id, outcome })

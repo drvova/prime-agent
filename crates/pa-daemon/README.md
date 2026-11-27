@@ -218,7 +218,7 @@ round-trips through a real worker session and kernel - the kernel cell's
 session's host handlers, spawn the fixture
 (`tests/fixtures/mcp_echo_server.py`), and echo back.
 
-Update-prepare transaction (`update_prepare.rs`): the supervisor-side FSM
+Update-prepare transaction (pa-core's `update::restart`, shared with the runtime daemon; the supervisor's residents' snapshot and stop are `supervisor/update_restart.rs`): the FSM
 `Draining -> Fenced -> Snapshotted -> Prepared -> Stopping` with the
 mutation-drain latch + admission gate (mutating commands refused with
 "Daemon is preparing an update restart" while active; reads/attach and the
@@ -229,8 +229,8 @@ re-checked on a timer and on any later command — idempotent
 the coordinator maps to Join), and `Aborted -> Serving` with prepared-dir
 cleanup as the failure default. The prepare RPC drives accept
 through the mutation drain to `Fenced`, snapshots every resident worker
-(`update_snapshot`, `worker.rs`), assembles the roster (`update_roster.rs`:
-sessions/workers/subagents from the ledger + displays, heartbeats as a
+(`update_snapshot`, `worker.rs`), assembles the roster (`update_roster.rs`'s session and worker
+rows, pa-core's `update::restart::roster` for subagents from the ledger + displays and heartbeats as a
 read-only `scheduled-jobs.json` projection), writes
 `prepared/<id>/{roster,marker}.json` durably, and acks `Prepared` — all
 inside the prepare budget. `commit_update_restart` consumes the

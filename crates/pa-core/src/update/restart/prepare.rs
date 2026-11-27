@@ -1,4 +1,4 @@
-//! The supervisor's update-prepare transaction: `Draining -> Fenced -> Snapshotted
+//! The daemon's update-prepare transaction (both daemons'): `Draining -> Fenced -> Snapshotted
 //! -> Prepared -> Stopping`, with `Aborted -> Serving` as the recovery path of last resort.
 //! A transaction with watchdogs (spec §2): expiry aborts, deletes the prepared artifacts, and
 //! returns the supervisor to `Serving`.
@@ -16,13 +16,12 @@ use pa_types::daemon::{
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use crate::util::now_ms;
-use pa_core::session::manager::iso_from_unix_ms;
+use crate::session::manager::iso_from_unix_ms;
 
 /// Wire names of the supervisor-side prepare states (TS `draining`/`prepared`
 /// phases, extended with the spec's `fenced`/`snapshotted`/`stopping`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PrepareState {
+pub enum PrepareState {
     /// Prepare accepted; waiting for in-flight mutations to drain.
     Draining,
     /// Mutations drained; a stable point to snapshot from.
@@ -37,7 +36,8 @@ pub(crate) enum PrepareState {
 }
 
 impl PrepareState {
-    pub(crate) fn wire_name(self) -> &'static str {
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
         match self {
             PrepareState::Draining => "draining",
             PrepareState::Fenced => "fenced",
@@ -61,7 +61,7 @@ impl PrepareState {
 
 /// Why an active prepare transaction was aborted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AbortReason {
+pub enum AbortReason {
     /// The hard prepare budget (`T_prepare`, 90 s default) expired while
     /// `Draining`, `Fenced`, or `Snapshotted`.
     PrepareDeadlineExceeded,
@@ -74,7 +74,8 @@ pub(crate) enum AbortReason {
 }
 
 impl AbortReason {
-    pub(crate) fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             AbortReason::PrepareDeadlineExceeded => "prepare_deadline_exceeded",
             AbortReason::PreparedExpired => "prepared_expired",
@@ -86,10 +87,10 @@ impl AbortReason {
 /// The outcome of an abort: the aborted update plus whether its prepared
 /// artifacts need deletion on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AbortOutcome {
-    pub(crate) update_id: UpdateId,
-    pub(crate) delete_prepared: bool,
-    pub(crate) reason: AbortReason,
+pub struct AbortOutcome {
+    pub update_id: UpdateId,
+    pub delete_prepared: bool,
+    pub reason: AbortReason,
 }
 
 /// The prepare transaction of one `update_id`: all transitions are legality-checked (a driver bug
@@ -194,26 +195,26 @@ impl PrepareTransaction {
 
 /// The marker's `expires_at` (epoch ms) for a snapshot taken at `now_ms`.
 /// One definition shared by the artifact writer and the state transition.
-pub(crate) fn marker_expiry_ms(now_ms: u64, budget: &UpdateTimeoutBudget) -> u64 {
+pub(super) fn marker_expiry_ms(now_ms: u64, budget: &UpdateTimeoutBudget) -> u64 {
     now_ms + budget.prepared_expiry_ms
 }
 
 /// ISO timestamp of a marker expiry (the string written into `marker.json`).
-pub(crate) fn marker_expires_at_iso(now_ms: u64, budget: &UpdateTimeoutBudget) -> String {
+pub(super) fn marker_expires_at_iso(now_ms: u64, budget: &UpdateTimeoutBudget) -> String {
     iso_from_unix_ms(marker_expiry_ms(now_ms, budget))
 }
 
 /// The coordinator-facing transaction manager: at most one active
 /// transaction per supervisor; `Serving` is the empty state.
 #[derive(Debug, Default)]
-pub(crate) struct PrepareCoordinator {
+pub struct PrepareCoordinator {
     inner: Mutex<Option<PrepareTransaction>>,
     /// Woken whenever a transition moves the watchdog budget.
     watchdog_moved: tokio::sync::Notify,
 }
 
 /// Result of [`PrepareCoordinator::begin`].
-pub(crate) enum BeginOutcome {
+pub enum BeginOutcome {
     /// A new transaction started in `Draining`.
     Started {
         accepted_at_ms: u64,
@@ -232,7 +233,7 @@ pub(crate) enum BeginOutcome {
 
 /// Result of a driver operation against the active transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PrepareOp {
+pub enum PrepareOp {
     /// Applied; carries the new state.
     Applied(PrepareState),
     /// No matching transaction: it aborted (watchdog) or never existed.
@@ -240,14 +241,18 @@ pub(crate) enum PrepareOp {
 }
 
 impl PrepareCoordinator {
-    pub(crate) fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self::default()
     }
 
     /// Run one operation on the transaction slot, waking the expiry wait
     /// when the operation moved the watchdog budget.
     fn modify<R>(&self, operation: impl FnOnce(&mut Option<PrepareTransaction>) -> R) -> R {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let before = inner.as_ref().and_then(PrepareTransaction::watchdog);
         let output = operation(&mut inner);
         if inner.as_ref().and_then(PrepareTransaction::watchdog) != before {
@@ -258,7 +263,7 @@ impl PrepareCoordinator {
 
     /// Accept a prepare request (idempotent on `update_id`, refusing any
     /// other id while active).
-    pub(crate) fn begin(
+    pub fn begin(
         &self,
         update_id: UpdateId,
         now_ms: u64,
@@ -286,7 +291,7 @@ impl PrepareCoordinator {
 
     /// Watchdog poll: abort an active transaction whose budget expired.
     /// Called when the expiry wait fires and on any later command (spec §5).
-    pub(crate) fn abort_if_expired(&self, now_ms: u64) -> Option<AbortOutcome> {
+    pub fn abort_if_expired(&self, now_ms: u64) -> Option<AbortOutcome> {
         self.modify(|inner| {
             let (deadline_ms, reason) = inner.as_ref()?.watchdog()?;
             if now_ms < deadline_ms {
@@ -298,7 +303,7 @@ impl PrepareCoordinator {
 
     /// Driver abort (failure default - rollback over retry). Idempotent:
     /// a second abort for the same id finds nothing and returns `None`.
-    pub(crate) fn abort(&self, update_id: &UpdateId) -> Option<AbortOutcome> {
+    pub fn abort(&self, update_id: &UpdateId) -> Option<AbortOutcome> {
         self.modify(|inner| match inner.as_ref() {
             Some(active) if *active.update_id() == *update_id => {
                 // The stop protocol owns `Stopping` from here on; the driver
@@ -313,12 +318,12 @@ impl PrepareCoordinator {
     }
 
     /// `Draining -> Fenced` for the named transaction.
-    pub(crate) fn drain_complete(&self, update_id: &UpdateId) -> PrepareOp {
+    pub fn drain_complete(&self, update_id: &UpdateId) -> PrepareOp {
         self.apply(update_id, PrepareTransaction::drain_complete)
     }
 
     /// `Fenced -> Snapshotted` for the named transaction; the caller wrote the artifacts first.
-    pub(crate) fn snapshot_written(
+    pub fn snapshot_written(
         &self,
         update_id: &UpdateId,
         now_ms: u64,
@@ -330,13 +335,13 @@ impl PrepareCoordinator {
     }
 
     /// `Snapshotted -> Prepared` for the named transaction.
-    pub(crate) fn prepare_acked(&self, update_id: &UpdateId) -> PrepareOp {
+    pub fn prepare_acked(&self, update_id: &UpdateId) -> PrepareOp {
         self.apply(update_id, PrepareTransaction::prepare_acked)
     }
 
     /// `Prepared -> Stopping` for the named transaction; idempotent while
     /// already `Stopping` (the coordinator may poll the commit).
-    pub(crate) fn commit(&self, update_id: &UpdateId) -> PrepareOp {
+    pub fn commit(&self, update_id: &UpdateId) -> PrepareOp {
         self.modify(|inner| {
             let Some(transaction) = inner.as_mut() else {
                 return PrepareOp::NotActive;
@@ -356,7 +361,7 @@ impl PrepareCoordinator {
 
     /// `Stopping -> Aborted` (spec §5's `worker budget exceeded -> Aborted`): only the stop driver
     /// may take the transaction; the prepared artifacts are garbage and must be deleted.
-    pub(crate) fn abandon_stopping(&self, update_id: &UpdateId) -> Option<AbortOutcome> {
+    pub fn abandon_stopping(&self, update_id: &UpdateId) -> Option<AbortOutcome> {
         self.modify(|inner| match inner.as_ref() {
             Some(transaction)
                 if *transaction.update_id() == *update_id
@@ -392,13 +397,13 @@ impl PrepareCoordinator {
     /// watchdog exit). One waiter only (the supervisor's watchdog task):
     /// a transition that lands while no one is parked leaves a
     /// `notify_one` permit, which the next wait consumes.
-    pub(crate) async fn wait_for_expiry(&self) -> AbortOutcome {
+    pub async fn wait_for_expiry(&self) -> AbortOutcome {
         loop {
             let moved = self.watchdog_moved.notified();
             let watchdog = self
                 .inner
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
                 .and_then(PrepareTransaction::watchdog);
             let Some((deadline_ms, _)) = watchdog else {
@@ -419,24 +424,19 @@ impl PrepareCoordinator {
     }
 
     /// The state of the active transaction, if any.
-    pub(crate) fn active_state(&self) -> Option<PrepareState> {
+    pub fn active_state(&self) -> Option<PrepareState> {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(PrepareTransaction::state)
     }
 
     /// The active transaction's update id, if any.
-    /// Reader: the coordinator slice.
-    #[expect(
-        dead_code,
-        reason = "the coordinator slice reads it; until then nothing calls it"
-    )]
-    pub(crate) fn active_update_id(&self) -> Option<UpdateId> {
+    pub fn active_update_id(&self) -> Option<UpdateId> {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(|t| t.update_id().clone())
     }
@@ -454,14 +454,10 @@ fn take_locked(
     })
 }
 
-/// TS message for a mutating command refused by the admission gate
-/// (owned by `pa_types::daemon` for the TUI's exact-message fallback).
-pub(crate) use pa_types::daemon::UPDATE_RESTART_PREPARING_MESSAGE as UPDATE_PREPARING_MESSAGE;
-
 /// The admission gate verdict (spec §5): mutating commands are refused
 /// while `Draining..Prepared`, except the abort-family drain commands,
 /// which TS lets through during `Draining` (they shorten the drain).
-pub(crate) fn update_gate_refuses(state: PrepareState, command_type: &str) -> bool {
+pub(super) fn update_gate_refuses(state: PrepareState, command_type: &str) -> bool {
     if !is_daemon_mutating_command(command_type) {
         return false;
     }
@@ -470,43 +466,56 @@ pub(crate) fn update_gate_refuses(state: PrepareState, command_type: &str) -> bo
 
 /// The prepared directory for one update under the socket's scratch dir.
 /// `socket_hash` is the sha256 hex of the normalized socket path.
-pub(crate) fn prepared_dir(agent_dir: &Path, socket_hash: &str, update_id: &UpdateId) -> PathBuf {
+pub(super) fn prepared_dir(agent_dir: &Path, socket_hash: &str, update_id: &UpdateId) -> PathBuf {
     prepared_dir_of(&socket_update_dir(agent_dir, socket_hash), update_id)
 }
 
 /// Write `roster.json` + `marker.json` durably into the prepared dir (one atomic 0600 write per
 /// file, fsync before rename); call this between `Fenced` and the `Snapshotted`, then ack.
-pub(crate) fn write_prepared_artifacts(
+pub(super) fn write_prepared_artifacts(
     prepared_dir: &Path,
     roster: &UpdateRoster,
     marker: &UpdatePreparedMarker,
 ) -> Result<()> {
     std::fs::create_dir_all(prepared_dir)
         .with_context(|| format!("create {}", prepared_dir.display()))?;
-    crate::descriptor::write_file_atomic(
+    write_private_synced(
         &prepared_dir.join("roster.json"),
         &serde_json::to_string_pretty(roster)?,
     )?;
-    crate::descriptor::write_file_atomic(
+    write_private_synced(
         &prepared_dir.join("marker.json"),
         &serde_json::to_string_pretty(marker)?,
     )
 }
 
-/// Read the prepared marker back (expired markers are the coordinator's
-/// refusal); `None` if absent or unparseable.
-#[allow(
-    dead_code,
-    reason = "only the tests read the marker until the graceful-stop slice wires the writers"
-)]
-pub(crate) fn read_prepared_marker(prepared_dir: &Path) -> Option<UpdatePreparedMarker> {
-    let content = std::fs::read_to_string(prepared_dir.join("marker.json")).ok()?;
-    serde_json::from_str(&content).ok()
+/// One owner-only file, its temp file synced before the rename onto `path`.
+fn write_private_synced(path: &Path, content: &str) -> Result<()> {
+    pa_types::platform::replace_file(
+        path,
+        content.as_bytes(),
+        pa_types::platform::ReplaceOptions {
+            durability: pa_types::platform::Durability::SyncFile,
+            mode: pa_types::platform::FileMode::Private,
+            symlinks: pa_types::platform::Symlinks::ReplaceLink,
+        },
+    )
+    .with_context(|| format!("persist {}", path.display()))
+}
+
+/// Epoch milliseconds now (the budgets are wall-clock: durable in `marker.json`).
+#[must_use]
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// Delete the prepared dir; idempotent (the supervisor's self-expiry and the
 /// coordinator's post-restore cleanup both run, and both must be safe).
-pub(crate) fn delete_prepared_dir(prepared_dir: &Path) -> Result<()> {
+pub(super) fn delete_prepared_dir(prepared_dir: &Path) -> Result<()> {
     match std::fs::remove_dir_all(prepared_dir) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -517,25 +526,32 @@ pub(crate) fn delete_prepared_dir(prepared_dir: &Path) -> Result<()> {
 /// Counts in-flight mutating commands so `Draining` can wait for them
 /// (TS `MutationDrainLatch`): the wait is cancel-safe and race-free.
 #[derive(Clone)]
-pub(crate) struct MutationDrainLatch {
+pub struct MutationDrainLatch {
     active: watch::Sender<u64>,
 }
 
+impl Default for MutationDrainLatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MutationDrainLatch {
-    pub(crate) fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         MutationDrainLatch {
             active: watch::Sender::new(0),
         }
     }
 
-    pub(crate) fn begin(&self) {
+    pub fn begin(&self) {
         self.active.send_if_modified(|count| {
             *count += 1;
             true
         });
     }
 
-    pub(crate) fn end(&self) {
+    pub fn end(&self) {
         self.active.send_if_modified(|count| {
             *count = count.saturating_sub(1);
             true
@@ -544,7 +560,11 @@ impl MutationDrainLatch {
 
     /// Wait until at most `remaining` mutations are in flight, or fail with
     /// the TS message when the deadline passes.
-    pub(crate) async fn wait_for_drain(&self, remaining: u64, deadline: Instant) -> Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// The deadline passed with more than `remaining` in flight.
+    pub async fn wait_for_drain(&self, remaining: u64, deadline: Instant) -> Result<()> {
         const ABORT_MESSAGE: &str = "Timed out draining daemon mutations for update restart";
         let mut receiver = self.active.subscribe();
         let drained = receiver.wait_for(|count| *count <= remaining);
@@ -571,6 +591,12 @@ mod tests {
     use super::*;
     use pa_types::daemon::{update_marker_path, update_roster_path, UpdateSupervisorIdentity};
     use serde_json::Map;
+
+    /// The prepared marker read back; `None` if absent or unparseable.
+    fn read_prepared_marker(prepared_dir: &Path) -> Option<UpdatePreparedMarker> {
+        let content = std::fs::read_to_string(prepared_dir.join("marker.json")).ok()?;
+        serde_json::from_str(&content).ok()
+    }
 
     fn budget() -> UpdateTimeoutBudget {
         // CI-scale budgets keep every test sub-second.

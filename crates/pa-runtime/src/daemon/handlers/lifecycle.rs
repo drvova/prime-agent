@@ -1,7 +1,8 @@
 //! The daemon's own end, asked for by a client: `daemon.shutdown` and
 //! `daemon.restart`, the old supervisor's `shutdown` and `restart`, which
 //! end it the same way (the client that asked for a restart starts the
-//! next daemon).
+//! next daemon); an update's commit (`handlers/update.rs`) ends it the same
+//! way too, its `system/closing` carrying the update's payload.
 //!
 //! The call is answered first, then the stop is requested
 //! (`crate::wire::after_reply`), so the client that asked reads its reply
@@ -41,6 +42,9 @@ const DRAIN_HOLD: &str = "daemon-stop";
 pub(in crate::daemon) struct DaemonStop {
     requested: Notify,
     stopping: AtomicBool,
+    /// What `system/closing` says when it is not a plain shutdown: an
+    /// update's commit sets its `daemon_closing` payload.
+    closing: std::sync::Mutex<Option<Value>>,
 }
 
 impl DaemonStop {
@@ -58,6 +62,14 @@ impl DaemonStop {
     /// Whether the daemon is stopping.
     pub(in crate::daemon) fn stopping(&self) -> bool {
         self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// What the drain's `system/closing` carries: the old `daemon_closing`
+    /// frame without its `type`.
+    pub(in crate::daemon) fn closing(&self) -> Value {
+        crate::lock(&self.closing)
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({ "reason": "shutdown" }))
     }
 }
 
@@ -82,10 +94,17 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             .client_of(connection)
             .replace(['\n', '\r'], " ");
         tracing::info!("{call} requested by client {client}");
+        self.request_stop(serde_json::json!({ "reason": "shutdown" }));
+        Ok(Value::Null)
+    }
+
+    /// Begins the stop now, `system/closing` to carry `closing`, and
+    /// requests it once the reply being answered is queued.
+    pub(super) fn request_stop(&self, closing: Value) {
+        *crate::lock(&self.stop.closing) = Some(closing);
         self.stop.begin();
         let stop = Arc::clone(&self.stop);
         crate::wire::after_reply(move || stop.requested.notify_one());
-        Ok(Value::Null)
     }
 
     /// The drain's cut: every open session's lane is held, so nothing queued

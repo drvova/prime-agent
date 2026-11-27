@@ -62,6 +62,10 @@ impl Handlers for Echo {
     fn disconnected(&self, _connection: ConnectionId) -> impl Future<Output = ()> + Send {
         std::future::ready(())
     }
+
+    fn admit_publish(&self, _topic: &pa_types::event_log::Topic) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// A log whose next `since` or `before` read can be held at a sync point.

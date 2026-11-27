@@ -346,6 +346,14 @@ pub enum Call {
     /// `daemon.restart`: the old daemon's `restart`, which stops it exactly
     /// as `daemon.shutdown` does; the client that asked starts the next one.
     DaemonRestart,
+    /// `daemon.prepare_update_restart`: the old daemon's
+    /// `prepare_update_restart`, the update coordinator's prepare (the
+    /// sessions' roster written for the next daemon).
+    DaemonPrepareUpdateRestart,
+    /// `daemon.commit_update_restart`: the old daemon's
+    /// `commit_update_restart`, which stops the daemon for the update once
+    /// answered.
+    DaemonCommitUpdateRestart,
 }
 
 impl FromStr for Call {
@@ -417,6 +425,8 @@ impl FromStr for Call {
             "session.manage_heartbeat" => Call::SessionManageHeartbeat,
             "daemon.shutdown" => Call::DaemonShutdown,
             "daemon.restart" => Call::DaemonRestart,
+            "daemon.prepare_update_restart" => Call::DaemonPrepareUpdateRestart,
+            "daemon.commit_update_restart" => Call::DaemonCommitUpdateRestart,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",
@@ -480,6 +490,15 @@ pub trait Handlers: Send + Sync + 'static {
     /// what its calls made it hold. Called once per connection, after its
     /// last call.
     fn disconnected(&self, connection: ConnectionId) -> impl Future<Output = ()> + Send;
+
+    /// Whether a client's publish on `topic` (one of the client topics) may
+    /// go ahead now; asked before it is published, and an error refuses it
+    /// with its message. It must not block.
+    ///
+    /// # Errors
+    ///
+    /// The publish is refused now (the runtime daemon's update gate).
+    fn admit_publish(&self, topic: &pa_types::event_log::Topic) -> anyhow::Result<()>;
 }
 
 /// Shared handlers answer as the handlers they share: the runtime daemon's
@@ -504,5 +523,9 @@ impl<H: Handlers> Handlers for std::sync::Arc<H> {
 
     fn disconnected(&self, connection: ConnectionId) -> impl Future<Output = ()> + Send {
         H::disconnected(self, connection)
+    }
+
+    fn admit_publish(&self, topic: &pa_types::event_log::Topic) -> anyhow::Result<()> {
+        H::admit_publish(self, topic)
     }
 }

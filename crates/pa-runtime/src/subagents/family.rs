@@ -66,7 +66,7 @@ impl DaemonFamily {
     }
 
     /// Runs `write` on the ledger on the blocking pool.
-    async fn on_ledger<T: Send + 'static>(
+    pub(crate) async fn on_ledger<T: Send + 'static>(
         &self,
         write: impl FnOnce(&RlmSpawnLedger) -> anyhow::Result<T> + Send + 'static,
     ) -> anyhow::Result<T> {

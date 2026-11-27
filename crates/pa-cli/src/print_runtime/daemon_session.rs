@@ -212,6 +212,7 @@ pub(crate) fn run_runtime_daemon(
         let served = pa_runtime::daemon::run(
             listener,
             pa_runtime::daemon::DaemonOptions {
+                socket: socket.clone(),
                 session_dir: super::replacement_session_dir(options),
                 cwd: options.config.cwd.clone(),
                 selected: {
