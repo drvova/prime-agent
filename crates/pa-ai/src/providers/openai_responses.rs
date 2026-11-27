@@ -95,10 +95,10 @@ pub struct OpenAIResponsesOptions {
 impl OpenAIResponsesOptions {
     pub fn from_base(base: StreamOptions) -> Self {
         Self {
+            service_tier: base.service_tier,
             base,
             reasoning_effort: None,
             reasoning_summary: None,
-            service_tier: None,
         }
     }
 }
@@ -494,10 +494,10 @@ pub fn stream_simple_openai_responses(
         .map(|reasoning| clamp_thinking_level(model, reasoning));
     let reasoning_effort = clamped_reasoning.filter(|level| *level != ModelThinkingLevel::Off);
     let stream_options = OpenAIResponsesOptions {
+        service_tier: base.service_tier,
         base,
         reasoning_effort,
         reasoning_summary: None,
-        service_tier: None,
     };
     stream_openai_responses(model, context, Some(&stream_options))
 }
@@ -658,6 +658,70 @@ mod tests {
         assert_eq!(
             params.get("reasoning"),
             Some(&json!({ "effort": "xhigh", "summary": "auto" }))
+        );
+    }
+
+    /// The `service_tier` a stream's request body carries for a session's requested tier,
+    /// captured by `on_payload`, which also cancels the request before it is sent.
+    async fn sent_service_tier(
+        stream: impl FnOnce(StreamOptions) -> AssistantMessageEventStream,
+    ) -> Option<Value> {
+        let signal = tokio_util::sync::CancellationToken::new();
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let base = StreamOptions {
+            api_key: Some("key".to_string()),
+            service_tier: Some(ServiceTier::Priority),
+            signal: Some(signal.clone()),
+            on_payload: Some(std::sync::Arc::new({
+                let sent = std::sync::Arc::clone(&sent);
+                move |body: Value, _: &Model| {
+                    *sent.lock().expect("sent body") = Some(body);
+                    signal.cancel();
+                    None
+                }
+            })),
+            ..Default::default()
+        };
+        stream(base).result().await;
+        let body = sent
+            .lock()
+            .expect("sent body")
+            .take()
+            .expect("a request body");
+        body.get("service_tier").cloned()
+    }
+
+    /// A requested service tier reaches the request from both entries: the simple stream the
+    /// session engine calls, and the provider's own stream over plain stream options.
+    #[tokio::test]
+    async fn the_requested_service_tier_is_sent() {
+        let model = serde_json::from_value::<Model>(json!({
+            "id": "gpt-5.4", "name": "gpt-5.4", "api": "openai-responses", "provider": "openai",
+            "baseUrl": "http://127.0.0.1:1/v1", "reasoning": true, "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 1000, "maxTokens": 100
+        }))
+        .unwrap();
+        let context = Context {
+            system_prompt: None,
+            messages: Vec::new(),
+            tools: None,
+        };
+        let simple = sent_service_tier(|base| {
+            let options = SimpleStreamOptions {
+                base,
+                reasoning: None,
+                thinking_budgets: None,
+            };
+            stream_simple_openai_responses(&model, &context, Some(&options))
+        })
+        .await;
+        let direct =
+            sent_service_tier(|base| OpenAIResponsesProvider.stream(&model, &context, Some(&base)))
+                .await;
+        assert_eq!(
+            (simple, direct),
+            (Some(json!("priority")), Some(json!("priority")))
         );
     }
 }

@@ -831,7 +831,7 @@ fn wait(
         (End::Yielded, ownership) => {
             // Handed to the background: no call waits for it any more.
             match ownership {
-                Ownership::Owned => job::list_waiter(session, job, /*call*/ None),
+                Ownership::Owned => job::list_unwaited(session, job),
                 Ownership::Shared => {}
             }
             show(CellRecord::BashWait { completed: false });
@@ -1099,12 +1099,19 @@ pub(super) fn call(
                     }
                 }));
             }
+            // The model's call waits for this command: it is the call's own,
+            // and is listed as the call's from its first line, before it can
+            // start. A kernel that ends once it has started then never leaves
+            // it listed as no call's.
+            let call = (!background && !persistent)
+                .then(|| lock(&session.cells).call.clone())
+                .flatten();
             let job = if persistent {
                 persistent::spawn(session, script)?
             } else if elevated {
-                elevated::spawn(session, script)?
+                elevated::spawn(session, script, call.as_deref())?
             } else {
-                job::spawn(session, script, on_finished)?
+                job::spawn(session, script, on_finished, call.as_deref())?
             };
             show(CellRecord::BashCommand {
                 command: script.to_string(),
@@ -1123,11 +1130,6 @@ pub(super) fn call(
             let ownership = if persistent {
                 Ownership::Shared
             } else {
-                // The model's call waits for this command: it is the call's own.
-                let call = lock(&session.cells).call.clone();
-                if let Some(call) = call {
-                    job::list_waiter(session, &job, Some(&call));
-                }
                 Ownership::Owned
             };
             wait(session, &job, session.window(&requested), limit, ownership)
