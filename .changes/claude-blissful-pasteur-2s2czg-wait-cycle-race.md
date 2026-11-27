@@ -1,0 +1,1 @@
+- Fixed `agent-message-wait` sometimes reporting a false `cycle` right after the session it waits on was sent a message that ended that session's own wait.
