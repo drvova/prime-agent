@@ -140,9 +140,7 @@ fn the_built_session_carries_the_durable_header_id_across_rebuilds() {
 #[test]
 fn a_side_question_bills_the_session_it_ran_on() {
     use crate::engine::SessionEngine as _;
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let (_dir, engine) = faux_engine_with_settings(
         &json!({ "responses": [{ "text": "warm ok" }, { "text": "the aside" }] }),
         u64::MAX,
@@ -679,9 +677,7 @@ fn an_unbuilt_engine_branch_summary_carries_the_request_session_id() {
 /// failures, whose sender the dropped payload could not identify.
 #[test]
 fn an_injected_custom_row_without_a_timestamp_admits_the_turn() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let (_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "notice acknowledged"}] }),
         1,
@@ -824,9 +820,7 @@ fn the_parse_failure_log_line_carries_the_senders_identity_not_the_payload() {
 #[cfg(unix)]
 #[test]
 fn dropping_the_engine_kills_the_command_its_kernel_left_running() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let pipes = tempfile::tempdir().unwrap();
     let held = pipes.path().join("held");
     assert!(pa_types::session_scope::std_command("mkfifo")
@@ -881,9 +875,7 @@ fn dropping_the_engine_kills_the_command_its_kernel_left_running() {
 #[test]
 fn a_better_run_answers_the_rewrite_and_its_outcome_counts_from_the_command_loop() {
     use crate::engine::SessionEngine as _;
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let (_dir, engine) = faux_engine_with_settings(
         &json!({ "responses": [
             { "text": "warm ok" },
