@@ -297,7 +297,7 @@ fn a_newer_schema_is_refused() {
     assert_eq!(
         refused,
         Some(format!(
-            "migrate {}: the database is at schema version 99, newer than this build's 3: it \
+            "migrate {}: the database is at schema version 99, newer than this build's 4: it \
              was written by a newer Prime Agent",
             path.display()
         ))
@@ -619,6 +619,77 @@ fn values_and_crash_records_are_kept_by_partition() {
             vec![
                 "harness:/h.json".to_string(),
                 "harness:/other.json".to_string()
+            ],
+        )
+    );
+}
+
+/// A database at schema version 3 (before the task table) migrates to 4 at
+/// open: its rows stay, and tasks save and read back in insertion order.
+#[test]
+fn a_version_3_database_migrates_keeping_its_rows() {
+    use pa_types::event_log::{EventId, Priority, Task, TaskState};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        for migration in &super::schema::MIGRATIONS[..3] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .execute_batch(
+                "INSERT INTO events (id, ts, topic, source, trust, payload) \
+                 VALUES ('evt-1', 7, 'agent/a/done', 'test', 'owner', '{}'); \
+                 INSERT INTO partitions (scope, held_since) VALUES ('harness:/h.json', 1); \
+                 INSERT INTO kv (scope, key, value, updated) \
+                 VALUES ('harness:/h.json', 'document', 'kept', 1); \
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+    }
+    let log = Log::open(&path, DEFAULT_EVENT_RETENTION).unwrap();
+    let task = |id: &str, state: TaskState| Task {
+        id: id.to_string(),
+        session: "a".to_string(),
+        priority: Priority::Prompt,
+        state,
+        trigger: EventId("evt-1".to_string()),
+        prompt: format!("prompt {id}"),
+        trust: Trust::Owner,
+        attempts: 0,
+        error: None,
+    };
+    for saved in [
+        task("first", TaskState::Queued),
+        task("second", TaskState::Queued),
+        task("third", TaskState::Queued),
+        task("first", TaskState::Running),
+        task("second", TaskState::Done),
+    ] {
+        log.save_task(saved).wait_blocking().unwrap();
+    }
+    let version: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        (
+            version,
+            log.events_since(0, 10)
+                .unwrap()
+                .into_iter()
+                .map(|event| (event.id, event.seq))
+                .collect::<Vec<_>>(),
+            log.value("harness:/h.json", "document").unwrap(),
+            log.unfinished_tasks().unwrap(),
+        ),
+        (
+            4,
+            vec![(EventId("evt-1".to_string()), 1)],
+            Some("kept".to_string()),
+            vec![
+                task("first", TaskState::Running),
+                task("third", TaskState::Queued)
             ],
         )
     );

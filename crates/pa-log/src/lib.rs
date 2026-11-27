@@ -6,9 +6,10 @@
 //!   on a receipt.
 //! - Reads take a read-only connection from a small pool; in WAL mode a read
 //!   never waits for the writer.
-//! - [`Log::append_event`], [`Log::events`] and [`Log::prune_events`] are the
-//!   event log ([`pa_types::event_log`]): an event gets its id, sequence
-//!   number and time when it is stored, and expires after its retention.
+//! - [`Log::append_event`], [`Log::events`], [`Log::events_since`],
+//!   [`Log::events_before`] and [`Log::prune_events`] are the event log
+//!   ([`pa_types::event_log`]): an event gets its id, sequence number and
+//!   time when it is stored, and expires after its retention.
 //! - [`Log::import_session_file`], [`Log::export_session`],
 //!   [`Log::append_entry`], [`Log::sessions`] and [`Log::entries`] keep
 //!   session transcripts line for line, so a JSONL session file imported and
@@ -22,6 +23,9 @@
 //!   agent's other state (schedules, the event bus, the harness store, the
 //!   crash log) by partition, each written whole or imported once from the
 //!   file it replaces ([`Origin`]).
+//! - [`Log::save_task`] and [`Log::unfinished_tasks`] keep the runtime's
+//!   task lanes ([`pa_types::event_log::Task`]), so queued work survives a
+//!   restart.
 //!
 //! The database runs with `journal_mode=WAL` and `synchronous=NORMAL`: a power
 //! loss can drop the last commits, but never leaves the file inconsistent.
@@ -37,6 +41,7 @@ mod events;
 mod partitions;
 mod schema;
 mod sessions;
+mod tasks;
 mod transcripts;
 mod writer;
 

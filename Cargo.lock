@@ -3510,6 +3510,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pa-runtime"
+version = "0.10.3"
+dependencies = [
+ "anyhow",
+ "pa-log",
+ "pa-types",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "pa-shell"
 version = "0.10.3"
 dependencies = [

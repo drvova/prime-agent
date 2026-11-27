@@ -1,4 +1,5 @@
-//! The event log: appending, reading by topic filter, and expiry.
+//! The event log: appending, reading (by topic filter, or every event from a
+//! sequence number), and expiry.
 
 use std::time::Duration;
 
@@ -23,6 +24,15 @@ pub struct EventRetention {
 
 /// Rows read per query while filtering by topic in Rust.
 const SCAN_BATCH: i64 = 512;
+
+/// Where a read of the log starts, and which way it goes.
+#[derive(Debug, Clone, Copy)]
+enum Direction {
+    /// Above this sequence number, oldest first.
+    After(u64),
+    /// Below this sequence number, newest first.
+    Before(u64),
+}
 
 fn text<T: serde::Serialize>(value: &T) -> Result<String> {
     Ok(serde_json::to_string(value)?)
@@ -106,14 +116,57 @@ impl Log {
     ///
     /// The database could not be read, or a stored row does not decode.
     pub fn events(&self, filter: &TopicFilter, since: Since, limit: usize) -> Result<Vec<Event>> {
+        match since {
+            Since::Now => Ok(Vec::new()),
+            Since::After { seq } => self.scan(Some(filter), Direction::After(seq), limit),
+            Since::Tail { count } => {
+                let wanted = limit.min(usize::try_from(count).unwrap_or(usize::MAX));
+                let mut found = self.scan(Some(filter), Direction::Before(u64::MAX), wanted)?;
+                found.reverse();
+                Ok(found)
+            }
+        }
+    }
+
+    /// At most `limit` stored events whose sequence number is above `seq`,
+    /// oldest first, whatever their topic (`pa-runtime`'s `EventStore::since`).
+    ///
+    /// # Errors
+    ///
+    /// The database could not be read, or a stored row does not decode.
+    pub fn events_since(&self, seq: u64, limit: usize) -> Result<Vec<Event>> {
+        self.scan(None, Direction::After(seq), limit)
+    }
+
+    /// At most `limit` stored events whose sequence number is below `seq`,
+    /// newest first, whatever their topic (`pa-runtime`'s
+    /// `EventStore::before`): `events_before(u64::MAX, 1)` is the last one.
+    ///
+    /// # Errors
+    ///
+    /// The database could not be read, or a stored row does not decode.
+    pub fn events_before(&self, seq: u64, limit: usize) -> Result<Vec<Event>> {
+        self.scan(None, Direction::Before(seq), limit)
+    }
+
+    /// At most `wanted` stored events matching `filter` (every event when it
+    /// is `None`), read from `direction`'s sequence number in its order.
+    fn scan(
+        &self,
+        filter: Option<&TopicFilter>,
+        direction: Direction,
+        wanted: usize,
+    ) -> Result<Vec<Event>> {
         // The filter's literal levels before its first wildcard (`agent/3f2a`
         // of `agent/3f2a/+`) narrow the scan in SQL; the filter itself decides.
-        let levels: Vec<&str> = filter
-            .as_str()
-            .split('/')
-            .take_while(|level| *level != "+" && *level != "#")
-            .collect();
-        let prefix = (!levels.is_empty()).then(|| levels.join("/"));
+        let prefix = filter.and_then(|filter| {
+            let levels: Vec<&str> = filter
+                .as_str()
+                .split('/')
+                .take_while(|level| *level != "+" && *level != "#")
+                .collect();
+            (!levels.is_empty()).then(|| levels.join("/"))
+        });
         let like = prefix.as_ref().map(|prefix| {
             format!(
                 "{}/%",
@@ -123,39 +176,36 @@ impl Log {
                     .replace('_', r"\_")
             )
         });
+        // A sequence number past SQLite's integers is past every stored one.
+        let (seq, bound, order) = match direction {
+            Direction::After(seq) => (seq, "seq > ?1", "ASC"),
+            Direction::Before(seq) => (seq, "seq < ?1", "DESC"),
+        };
+        let mut cursor = i64::try_from(seq).unwrap_or(i64::MAX);
+        // Unfiltered, every row read is wanted: read no more than that.
+        let batch_rows = match filter {
+            Some(_) => SCAN_BATCH,
+            None => i64::try_from(wanted).unwrap_or(SCAN_BATCH).min(SCAN_BATCH),
+        };
         self.read(|connection| {
-            let (mut cursor, wanted, newest_first) = match since {
-                Since::Now => return Ok(Vec::new()),
-                Since::After { seq } => (i64::try_from(seq)?, limit, false),
-                Since::Tail { count } => (
-                    i64::MAX,
-                    limit.min(usize::try_from(count).unwrap_or(usize::MAX)),
-                    true,
-                ),
-            };
-            let (bound, order) = if newest_first {
-                ("seq < ?1", "DESC")
-            } else {
-                ("seq > ?1", "ASC")
-            };
             let topic = if prefix.is_some() {
-                r" AND (topic = ?2 OR topic LIKE ?3 ESCAPE '\')"
+                r" AND (topic = ?3 OR topic LIKE ?4 ESCAPE '\')"
             } else {
                 ""
             };
             let sql = format!(
                 "SELECT seq, ts, id, topic, source, session, trust, cause, reply, payload \
-                 FROM events WHERE {bound}{topic} ORDER BY seq {order} LIMIT {SCAN_BATCH}"
+                 FROM events WHERE {bound}{topic} ORDER BY seq {order} LIMIT ?2"
             );
             let mut statement = connection.prepare_cached(&sql)?;
             let mut found = Vec::new();
             while found.len() < wanted {
                 let batch = match (&prefix, &like) {
                     (Some(prefix), Some(like)) => statement
-                        .query_map(params![cursor, prefix, like], decode)?
+                        .query_map(params![cursor, batch_rows, prefix, like], decode)?
                         .collect::<rusqlite::Result<Vec<_>>>()?,
                     _ => statement
-                        .query_map(params![cursor], decode)?
+                        .query_map(params![cursor, batch_rows], decode)?
                         .collect::<rusqlite::Result<Vec<_>>>()?,
                 };
                 let batch = batch.into_iter().collect::<Result<Vec<Event>>>()?;
@@ -163,16 +213,11 @@ impl Log {
                     break;
                 };
                 cursor = i64::try_from(last.seq)?;
-                found.extend(
-                    batch
-                        .into_iter()
-                        .filter(|event| filter.matches(&event.event.topic)),
-                );
+                found.extend(batch.into_iter().filter(|event| {
+                    filter.is_none_or(|filter| filter.matches(&event.event.topic))
+                }));
             }
             found.truncate(wanted);
-            if newest_first {
-                found.reverse();
-            }
             Ok(found)
         })
     }

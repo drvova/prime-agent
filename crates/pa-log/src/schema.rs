@@ -10,7 +10,7 @@ use rusqlite::Connection;
 
 /// The migrations, in order: migration `n` (1-based) brings `user_version`
 /// from `n - 1` to `n`.
-const MIGRATIONS: &[&str] = &[
+pub(crate) const MIGRATIONS: &[&str] = &[
     // 1: the event log, and session transcripts kept line for line.
     r"
     CREATE TABLE events (
@@ -141,6 +141,26 @@ const MIGRATIONS: &[&str] = &[
         record    TEXT NOT NULL
     );
     CREATE INDEX crashes_scope ON crashes (scope, seq);
+    ",
+    // 4: the runtime's task lanes (`pa-runtime`'s `TaskStore`). `seq` is a
+    // task's place in insertion order, fixed by its first save; `created`
+    // and `updated` are Unix milliseconds of its first and last save.
+    r"
+    CREATE TABLE tasks (
+        seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+        id       TEXT NOT NULL UNIQUE,
+        session  TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        state    TEXT NOT NULL,
+        trigger  TEXT NOT NULL,
+        prompt   TEXT NOT NULL,
+        trust    TEXT NOT NULL,
+        attempts INTEGER NOT NULL,
+        error    TEXT,
+        created  INTEGER NOT NULL,
+        updated  INTEGER NOT NULL
+    );
+    CREATE INDEX tasks_state ON tasks (state, session);
     ",
 ];
 

@@ -2,6 +2,23 @@ use proptest::prelude::*;
 
 use super::{Topic, TopicError, TopicFilter, TopicTrie};
 
+/// Only a session's stream and tool topics are live only.
+#[test]
+fn only_agent_stream_and_tool_topics_are_live_only() {
+    assert_eq!(
+        [
+            "agent/3f2a/stream",
+            "agent/3f2a/tool",
+            "agent/3f2a/done",
+            "agent/3f2a/stream/more",
+            "source/3f2a/stream",
+            "agent/stream",
+        ]
+        .map(|topic| Topic::new(topic).unwrap().is_live_only()),
+        [true, true, false, false, false, false]
+    );
+}
+
 /// Which topics and filters parse, and why the rest do not.
 #[test]
 fn topics_and_filters_are_validated() {
