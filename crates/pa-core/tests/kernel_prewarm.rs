@@ -19,8 +19,8 @@ use pa_core::settings::SettingsManager;
 use pa_types::session::FileEntry;
 
 /// The faux provider registry is process-global and both tests drive it:
-/// the std lock serializes them (the only contenders).
-static FAUX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// the async lock serializes them across their awaits (the only contenders).
+static FAUX_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// One faux provider session: the model, its agent-loop shape, and the
 /// stream function, with the scripted responses queued.
@@ -90,14 +90,8 @@ async fn wait_for_kernel_boot(engine: &pa_core::session_engine::engine::SessionE
 /// durable entries — with the empty-namespace arm, because the model never
 /// ran a cell.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "the faux provider registry is process-global; the lock serializes the tests across awaits"
-)]
 async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
-    let _guard = FAUX_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = FAUX_LOCK.lock().await;
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -196,14 +190,8 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
 /// call joins a booted kernel instead of paying the cold start after its
 /// first model call.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "the faux provider registry is process-global; the lock serializes the tests across awaits"
-)]
 async fn subagent_sessions_boot_their_kernel_before_the_first_cell() {
-    let _guard = FAUX_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = FAUX_LOCK.lock().await;
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -285,15 +273,9 @@ impl Drop for CleanTelemetryEnv {
 /// pre-install-window finding: the switch used to arrive only at the
 /// first-turn install, so an off-period prewarm boot counted.
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "the faux provider registry is process-global; the lock serializes the tests across awaits"
-)]
 async fn an_off_switch_at_creation_keeps_the_prewarm_window_uncounted() {
     let _env = CleanTelemetryEnv::default();
-    let _guard = FAUX_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = FAUX_LOCK.lock().await;
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
