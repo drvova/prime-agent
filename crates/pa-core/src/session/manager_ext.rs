@@ -333,7 +333,7 @@ mod tests {
         manager.branch(&a);
         assert_eq!(manager.get_branch(None).len(), 1);
         let summary_id = manager
-            .branch_with_summary(Some(&a), "went back", None, None, None, None)
+            .branch_with_summary(Some(&a), "went back", None, None, None, /*model*/ None)
             .unwrap();
         assert!(manager.get_entry_by_id(&summary_id).is_some());
         assert!(manager.get_entry_by_id(&b).is_some());

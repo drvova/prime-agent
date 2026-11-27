@@ -245,37 +245,34 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                         "Entry {leaf} not found"
                     );
                 }
-                let summary_entry = match summary {
-                    Some(run) => {
-                        let usage = run.usage.map(serde_json::from_value).transpose()?;
-                        let summary_id = manager.branch_with_summary(
-                            new_leaf.as_deref(),
-                            &run.summary,
-                            run.details,
-                            None,
-                            usage,
-                            run.model
-                                .as_ref()
-                                .map(|(provider, model_id)| (provider.as_str(), model_id.as_str())),
-                        )?;
-                        if let Some(label) = &label {
-                            manager.append_label_change(&summary_id, Some(label))?;
-                        }
-                        manager
-                            .get_entry_by_id(&summary_id)
-                            .map(serde_json::to_value)
-                            .transpose()?
+                let summary_entry = if let Some(run) = summary {
+                    let usage = run.usage.map(serde_json::from_value).transpose()?;
+                    let summary_id = manager.branch_with_summary(
+                        new_leaf.as_deref(),
+                        &run.summary,
+                        run.details,
+                        /*from_hook*/ None,
+                        usage,
+                        run.model
+                            .as_ref()
+                            .map(|(provider, model_id)| (provider.as_str(), model_id.as_str())),
+                    )?;
+                    if let Some(label) = &label {
+                        manager.append_label_change(&summary_id, Some(label))?;
                     }
-                    None => {
-                        match new_leaf.as_deref() {
-                            Some(leaf) => manager.branch(leaf),
-                            None => manager.reset_leaf(),
-                        }
-                        if let Some(label) = &label {
-                            manager.append_label_change(&target_id, Some(label))?;
-                        }
-                        None
+                    manager
+                        .get_entry_by_id(&summary_id)
+                        .map(serde_json::to_value)
+                        .transpose()?
+                } else {
+                    match new_leaf.as_deref() {
+                        Some(leaf) => manager.branch(leaf),
+                        None => manager.reset_leaf(),
                     }
+                    if let Some(label) = &label {
+                        manager.append_label_change(&target_id, Some(label))?;
+                    }
+                    None
                 };
                 drop(manager);
                 // The moved branch invalidates an armed review.
