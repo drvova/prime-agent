@@ -283,8 +283,11 @@ mod tests {
     use super::*;
 
     /// One faux provider registration with a unique api id per test
-    /// (the registry is process-global).
+    /// (the registry is process-global). The id is a process-wide counter:
+    /// a clock reading can repeat between tests that run concurrently,
+    /// and a repeated id replaces the other test's scripted provider.
     fn faux_model(responses: &[serde_json::Value]) -> Model {
+        static NEXT_API: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let script = serde_json::json!({
             "modelId": "compact-trigger-1",
             "responses": responses.to_vec(),
@@ -293,10 +296,7 @@ mod tests {
             pa_ai::faux::script::parse_faux_script(&script).expect("the faux script parses");
         let api = format!(
             "faux-trigger-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
+            NEXT_API.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let registration =
             pa_ai::faux::register_faux_provider(pa_ai::faux::RegisterFauxProviderOptions {
