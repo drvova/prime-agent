@@ -215,6 +215,25 @@ fn a_deliberate_stop_of_a_kept_runtime_daemon_is_not_restarted() {
 }
 
 #[test]
+fn a_kept_runtime_daemon_stopped_while_it_boots_drains_and_is_not_restarted() {
+    // SIGTERM as soon as the daemon holds the agent dir's lock, before it serves: the drain
+    // it was sent for, not a death.
+    let bed = Bed::new();
+    let mut kept = bed.kept_runtime_daemon(&bed.old_socket());
+    let holder = wait_for("the runtime daemon to take the lock", || {
+        pa_core::platform::RuntimeDaemonLock::recorded(&bed.agent_dir())
+    });
+    signal(holder.pid, Signal::SIGTERM);
+    assert_eq!(
+        (
+            exit_code(&mut kept.keeper),
+            bed.deaths(&bed.runtime_socket())
+        ),
+        (Some(0), Vec::<Value>::new())
+    );
+}
+
+#[test]
 fn a_runtime_daemon_that_dies_at_every_start_is_given_up_on() {
     let bed = Bed::new();
     // The socket's directory is a regular file: the daemon cannot bind and
