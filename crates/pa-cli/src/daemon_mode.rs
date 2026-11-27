@@ -2,7 +2,7 @@
 //! mode (detached) when no daemon is listening. With the runtime daemon
 //! selected (`PRIME_AGENT_RUNTIME_DAEMON=1`, or `"daemon": "runtime"` in the
 //! global settings) it is the runtime daemon instead, on its own socket,
-//! unless its launcher waits on the supervisor's socket and says so
+//! unless the update coordinator's successor spawn says otherwise
 //! ([`SUPERVISOR_ENV`]).
 
 use anyhow::Result;
@@ -13,13 +13,13 @@ use crate::mode::RunOptions;
 /// The environment switch that selects the runtime daemon.
 pub(crate) const RUNTIME_DAEMON_ENV: &str = "PRIME_AGENT_RUNTIME_DAEMON";
 
-/// The internal override a launcher that waits on the supervisor's socket
-/// (`daemon.sock`) sets on the `--mode daemon` process it spawns: that process
-/// is the supervisor whatever the runtime-daemon opt-in says. The interactive
-/// TUI and the update coordinator's successor speak the old wire only until the
-/// TUI moves to wire2, so the opt-in must not turn their daemon into the
-/// runtime daemon on `daemon2.sock`. A restart owner passes it on to the daemon
-/// it keeps, which inherits its environment.
+/// The internal override the update coordinator's successor sets on the
+/// `--mode daemon` process it spawns while the supervisor is the daemon the
+/// update drives: that process is the supervisor whatever the successor's own
+/// settings say, since the coordinator waits for its hello on `daemon.sock`. A
+/// restart owner passes it on to the daemon it keeps, which inherits its
+/// environment. The interactive launch never sets it: it waits on the socket of
+/// the daemon the opt-in selects.
 pub(crate) const SUPERVISOR_ENV: &str = "PRIME_AGENT_DAEMON_SUPERVISOR";
 
 /// Whether the process's own environment selects the runtime daemon; read

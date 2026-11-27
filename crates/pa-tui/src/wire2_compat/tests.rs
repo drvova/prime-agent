@@ -264,79 +264,97 @@ fn a_stored_fault_replays_as_its_session_event_and_is_ignored_live() {
     );
 }
 
+/// The input commands publish on the session's `agent/<id>/input` as the runtime's input (text,
+/// images, place in the lane: a steer, a follow-up, or the prompt's own streaming behavior), and a
+/// prompt with parts that input has no room for is not carried; a detach that names no session
+/// is answered by the layer, as the old daemon answered it.
 #[test]
 fn input_commands_publish_on_the_session_input_topic() {
+    let image = json!({ "type": "image", "data": "AA==", "mimeType": "image/png" });
     let input: PromptInput = serde_json::from_value(json!({
-        "images": [{ "type": "image", "data": "AA==", "mimeType": "image/png" }],
+        "images": [image],
         "streamingBehavior": "followUp",
     }))
     .expect("prompt input");
     let plain: PromptInput = serde_json::from_value(json!({})).expect("prompt input");
+    let custom: PromptInput =
+        serde_json::from_value(json!({ "customMessage": { "customType": "note" } }))
+            .expect("prompt input");
+    let prompt = |message: &str, input: &PromptInput| DaemonCommand::Prompt {
+        id: None,
+        active_session_id: "s1".to_string(),
+        message: message.to_string(),
+        input: input.clone(),
+        rest: Map::new(),
+    };
     let commands = [
-        DaemonCommand::Prompt {
-            id: None,
-            active_session_id: "s1".to_string(),
-            message: "hi".to_string(),
-            input: input.clone(),
-            rest: Map::new(),
-        },
+        prompt("hi", &input),
+        prompt("idle", &plain),
         DaemonCommand::Steer {
             id: None,
             active_session_id: "s1".to_string(),
             message: "stop that".to_string(),
-            input: plain,
+            input: plain.clone(),
             rest: Map::new(),
         },
         DaemonCommand::FollowUp {
             id: None,
             active_session_id: "s1".to_string(),
             message: "then this".to_string(),
-            input,
+            input: plain,
             rest: Map::new(),
         },
     ];
-    // The runtime's half: the publish read back as the command it carries.
-    let read_back = |frame: ClientFrame| {
-        let ClientFrame::Publish { topic, payload, .. } = frame else {
-            panic!("an input command publishes: {frame:?}");
-        };
-        let session = topic.levels().nth(1).expect("agent/<id>/input").to_string();
-        let mut payload = payload.as_object().cloned().expect("an object payload");
-        let kind = payload.remove("kind").expect("the input kind");
-        payload.insert("type".to_string(), kind);
-        payload.insert("activeSessionId".to_string(), Value::from(session));
-        (
-            topic.as_str().to_string(),
-            serde_json::from_value::<DaemonCommand>(Value::Object(payload)).expect("a command"),
-        )
-    };
-    let published: Vec<(String, DaemonCommand)> = commands
+    let published: Vec<(String, Value)> = commands
         .iter()
         .enumerate()
         .map(
             |(index, command)| match outgoing(format!("p{index}"), command.clone()).unwrap() {
-                Outgoing::Publish(frame) => read_back(frame),
+                Outgoing::Publish(ClientFrame::Publish { topic, payload, .. }) => {
+                    (topic.as_str().to_string(), payload)
+                }
                 other => panic!("not a publish: {other:?}"),
             },
         )
         .collect();
-    // A detach that names no session stays on the old wire.
     let detach = DaemonCommand::Detach {
         id: None,
         active_session_id: None,
         rest: Map::new(),
     };
+    let refused = match outgoing("c".to_string(), prompt("x", &custom)).unwrap() {
+        Outgoing::Unmapped { command, .. } => Some(*command),
+        _ => None,
+    };
     assert_eq!(
         (
             published,
-            outgoing("d".to_string(), detach.clone()).unwrap()
+            refused,
+            outgoing("d".to_string(), detach).unwrap()
         ),
         (
-            commands
-                .iter()
-                .map(|command| ("agent/s1/input".to_string(), command.clone()))
-                .collect(),
-            Outgoing::Unmapped(Box::new(detach))
+            vec![
+                (
+                    "agent/s1/input".to_string(),
+                    json!({ "text": "hi", "images": [image], "priority": "follow_up" })
+                ),
+                ("agent/s1/input".to_string(), json!({ "text": "idle" })),
+                (
+                    "agent/s1/input".to_string(),
+                    json!({ "text": "stop that", "priority": "steer" })
+                ),
+                (
+                    "agent/s1/input".to_string(),
+                    json!({ "text": "then this", "priority": "follow_up" })
+                ),
+            ],
+            Some(prompt("x", &custom)),
+            Outgoing::Local(Box::new(
+                serde_json::from_value(
+                    json!({ "type": "response", "id": "d", "command": "detach", "success": true })
+                )
+                .unwrap()
+            ))
         )
     );
 }
@@ -388,7 +406,9 @@ fn session_reads_query_and_their_replies_round_trip() {
         .into_iter()
         .map(
             |command| match outgoing("q".to_string(), command).unwrap() {
-                Outgoing::Query(frame) | Outgoing::Call(frame) => frame,
+                Outgoing::Query(frame)
+                | Outgoing::Call(frame)
+                | Outgoing::Attach { call: frame, .. } => frame,
                 other => panic!("not a query or call: {other:?}"),
             },
         )
@@ -953,6 +973,11 @@ fn the_detach_and_the_answer_call_and_answer_without_data() {
     ]
     .into_iter()
     .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .map(|frame| match frame {
+        // The transport also stops following the session: the call is the detach's.
+        Outgoing::Detach { call, .. } => Outgoing::Call(call),
+        other => other,
+    })
     .collect();
     let call = |method: &str, args: Value| {
         Outgoing::Call(ClientFrame::Call {

@@ -85,7 +85,7 @@ pub async fn ensure_daemon_running_with(
         }
         DaemonProbe::Absent => {}
     }
-    spawn_daemon_detached(socket_path, spawn_cwd, exe, SpawnedDaemon::Supervisor)?;
+    spawn_daemon_detached(socket_path, spawn_cwd, exe)?;
     let deadline = Instant::now() + Duration::from_millis(DAEMON_STARTUP_TIMEOUT_MS);
     loop {
         match probe_daemon(socket_path).await {
@@ -127,7 +127,7 @@ pub async fn ensure_runtime_daemon_running(
         return Ok(socket);
     }
     let exe = std::env::current_exe().context("resolve the prime-agent executable")?;
-    spawn_daemon_detached(daemon_socket, spawn_cwd, &exe, SpawnedDaemon::Selected)?;
+    spawn_daemon_detached(daemon_socket, spawn_cwd, &exe)?;
     let deadline = Instant::now() + Duration::from_millis(DAEMON_STARTUP_TIMEOUT_MS);
     loop {
         if pa_daemon::socket::can_connect(&socket, probe).await {
@@ -200,23 +200,32 @@ async fn wait_for_socket_gone(socket_path: &Path) -> bool {
     false
 }
 
-/// Which daemon a detached `--mode daemon` spawn becomes.
-#[derive(Clone, Copy)]
-enum SpawnedDaemon {
-    /// The supervisor, whatever the runtime-daemon opt-in says: the caller waits on
-    /// `daemon.sock` and speaks the old wire.
-    Supervisor,
-    /// The daemon the environment or the settings select (the runtime daemon under the opt-in).
-    Selected,
+/// The interactive UI's [`pa_tui::daemon_reconnect::DaemonLauncher`] on the runtime daemon: a
+/// window that lost its daemon, and whose restart owner did not bring it back, gets it started
+/// the way the launch did ([`ensure_runtime_daemon_running`], which leaves a daemon that answers
+/// alone).
+pub(super) struct RuntimeDaemonLauncher {
+    /// The supervisor's socket the runtime daemon's (`daemon2.sock`) sits beside.
+    pub(super) daemon_socket: std::path::PathBuf,
+    pub(super) spawn_cwd: std::path::PathBuf,
 }
 
-/// Spawn a detached daemon on `socket_path` (the child outlives this CLI).
-fn spawn_daemon_detached(
-    socket_path: &Path,
-    spawn_cwd: &Path,
-    exe: &Path,
-    daemon: SpawnedDaemon,
-) -> Result<()> {
+impl pa_tui::daemon_reconnect::DaemonLauncher for RuntimeDaemonLauncher {
+    fn ensure_running(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            ensure_runtime_daemon_running(&self.daemon_socket, &self.spawn_cwd)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("{error:#}"))
+        })
+    }
+}
+
+/// Spawn a detached daemon on `socket_path` (the child outlives this CLI): the daemon the
+/// environment or the settings select, which the caller waits for on that daemon's socket.
+fn spawn_daemon_detached(socket_path: &Path, spawn_cwd: &Path, exe: &Path) -> Result<()> {
     let mut command = Command::new(exe);
     command
         .args(["--mode", "daemon", "--daemon-socket"])
@@ -225,10 +234,8 @@ fn spawn_daemon_detached(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    match daemon {
-        SpawnedDaemon::Supervisor => command.env(crate::daemon_mode::SUPERVISOR_ENV, "1"),
-        SpawnedDaemon::Selected => command.env_remove(crate::daemon_mode::SUPERVISOR_ENV),
-    };
+    // The update successor's override is never passed on to a daemon this launch selects.
+    command.env_remove(crate::daemon_mode::SUPERVISOR_ENV);
     // The spawned process is the daemon's restart owner: it starts the daemon with these same
     // arguments and starts it again when it dies abnormally. Unix only: the owner forwards
     // signals and reads the daemon's terminating signal, neither of which exists on Windows,

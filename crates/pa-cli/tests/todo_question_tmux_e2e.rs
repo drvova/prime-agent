@@ -11,6 +11,8 @@
 //! Every wait polls the captured pane for observable state under a deadline; nothing sleeps
 //! for a fixed time.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -82,6 +84,11 @@ impl Drop for Pane {
             .arg(&self.launcher)
             .args(["shutdown", "--force"])
             .output();
+        // `shutdown --force` stops the supervisor's daemons; the runtime daemon's is stopped by
+        // its lock.
+        if let Some(dir) = self.launcher.parent() {
+            support::stop_runtime_daemon(&dir.join("home/.prime/agent"));
+        }
         let _ = self.tmux(&["kill-server"]);
     }
 }
@@ -145,13 +152,14 @@ fn start(dir: &Path) -> Pane {
         &launcher,
         format!(
             "cd {project}\nexec env -i PATH=/usr/bin:/bin HOME={home} TERM=xterm-256color \
-             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 \
+             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1{daemon_env} \
              PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
             project = quote(&project),
             home = quote(&home),
             script = quote(&script),
             socket = quote(&dir.join("daemon.sock")),
             binary = quote(Path::new(env!("CARGO_BIN_EXE_prime-agent"))),
+            daemon_env = support::daemon_env(),
         ),
     )
     .expect("launcher");
@@ -281,3 +289,7 @@ fn todos_and_a_question_are_driven_from_the_kernel_and_answered_by_keyboard() {
     let cleared = pane.wait_for("you are welcome");
     assert!(!cleared.contains("Todos 7/7"), "{cleared}");
 }
+
+support::on_the_runtime_daemon!(
+    todos_and_a_question_are_driven_from_the_kernel_and_answered_by_keyboard,
+);

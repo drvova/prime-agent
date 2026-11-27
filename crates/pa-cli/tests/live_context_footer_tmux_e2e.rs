@@ -5,6 +5,8 @@
 //! observable change; none sleeps a fixed interval to let the product catch up.
 #![cfg(unix)]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -18,6 +20,7 @@ const END_MARKER: &str = "livecontextdone";
 struct TmuxPane {
     server: String,
     socket: PathBuf,
+    agent_dir: PathBuf,
 }
 
 impl TmuxPane {
@@ -64,6 +67,7 @@ impl Drop for TmuxPane {
             let _ = std::fs::remove_file(tmux_socket);
         }
         shutdown_daemon(&self.socket);
+        support::stop_runtime_daemon(&self.agent_dir);
     }
 }
 
@@ -149,13 +153,19 @@ fn the_footer_context_moves_while_the_reply_streams() {
     .expect("write script");
     let socket = root.join("daemon.sock");
     let pane = TmuxPane {
-        server: format!("pa-live-context-{}", std::process::id()),
+        // One server per daemon variant: both run in this process at once.
+        server: format!(
+            "pa-live-context-{}-{:?}",
+            std::process::id(),
+            support::DAEMON.with(std::cell::Cell::get)
+        ),
         socket: socket.clone(),
+        agent_dir: agent_dir.clone(),
     };
     let binary = env!("CARGO_BIN_EXE_prime-agent");
     let launch = format!(
         "cd '{cwd}' && exec env -i HOME='{home}' PATH='{path}' TERM=xterm-256color TMPDIR='{root}' \
-         DO_NOT_TRACK=1 PI_OFFLINE=1 PRIME_AGENT_CODING_AGENT_DIR='{agent}' \
+         DO_NOT_TRACK=1 PI_OFFLINE=1{daemon_env} PRIME_AGENT_CODING_AGENT_DIR='{agent}' \
          PRIME_AGENT_SESSION_DIR='{sessions}' PRIME_AGENT_FAUX_SCRIPT='{script}' \
          '{binary}' --daemon-socket '{socket}' 'look it up'",
         cwd = cwd.display(),
@@ -166,6 +176,7 @@ fn the_footer_context_moves_while_the_reply_streams() {
         sessions = agent_dir.join("sessions").display(),
         script = script.display(),
         socket = socket.display(),
+        daemon_env = support::daemon_env(),
     );
     let started = pane.tmux(&[
         "new-session",
@@ -209,3 +220,5 @@ fn the_footer_context_moves_while_the_reply_streams() {
             && context_label(screen).is_some_and(|label| !label.starts_with('~'))
     });
 }
+
+support::on_the_runtime_daemon!(the_footer_context_moves_while_the_reply_streams,);

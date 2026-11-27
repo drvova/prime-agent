@@ -437,12 +437,21 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   the runtime's `session.attach` on a wire2 connection, until its `session.detach` or the
   connection's end); otherwise `ask` settles as `no_user` at once. A surface never awaits a
   client: it publishes fire-and-forget and answers from state it holds.
+- The interactive TUI runs on the daemon the opt-in selects (phase 8e; the default stays the
+  supervisor until 8f): `pa_tui::daemon_client::DaemonClient` speaks the old wire to `daemon.sock`
+  or wire2 to `daemon2.sock` (`daemon_client::Transport`, declared per socket by the composition
+  root), its wire2 link carrying every command the TUI sends through `wire2_compat` (a guard
+  test fails on one with no wire2 form) and mapping the runtime's topics back to the old events;
+  an attach follows the session's topics before its call, holds its events until the snapshot
+  and drops those the snapshot holds, and a reconnect replays the stored topics after the last
+  stored event it saw. Nothing on that path awaits telemetry
+  (`the_startup_flush_never_blocks_the_runtime_launch`).
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the
-  supervisor (`PRIME_AGENT_DAEMON_SUPERVISOR=1`, set by the interactive TUI's spawn and the
-  update coordinator's successor, which speak the old wire until the TUI moves to wire2 in 8e;
-  the keeper keeps the supervisor for them) (`pa_runtime::daemon`, wire2 on
+  supervisor (`PRIME_AGENT_DAEMON_SUPERVISOR=1`, set by the update coordinator's successor while
+  the supervisor is the daemon the update drives; the keeper keeps the supervisor for it)
+  (`pa_runtime::daemon`, wire2 on
   `daemon2.sock` beside it, one per agent dir by an OS lock on `runtime-daemon.lock`, whose
   recorded holder and restart owner the supervisor's boot reap spares though their command lines
   name the same socket; a holder that does not answer on the same socket is a wedged

@@ -25,7 +25,9 @@
 //! - **Progress.** `daemon.update_restore_status` answers the old
 //!   `update_restore_status` body, and `session.create` and `session.attach`
 //!   of a roster row wait behind the pass until its row settles (spec
-//!   §10.4); `daemon.identity` carries the hello's `updateResume`.
+//!   §10.4); `daemon.identity` carries the hello's `updateResume`, and the
+//!   capabilities a client of the old wire is served through the TUI's
+//!   compat layer (`serverCapabilities`).
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -50,6 +52,26 @@ pub(in crate::daemon) struct RuntimeRestore<B: SessionBuilder> {
     /// The sessions the boot revived with unfinished tasks.
     pub(in crate::daemon) revived: HashSet<String>,
 }
+
+/// The old daemon's server capabilities this daemon serves through the TUI's
+/// compat layer (`pa-tui` `wire2_compat`): the old supervisor's list without
+/// the ones that name its own processes (`direct_peer_transport`, the worker
+/// and owned-session ones) or ACP's.
+const SERVED_CAPABILITIES: [&str; 13] = [
+    "delete_rlm_subagent",
+    "heartbeat_catalog",
+    "heartbeat_management",
+    "model_catalog",
+    "side_question_transcript",
+    "transient_bash",
+    "kernel_bash_activity",
+    "persistent_shells",
+    "factory_activity",
+    "queue_message_mutation",
+    "authoritative_child_roster",
+    "abort_and_send_queued",
+    "agent_roster",
+];
 
 impl<B: SessionBuilder> RestoreHost for RuntimeRestore<B> {
     type Session = String;
@@ -146,10 +168,25 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         Ok(())
     }
 
-    /// `daemon.identity`: the old `daemon_hello`'s identity fields.
-    pub(super) fn identity(&self) -> Value {
+    /// `daemon.identity`: the old `daemon_hello`'s identity fields, and the
+    /// capabilities the daemon serves a client of the old wire through the
+    /// TUI's compat layer (`serverCapabilities`, [`SERVED_CAPABILITIES`]):
+    /// `factory_activity` only while the factory lane is on, as the old
+    /// supervisor advertises it (its settings read off the executor).
+    pub(super) async fn identity(&self) -> anyhow::Result<Value> {
+        let agent_dir = self.agent_dir.clone();
+        let factory_lane = tokio::task::spawn_blocking(move || {
+            pa_core::session_engine::kernel_activity::factory_lane_enabled(&agent_dir)
+        })
+        .await
+        .context("the factory settings read's thread panicked")?;
+        let capabilities: Vec<&str> = SERVED_CAPABILITIES
+            .into_iter()
+            .filter(|capability| factory_lane || *capability != "factory_activity")
+            .collect();
         let pid = std::process::id();
-        json!({
+        Ok(json!({
+            "serverCapabilities": capabilities,
             "supervisorPid": pid,
             "supervisorProcessStartId": pa_core::session::hosted::process_start_id(pid),
             "supervisorGeneration": format!("runtime:{pid}"),
@@ -158,7 +195,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             "schemaId": pa_types::daemon::DAEMON_SCHEMA_ID,
             "supervisorSocketPath": self.update.socket_path(),
             "updateResume": self.restore.hello_resume(),
-        })
+        }))
     }
 
     /// One old worker command of the restore pass on open session `id`

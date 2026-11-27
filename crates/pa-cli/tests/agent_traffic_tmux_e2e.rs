@@ -6,6 +6,8 @@
 //! its sibling through `agent-message-send`. The test opens the scoped agents view from the
 //! dock, presses `m`, and polls the pane until both directions list (never a fixed sleep).
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -77,6 +79,11 @@ impl Drop for Pane {
             .arg(&self.launcher)
             .args(["shutdown", "--force"])
             .output();
+        // `shutdown --force` stops the supervisor's daemons; the runtime daemon's is stopped by
+        // its lock.
+        if let Some(dir) = self.launcher.parent() {
+            support::stop_runtime_daemon(&dir.join("home/.prime/agent"));
+        }
         let _ = self.tmux(&["kill-server"]);
     }
 }
@@ -133,20 +140,24 @@ fn start(dir: &Path) -> Pane {
     )
     .expect("faux script");
     // The pane's whole environment, so nothing ambient (provider keys, the user's HOME, a
-    // daemon socket) reaches the product.
+    // daemon socket) reaches the product. The children's script is named twice: the supervisor's
+    // children get it from the create (the client's `childScript`), the runtime daemon's from its
+    // own environment.
     let launcher = dir.join("launch.sh");
     let quote = |path: &Path| format!("'{}'", path.display());
     std::fs::write(
         &launcher,
         format!(
             "cd {project}\nexec env -i PATH=/usr/bin:/bin HOME={home} TERM=xterm-256color \
-             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 \
-             PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
+             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1{daemon_env} \
+             PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_FAUX_CHILD_SCRIPT={script} \
+             PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
             project = quote(&project),
             home = quote(&home),
             script = quote(&script),
             socket = quote(&dir.join("daemon.sock")),
             binary = quote(Path::new(env!("CARGO_BIN_EXE_prime-agent"))),
+            daemon_env = support::daemon_env(),
         ),
     )
     .expect("launcher");
@@ -208,3 +219,5 @@ fn two_children_messaging_each_other_show_in_the_traffic_pane() {
     assert!(open.contains("contract ready for review"), "{open}");
     assert!(open.contains("M hide traffic"), "{open}");
 }
+
+support::on_the_runtime_daemon!(two_children_messaging_each_other_show_in_the_traffic_pane,);

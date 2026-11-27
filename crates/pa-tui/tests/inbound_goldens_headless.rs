@@ -24,17 +24,34 @@
 //! `session_action_update`) right before it. In the compared frame, times of day read `##:##`
 //! and elapsed times `#` (the TUI reads them off its own clock), and the context tray row is
 //! elided (it settles on whichever `get_session_stats` reply wins its race with the stream).
+//!
+//! # Both transports
+//!
+//! Every scenario is replayed twice: on the old wire, as recorded, and on wire2 (the daemon
+//! client's wire2 link, `Transport::Wire2`), where a small wire2 mock serves the same recording
+//! as the runtime daemon would: `welcome` and `daemon.identity` (the recorded hello's fields) for
+//! the hello, each request's reply as the recorded reply to the old command it stands for (in the
+//! runtime's own terms where its call has them: `session.create`'s `{session, path, cwd}`,
+//! `schedules`' `{jobs}`), and each streamed frame as the event the runtime publishes for it
+//! (`agent/<id>/stream` with the frame's `meta.sequence`, `runtime/roster`), to the subscription
+//! that follows its topic, released at the same replies. Both must end on the committed frame.
 #![cfg(unix)]
 
 mod support;
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use pa_tui::daemon_client::Transport;
 use pa_tui::interactive::{HeadlessPlan, HeadlessStep, SessionSelection};
+use pa_types::daemon::framing::{
+    encode_private_frame, PrivateFrameDecoder, DEFAULT_PRIVATE_FRAME_LIMITS,
+};
+use pa_types::event_log::{Event, EventId, NewEvent, Topic, TopicFilter, Trust};
+use pa_types::wire2::{ClientFrame, Outcome, ServerFrame};
 use serde_json::{json, Value};
 
 use support::{accept_within_idle_window, run_headless, write_json, MockSupervisor};
@@ -122,8 +139,13 @@ struct Replay {
 }
 
 impl Replay {
-    /// Answer one request and release the frames its reply starts.
+    /// Answer one request on the old wire and release the frames its reply starts.
     fn answer(&mut self, writer: &mut UnixStream, id: &str, command: &str) {
+        self.answer_with(id, command, |frame| write_json(writer, frame));
+    }
+
+    /// Answer one request: `write` gets the frames its reply starts and the reply, in order.
+    fn answer_with(&mut self, id: &str, command: &str, mut write: impl FnMut(&Value)) {
         let index = self.answered.entry(command.to_string()).or_default();
         let reply = self
             .recording
@@ -136,7 +158,7 @@ impl Replay {
         );
         reply["id"] = json!(id);
         if !TURN_STARTS.contains(&command) {
-            write_json(writer, &reply);
+            write(&reply);
             return;
         }
         self.released += 1;
@@ -144,11 +166,11 @@ impl Replay {
         let empty = Block::default();
         let block = block.unwrap_or(&empty);
         for frame in &block.before {
-            write_json(writer, frame);
+            write(frame);
         }
-        write_json(writer, &reply);
+        write(&reply);
         for frame in &block.after {
-            write_json(writer, frame);
+            write(frame);
         }
     }
 }
@@ -174,8 +196,211 @@ fn serve(stream: UnixStream, replay: &Mutex<Replay>) {
     }
 }
 
-/// Replay `name` under `steps` and return its final frame, clock readings masked.
-fn replay(name: &str, session: SessionSelection, steps: Vec<HeadlessStep>) -> String {
+/// The old command a wire2 request stands for: the compat layer's mapping read backwards, for the
+/// requests the scenarios send.
+fn old_command(frame: &ClientFrame) -> Option<&'static str> {
+    Some(match frame {
+        ClientFrame::Publish { .. } => "prompt",
+        ClientFrame::Query { name, args, .. } => match (name.as_str(), args["shape"].as_str()) {
+            ("runtime.roster", _) => "roster_subscribe",
+            ("schedules", _) => "heartbeats_list",
+            ("session.kernel_bash", _) => "list_kernel_bash",
+            ("session.model_catalog", _) => "get_model_catalog",
+            ("session.snapshot", Some("state")) => "get_state",
+            ("session.commands", _) => "get_commands",
+            ("transcript.page", _) => "get_messages",
+            ("session.usage", _) => "get_session_stats",
+            _ => return None,
+        },
+        ClientFrame::Call { method, .. } => match method.as_str() {
+            "session.create" => "create",
+            "session.attach" => "attach",
+            "session.detach" => "detach",
+            _ => return None,
+        },
+        ClientFrame::Hello { .. }
+        | ClientFrame::Subscribe { .. }
+        | ClientFrame::Unsubscribe { .. } => return None,
+    })
+}
+
+/// A recorded reply as the runtime daemon's: its `data` as the result (in the runtime's terms
+/// where its call has them), a failure as the error with its `errorInfo`.
+fn wire2_outcome(command: &str, reply: &Value) -> Outcome {
+    if reply["success"] != json!(true) {
+        return Outcome::Error {
+            message: reply["error"].as_str().unwrap_or_default().to_string(),
+            info: reply.get("errorInfo").cloned(),
+        };
+    }
+    let data = reply.get("data").cloned().unwrap_or(Value::Null);
+    let result = match command {
+        "create" => json!({ "session": data["activeSessionId"], "path": data["sessionFile"],
+                            "cwd": data["cwd"] }),
+        "heartbeats_list" => json!({
+            "jobs": data["heartbeats"].as_array().into_iter().flatten()
+                .map(|row| row["job"].clone()).collect::<Vec<_>>(),
+        }),
+        _ => data,
+    };
+    Outcome::Ok { result }
+}
+
+/// A streamed old frame as the event the runtime daemon publishes for it, if it publishes one.
+fn wire2_event(frame: &Value) -> Option<Event> {
+    let (topic, payload) = match frame["type"].as_str()? {
+        "session_event" => {
+            let mut payload = frame["event"].clone();
+            if let Some(sequence) = frame["meta"]["sequence"].as_u64() {
+                payload["meta"] = json!({ "sequence": sequence });
+            }
+            (
+                format!("agent/{}/stream", frame["activeSessionId"].as_str()?),
+                payload,
+            )
+        }
+        "roster_update" => {
+            let mut payload = frame.clone();
+            payload.as_object_mut()?.remove("type");
+            ("runtime/roster".to_string(), payload)
+        }
+        _ => return None,
+    };
+    Some(Event {
+        id: EventId(frame["meta"]["id"].as_str().unwrap_or("live-0").to_string()),
+        seq: 0,
+        ts: 0,
+        event: NewEvent {
+            topic: Topic::new(topic).ok()?,
+            source: "runtime".to_string(),
+            session: None,
+            payload,
+            trust: Trust::Owner,
+            cause: None,
+            reply: None,
+        },
+    })
+}
+
+fn write_frame(writer: &mut UnixStream, frame: &ServerFrame) {
+    let bytes = encode_private_frame(
+        &serde_json::to_value(frame).expect("a frame serializes"),
+        &[],
+        DEFAULT_PRIVATE_FRAME_LIMITS,
+    )
+    .expect("a frame encodes");
+    writer.write_all(&bytes).expect("write mock frame");
+}
+
+/// Serve one wire2 connection from the replay: the recorded hello as the runtime's identity, each
+/// request answered as [`Replay::answer_with`] answers its old command.
+fn serve_wire2(stream: UnixStream, replay: &Mutex<Replay>) {
+    let mut writer = stream.try_clone().expect("clone mock socket");
+    let mut reader = stream;
+    let mut decoder = PrivateFrameDecoder::new(DEFAULT_PRIVATE_FRAME_LIMITS);
+    let mut subscriptions: Vec<(String, TopicFilter)> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = match reader.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        let Ok(frames) = decoder.push(&chunk[..read]) else {
+            break;
+        };
+        for frame in frames {
+            let Ok(frame) = serde_json::from_value::<ClientFrame>(frame.header) else {
+                continue;
+            };
+            let answer_frame = |id: &str, outcome: Outcome| ServerFrame::Reply {
+                id: id.to_string(),
+                outcome,
+            };
+            match &frame {
+                ClientFrame::Hello { .. } => write_frame(
+                    &mut writer,
+                    &ServerFrame::Welcome {
+                        version: pa_types::wire2::WIRE2_VERSION,
+                        runtime_version: "0.0.0".to_string(),
+                        last_seq: 0,
+                    },
+                ),
+                ClientFrame::Subscribe { sub_id, filter, .. } => {
+                    subscriptions.push((sub_id.clone(), filter.clone()));
+                    write_frame(
+                        &mut writer,
+                        &ServerFrame::Backfilled {
+                            sub_id: sub_id.clone(),
+                            through_seq: 0,
+                        },
+                    );
+                }
+                ClientFrame::Unsubscribe { sub_id } => {
+                    subscriptions.retain(|(known, _)| known != sub_id);
+                }
+                ClientFrame::Query { id, name, .. } if name == "daemon.identity" => {
+                    let mut identity = replay.lock().unwrap().recording.hello.clone();
+                    if let Some(fields) = identity.as_object_mut() {
+                        fields.remove("type");
+                        fields.remove("protocol");
+                    }
+                    write_frame(
+                        &mut writer,
+                        &answer_frame(id, Outcome::Ok { result: identity }),
+                    );
+                }
+                ClientFrame::Query { id, name, .. } if name == "system.history_import" => {
+                    write_frame(
+                        &mut writer,
+                        &answer_frame(
+                            id,
+                            Outcome::Ok {
+                                result: Value::Null,
+                            },
+                        ),
+                    );
+                }
+                ClientFrame::Publish { id, .. }
+                | ClientFrame::Query { id, .. }
+                | ClientFrame::Call { id, .. } => {
+                    let command = old_command(&frame).unwrap_or("unmapped");
+                    replay.lock().unwrap().answer_with(id, command, |old| {
+                        if old["type"] == "response" {
+                            write_frame(
+                                &mut writer,
+                                &answer_frame(id, wire2_outcome(command, old)),
+                            );
+                            return;
+                        }
+                        let Some(event) = wire2_event(old) else {
+                            return;
+                        };
+                        if let Some((sub_id, _)) = subscriptions
+                            .iter()
+                            .find(|(_, filter)| filter.matches(&event.event.topic))
+                        {
+                            write_frame(
+                                &mut writer,
+                                &ServerFrame::Event {
+                                    sub_id: sub_id.clone(),
+                                    event,
+                                },
+                            );
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Replay `name` under `steps` on `transport` and return its final frame, clock readings masked.
+fn replay(
+    name: &str,
+    session: SessionSelection,
+    steps: Vec<HeadlessStep>,
+    transport: Transport,
+) -> String {
     let replay = Arc::new(Mutex::new(Replay {
         recording: Recording::load(name),
         answered: HashMap::new(),
@@ -192,12 +417,16 @@ fn replay(name: &str, session: SessionSelection, steps: Vec<HeadlessStep>) -> St
             ..support::options(socket)
         },
         |socket| {
+            pa_tui::daemon_client::use_transport(socket, transport);
             let mock = MockSupervisor::bind(socket);
             move || {
                 let mut connections = Vec::new();
                 while let Some(stream) = accept_within_idle_window(&mock.listener) {
                     let replay = Arc::clone(&replay);
-                    connections.push(std::thread::spawn(move || serve(stream, &replay)));
+                    connections.push(std::thread::spawn(move || match transport {
+                        Transport::OldWire => serve(stream, &replay),
+                        Transport::Wire2 => serve_wire2(stream, &replay),
+                    }));
                 }
                 for connection in connections {
                     connection.join().expect("replay connection");
@@ -295,9 +524,11 @@ fn recorded_streams_render_their_golden_frames() {
     ];
     let mut rendered = Vec::new();
     let mut goldens = Vec::new();
-    for (name, session, steps) in scenarios {
-        rendered.push((name, replay(name, session, steps)));
-        goldens.push((name, expected(name)));
+    for transport in [Transport::OldWire, Transport::Wire2] {
+        for (name, session, steps) in scenarios.clone() {
+            rendered.push((transport, name, replay(name, session, steps, transport)));
+            goldens.push((transport, name, expected(name)));
+        }
     }
     assert_eq!(rendered, goldens);
 }

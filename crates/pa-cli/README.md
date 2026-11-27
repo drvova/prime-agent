@@ -26,7 +26,8 @@ options (provider, model, thinking, system prompt and appended ones, skills, pro
 the autonomous run on `BuiltSession`, the goal seeded on a fresh branch, `executionMode` `acp` as
 the telemetry mode), builds the engine through the headless assembly (the faux provider
 under `PRIME_AGENT_FAUX_SCRIPT`, each session answering from a queue of its own,
-`faux-<session id>`, as each supervisor worker does), streams the turn driver's events, and
+`faux-<session id>`, presenting the script's `provider` and `modelId`, as each supervisor worker
+does), streams the turn driver's events, and
 builds subagents as the print run does (`print_session::build_subagent`; a scripted session's
 subagent runs `PRIME_AGENT_FAUX_CHILD_SCRIPT` when the script names none for it, the
 supervisor's `childScript`); a session's engine binds its kernel's
@@ -34,12 +35,19 @@ supervisor's `childScript`); a session's engine binds its kernel's
 `schedule.*` still refuses). The daemon's `selected` re-reads the global settings before each
 scheduled job (`daemon_mode::settings_select_runtime_daemon`; the environment switch is read
 once). A kept launch still splits into the keeper
-first; the runtime daemon has no keeper of its own yet (phase 7c). A launcher that waits on the
-supervisor's socket (the interactive TUI's `ensure_daemon_running`, the update coordinator's
-successor while the supervisor is the selected daemon) sets `PRIME_AGENT_DAEMON_SUPERVISOR=1` on the daemon it spawns
-(`daemon_mode::SUPERVISOR_ENV`): that process and the daemon its keeper keeps are the supervisor
-whatever the opt-in says, until the TUI speaks wire2 (phase 8e). `tests/runtime_opt_in_launch_tmux_e2e.rs`
-is its verifier.
+first; the runtime daemon has no keeper of its own yet (phase 7c). The update coordinator's
+successor, while the supervisor is the daemon the update drives, sets
+`PRIME_AGENT_DAEMON_SUPERVISOR=1` on the daemon it spawns (`daemon_mode::SUPERVISOR_ENV`): that
+process and the daemon its keeper keeps are the supervisor whatever the successor's settings say.
+The interactive launch under the opt-in runs the TUI on the runtime daemon (phase 8e):
+`interactive_mode` ensures it (`ensure_runtime_daemon_running`), declares `daemon2.sock` a wire2
+socket (`pa_tui::daemon_client::use_transport`), hands the TUI and its agents view that socket,
+and installs the TUI's `DaemonLauncher` (`interactive_mode::daemon::RuntimeDaemonLauncher`, the
+same ensure) for a window whose daemon nothing brought back; without the opt-in it ensures the
+supervisor as before. A session the TUI creates carries `executionMode: "interactive"`, stamped on
+its telemetry as the supervisor's are. `tests/runtime_opt_in_launch_tmux_e2e.rs` is the launch's
+verifier, and the tmux verifiers that run the real binary under `env -i` run on both daemons
+(`support::on_the_runtime_daemon!`).
 `tests/runtime_daemon_e2e/` drives it over wire2 against the real binary; `turns.rs` there ports
 the supervisor's steer batching, queue order and abort tests (`steer_boundary_batch_e2e`,
 `queue_delivery_e2e`, `abort_kernel_e2e`) onto it, with withdraw, restore, compaction and the

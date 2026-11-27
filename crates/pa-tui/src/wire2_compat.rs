@@ -1,7 +1,8 @@
-//! The wire2 compatibility layer (TUI port stage (a)): wire2 traffic in terms of the inputs the
-//! TUI already consumes, so a later phase can move the `daemon_client` facade onto wire2 without
-//! touching the views that speak `DaemonCommand` and `DaemonClientEvent`. Nothing calls it on the
-//! live transport yet; `tests/goldens/inbound/` is its oracle.
+//! The wire2 compatibility layer: wire2 traffic in terms of the inputs the TUI already consumes,
+//! so the `daemon_client` facade's wire2 link (`daemon_client/wire2.rs`) carries the TUI on the
+//! runtime daemon without touching the views that speak `DaemonCommand` and `DaemonClientEvent`.
+//! `tests/goldens/inbound/` is its oracle, replayed through both transports
+//! (`tests/inbound_goldens_headless.rs`).
 //!
 //! # The contract the runtime honours
 //!
@@ -45,9 +46,14 @@
 //! absent; the TUI reads it only when `sequence` is missing. An event on any other topic is not a
 //! TUI input today and is ignored, like an unknown broadcast on the old wire.
 //!
-//! Outbound, the input commands become one publish each on `agent/<id>/input` (owner trust): the
-//! payload is the command's own JSON without `type` and `activeSessionId`, plus `kind` - the old
-//! command type (`prompt`, `steer`, `follow_up`).
+//! Outbound, the input commands become one publish each on `agent/<id>/input` (owner trust), the
+//! runtime's input (`pa_types::event_log::AgentInput`): the command's `message` as `text`, its
+//! images, and its place in the lane (`steer` a steer, `follow_up` a follow-up, `prompt` its
+//! `streamingBehavior`, none without one). A prompt that carries content blocks, a custom message
+//! or prefix messages is not carried: the runtime's input has no room for them.
+//! `prompt_and_wait` is the same publish as a follow-up, answered at the `agent/<id>/done` of the
+//! task the publish's reply names (a failed task fails it); the transport follows the session's
+//! `done` before it publishes.
 //!
 //! The session reads become one query each, whose reply's result is the old response's `data`
 //! verbatim ([`response_from_reply`]; an error reply is the old failure with its message, and its
@@ -133,7 +139,10 @@
 //! `update_restore_status` is the query `daemon.update_restore_status` (no session), whose result
 //! is the old response's `data`: `{updateId, inFlight, complete, counts, failures}`.
 //!
-//! `attach` is the call `session.attach` with `session` (the command's `activeSessionId`),
+//! `attach` is the call `session.attach` (sent once the transport follows the session's topics,
+//! [`session_subscription`]: its stream live, its stored topics after the last stored event the
+//! process saw on the socket, so a reconnect replays a fault or close it missed) with `session`
+//! (the command's `activeSessionId`),
 //! `clientId`, `capabilities` and `resumeCursor` (those it carries), whose reply's result is the
 //! old attach response's `data`: the connection's client is attached to the session until its
 //! `detach` or the connection's end, and one that names `user_questions` makes the session's
@@ -177,28 +186,65 @@
 //! import's started frame without `type`, or `null` while none runs
 //! ([`history_import_reply_frame`]).
 //!
-//! Every other command stays on the old wire.
+//! `heartbeats_changed`, the old daemon-global broadcast, is any session's live
+//! `agent/<id>/schedules` (subscription `compat:heartbeats` on `agent/+/schedules`, `Since::Now`).
+//! `daemon_hello` is the runtime's `welcome` and its `daemon.identity` (the old hello's identity
+//! fields and the `serverCapabilities` it serves through this layer, never the direct worker
+//! link's). `session_binding` has no counterpart: a wire2 session keeps its id across rebuilds.
 //!
-//! # Not mapped yet (phase 7 types these queries and calls)
+//! The runtime daemon's own calls and queries, which the CLI's and ACP's wire2 clients use too,
+//! carry the rest of what the TUI sends; their result is the old response's `data`, verbatim
+//! (the runtime answers these in the old daemon's shapes) except where noted:
 //!
-//! - Queries: `sessions.list` for `list`, the chunked `session_snapshot_*` frames (a TUI attach does
-//!   not ask for them), `session_attached`, `session_resynced`, `session_replaced`, `settings`
-//!   (`get_settings`), `models` (`get_available_models`), `subscriptions` and `tasks`
-//!   (`heartbeats_list`, `heartbeats_changed`),
-//!   `get_session_stats`, `get_rlm_children`.
-//! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
-//!   `fork` of the whole saved session, `label`, `export`, the auth
-//!   commands, `abort`/`abort_and_send_queued`, `compact`, a `detach` that names no session.
-//! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
-//! - Connection frames: `daemon_hello` from `welcome`, the direct worker link (retired: wire2 has one connection),
-//!   `session_binding` (a wire2 session keeps its id across rebuilds).
+//! | command | wire2 | arguments, and the result |
+//! | --- | --- | --- |
+//! | `create` | call `session.create` | `path` (the resumed `sessionPath`), `cwd` and `options` (the create config's `provider`, `model`, `thinking`, `systemPrompt`, `appendSystemPrompt`, `skills`, `promptTemplates`, `autonomous`, `executionMode`), `ephemeral` (`noSession`); `{session, path, cwd}` becomes the old `{activeSessionId, sessionId, sessionFile}` beside them |
+//! | `list` | query `sessions.list` | `open` (all but `all`) |
+//! | `kill` | call `session.stop` | `session` |
+//! | `rename`, `set_session_name` | call `session.rename` | `session`, `name` |
+//! | `rename_saved_session`, `delete_saved_session` | call `session.rename`, `session.delete` | `session`: the saved transcript's file stem (the runtime keeps a session as `<id>.jsonl`) |
+//! | `set_model` | call `session.set_model` | `session`, `provider`, `modelId` |
+//! | `set_thinking_level` | call `session.set_effort` | `session`, `level` |
+//! | `set_session_entry_label` | call `session.label` | `session`, `entry`, `label` |
+//! | `export_jsonl` | call `session.export` | `session`, `out` |
+//! | `abort`, `abort_and_send_queued` | call `session.abort`, `session.abort_and_send_queued` | `session` |
+//! | `execute_bash`, `abort_bash` | call `session.bash`, `session.abort_bash` | `session`, `command`, `excludeFromContext`, `transient`, `runId` |
+//! | `cancel_rlm_child` | call `session.cancel_child` | `session`, `child` |
+//! | `get_connection_state`, `get_rlm_children`, `get_session_stats`, `get_context_tree`, `get_context_breakdown`, `get_session_tree`, `get_system_prompt` | query `session.model`, `session.children`, `session.usage`, `session.context_tree`, `session.breakdown`, `session.tree`, `session.system_prompt` | `session` |
+//! | `heartbeats_list` | query `schedules` | `session` when it names one; `{jobs}` becomes the old `{heartbeats: [{job}]}` of its heartbeat jobs |
+//! | `detach` of no session | none | answered by the layer, as the old daemon answered it |
+//!
+//! A create whose config carries a choice the runtime's create has no form of yet (`apiKey`,
+//! `credential`, `profile`, `models`, `parentSessionPath`, `rlmDepth`) is not carried, and
+//! refused, rather than run without it. Its `sessionDir`, `script`, `childScript`,
+//! `telemetryDisabled`, `env`, `launchEnv` and `lifecycle` are left out: the daemon keeps its
+//! sessions in its own session dir and runs with the environment, the faux script and the
+//! telemetry switch of the launch that started it.
+//!
+//! # Not carried
+//!
+//! [`outgoing`] names every command, without a wildcard; these come back
+//! [`Outgoing::Unmapped`] with their reason, and the transport refuses them:
+//!
+//! - `get_direct_worker_transport`: the old wire's direct worker link (wire2 has one connection;
+//!   the facade never asks for it on wire2).
+//! - The frames between the old daemon's own processes (`worker_*`, `get_worker_peer_transport`,
+//!   `provider_admission_*`, `ack_result`, `retry_worker`).
+//! - What the CLI's and ACP's own wire2 clients send and the TUI does not (`send_message`, the
+//!   `cron_*` commands, `wait_for_idle`, `compact`, the ACP session commands, ...).
+//! - The old-wire commands no client of this build sends (`reattach`, `restore_*`, `get_queue`,
+//!   `new_session`, ...).
+//!
+//! The guard (`wire2_compat/guard_tests.rs`) finds every command the TUI's own code builds and
+//! fails when one comes back unmapped.
 
 use anyhow::{anyhow, Context, Result};
 use pa_types::daemon::{
     DaemonCommand, DaemonEventMeta, DaemonOutbound, DaemonProtocolInfo, DaemonResponse,
-    DaemonSessionClosedReason, DAEMON_PROTOCOL_NAME, DAEMON_PROTOCOL_VERSION,
+    DaemonSessionClosedReason, PromptInput, StreamingBehavior, DAEMON_PROTOCOL_NAME,
+    DAEMON_PROTOCOL_VERSION,
 };
-use pa_types::event_log::{Event, Topic, TopicFilter};
+use pa_types::event_log::{AgentInput, Event, Priority, Topic, TopicFilter};
 use pa_types::wire2::{ClientFrame, Outcome, Since};
 use serde_json::{Map, Value};
 
@@ -236,8 +282,24 @@ pub(crate) enum Outgoing {
         unsubscribe: ClientFrame,
         response: Box<DaemonOutbound>,
     },
-    /// A command wire2 does not carry yet (see the module docs); it stays on the old wire.
-    Unmapped(Box<DaemonCommand>),
+    /// A session's attach: the call, after the transport follows the session's topics
+    /// ([`session_subscription`]) and before it delivers what they carried meanwhile.
+    Attach { session: String, call: ClientFrame },
+    /// A session's detach: the call, and the transport stops following the session's topics.
+    Detach { session: String, call: ClientFrame },
+    /// `prompt_and_wait`: the input published on `session`, answered once the task its reply
+    /// names is done (`agent/<id>/done`).
+    PublishAndWait {
+        session: String,
+        publish: ClientFrame,
+    },
+    /// A command the layer answers itself, as the old daemon did.
+    Local(Box<DaemonOutbound>),
+    /// A command wire2 does not carry, and why (see the module docs): the transport refuses it.
+    Unmapped {
+        command: Box<DaemonCommand>,
+        reason: &'static str,
+    },
 }
 
 /// The old frame `event` stands for, or `None` for a topic the TUI has no input for.
@@ -430,8 +492,10 @@ const TRAFFIC_FEED: (&str, &str, &str) = ("compat:traffic", "runtime/traffic", "
 
 /// `command` as wire2 carries it: an input command becomes a publish, a session read a query, a
 /// setting switch a call, a feed's subscribe and unsubscribe its subscription's, the
-/// saved-session list a stream, each request with `request_id` as its frame id; every other
-/// command comes back unmapped.
+/// saved-session list a stream, an attach or a detach the call the transport frames with the
+/// session's subscription, `prompt_and_wait` a publish answered at its task's `done`, each request
+/// with `request_id` as its frame id; a detach of no session is answered here, and every command
+/// wire2 does not carry comes back unmapped with its reason (the match names every command).
 ///
 /// # Errors
 ///
@@ -452,16 +516,64 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
             args: Value::Object(args),
         }))
     };
-    let active_session_id = match &command {
+    match &command {
         DaemonCommand::Prompt {
-            active_session_id, ..
-        }
-        | DaemonCommand::Steer {
-            active_session_id, ..
-        }
-        | DaemonCommand::FollowUp {
-            active_session_id, ..
-        } => active_session_id.clone(),
+            active_session_id,
+            message,
+            input,
+            ..
+        } => input_publish(
+            request_id,
+            active_session_id,
+            message,
+            input,
+            input.streaming_behavior.map(|behavior| match behavior {
+                StreamingBehavior::Steer => Priority::Steer,
+                StreamingBehavior::FollowUp => Priority::FollowUp,
+            }),
+        ),
+        DaemonCommand::Steer {
+            active_session_id,
+            message,
+            input,
+            ..
+        } => input_publish(
+            request_id,
+            active_session_id,
+            message,
+            input,
+            Some(Priority::Steer),
+        ),
+        DaemonCommand::FollowUp {
+            active_session_id,
+            message,
+            input,
+            ..
+        } => input_publish(
+            request_id,
+            active_session_id,
+            message,
+            input,
+            Some(Priority::FollowUp),
+        ),
+        DaemonCommand::PromptAndWait {
+            active_session_id,
+            message,
+            input,
+            ..
+        } => match input_publish(
+            request_id,
+            active_session_id,
+            message,
+            input,
+            Some(Priority::FollowUp),
+        )? {
+            Outgoing::Publish(publish) => Ok(Outgoing::PublishAndWait {
+                session: active_session_id.clone(),
+                publish,
+            }),
+            refused => Ok(refused),
+        },
         DaemonCommand::Attach {
             active_session_id,
             client_id,
@@ -486,47 +598,52 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                     args.insert(key.to_string(), value);
                 }
             }
-            return Ok(Outgoing::Call(ClientFrame::Call {
-                id: request_id,
-                method: "session.attach".to_string(),
-                args: Value::Object(args),
-            }));
+            Ok(Outgoing::Attach {
+                session: active_session_id.clone(),
+                call: ClientFrame::Call {
+                    id: request_id,
+                    method: "session.attach".to_string(),
+                    args: Value::Object(args),
+                },
+            })
         }
         DaemonCommand::Detach {
             active_session_id: Some(active_session_id),
             ..
-        } => return session_call(request_id, "session.detach", active_session_id, &command),
+        } => match session_call(request_id, "session.detach", active_session_id, &command)? {
+            Outgoing::Call(call) => Ok(Outgoing::Detach {
+                session: active_session_id.clone(),
+                call,
+            }),
+            other => Ok(other),
+        },
         DaemonCommand::AnswerQuestion {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.answer_question",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.answer_question",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::GetState {
             active_session_id, ..
-        } => return query("session.snapshot", active_session_id, "state", Vec::new()),
+        } => query("session.snapshot", active_session_id, "state", Vec::new()),
         DaemonCommand::GetMessages {
             active_session_id,
             page,
             capabilities,
             rest,
             ..
-        } => {
-            return query(
-                "transcript.page",
-                active_session_id,
-                "messages",
-                vec![
-                    ("page", member(page.as_ref())),
-                    ("historyLeafId", rest.get("historyLeafId").cloned()),
-                    ("capabilities", member(capabilities.as_ref())),
-                ],
-            )
-        }
+        } => query(
+            "transcript.page",
+            active_session_id,
+            "messages",
+            vec![
+                ("page", member(page.as_ref())),
+                ("historyLeafId", rest.get("historyLeafId").cloned()),
+                ("capabilities", member(capabilities.as_ref())),
+            ],
+        ),
         DaemonCommand::ListSavedSessions {
             active_session_id,
             cwd,
@@ -558,7 +675,7 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 }
             }
             let sub_id = format!("compat:list:{request_id}");
-            return Ok(Outgoing::Stream {
+            Ok(Outgoing::Stream {
                 subscribe: ClientFrame::Subscribe {
                     sub_id: sub_id.clone(),
                     filter: TopicFilter::new(format!("runtime/session_list/{request_id}"))
@@ -571,499 +688,653 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                     args: Value::Object(args),
                 },
                 unsubscribe: ClientFrame::Unsubscribe { sub_id },
-            });
+            })
         }
         DaemonCommand::CycleModel {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.cycle_model",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.cycle_model",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::SetScopedModels {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.set_scoped_models",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.set_scoped_models",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::CycleThinkingLevel {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.cycle_effort",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.cycle_effort",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::SetServiceTier {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.set_service_tier",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.set_service_tier",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::SetTransport {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.set_transport",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.set_transport",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::SetSteeringMode {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.set_steering_mode",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.set_steering_mode",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::SetFollowUpMode {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.set_follow_up_mode",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.set_follow_up_mode",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::SetAutoCompaction {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.set_auto_compaction",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.set_auto_compaction",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::SetAutoRetry {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.set_auto_retry",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.set_auto_retry",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::Reload {
             active_session_id, ..
-        } => return session_call(request_id, "session.reload", active_session_id, &command),
+        } => session_call(request_id, "session.reload", active_session_id, &command),
         DaemonCommand::MarkAnthropicWarningShown {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.mark_anthropic_warning_shown",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.mark_anthropic_warning_shown",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::GetCommands {
             active_session_id, ..
-        } => {
-            return command_query(
-                request_id,
-                "session.commands",
-                Some(active_session_id),
-                &command,
-            )
-        }
+        } => command_query(
+            request_id,
+            "session.commands",
+            Some(active_session_id),
+            &command,
+        ),
         DaemonCommand::GetMcpConnections {
             active_session_id, ..
-        } => {
-            return command_query(
-                request_id,
-                "session.mcp_connections",
-                Some(active_session_id),
-                &command,
-            )
-        }
+        } => command_query(
+            request_id,
+            "session.mcp_connections",
+            Some(active_session_id),
+            &command,
+        ),
         DaemonCommand::GetModelCatalog {
             active_session_id, ..
-        } => {
-            return command_query(
-                request_id,
-                "session.model_catalog",
-                Some(active_session_id),
-                &command,
-            )
-        }
+        } => command_query(
+            request_id,
+            "session.model_catalog",
+            Some(active_session_id),
+            &command,
+        ),
         DaemonCommand::GetUserMessagesForForking {
             active_session_id, ..
-        } => {
-            return command_query(
-                request_id,
-                "session.fork_messages",
-                Some(active_session_id),
-                &command,
-            )
-        }
+        } => command_query(
+            request_id,
+            "session.fork_messages",
+            Some(active_session_id),
+            &command,
+        ),
         DaemonCommand::GetLastAssistantText {
             active_session_id, ..
-        } => {
-            return command_query(
-                request_id,
-                "session.last_assistant_text",
-                Some(active_session_id),
-                &command,
-            )
-        }
+        } => command_query(
+            request_id,
+            "session.last_assistant_text",
+            Some(active_session_id),
+            &command,
+        ),
         DaemonCommand::NavigateTree {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.navigate_tree",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.navigate_tree",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::AbortBranchSummary {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.abort_branch_summary",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.abort_branch_summary",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::ExportHtml {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.export_html",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.export_html",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::Fork {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.fork_entry",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.fork_entry",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::ImportJsonl {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.import_jsonl",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.import_jsonl",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::MutateQueuedMessage {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.mutate_queued_message",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.mutate_queued_message",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::AbortCompaction {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.abort_compaction",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.abort_compaction",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::AbortRetry {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.abort_retry",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.abort_retry",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::StartSideQuestion {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.start_side_question",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.start_side_question",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::AbortSideQuestion {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.abort_side_question",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.abort_side_question",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::RecordBetterOutcome {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.record_better_outcome",
-                active_session_id,
-                &command,
-            )
-        }
-        DaemonCommand::GetUsage { .. } => {
-            return command_query(request_id, "usage", None, &command);
-        }
+        } => session_call(
+            request_id,
+            "session.record_better_outcome",
+            active_session_id,
+            &command,
+        ),
+        DaemonCommand::GetUsage { .. } => command_query(request_id, "usage", None, &command),
         DaemonCommand::ListKernelBash {
             active_session_id, ..
-        } => {
-            return command_query(
-                request_id,
-                "session.kernel_bash",
-                Some(active_session_id),
-                &command,
-            )
-        }
+        } => command_query(
+            request_id,
+            "session.kernel_bash",
+            Some(active_session_id),
+            &command,
+        ),
         DaemonCommand::TailKernelBash {
             active_session_id, ..
-        } => {
-            return command_query(
-                request_id,
-                "session.kernel_bash_tail",
-                Some(active_session_id),
-                &command,
-            )
-        }
+        } => command_query(
+            request_id,
+            "session.kernel_bash_tail",
+            Some(active_session_id),
+            &command,
+        ),
         DaemonCommand::KillKernelBash {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.kill_kernel_bash",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.kill_kernel_bash",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::FactoryActivity {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.factory_activity",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.factory_activity",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::ListPersistentShells { .. } => {
-            return command_query(request_id, "persistent_shells", None, &command);
+            command_query(request_id, "persistent_shells", None, &command)
         }
         DaemonCommand::TailPersistentShell { .. } => {
-            return command_query(request_id, "persistent_shells.tail", None, &command);
+            command_query(request_id, "persistent_shells.tail", None, &command)
         }
-        DaemonCommand::KillPersistentShell { .. } => {
-            return Ok(Outgoing::Call(ClientFrame::Call {
-                id: request_id,
-                method: "persistent_shells.kill".to_string(),
-                args: command_args(&command, None)?,
-            }));
-        }
+        DaemonCommand::KillPersistentShell { .. } => Ok(Outgoing::Call(ClientFrame::Call {
+            id: request_id,
+            method: "persistent_shells.kill".to_string(),
+            args: command_args(&command, None)?,
+        })),
         DaemonCommand::AgentMessagesStatus {
             active_session_id, ..
-        } => {
-            return command_query(
-                request_id,
-                "agent_messages",
-                active_session_id.as_deref(),
-                &command,
-            )
-        }
+        } => command_query(
+            request_id,
+            "agent_messages",
+            active_session_id.as_deref(),
+            &command,
+        ),
         DaemonCommand::AgentMessagesPause {
             active_session_id, ..
-        } => {
-            return ingest_call(
-                request_id,
-                "agent_messages.pause",
-                active_session_id.as_deref(),
-                &command,
-            )
-        }
+        } => ingest_call(
+            request_id,
+            "agent_messages.pause",
+            active_session_id.as_deref(),
+            &command,
+        ),
         DaemonCommand::AgentMessagesResume {
             active_session_id, ..
-        } => {
-            return ingest_call(
-                request_id,
-                "agent_messages.resume",
-                active_session_id.as_deref(),
-                &command,
-            )
-        }
+        } => ingest_call(
+            request_id,
+            "agent_messages.resume",
+            active_session_id.as_deref(),
+            &command,
+        ),
         DaemonCommand::AgentMessagesClear {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "agent_messages.clear",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "agent_messages.clear",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::GetRlmMaxDepthStatus {
             active_session_id, ..
-        } => {
-            return command_query(
-                request_id,
-                "session.rlm_max_depth",
-                Some(active_session_id),
-                &command,
-            )
-        }
+        } => command_query(
+            request_id,
+            "session.rlm_max_depth",
+            Some(active_session_id),
+            &command,
+        ),
         DaemonCommand::SetRlmMaxDepth {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.set_rlm_max_depth",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.set_rlm_max_depth",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::DeleteRlmSubagent {
             active_session_id,
             child_id,
             ..
-        } => {
-            return Ok(Outgoing::Call(ClientFrame::Call {
-                id: request_id,
-                method: "session.delete_child".to_string(),
-                args: serde_json::json!({ "session": active_session_id, "child": child_id }),
-            }));
-        }
+        } => Ok(Outgoing::Call(ClientFrame::Call {
+            id: request_id,
+            method: "session.delete_child".to_string(),
+            args: serde_json::json!({ "session": active_session_id, "child": child_id }),
+        })),
         DaemonCommand::HeartbeatGet {
             active_session_id, ..
-        } => {
-            return command_query(
-                request_id,
-                "session.heartbeat",
-                Some(active_session_id),
-                &command,
-            )
-        }
+        } => command_query(
+            request_id,
+            "session.heartbeat",
+            Some(active_session_id),
+            &command,
+        ),
         DaemonCommand::HeartbeatSet {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.set_heartbeat",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.set_heartbeat",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::HeartbeatUpdate {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.update_heartbeat",
-                active_session_id,
-                &command,
-            )
-        }
+        } => session_call(
+            request_id,
+            "session.update_heartbeat",
+            active_session_id,
+            &command,
+        ),
         DaemonCommand::HeartbeatManage {
             active_session_id, ..
-        } => {
-            return session_call(
-                request_id,
-                "session.manage_heartbeat",
-                active_session_id,
-                &command,
-            )
-        }
-        DaemonCommand::Shutdown { .. } => {
-            return Ok(Outgoing::Call(ClientFrame::Call {
-                id: request_id,
-                method: "daemon.shutdown".to_string(),
-                args: command_args(&command, None)?,
-            }));
-        }
-        DaemonCommand::Restart { .. } => {
-            return Ok(Outgoing::Call(ClientFrame::Call {
-                id: request_id,
-                method: "daemon.restart".to_string(),
-                args: command_args(&command, None)?,
-            }));
-        }
-        DaemonCommand::PrepareUpdateRestart { .. } => {
-            return Ok(Outgoing::Call(ClientFrame::Call {
-                id: request_id,
-                method: "daemon.prepare_update_restart".to_string(),
-                args: command_args(&command, None)?,
-            }));
-        }
+        } => session_call(
+            request_id,
+            "session.manage_heartbeat",
+            active_session_id,
+            &command,
+        ),
+        DaemonCommand::Shutdown { .. } => Ok(Outgoing::Call(ClientFrame::Call {
+            id: request_id,
+            method: "daemon.shutdown".to_string(),
+            args: command_args(&command, None)?,
+        })),
+        DaemonCommand::Restart { .. } => Ok(Outgoing::Call(ClientFrame::Call {
+            id: request_id,
+            method: "daemon.restart".to_string(),
+            args: command_args(&command, None)?,
+        })),
+        DaemonCommand::PrepareUpdateRestart { .. } => Ok(Outgoing::Call(ClientFrame::Call {
+            id: request_id,
+            method: "daemon.prepare_update_restart".to_string(),
+            args: command_args(&command, None)?,
+        })),
         DaemonCommand::UpdateRestoreStatus { .. } => {
-            return command_query(request_id, "daemon.update_restore_status", None, &command);
+            command_query(request_id, "daemon.update_restore_status", None, &command)
         }
-        DaemonCommand::CommitUpdateRestart { .. } => {
-            return Ok(Outgoing::Call(ClientFrame::Call {
-                id: request_id,
-                method: "daemon.commit_update_restart".to_string(),
-                args: command_args(&command, None)?,
-            }));
-        }
-        DaemonCommand::RosterSubscribe { .. } => return follow(request_id, ROSTER_FEED),
-        DaemonCommand::AgentTrafficSubscribe { .. } => return follow(request_id, TRAFFIC_FEED),
+        DaemonCommand::CommitUpdateRestart { .. } => Ok(Outgoing::Call(ClientFrame::Call {
+            id: request_id,
+            method: "daemon.commit_update_restart".to_string(),
+            args: command_args(&command, None)?,
+        })),
+        DaemonCommand::RosterSubscribe { .. } => follow(request_id, ROSTER_FEED),
+        DaemonCommand::AgentTrafficSubscribe { .. } => follow(request_id, TRAFFIC_FEED),
         DaemonCommand::RosterUnsubscribe { .. } => {
-            return Ok(unfollow(request_id, ROSTER_FEED, "roster_unsubscribe"))
+            Ok(unfollow(request_id, ROSTER_FEED, "roster_unsubscribe"))
         }
-        DaemonCommand::AgentTrafficUnsubscribe { .. } => {
-            return Ok(unfollow(
-                request_id,
-                TRAFFIC_FEED,
-                "agent_traffic_unsubscribe",
-            ))
+        DaemonCommand::AgentTrafficUnsubscribe { .. } => Ok(unfollow(
+            request_id,
+            TRAFFIC_FEED,
+            "agent_traffic_unsubscribe",
+        )),
+        DaemonCommand::Detach {
+            active_session_id: None,
+            ..
+        } => Ok(Outgoing::Local(Box::new(answered(request_id, "detach")))),
+        DaemonCommand::Create {
+            session_path,
+            no_session,
+            config,
+            ..
+        } => {
+            let config = config.clone().unwrap_or(Value::Null);
+            // A choice the runtime's create cannot honour refuses the create, never runs the
+            // session without it (a pinned credential, a scoped child, a session dir).
+            if CREATE_UNCARRIED
+                .iter()
+                .any(|key| config.get(*key).is_some())
+            {
+                return Ok(unmapped(command, CREATE_CHOICES));
+            }
+            let options: Map<String, Value> = CREATE_OPTIONS
+                .iter()
+                .filter_map(|key| Some(((*key).to_string(), config.get(*key)?.clone())))
+                .collect();
+            let mut args = serde_json::json!({ "options": options });
+            if let Some(cwd) = config.get("cwd") {
+                args["cwd"] = cwd.clone();
+            }
+            if let Some(path) = session_path {
+                args["path"] = Value::from(path.as_str());
+            }
+            if *no_session == Some(true) {
+                args["ephemeral"] = Value::Bool(true);
+            }
+            Ok(call(request_id, "session.create", args))
         }
-        // The rest is the module docs' list of commands wire2 does not carry yet.
-        _ => return Ok(Outgoing::Unmapped(Box::new(command))),
-    };
-    let topic = Topic::new(format!("agent/{active_session_id}/input"))
-        .with_context(|| format!("session {active_session_id:?} has no input topic"))?;
-    let Value::Object(mut payload) = serde_json::to_value(&command)? else {
-        return Err(anyhow!("a command serializes to an object"));
-    };
-    payload.remove("activeSessionId");
-    let kind = payload
-        .remove("type")
-        .ok_or_else(|| anyhow!("a command carries its type"))?;
-    payload.insert("kind".to_string(), kind);
-    Ok(Outgoing::Publish(ClientFrame::Publish {
-        id: request_id,
-        topic,
-        payload: Value::Object(payload),
-    }))
+        DaemonCommand::List { all, .. } => Ok(query_frame(
+            request_id,
+            "sessions.list",
+            serde_json::json!({ "open": *all != Some(true) }),
+        )),
+        DaemonCommand::Kill {
+            active_session_id, ..
+        } => Ok(call(
+            request_id,
+            "session.stop",
+            serde_json::json!({ "session": active_session_id }),
+        )),
+        DaemonCommand::Rename {
+            active_session_id,
+            name,
+            ..
+        }
+        | DaemonCommand::SetSessionName {
+            active_session_id,
+            name,
+            ..
+        } => Ok(call(
+            request_id,
+            "session.rename",
+            serde_json::json!({ "session": active_session_id, "name": name }),
+        )),
+        DaemonCommand::RenameSavedSession {
+            session_path, name, ..
+        } => Ok(call(
+            request_id,
+            "session.rename",
+            serde_json::json!({ "session": saved_session_id(session_path)?, "name": name }),
+        )),
+        DaemonCommand::DeleteSavedSession { session_path, .. } => Ok(call(
+            request_id,
+            "session.delete",
+            serde_json::json!({ "session": saved_session_id(session_path)? }),
+        )),
+        DaemonCommand::SetModel {
+            active_session_id,
+            provider,
+            model_id,
+            ..
+        } => Ok(call(
+            request_id,
+            "session.set_model",
+            serde_json::json!({ "session": active_session_id, "provider": provider,
+                                "modelId": model_id }),
+        )),
+        DaemonCommand::SetThinkingLevel {
+            active_session_id,
+            level,
+            ..
+        } => Ok(call(
+            request_id,
+            "session.set_effort",
+            serde_json::json!({ "session": active_session_id, "level": level }),
+        )),
+        DaemonCommand::SetSessionEntryLabel {
+            active_session_id,
+            entry_id,
+            label,
+            ..
+        } => Ok(call(
+            request_id,
+            "session.label",
+            serde_json::json!({ "session": active_session_id, "entry": entry_id,
+                                "label": label }),
+        )),
+        DaemonCommand::ExportJsonl {
+            active_session_id,
+            output_path,
+            ..
+        } => Ok(call(
+            request_id,
+            "session.export",
+            serde_json::json!({ "session": active_session_id, "out": output_path }),
+        )),
+        DaemonCommand::Abort {
+            active_session_id, ..
+        } => Ok(call(
+            request_id,
+            "session.abort",
+            serde_json::json!({ "session": active_session_id }),
+        )),
+        DaemonCommand::AbortAndSendQueued {
+            active_session_id, ..
+        } => Ok(call(
+            request_id,
+            "session.abort_and_send_queued",
+            serde_json::json!({ "session": active_session_id }),
+        )),
+        DaemonCommand::ExecuteBash {
+            active_session_id,
+            command: line,
+            exclude_from_context,
+            transient,
+            run_id,
+            ..
+        } => {
+            let mut args = serde_json::json!({ "session": active_session_id, "command": line });
+            for (key, value) in [
+                ("excludeFromContext", exclude_from_context.map(Value::Bool)),
+                ("transient", transient.map(Value::Bool)),
+                ("runId", run_id.clone().map(Value::from)),
+            ] {
+                if let Some(value) = value {
+                    args[key] = value;
+                }
+            }
+            Ok(call(request_id, "session.bash", args))
+        }
+        DaemonCommand::AbortBash {
+            active_session_id, ..
+        } => Ok(call(
+            request_id,
+            "session.abort_bash",
+            serde_json::json!({ "session": active_session_id }),
+        )),
+        DaemonCommand::CancelRlmChild {
+            active_session_id,
+            child_id,
+            ..
+        } => Ok(call(
+            request_id,
+            "session.cancel_child",
+            serde_json::json!({ "session": active_session_id, "child": child_id }),
+        )),
+        DaemonCommand::GetConnectionState {
+            active_session_id, ..
+        } => Ok(session_query(
+            request_id,
+            "session.model",
+            active_session_id,
+        )),
+        DaemonCommand::GetRlmChildren {
+            active_session_id, ..
+        } => Ok(session_query(
+            request_id,
+            "session.children",
+            active_session_id,
+        )),
+        DaemonCommand::GetSessionStats {
+            active_session_id, ..
+        } => Ok(session_query(
+            request_id,
+            "session.usage",
+            active_session_id,
+        )),
+        DaemonCommand::GetContextTree {
+            active_session_id, ..
+        } => Ok(session_query(
+            request_id,
+            "session.context_tree",
+            active_session_id,
+        )),
+        DaemonCommand::GetContextBreakdown {
+            active_session_id, ..
+        } => Ok(session_query(
+            request_id,
+            "session.breakdown",
+            active_session_id,
+        )),
+        DaemonCommand::GetSessionTree {
+            active_session_id, ..
+        } => Ok(session_query(request_id, "session.tree", active_session_id)),
+        DaemonCommand::GetSystemPrompt {
+            active_session_id, ..
+        } => Ok(session_query(
+            request_id,
+            "session.system_prompt",
+            active_session_id,
+        )),
+        DaemonCommand::HeartbeatsList {
+            active_session_id, ..
+        } => {
+            let mut args = serde_json::json!({});
+            if let Some(session) = active_session_id {
+                args["session"] = Value::from(session.as_str());
+            }
+            Ok(query_frame(request_id, "schedules", args))
+        }
+        // The direct worker link: wire2 has one connection.
+        DaemonCommand::GetDirectWorkerTransport { .. } => Ok(unmapped(command, DIRECT_LINK)),
+        // The old daemon's own processes' frames.
+        DaemonCommand::GetWorkerPeerTransport { .. }
+        | DaemonCommand::WorkerIdlePassivation { .. }
+        | DaemonCommand::WorkerRosterDelta { .. }
+        | DaemonCommand::ProviderAdmissionAcquire { .. }
+        | DaemonCommand::ProviderAdmissionRelease { .. }
+        | DaemonCommand::WorkerAgentTraffic { .. }
+        | DaemonCommand::WorkerRegister { .. }
+        | DaemonCommand::AckResult { .. }
+        | DaemonCommand::RetryWorker { .. } => Ok(unmapped(command, WORKER_FRAME)),
+        // What the CLI's and ACP's own wire2 clients send (`pa-cli` `runtime_daemon_client`,
+        // `pa-runtime` `acp::wire2_link`); the TUI sends none of them.
+        DaemonCommand::ListAgentPeers { .. }
+        | DaemonCommand::EventBus { .. }
+        | DaemonCommand::CompleteOwnedSession { .. }
+        | DaemonCommand::CancelPromptAdmission { .. }
+        | DaemonCommand::SendMessage { .. }
+        | DaemonCommand::WaitForIdle { .. }
+        | DaemonCommand::WaitForHeadlessCompletion { .. }
+        | DaemonCommand::ReplaceAcpMcpServers { .. }
+        | DaemonCommand::GetAvailableModels { .. }
+        | DaemonCommand::AbortAndClearQueue { .. }
+        | DaemonCommand::AcquireSessionInputPause { .. }
+        | DaemonCommand::ReleaseSessionInputPause { .. }
+        | DaemonCommand::CronList { .. }
+        | DaemonCommand::CronAdd { .. }
+        | DaemonCommand::CronCancel { .. }
+        | DaemonCommand::Compact { .. }
+        | DaemonCommand::GetSessionContext { .. } => Ok(unmapped(command, OTHER_CLIENTS)),
+        // Old-wire commands no client of this build sends.
+        DaemonCommand::Reattach { .. }
+        | DaemonCommand::PromoteOwnedSession { .. }
+        | DaemonCommand::RestoreNextTurn { .. }
+        | DaemonCommand::RestoreActions { .. }
+        | DaemonCommand::AppendCustomMessage { .. }
+        | DaemonCommand::ResumeQueue { .. }
+        | DaemonCommand::GetSessionHeader { .. }
+        | DaemonCommand::GetSessionMessages { .. }
+        | DaemonCommand::GetResourceSnapshot { .. }
+        | DaemonCommand::SetMcpStaticToken { .. }
+        | DaemonCommand::RemoveMcpConnection { .. }
+        | DaemonCommand::GetQueue { .. }
+        | DaemonCommand::ClearQueue { .. }
+        | DaemonCommand::Refine { .. }
+        | DaemonCommand::ExecuteBashAndWait { .. }
+        | DaemonCommand::NewSession { .. }
+        | DaemonCommand::SwitchSession { .. }
+        | DaemonCommand::GetToolDefinition { .. } => Ok(unmapped(command, NOT_SENT)),
+    }
 }
 
 /// The arguments `command` carries over wire2: its own members without `type`, `id` and
@@ -1169,17 +1440,164 @@ fn unfollow(request_id: String, (sub_id, _, _): (&str, &str, &str), command: &st
         unsubscribe: ClientFrame::Unsubscribe {
             sub_id: sub_id.to_string(),
         },
-        response: Box::new(DaemonOutbound::Response {
-            response: DaemonResponse {
-                id: Some(request_id),
-                command: command.to_string(),
-                success: true,
-                data: None,
-                error: None,
-                error_info: None,
-            },
-        }),
+        response: Box::new(answered(request_id, command)),
     }
+}
+
+/// The old daemon's plain success for `command` (request `request_id`), without `data`.
+fn answered(request_id: String, command: &str) -> DaemonOutbound {
+    DaemonOutbound::Response {
+        response: DaemonResponse {
+            id: Some(request_id),
+            command: command.to_string(),
+            success: true,
+            data: None,
+            error: None,
+            error_info: None,
+        },
+    }
+}
+
+/// Why a command is not carried (the module docs' last table).
+const DIRECT_LINK: &str = "the direct worker link is the old daemon's: wire2 has one connection";
+const WORKER_FRAME: &str = "a frame between the old daemon's own processes";
+const OTHER_CLIENTS: &str =
+    "the CLI's and ACP's own wire2 clients send it; the terminal UI does not";
+const NOT_SENT: &str = "no client of this build sends it";
+const INPUT_PARTS: &str =
+    "the runtime daemon's input carries a prompt's text and images, not its content blocks, \
+     custom message or prefix messages";
+
+/// `command`, refused on wire2 for `reason`.
+fn unmapped(command: DaemonCommand, reason: &'static str) -> Outgoing {
+    Outgoing::Unmapped {
+        command: Box::new(command),
+        reason,
+    }
+}
+
+/// The create config's members the runtime daemon's `session.create` has no form of yet; a create
+/// that carries one is not carried ([`CREATE_CHOICES`]). `telemetryDisabled`, `sessionDir`,
+/// `script` and `childScript` are not among them: the daemon the launch started runs with the
+/// launch's own telemetry switch and faux script (`PRIME_AGENT_FAUX_SCRIPT`, a verification seam),
+/// and keeps its sessions in its own session dir.
+const CREATE_UNCARRIED: [&str; 6] = [
+    "apiKey",
+    "credential",
+    "profile",
+    "models",
+    "parentSessionPath",
+    "rlmDepth",
+];
+const CREATE_CHOICES: &str = "the runtime daemon's create has no form yet of an API key, a credential or profile pin, a model scope or a parent session";
+
+/// The create config's members the runtime daemon's `session.create` takes as `options` (pa-runtime
+/// `acp::wire2_link` lists the same; the rest of the config is not carried, see the module docs).
+const CREATE_OPTIONS: [&str; 9] = [
+    "provider",
+    "model",
+    "thinking",
+    "systemPrompt",
+    "appendSystemPrompt",
+    "skills",
+    "promptTemplates",
+    "autonomous",
+    "executionMode",
+];
+
+/// The input command on session `session` as the runtime daemon's `agent/<id>/input` event: its
+/// text, its images, and its place in the session's lane.
+fn input_publish(
+    request_id: String,
+    session: &str,
+    message: &str,
+    input: &PromptInput,
+    priority: Option<Priority>,
+) -> Result<Outgoing> {
+    if input.content.is_some() || input.custom_message.is_some() || input.prefix_messages.is_some()
+    {
+        return Ok(Outgoing::Unmapped {
+            command: Box::new(DaemonCommand::Prompt {
+                id: None,
+                active_session_id: session.to_string(),
+                message: message.to_string(),
+                input: input.clone(),
+                rest: Map::new(),
+            }),
+            reason: INPUT_PARTS,
+        });
+    }
+    let topic = Topic::new(format!("agent/{session}/input"))
+        .with_context(|| format!("session {session:?} has no input topic"))?;
+    let images = match &input.images {
+        Some(images) => serde_json::from_value(images.clone()).context("the prompt's images")?,
+        None => Vec::new(),
+    };
+    let payload = AgentInput {
+        text: message.to_string(),
+        images,
+        priority,
+    };
+    Ok(Outgoing::Publish(ClientFrame::Publish {
+        id: request_id,
+        topic,
+        payload: serde_json::to_value(payload)?,
+    }))
+}
+
+/// The call `method` with `args`.
+fn call(request_id: String, method: &str, args: Value) -> Outgoing {
+    Outgoing::Call(ClientFrame::Call {
+        id: request_id,
+        method: method.to_string(),
+        args,
+    })
+}
+
+/// The query `name` with `args`.
+fn query_frame(request_id: String, name: &str, args: Value) -> Outgoing {
+    Outgoing::Query(ClientFrame::Query {
+        id: request_id,
+        name: name.to_string(),
+        args,
+    })
+}
+
+/// The query `name` on session `session` alone.
+fn session_query(request_id: String, name: &str, session: &str) -> Outgoing {
+    query_frame(request_id, name, serde_json::json!({ "session": session }))
+}
+
+/// The id of the saved session at `path`: the runtime daemon keeps a session as `<id>.jsonl` in
+/// its session dir and names a saved one by its id.
+fn saved_session_id(path: &str) -> Result<String> {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("{path:?} names no saved session"))
+}
+
+/// The subscription a transport follows session `session`'s topics with (`agent/<id>/#`), from
+/// after `since` in the log: its live stream, and the stored topics (its faults, its close) a
+/// reconnecting client replays from where it left off.
+///
+/// # Errors
+///
+/// The session id is not a topic level.
+pub(crate) fn session_subscription(session: &str, since: Since) -> Result<ClientFrame> {
+    Ok(ClientFrame::Subscribe {
+        sub_id: session_subscription_id(session),
+        filter: TopicFilter::new(format!("agent/{session}/#"))
+            .with_context(|| format!("session {session:?} has no topics"))?,
+        since,
+    })
+}
+
+/// The id of [`session_subscription`]'s subscription.
+pub(crate) fn session_subscription_id(session: &str) -> String {
+    format!("compat:agent:{session}")
 }
 
 /// An optional command member a mapped query forwards: its JSON, `None` when it is absent.
@@ -1199,7 +1617,7 @@ pub(crate) fn response_from_reply(
         Outcome::Ok {
             result: Value::Null,
         } if ANSWERED_WITHOUT_DATA.contains(&command) => (true, None, None),
-        Outcome::Ok { result } => (true, Some(result), None),
+        Outcome::Ok { result } => (true, Some(old_data(command, result)), None),
         Outcome::Error { message, info } => (
             false,
             None,
@@ -1221,6 +1639,36 @@ pub(crate) fn response_from_reply(
     }
 }
 
+/// The old response's `data` for a mapped `command`'s reply `result`: verbatim, except where the
+/// runtime daemon's own call answers in its own terms (the module docs' phase-7 table).
+fn old_data(command: &str, mut result: Value) -> Value {
+    match command {
+        // `{session, path, cwd}`: the old create's ids (one id on wire2) and transcript.
+        "create" => {
+            if let Some(fields) = result.as_object_mut() {
+                let session = fields.get("session").cloned().unwrap_or(Value::Null);
+                let path = fields.get("path").cloned().unwrap_or(Value::Null);
+                fields.insert("activeSessionId".to_string(), session.clone());
+                fields.insert("sessionId".to_string(), session);
+                fields.insert("sessionFile".to_string(), path);
+            }
+            result
+        }
+        // `{jobs}`: the old catalog's rows are the heartbeat jobs, each as `{job}`.
+        "heartbeats_list" => {
+            let heartbeats: Vec<Value> = result["jobs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|job| matches!(job["source"].as_str(), Some("heartbeat" | "rlm_heartbeat")))
+                .map(|job| serde_json::json!({ "job": job }))
+                .collect();
+            serde_json::json!({ "heartbeats": heartbeats })
+        }
+        _ => result,
+    }
+}
+
 /// The wire2 frames `command` becomes (request `request_id`), in the order they are sent, the
 /// reply-bearing one last; none for a command wire2 does not carry yet. The test seam pa-cli's
 /// `runtime_daemon_e2e` drives the layer's outbound half through, against a real runtime daemon.
@@ -1236,8 +1684,10 @@ pub fn request_frames(request_id: String, command: DaemonCommand) -> Result<Vec<
         | Outgoing::Stream {
             subscribe, query, ..
         } => vec![subscribe, query],
+        Outgoing::Attach { call, .. } | Outgoing::Detach { call, .. } => vec![call],
+        Outgoing::PublishAndWait { publish, .. } => vec![publish],
         Outgoing::Unfollow { unsubscribe, .. } => vec![unsubscribe],
-        Outgoing::Unmapped(_) => Vec::new(),
+        Outgoing::Local(_) | Outgoing::Unmapped { .. } => Vec::new(),
     })
 }
 
@@ -1254,5 +1704,7 @@ pub fn response_frame(command: &str, outcome: Outcome) -> Result<Value> {
     ))?)
 }
 
+#[cfg(test)]
+mod guard_tests;
 #[cfg(test)]
 mod tests;

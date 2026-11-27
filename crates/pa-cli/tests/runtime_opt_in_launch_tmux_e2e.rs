@@ -2,12 +2,12 @@
 
 //! tmux user-level verifier for the interactive launch under the runtime-daemon opt-in
 //! (`PRIME_AGENT_RUNTIME_DAEMON=1`): the real `prime-agent` binary runs in a private tmux server
-//! with an isolated HOME and the scripted faux provider, and must reach its first paint on a
-//! supervisor that answers on `daemon.sock`. The TUI speaks the old wire only, so the daemon it
-//! spawns stays the supervisor whatever the opt-in says; before that, the spawned daemon became
-//! the runtime daemon on `daemon2.sock` and the launch timed out after 30 s.
+//! with an isolated HOME and the scripted faux provider, and must reach its first paint on the
+//! runtime daemon, which it spawns on `daemon2.sock` and drives over wire2; no supervisor starts
+//! on `daemon.sock`. Before the TUI spoke wire2 its launch waited on `daemon.sock` and timed out
+//! after 30 s (phase 8a then kept its daemon the supervisor; phase 8e lifts that).
 
-use std::io::{BufRead as _, BufReader};
+use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -133,7 +133,7 @@ fn start(dir: &Path) -> Pane {
 }
 
 #[test]
-fn interactive_launch_under_the_runtime_opt_in_reaches_the_supervisor() {
+fn interactive_launch_under_the_runtime_opt_in_runs_on_the_runtime_daemon() {
     let dir = tempfile::TempDir::new_in(
         pa_types::platform::canonicalize(std::env::temp_dir()).expect("temp root"),
     )
@@ -145,13 +145,40 @@ fn interactive_launch_under_the_runtime_opt_in_reaches_the_supervisor() {
         screen.contains("faux-1") || screen.contains("Timed out waiting")
     });
     assert!(screen.contains("faux-1"), "the launch failed:\n{screen}");
-    // The daemon the launch spawned is the supervisor: it greets on `daemon.sock`.
-    let stream = UnixStream::connect(dir.path().join("daemon.sock")).expect("daemon.sock answers");
+    // The daemon the launch spawned is the runtime daemon: it welcomes a wire2 client on
+    // `daemon2.sock`, and nothing listens on `daemon.sock`.
+    let mut stream =
+        UnixStream::connect(dir.path().join("daemon2.sock")).expect("daemon2.sock answers");
     stream.set_read_timeout(Some(WAIT)).expect("a read timeout");
-    let mut hello = String::new();
-    BufReader::new(stream)
-        .read_line(&mut hello)
-        .expect("the daemon's hello");
-    let hello: serde_json::Value = serde_json::from_str(&hello).expect("the hello is JSON");
-    assert_eq!(hello["type"], json!("daemon_hello"), "{hello}");
+    let hello = pa_types::daemon::framing::encode_private_frame(
+        &json!({ "type": "hello", "version": pa_types::wire2::WIRE2_VERSION, "client": "probe" }),
+        &[],
+        pa_types::daemon::framing::DEFAULT_PRIVATE_FRAME_LIMITS,
+    )
+    .expect("a hello frame");
+    stream.write_all(&hello).expect("the hello");
+    let mut decoder = pa_types::daemon::framing::PrivateFrameDecoder::new(
+        pa_types::daemon::framing::DEFAULT_PRIVATE_FRAME_LIMITS,
+    );
+    let mut chunk = [0u8; 4096];
+    let welcome = loop {
+        let read = stream.read(&mut chunk).expect("the daemon's welcome");
+        assert!(read > 0, "daemon2.sock closed before its welcome");
+        if let Some(frame) = decoder
+            .push(&chunk[..read])
+            .expect("frames")
+            .into_iter()
+            .next()
+        {
+            break frame.header;
+        }
+    };
+    assert_eq!(
+        (
+            welcome["type"].clone(),
+            UnixStream::connect(dir.path().join("daemon.sock")).is_err()
+        ),
+        (json!("welcome"), true),
+        "{welcome}"
+    );
 }

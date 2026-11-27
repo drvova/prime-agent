@@ -92,12 +92,12 @@ pub(crate) async fn build_faux_engine_with(
         HeadlessEmbedding::Root { faux_lane, .. } => ("faux".to_string(), None, faux_lane.as_ref()),
         HeadlessEmbedding::Rpc => ("faux".to_string(), None, None),
     };
-    let register = |api: String| {
+    let register = |api: String, (provider, id): (&str, &str)| {
         pa_ai::faux::register_faux_provider(pa_ai::faux::RegisterFauxProviderOptions {
             api: Some(api),
-            provider: Some("faux".to_string()),
+            provider: Some(provider.to_string()),
             models: Some(vec![pa_ai::faux::FauxModelDefinition {
-                id: "faux-1".to_string(),
+                id: id.to_string(),
                 name: Some("Faux Model".to_string()),
                 reasoning: Some(reasoning),
                 input: Some(vec![pa_types::ai::ModelInput::Text]),
@@ -122,7 +122,7 @@ pub(crate) async fn build_faux_engine_with(
                 .unwrap_or(false),
         );
     };
-    let registration = register(api);
+    let registration = register(api, ("faux", "faux-1"));
     if let Some(queue) = child_queue {
         registration.set_responses(queue.steps.clone());
         registration.set_repeat_last_response(queue.repeat_last);
@@ -134,7 +134,17 @@ pub(crate) async fn build_faux_engine_with(
     // `faux` lane above stays for a model a `models.json` names on it.
     let registration = match session_lane {
         Some(session) => {
-            let own = register(format!("faux-{session}"));
+            // It presents the model the script names (`provider`, `modelId`), as each
+            // supervisor worker's scripted model does.
+            let text = |key: &str, default: &'static str| {
+                script
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(default)
+                    .to_string()
+            };
+            let identity = (text("provider", "faux"), text("modelId", "faux-1"));
+            let own = register(format!("faux-{session}"), (&identity.0, &identity.1));
             script_queue(&own);
             own
         }

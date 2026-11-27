@@ -551,7 +551,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::SessionRlmMaxDepth => self.rlm_max_depth(&args).await,
             Query::SessionHeartbeat => self.heartbeat(&args).await,
             Query::DaemonUpdateRestoreStatus => Ok(self.restore.status_body()),
-            Query::DaemonIdentity => Ok(self.identity()),
+            Query::DaemonIdentity => self.identity().await,
             Query::HistoryImport => Ok(self.history_import()),
         }
     }

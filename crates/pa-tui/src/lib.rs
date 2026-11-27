@@ -147,15 +147,7 @@ pub mod usage_page;
 pub mod user_message_selector;
 pub mod view;
 pub mod width;
-// Stage (a) of the TUI's wire2 port: tested against the inbound goldens, wired into the
-// `daemon_client` facade by the cutover phase.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the wire2 cutover phase routes the daemon client through it"
-    )
-)]
+// The TUI's commands and events on wire2: the `daemon_client` facade's wire2 link carries them.
 mod wire2_compat;
 #[doc(hidden)]
 pub use wire2_compat::{

@@ -1,7 +1,8 @@
 //! The inbound recording tap (debug builds only): with `PA_TUI_RECORD_INBOUND` naming a file,
 //! every frame the daemon client receives - from the supervisor socket and from a direct worker
 //! link, after `message_update` deltas are restored - is appended to it as one JSON line
-//! `{"via": "supervisor" | "direct", "frame": <the DaemonOutbound frame>}`.
+//! `{"via": "supervisor" | "direct" | "wire2", "frame": <the DaemonOutbound frame>}` (the wire2
+//! link's frames are the old ones the compat layer made of the runtime's events).
 //!
 //! This is how the inbound goldens under `tests/goldens/inbound/` were recorded: the stream the
 //! TUI receives today, which a wire2 client must reproduce behind `wire2_compat` (record the
@@ -23,6 +24,8 @@ const RECORD_ENV: &str = "PA_TUI_RECORD_INBOUND";
 pub(crate) enum Via {
     Supervisor,
     Direct,
+    /// The wire2 link: the old frame the compat layer made of a runtime event.
+    Wire2,
 }
 
 #[derive(Serialize)]

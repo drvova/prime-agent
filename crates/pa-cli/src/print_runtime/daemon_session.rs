@@ -52,7 +52,12 @@ impl SessionBuilder for DaemonSessions {
         let mode = match chosen.execution_mode.as_deref() {
             None | Some("daemon") => crate::mode::AppMode::Daemon,
             Some("acp") => crate::mode::AppMode::Acp,
-            Some(other) => anyhow::bail!("unknown execution mode {other:?} (acp, daemon)"),
+            // The terminal UI's sessions (its create's `executionMode`), stamped on their events
+            // as the old supervisor's are.
+            Some("interactive") => crate::mode::AppMode::Interactive,
+            Some(other) => {
+                anyhow::bail!("unknown execution mode {other:?} (acp, daemon, interactive)")
+            }
         };
         if chosen.provider.is_some() {
             options.config.provider.clone_from(&chosen.provider);
