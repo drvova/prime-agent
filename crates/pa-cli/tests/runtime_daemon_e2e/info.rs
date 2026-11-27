@@ -78,7 +78,12 @@ fn resources(agent_dir: &Path, cwd: &Path) {
     ];
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).unwrap();
-    let text: String = rows.iter().map(|row| format!("{row}\n")).collect();
+    let mut text = rows
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    text.push('\n');
     std::fs::write(sessions.join(format!("{id}.jsonl")), text).unwrap();
 }
 
@@ -107,7 +112,7 @@ fn old_answers(bed: &Bed) -> (Vec<Value>, String) {
     let active = created["data"]["id"].as_str().unwrap().to_string();
     let saved = created["data"]["sessionId"].as_str().unwrap().to_string();
     let mut answers = Vec::new();
-    let mut send = |commands: Vec<Value>, answers: &mut Vec<Value>| {
+    let send = |commands: Vec<Value>, answers: &mut Vec<Value>| {
         for (index, mut command) in commands.into_iter().enumerate() {
             command["activeSessionId"] = json!(active);
             let frames = old_list(&socket, &format!("i{}-{index}", answers.len()), &command);
