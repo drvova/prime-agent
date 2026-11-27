@@ -29,7 +29,7 @@ impl Drop for Daemon {
     }
 }
 
-fn spawn_daemon(socket: &Path, agent_dir: &Path, poison_lease_owner: Option<&str>) -> Daemon {
+fn spawn_daemon(socket: &Path, agent_dir: &Path, env: &[(&str, &str)]) -> Daemon {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command
         .arg("supervisor")
@@ -46,12 +46,7 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, poison_lease_owner: Option<&str
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "15000",
         );
-    if let Some(owner) = poison_lease_owner {
-        // An ancestor's lease owner id (a CLI running inside a worker's
-        // environment): without the per-worker stamp every lease the
-        // daemon's workers write would name this stale id instead.
-        command.env(pa_daemon::lease::SESSION_LEASE_OWNER_ID_ENV, owner);
-    }
+    command.envs(env.iter().copied());
     let mut child = command.spawn().expect("spawn pa-daemon supervisor");
     common::await_listening(socket, &mut child);
     Daemon {
@@ -226,7 +221,7 @@ fn create_over_a_live_worker_answers_the_live_binding() {
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let _daemon = spawn_daemon(&socket, &agent_dir, None);
+    let _daemon = spawn_daemon(&socket, &agent_dir, &[]);
 
     let script_path = write_script(dir.path(), &["first scripted", "second scripted"]);
     let create_config = json!({
@@ -319,7 +314,17 @@ fn the_lease_owner_names_the_live_worker_not_a_stale_inherited_id() {
     let socket = root.join("daemon.sock");
     let agent_dir = root.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let _daemon = spawn_daemon(&socket, &agent_dir, Some("stale-owner-245ddb974b6d"));
+    // An ancestor's lease owner id (a CLI running inside a worker's
+    // environment): without the per-worker stamp every lease the
+    // daemon's workers write would name this stale id instead.
+    let _daemon = spawn_daemon(
+        &socket,
+        &agent_dir,
+        &[(
+            pa_daemon::lease::SESSION_LEASE_OWNER_ID_ENV,
+            "stale-owner-245ddb974b6d",
+        )],
+    );
 
     let script_path = write_script(&root, &["one scripted"]);
     let create_config = json!({
@@ -360,7 +365,7 @@ fn create_over_a_dead_workers_file_launches_and_rebinds() {
     let socket = root.join("daemon.sock");
     let agent_dir = root.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let _daemon = spawn_daemon(&socket, &agent_dir, None);
+    let _daemon = spawn_daemon(&socket, &agent_dir, &[]);
 
     let script_path = write_script(&root, &["first scripted", "second scripted"]);
     let create_config = json!({
@@ -428,7 +433,7 @@ fn concurrent_creates_for_one_file_share_a_single_launch() {
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let _daemon = spawn_daemon(&socket, &agent_dir, None);
+    let _daemon = spawn_daemon(&socket, &agent_dir, &[]);
 
     let script_path = write_script(dir.path(), &["first scripted", "second scripted"]);
     let create_config = json!({
@@ -520,4 +525,67 @@ fn concurrent_creates_for_one_file_share_a_single_launch() {
         1,
         "one launch must serve the concurrent opens: {sessions:?}"
     );
+}
+
+/// A hosted session registers over the socket as soon as its thread runs,
+/// which can be before the launch publishes its identity: the registration
+/// must still find the session's own id. When it read the launch's
+/// placeholder instead, it armed an exit watch on the hosted id, which no
+/// OS process has, so the session was reported dead at once and restarted
+/// under its own create ("Daemon worker socket closed"). The debug-build
+/// gap holds the launch between start and publish so the registration
+/// always lands in that window.
+#[test]
+fn a_registration_ahead_of_the_spawn_record_keeps_the_session() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    // `SPAWN_PUBLISH_GAP_ENV` in `supervisor/supervision.rs`.
+    let _daemon = spawn_daemon(
+        &socket,
+        &agent_dir,
+        &[("PA_DAEMON_SPAWN_PUBLISH_GAP_MS", "500")],
+    );
+
+    let script_path = write_script(dir.path(), &["still here"]);
+    let create_config = json!({
+        "cwd": dir.path().to_string_lossy(),
+        "sessionDir": agent_dir.join("sessions").to_string_lossy(),
+        "script": script_path.to_string_lossy(),
+    });
+    let mut client = Client::connect(&socket);
+    let (id, _created) = create_session(&mut client, "c1", &create_config);
+    client.send_command("a1", &json!({ "type": "attach", "activeSessionId": id }));
+    let attached = client.read_response("a1");
+    assert_eq!(attached["success"], true, "attach failed: {attached}");
+    let text = client.prompt_and_final_text(
+        "p1",
+        &json!({ "type": "prompt", "activeSessionId": id, "message": "hi" }),
+    );
+    assert_eq!(text, "still here");
+
+    // The supervisor's account of the session's lifetime: its registrations
+    // (the boot one and the re-registration naming the created session), and
+    // never an exit and a restart under the create.
+    let log_dir = agent_dir.join("logs");
+    let log = std::fs::read_dir(&log_dir)
+        .expect("the daemon's log dir")
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("daemon.sock.")
+        })
+        .map(|entry| std::fs::read_to_string(entry.path()).expect("read the daemon log"))
+        .expect("the supervisor's log");
+    let ends: Vec<&str> = log
+        .lines()
+        .filter_map(|line| line.split_once("] session worker "))
+        .filter_map(|(_, message)| message.split_once(' '))
+        .map(|(_, event)| event.split([' ', ';']).next().unwrap_or_default())
+        .filter(|event| !event.ends_with("registered"))
+        .collect();
+    assert_eq!(ends, Vec::<&str>::new(), "the supervisor log:\n{log}");
 }
