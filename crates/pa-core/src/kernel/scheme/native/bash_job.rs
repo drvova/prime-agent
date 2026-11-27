@@ -186,22 +186,12 @@ fn list_running(list: &std::path::Path, record: &serde_json::Value) {
     }
 }
 
-/// List `job` again, as the command the model's tool call `call` waits for
-/// and owns, or with no call once none does (its wait handed it to the
-/// background). A command still running when its kernel ends is then known
-/// as its call's own: the session answers that call (in the daemon, as of
-/// unknown outcome), and the host need not announce the command as lost on
-/// top of it. Nothing is written once the job's group has ended, so the line
-/// its end wrote stays its last.
-pub(super) fn list_waiter(session: &Session, job: &Job, call: Option<&str>) {
-    let Some(list) = &session.running_list else {
-        return;
-    };
-    // Under the table's lock, which the end's line is written under too.
-    let table = lock(&session.table);
-    if table.closed || lock(&job.state).reaped {
-        return;
-    }
+/// The line that lists `job` as running: as the command the model's tool
+/// call `call` waits for and owns, or as no call's. A command still running
+/// when its kernel ends is then known as its call's own: the session answers
+/// that call (in the daemon, as of unknown outcome), and the host need not
+/// announce the command as lost on top of it.
+fn running_record(job: &Job, call: Option<&str>) -> serde_json::Value {
     let mut record = serde_json::json!({
         "job": job.id,
         "pid": job.pid,
@@ -211,7 +201,22 @@ pub(super) fn list_waiter(session: &Session, job: &Job, call: Option<&str>) {
     if let Some(call) = call {
         record["call"] = serde_json::json!(call);
     }
-    list_running(list, &record);
+    record
+}
+
+/// List `job` again, with no call: its wait handed it to the background, so
+/// none waits for it any more. Nothing is written once the job's group has
+/// ended, so the line its end wrote stays its last.
+pub(super) fn list_unwaited(session: &Session, job: &Job) {
+    let Some(list) = &session.running_list else {
+        return;
+    };
+    // Under the table's lock, which the end's line is written under too.
+    let table = lock(&session.table);
+    if table.closed || lock(&job.state).reaped {
+        return;
+    }
+    list_running(list, &running_record(job, /*call*/ None));
 }
 
 /// Held by the task that watches a job, until the job's group is known to be
@@ -698,11 +703,18 @@ pub(super) fn read_output(
         }))
 }
 
-/// Put `job` in the session's table and its list of running commands, with
+/// Put `job` in the session's table and its list of running commands (as
+/// the command the model's tool call `call` waits for, when one does), with
 /// a slot or, when `may_queue` and the session is at its limit, in line for
 /// one. Returns whether it is held, or `None` when the kernel was killed and
-/// nothing more may start.
-pub(super) fn enlist(session: &Session, job: &Arc<Job>, may_queue: bool) -> Option<bool> {
+/// nothing more may start. The job is listed before its gate can open, so
+/// nothing it does happens while it is listed as no call's.
+pub(super) fn enlist(
+    session: &Session,
+    job: &Arc<Job>,
+    may_queue: bool,
+    call: Option<&str>,
+) -> Option<bool> {
     let queued = {
         let mut table = lock(&session.table);
         if table.closed {
@@ -712,15 +724,7 @@ pub(super) fn enlist(session: &Session, job: &Arc<Job>, may_queue: bool) -> Opti
         table.order.push(job.id.clone());
         // Under the table's lock, so the list's lines are in the jobs' order.
         if let Some(list) = &session.running_list {
-            list_running(
-                list,
-                &serde_json::json!({
-                    "job": job.id,
-                    "pid": job.pid,
-                    "command": super::capped(&job.command),
-                    "running": true,
-                }),
-            );
+            list_running(list, &running_record(job, call));
         }
         let queued = may_queue && table.running >= session.host.settings.max_jobs;
         if queued {
@@ -736,7 +740,8 @@ pub(super) fn enlist(session: &Session, job: &Arc<Job>, may_queue: bool) -> Opti
 
 /// Start `command` as a job of `session`. It runs at once when a job slot
 /// is free; over the session's limit it is held at its gate (`queued`) until
-/// one frees or a caller starts it. `on_finished` runs with its result.
+/// one frees or a caller starts it. `on_finished` runs with its result;
+/// `call` is the model's tool call that waits for it, when one does.
 ///
 /// # Errors
 ///
@@ -747,6 +752,7 @@ pub(super) fn spawn(
     session: &Arc<Session>,
     command: &str,
     on_finished: Option<FinishHook>,
+    call: Option<&str>,
 ) -> anyhow::Result<Arc<Job>> {
     if !session.cwd.is_dir() {
         bail!(
@@ -757,7 +763,7 @@ pub(super) fn spawn(
     let settings = &session.host.settings;
     match settings.engine {
         platform::KernelShell::BuiltIn => {
-            return super::engine::spawn(session, command, on_finished);
+            return super::engine::spawn(session, command, on_finished, call);
         }
         platform::KernelShell::System => {}
     }
@@ -895,7 +901,7 @@ pub(super) fn spawn(
     }
     // Windows starts every command at once: its gate only covers the
     // moment before the shell is inside its job object.
-    let Some(queued) = enlist(session, &job, /*may_queue*/ cfg!(unix)) else {
+    let Some(queued) = enlist(session, &job, /*may_queue*/ cfg!(unix), call) else {
         return Err(abandon(&mut child, anyhow!("the kernel was shut down")));
     };
     // The hold exists before the task is first polled: a runtime shut down
