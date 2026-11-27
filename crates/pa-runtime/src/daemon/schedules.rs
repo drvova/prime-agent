@@ -19,7 +19,9 @@
 //!   recovery), under its catch-up rule: a job whose time passed while
 //!   nothing ran fires once, and its next run counts from that fire. A
 //!   timer's own claim (`lastFiredMs`) is cleared whenever it is defined,
-//!   so it never holds back a run the store owes.
+//!   so it never holds back a run the store owes. A pass that fails (the
+//!   store's state lock a killed daemon left behind, until it is stale) is
+//!   run again after a backoff: its timer has fired, and nothing else would.
 //! - **Changes.** A job made, changed or cancelled (by the kernel, or by
 //!   `schedule.add` and `schedule.cancel`) publishes `agent/<id>/schedules`
 //!   (`{"active": <its active jobs>}`) at the lane's next pass: the old
@@ -46,6 +48,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use anyhow::Context as _;
 use pa_core::cron::scheduler::{
@@ -80,6 +83,13 @@ const SKIPPED: &str = "skipped";
 
 /// The prefix of a job's timer source's name.
 const TIMER_PREFIX: &str = "schedule-";
+
+/// How long a lane waits to run a failed pass again, doubling with each
+/// failure in a row up to [`FAILED_PASS_RETRY_CAP`]. A pass fails when the
+/// store's state lock is not acquired: a daemon killed while it held it
+/// leaves it behind, and it is taken over once stale (30 s).
+const FAILED_PASS_RETRY: Duration = Duration::from_secs(1);
+const FAILED_PASS_RETRY_CAP: Duration = Duration::from_secs(10);
 
 /// Which jobs a listing shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,11 +205,29 @@ impl<B: SessionBuilder> Schedules<B> {
         let lane = self.handle.spawn({
             let (pass, jobs, id) = (Arc::clone(&pass), self.me.clone(), id.to_string());
             async move {
+                // After a pass that failed, how long until it is run again.
+                let mut retry: Option<Duration> = None;
                 loop {
-                    pass.notified().await;
-                    if let Err(error) = scheduler.run_due().await {
-                        tracing::warn!("session {id}'s scheduled jobs did not run: {error:#}");
+                    match retry {
+                        Some(delay) => {
+                            tokio::select! {
+                                () = pass.notified() => {}
+                                () = tokio::time::sleep(delay) => {}
+                            }
+                        }
+                        None => pass.notified().await,
                     }
+                    retry = match scheduler.run_due().await {
+                        Ok(_) => None,
+                        // Nothing else runs the pass again: its timer has
+                        // fired, and the job's next run did not move.
+                        Err(error) => {
+                            tracing::warn!("session {id}'s scheduled jobs did not run: {error:#}");
+                            Some(retry.map_or(FAILED_PASS_RETRY, |delay| {
+                                (delay * 2).min(FAILED_PASS_RETRY_CAP)
+                            }))
+                        }
+                    };
                     let Some(jobs) = jobs.upgrade() else {
                         return;
                     };
@@ -489,7 +517,7 @@ impl<B: SessionBuilder> Schedules<B> {
             .context("the job's task was not accepted")?
             .task;
         match tokio::time::timeout(
-            std::time::Duration::from_millis(FIRE_SETTLE_TIMEOUT_MS),
+            Duration::from_millis(FIRE_SETTLE_TIMEOUT_MS),
             done_of(&runtime, &mut listener, session, &task),
         )
         .await
