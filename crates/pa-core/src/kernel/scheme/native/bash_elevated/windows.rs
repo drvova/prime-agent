@@ -488,7 +488,11 @@ async fn serve(
 }
 
 /// See [`super::spawn`].
-pub(super) fn spawn(session: &Arc<Session>, command: &str) -> anyhow::Result<Arc<Job>> {
+pub(super) fn spawn(
+    session: &Arc<Session>,
+    command: &str,
+    call: Option<&str>,
+) -> anyhow::Result<Arc<Job>> {
     let settings = &session.host.settings;
     let script = match &settings.command_prefix {
         Some(prefix) => format!("{prefix}\n{command}"),
@@ -535,7 +539,7 @@ pub(super) fn spawn(session: &Arc<Session>, command: &str) -> anyhow::Result<Arc
     let (output, output_end) = std::io::pipe().context("could not open the output pipe")?;
     let job = Arc::new(job);
     job::read_output(&job, output, fence.clone()).context("could not start the output reader")?;
-    if job::enlist(session, &job, /*may_queue*/ false).is_none() {
+    if job::enlist(session, &job, /*may_queue*/ false, call).is_none() {
         bail!("the kernel was shut down");
     }
     let run = (

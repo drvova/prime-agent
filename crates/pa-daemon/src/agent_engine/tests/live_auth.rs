@@ -134,9 +134,7 @@ fn served_keys(registration: &pa_ai::faux::FauxProviderRegistration) -> Vec<Opti
 /// restart, no `/reload`, no rebuild.
 #[test]
 fn the_built_sessions_stream_picks_up_an_external_reauth_per_call() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -173,9 +171,7 @@ fn the_built_sessions_stream_picks_up_an_external_reauth_per_call() {
 /// an explicit config key keeps serving it across store changes.
 #[test]
 fn the_create_config_key_override_never_store_swaps() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -243,9 +239,7 @@ fn a_cleared_selection_key_stops_serving() {
 /// (a captured credential is the stale-token loop this seam ends).
 #[test]
 fn a_logout_serves_the_fallback_key_never_the_captured_pair() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -281,9 +275,7 @@ fn a_logout_serves_the_fallback_key_never_the_captured_pair() {
 /// expired captured token never resends.
 #[test]
 fn an_expired_credential_without_a_refresh_path_serves_the_fallback_key() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -330,9 +322,7 @@ fn an_expired_credential_without_a_refresh_path_serves_the_fallback_key() {
 /// moment the read succeeds again.
 #[test]
 fn a_held_document_lock_keeps_serving_the_last_read_credential() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -382,9 +372,7 @@ fn a_held_document_lock_keeps_serving_the_last_read_credential() {
 /// credential is picked up as soon as the store parses again.
 #[test]
 fn a_corrupt_auth_store_keeps_serving_the_last_read_credential() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -429,9 +417,7 @@ fn a_corrupt_auth_store_keeps_serving_the_last_read_credential() {
 /// the key.
 #[test]
 fn a_create_config_key_keeps_serving_while_the_store_read_fails() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -532,9 +518,7 @@ impl pa_core::auth::OAuthIntegration for CountingRefresh {
 /// later call serves it without another refresh.
 #[test]
 fn an_expired_credential_refreshes_and_serves_the_live_session() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -600,9 +584,7 @@ fn an_expired_credential_refreshes_and_serves_the_live_session() {
 /// fallback key — streams per call, never the captured pair.
 #[test]
 fn a_failed_refresh_makes_one_attempt_per_resolution() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -742,9 +724,7 @@ fn rejected_credential_engine(
 /// refreshed token.
 #[test]
 fn a_rejected_unexpired_credential_is_refreshed_and_the_retry_serves_it() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let registration = register_rejecting_faux();
     let attempts = Arc::new(std::sync::Mutex::new(0));
@@ -767,9 +747,7 @@ fn a_rejected_unexpired_credential_is_refreshed_and_the_retry_serves_it() {
 /// re-login sentence instead of re-sending the rejected token.
 #[test]
 fn a_refused_forced_refresh_ends_the_turn_with_the_re_login_sentence() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let registration = register_rejecting_faux();
     let attempts = Arc::new(std::sync::Mutex::new(0));
@@ -812,9 +790,7 @@ fn command_runs(counter: &std::path::Path) -> usize {
 #[cfg(unix)]
 #[test]
 fn a_stored_command_key_resolves_once_and_never_re_runs_per_call() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -870,9 +846,7 @@ fn a_stored_command_key_resolves_once_and_never_re_runs_per_call() {
 #[cfg(unix)]
 #[test]
 fn a_prime_command_key_never_runs_for_another_providers_call() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -921,9 +895,7 @@ fn a_prime_command_key_never_runs_for_another_providers_call() {
 #[cfg(unix)]
 #[test]
 fn a_failed_prime_command_key_never_runs_for_another_providers_call() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -975,9 +947,7 @@ fn a_failed_prime_command_key_never_runs_for_another_providers_call() {
 #[cfg(unix)]
 #[test]
 fn a_failed_serving_command_key_resolves_once_per_call() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     write_credential_backed_faux_provider(&agent_dir);
@@ -1023,9 +993,7 @@ type ServedAdapted = (String, String, String, Option<String>);
 /// request model (TS `requestModel`) together with the credential.
 #[test]
 fn a_mid_session_xai_login_switches_the_request_model_live() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
@@ -1150,9 +1118,7 @@ fn a_mid_session_xai_login_switches_the_request_model_live() {
 /// openai-responses shape — never resends.
 #[test]
 fn a_mid_session_xai_logout_serves_the_api_key_shape_never_the_captured_token() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
@@ -1256,9 +1222,7 @@ fn a_mid_session_xai_logout_serves_the_api_key_shape_never_the_captured_token() 
 /// `openai-responses` shape.
 #[test]
 fn a_mid_session_xai_login_never_switches_a_create_config_key_session() {
-    let _faux = FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _faux = FAUX_TEST_LOCK.blocking_lock();
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
