@@ -578,7 +578,7 @@ mod tests {
         let diffs = cell_diffs(
             dir.path(),
             r#"(let ([view (fs-read "a.txt")])
-                 (fs-edit "a.txt" (hash 'replace (fs-anchor view 15) 'text "changed")))"#,
+                 (fs-edit "a.txt" (hash 'replace 15 'text "changed") (hash 'view view)))"#,
         )
         .await;
         let path = pa_types::platform::canonicalize(dir.path())

@@ -11,7 +11,7 @@ occurrence of a string. `old-str` must appear exactly once in the file.
 Call it from the kernel:
 
 ```scheme
-(edit "pkg/file.py" old new)
+(fs-edit "pkg/file.py" (hash 'old old 'new new))
 ```
 
 Use exact old and new strings. Inside a Scheme string write `\"` for a double
@@ -27,7 +27,7 @@ retyped and a stale file is rejected instead of corrupted:
 ```scheme
 (define view (fs-read "pkg/file.py"))
 (displayln (hash-ref view 'text))
-(fs-edit "pkg/file.py" (hash 'replace (fs-anchor view 12) 'text "new line"))
+(fs-edit "pkg/file.py" (hash 'replace 12 'text "new line") (hash 'view view))
 ```
 
-`(api-help "fs")` prints the reference of both.
+`(api-help "fs-edit")` prints the reference of both.

@@ -735,8 +735,8 @@ mod tests {
         let kernel = kernel_in(&root, handlers).await;
         let mut tables = Vec::new();
         for check in [
-            r#"(lambda (path) (pair? (hash-ref (fs-glob "fixed.txt" (hash 'path path)) 'entries)))"#,
-            r#"(lambda (path) (if (pair? (hash-ref (fs-glob "fixed.txt" (hash 'path path)) 'entries)) 3 (error "no marker")))"#,
+            r#"(lambda (path) (pair? (hash-ref (fs-find (hash 'glob "fixed.txt" 'path path)) 'entries)))"#,
+            r#"(lambda (path) (if (pair? (hash-ref (fs-find (hash 'glob "fixed.txt" 'path path)) 'entries)) 3 (error "no marker")))"#,
         ] {
             let run = format!(
                 r#"(rlm-hypotheses "make the check pass" (list "change nothing" "marker") #:check {check})"#

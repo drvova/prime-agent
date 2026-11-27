@@ -951,7 +951,7 @@ async fn an_untrusted_tasks_reads_stay_under_the_sessions_directory() {
 #[tokio::test]
 async fn an_unlisted_host_request_is_refused_to_an_untrusted_task() {
     let mut bed = bed(json!([
-        eval_cell(&format!("(host-request {UNLISTED_REQUEST:?} (hash))")),
+        eval_cell(&format!("(%host-request {UNLISTED_REQUEST:?} (hash))")),
         { "text": "refused" },
     ]))
     .await;

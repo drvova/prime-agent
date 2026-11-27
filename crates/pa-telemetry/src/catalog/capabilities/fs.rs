@@ -115,7 +115,7 @@ pub(in crate::catalog) const AGENT_PREFETCH: EventRule = EventRule {
     ],
 };
 
-/// How the kernel's `(edit path old-str new-str)` found the text it replaced (v2), emitted at
+/// How the kernel's `(fs-edit path (hash 'old old-str 'new new-str))` found the text it replaced (v2), emitted at
 /// session end beside `agent session ended` (which sits near the backend's 128-key cap) only when
 /// an edit matched or missed: edits applied by each step of its normalization ladder (exact,
 /// trailing whitespace ignored, indentation ignored, Unicode punctuation folded, literal escapes

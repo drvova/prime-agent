@@ -403,7 +403,7 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_kernel: bool) ->
     }
     if has_kernel {
         lines.push(
-            "`(bash cmd)` waits up to 10 seconds and returns the moment the command finishes. For a command you expect to take longer (a build or test suite), ask for a longer wait up front: `(bash cmd (hash 'wait-ms 120000))` (up to 600000). If the command is still running when the wait runs out, it returns a snapshot: `running` is `#t`, `exit-code` is `#f`, `output` is the newest output, `duration-ms` is the elapsed time, and `job` is the id `bash-wait`, `bash-tail`, and `bash-kill` take. A completed result has `running` `#f` and an integer `exit-code`. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification."
+            "`(bash cmd)` waits up to 10 seconds and returns the moment the command finishes. For a command you expect to take longer (a build or test suite), ask for a longer wait up front: `(bash cmd (hash 'wait-ms 120000))` (up to 600000). If the command is still running when the wait runs out, it returns a snapshot: `running` is `#t`, `exit-code` is `#f`, `output` is the newest output, `duration-ms` is the elapsed time, and `job` is the id `bash-wait`, `bash-output`, and `bash-kill` take. A completed result has `running` `#f` and an integer `exit-code`. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification."
                 .to_string(),
         );
         lines.push(if options.daemonless {

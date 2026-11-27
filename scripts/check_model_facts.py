@@ -30,7 +30,7 @@ CELL = """(define probes-so-far (with-handler (lambda (e) 0) (eval 'kept-probe-c
 (eval (list 'define 'kept-probe-count (+ 1 probes-so-far)))
 (displayln (string-append "MODEL_FACTS_PARITY="
                           (value->jsexpr-string (hash 'kernel_probe_count (+ 1 probes-so-far)
-                                                      'model_info (model-info)
+                                                      'model_info (session-info "model")
                                                       'compact_status (compact-status)))))"""
 MODELS = [
     {'id': 'facts-text', 'name': 'Facts text', 'reasoning': False,

@@ -4,8 +4,8 @@
 //!
 //! Accepted forms, one or more per cell:
 //!
-//! - `(fs-read "path" [options])`, `(fs-grep "pattern" [options])`, `(fs-glob "pattern"
-//!   [options])`, `(fs-find [options])`, `(fs-symbol "name" [options])`, where `options` is
+//! - `(fs-read "path" [options])`, `(fs-grep "pattern" [options])`, `(fs-find [options])`,
+//!   `(fs-symbol "name" [options])`, where `options` is
 //!   `(hash 'key value ...)` and each value is a string, an integer, `#t`/`#f`, or a `(list ...)`
 //!   of those;
 //! - one of those inside `(displayln ...)`, `(display ...)`, or `(hash-ref ... 'text)`, the ways a
@@ -26,8 +26,8 @@ mod tests;
 pub(super) const EVAL_ACCEPTS: &str = "eval in this read-only helper accepts only file reads \
      with literal arguments, one call per form, e.g. `(displayln (hash-ref (fs-read \
      \"src/lib.rs\" (hash 'start 1 'end 80)) 'text))`, `(fs-grep \"fn parse\" (hash 'path \
-     \"src\" 'glob \"*.rs\"))`, `(fs-glob \"**/*.toml\")`, `(fs-find (hash 'name \
-     \"Makefile\"))`, `(fs-symbol \"parse\")`.";
+     \"src\" 'glob \"*.rs\"))`, `(fs-find (hash 'glob \"**/*.toml\"))`, `(fs-find (hash \
+     'name \"Makefile\"))`, `(fs-symbol \"parse\")`.";
 
 /// One piece of a cell, as read.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +45,6 @@ enum Datum {
 pub(crate) enum FsOp {
     Read,
     Grep,
-    Glob,
     Find,
     Symbol,
 }
@@ -55,7 +54,6 @@ impl FsOp {
         match name {
             "fs-read" => Some(Self::Read),
             "fs-grep" => Some(Self::Grep),
-            "fs-glob" => Some(Self::Glob),
             "fs-find" => Some(Self::Find),
             "fs-symbol" => Some(Self::Symbol),
             _ => None,
@@ -66,7 +64,6 @@ impl FsOp {
         match self {
             Self::Read => "fs-read",
             Self::Grep => "fs-grep",
-            Self::Glob => "fs-glob",
             Self::Find => "fs-find",
             Self::Symbol => "fs-symbol",
         }
@@ -76,7 +73,7 @@ impl FsOp {
     fn positional(self) -> Option<&'static str> {
         match self {
             Self::Read => Some("path"),
-            Self::Grep | Self::Glob => Some("pattern"),
+            Self::Grep => Some("pattern"),
             Self::Find => None,
             Self::Symbol => Some("name"),
         }
@@ -208,7 +205,7 @@ fn literal(datum: &Datum) -> Result<Value, String> {
 
 /// One top-level form as the reader call it is, or why it is refused.
 fn call(form: &Datum) -> Result<FsCall, String> {
-    const SHAPE: &str = "each form must be one fs-read/fs-grep/fs-glob/fs-find/fs-symbol call";
+    const SHAPE: &str = "each form must be one fs-read/fs-grep/fs-find/fs-symbol call";
     let Datum::List(items) = form else {
         return Err(SHAPE.to_string());
     };
@@ -221,8 +218,8 @@ fn call(form: &Datum) -> Result<FsCall, String> {
             ("hash-ref", [result, Datum::Quoted(key)]) if matches!(**key, Datum::Symbol(_)) => {
                 call(result)
             }
-            (name, _) if name.starts_with("fs-") || name == "edit" => Err(format!(
-                "{name} is not a read; only fs-read, fs-grep, fs-glob, fs-find, fs-symbol"
+            (name, _) if name.starts_with("fs-") => Err(format!(
+                "{name} is not a read; only fs-read, fs-grep, fs-find, fs-symbol"
             )),
             _ => Err(SHAPE.to_string()),
         };

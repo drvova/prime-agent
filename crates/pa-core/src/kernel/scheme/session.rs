@@ -66,7 +66,7 @@ impl Drop for LiveWork {
 
 #[cfg(test)]
 impl SchemeKernelProvisioner {
-    /// The host handlers the kernel answers `(host-request ...)` from.
+    /// The host handlers the kernel answers `(%host-request ...)` from.
     pub(crate) fn host_handlers(&self) -> &crate::kernel::shared::HostRequestHandlers {
         &self.state.handlers
     }

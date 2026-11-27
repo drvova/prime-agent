@@ -318,8 +318,9 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
         &format!(
             r"(fs-write {:?} (value->jsexpr-string
       (map (lambda (shell)
-             (list (hash-ref shell 'pid) (bash-running? shell) (bash-output shell)))
-           (bash-persistent-shells))))
+             (let ([standing (bash-output shell)])
+               (list (hash-ref shell 'pid) (hash-ref standing 'running) (hash-ref standing 'output))))
+           (bash-jobs #:persistent #t))))
 ",
             reattached.to_string_lossy()
         ),

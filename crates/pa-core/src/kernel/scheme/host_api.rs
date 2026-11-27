@@ -4,7 +4,7 @@
 //! bridge.
 //!
 //! Each wrapper builds the payload its Rust handler parses, sends it through
-//! `(host-request type payload)`, and shapes the reply. Optional arguments
+//! `(%host-request type payload)`, and shapes the reply. Optional arguments
 //! are Steel keyword arguments (`(rlm-spawn "task" #:name "worker")`); a
 //! keyword a function does not declare is refused before the function runs
 //! (`contracts.rs`). Whole numbers in a reply come back as exact integers,
@@ -33,7 +33,7 @@ const SOURCES: [(&str, &str); 10] = [
     ("events", include_str!("host_api/events.scm")),
 ];
 
-/// Define the host API in a session's `engine`, whose `host-request` bridge
+/// Define the host API in a session's `engine`, whose `%host-request` bridge
 /// is already loaded.
 pub(super) fn load(engine: &mut Engine) -> anyhow::Result<()> {
     // Names an open question, so an interrupt can withdraw exactly it.
@@ -418,6 +418,32 @@ mod tests {
         );
     }
 
+    /// `(session-info)` is one hash of every section, each as its own call would return it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_info_gathers_every_section_into_one_hash() {
+        let (handlers, _received) = answering(&[
+            ("model.info", json!({"id": "m", "provider": "p"})),
+            ("settings.session", json!({"autonomous": false})),
+            ("settings.host", json!({"daemonless": true})),
+            ("usage.session", json!({"costUsd": 0.5})),
+            ("usage.quotas", json!({"providers": []})),
+        ]);
+        let kernel = kernel_over(handlers).await;
+        let returned = values(kernel.as_ref(), &["(session-info)"]).await;
+        assert_eq!(
+            returned,
+            vec![Ok(json!({
+                "id": false,
+                "cwd": "/",
+                "artifact-dir": false,
+                "model": {"id": "m", "provider": "p"},
+                "settings": {"session": {"autonomous": false}, "host": {"daemonless": true}},
+                "usage": {"session": {"costUsd": 0.5}, "quotas": {"providers": []}},
+                "skills-unavailable": [],
+            }))]
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn compaction_refinement_the_goal_and_the_model_are_driven_from_a_cell() {
         let context = json!({"tokens": 52000, "context_window": 200_000, "percent": 26.5, "scheduled": false});
@@ -457,7 +483,7 @@ mod tests {
                 "(goal-get)",
                 r#"(goal-create "ship it" #:token-budget 50000 #:check "make check" #:verify "judge" #:max-cost-usd 2.5)"#,
                 "(goal-complete)",
-                "(model-info)",
+                r#"(session-info "model")"#,
                 r#"(model-set-effort "low")"#,
             ],
         )
@@ -541,8 +567,8 @@ mod tests {
         let mut returned = values(
             kernel.as_ref(),
             &[
-                "(settings-get)",
-                "(usage-get #:refresh #t)",
+                r#"(session-info "settings")"#,
+                r#"(session-info "usage" #:refresh #t)"#,
                 r#"(checkpoint-create "before refactor")"#,
                 "(checkpoint-list)",
                 r#"(checkpoint-restore "cp-1")"#,

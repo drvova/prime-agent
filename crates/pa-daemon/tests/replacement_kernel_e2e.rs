@@ -411,7 +411,7 @@ fn fork_disposes_the_kernel_and_starts_cold() {
 }
 
 /// The switch cwd rebind (TS `createRuntime({ cwd: sessionManager.getCwd() })`): the
-/// post-switch kernel's `(session-cwd)`, where its commands run, is the switched-to
+/// post-switch kernel's `(session-info "cwd")`, where its commands run, is the switched-to
 /// session's working directory.
 #[test]
 fn switch_session_rebinds_the_kernel_cwd_onto_the_target_session() {
@@ -423,7 +423,7 @@ fn switch_session_rebinds_the_kernel_cwd_onto_the_target_session() {
     std::fs::create_dir_all(&alpha).expect("alpha dir");
     std::fs::create_dir_all(&beta).expect("beta dir");
     // One scripted turn: a cell has a command write its working directory to the receipt
-    // and fails unless `(session-cwd)` names the same directory.
+    // and fails unless `(session-info "cwd")` names the same directory.
     let receipt = dir.path().join("receipts").join("cwd.txt");
     std::fs::create_dir_all(receipt.parent().expect("receipts dir")).expect("receipts dir");
     let script = dir.path().join("faux.json");
@@ -435,7 +435,7 @@ fn switch_session_rebinds_the_kernel_cwd_onto_the_target_session() {
                 { "content": [
                     { "type": "toolCall", "name": "eval", "arguments": {
                         "code": format!(
-                            "(define ran (bash {command:?}))\n(unless (equal? (trim (hash-ref ran 'output)) (session-cwd))\n  (error \"the command ran outside the session cwd\"))\n(displayln \"cwd\")",
+                            "(define ran (bash {command:?}))\n(unless (equal? (trim (hash-ref ran 'output)) (session-info \"cwd\"))\n  (error \"the command ran outside the session cwd\"))\n(displayln \"cwd\")",
                             command = format!("pwd | tee '{}'", receipt.to_string_lossy()),
                         ),
                     } },

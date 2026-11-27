@@ -404,7 +404,7 @@ pub fn create_async_bash_quiet_message(
     }
     content.push_str(
         "\n\nA command that writes nothing for this long may be stuck (waiting for input, a lock, \
-         or the network). Check it with `(bash-tail job)`, or end it with `(bash-kill job)`. If it \
+         or the network). Check it with `(bash-output job #:tail 20)`, or end it with `(bash-kill job)`. If it \
          is only slow, end the turn again: `[bash-done]` still arrives when it finishes, and a \
          command is named in at most three of these notices, each after a longer silence.",
     );

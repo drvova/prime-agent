@@ -171,11 +171,11 @@ fn write_models_json(agent_dir: &Path) {
     .expect("write models.json");
 }
 
-/// One probe cell: the kernel's `(model-info)` and `(compact-status)`
+/// One probe cell: the kernel's `(session-info "model")` and `(compact-status)`
 /// answered inside the turn, written to a receipt for the verifier.
 fn probe_cell(receipt: &Path) -> String {
     format!(
-        r#"(fs-write {receipt:?} (value->jsexpr-string (hash 'model_info (model-info) 'compact_status (compact-status))))
+        r#"(fs-write {receipt:?} (value->jsexpr-string (hash 'model_info (session-info "model") 'compact_status (compact-status))))
 (displayln "FACTS_PROBED")
 "#,
         receipt = receipt.display().to_string(),

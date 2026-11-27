@@ -30,7 +30,7 @@ SETUP = """(define restore-parity-marker "defined-before-resume")
 READ = """(displayln (string-append "RESTORE_PARITY_RESULT="
                           (value->jsexpr-string
                             (hash 'marker (with-handler (lambda (e) "gone") (eval 'restore-parity-marker))
-                                  'cwd (session-cwd)))))"""
+                                  'cwd (session-info "cwd")))))"""
 
 
 def texts(value):

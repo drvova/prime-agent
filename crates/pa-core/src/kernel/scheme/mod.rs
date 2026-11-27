@@ -16,7 +16,7 @@
 //! cannot unwind native code, so a host function that blocks watches the
 //! cell's signal and returns on its own.
 //!
-//! Scheme reaches the host through one primitive, `(host-request type
+//! Scheme reaches the host through one primitive, `(%host-request type
 //! payload)`: the payload crosses as JSON to the session's
 //! [`HostRequestHandlers`], the same handlers the Python kernel's host
 //! requests reach, and the reply comes back as a Scheme value or raises.
@@ -72,21 +72,45 @@ pub(crate) use native::JobObject;
 /// The Scheme side of the host bridge, defined in every session engine after
 /// its `%host-request-json` primitive is registered.
 const HOST_BRIDGE: &str = r"
-(define (host-request type payload)
+(define (%host-request type payload)
   (let ([reply (string->jsexpr (%host-request-json type (value->jsexpr-string payload)))])
     (if (hash-contains? reply 'error)
         (error (hash-ref reply 'error))
         (hash-ref reply 'value))))
-
-;; The session's working directory.
-(define (session-cwd) %session-cwd)
-
-;; The session's id, or #f when the host gave none.
-(define (session-id) %session-id)
-
-;; The saved session's artifact directory, or #f.
-(define (session-artifact-dir) %session-artifact-dir)
 ";
+
+/// `(session-info [section] #:refresh)`, defined once the host API and the
+/// skill loader are: what this session runs with, as one hash or one of its
+/// sections.
+const SESSION_INFO: &str = r#"
+;; The session's facts: {id, cwd, artifact-dir, model, settings, usage,
+;; skills-unavailable}, or the one `section` names. `id` and `artifact-dir`
+;; are #f when the host gave none; #:refresh #t re-reads the usage quotas.
+(define (session-info [section #f] #:refresh [refresh #f])
+  (let ([part
+         (lambda (name)
+           (cond
+             [(equal? name "id") %session-id]
+             [(equal? name "cwd") %session-cwd]
+             [(equal? name "artifact-dir") %session-artifact-dir]
+             [(equal? name "model") (%host-call "model.info" (hash))]
+             [(equal? name "settings")
+              (hash 'session (%host-call "settings.session" (hash))
+                    'host (%host-call "settings.host" (hash)))]
+             [(equal? name "usage")
+              (hash 'session (%host-call "usage.session" (hash))
+                    'quotas (%host-call "usage.quotas" (hash 'refresh refresh)))]
+             [(equal? name "skills-unavailable") (string->jsexpr (%skills-unavailable-json))]
+             [else
+              (error (string-append "session-info: unknown section " (to-string name)
+                                    "; expected one of id, cwd, artifact-dir, model, settings,"
+                                    " usage, skills-unavailable"))]))])
+    (if section
+        (part section)
+        (foldl (lambda (name info) (hash-insert info (string->symbol name) (part name)))
+               (hash)
+               (list "id" "cwd" "artifact-dir" "model" "settings" "usage" "skills-unavailable")))))
+"#;
 
 /// How long a stopped cell waits for the host to take back the question it
 /// had open.
@@ -235,7 +259,7 @@ pub fn prewarm_scheme_kernel() {
 /// no shell settings, and cells that run to their end.
 #[derive(Default)]
 pub struct SchemeKernelOptions {
-    /// Answers `(host-request type payload)`.
+    /// Answers `(%host-request type payload)`.
     pub host_handlers: HostRequestHandlers,
     /// The session's working directory: where relative paths in host
     /// functions resolve and commands run.
@@ -257,7 +281,7 @@ pub struct SchemeKernelOptions {
     pub agent_dir: Option<PathBuf>,
     /// More environment for commands, on top of the session's own.
     pub env: Vec<(String, String)>,
-    /// The session's id, as `(session-id)` returns it.
+    /// The session's id, as `(session-info "id")` returns it.
     pub session_id: Option<String>,
     /// A saved session's artifact directory: its name is the durable session
     /// id commands see as `RLM_SESSION_ID`, and the directory itself is
@@ -270,7 +294,7 @@ pub struct SchemeKernelOptions {
     pub on_background_cell: Option<BackgroundCellObserver>,
     /// Hears each `wait-until` wait a cell makes, and how it ends.
     pub on_cell_wait: Option<CellWaitObserver>,
-    /// Hears each `api-help` and `api-search` call a cell makes.
+    /// Hears each `api-help` call a cell makes, searches included.
     pub on_reference_lookup: Option<ReferenceLookupObserver>,
     /// The source lines a failed command a cell waited for gets on the
     /// cell's result. The default attaches none.
@@ -408,7 +432,7 @@ pub struct SchemeKernelProvisioner {
 }
 
 impl SchemeKernelProvisioner {
-    /// A provisioner whose kernel answers `(host-request ...)` from `handlers`
+    /// A provisioner whose kernel answers `(%host-request ...)` from `handlers`
     /// and works in `cwd`, with every other option at its default.
     #[must_use]
     pub fn new(handlers: HostRequestHandlers, cwd: impl Into<PathBuf>) -> Self {
@@ -760,7 +784,9 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 mcp::register(&mut engine, mcp_client, Arc::clone(&cell), refusals, admission)?;
                 rizin::register(&mut engine, rizin_sessions, Arc::clone(&cell), admission)?;
                 factory::register(&mut engine, factory.clone(), Arc::clone(&cell), admission)?;
-                skills.start(&mut engine)?;
+                skills.start(&mut engine);
+                contracts::load(&mut engine, SESSION_INFO)
+                    .map_err(|error| anyhow!("session-info failed to load: {error}"))?;
                 let own_globals = engine
                     .globals()
                     .iter()
@@ -982,14 +1008,14 @@ mod tests {
             .unwrap();
         let echoed = kernel
             .execute(
-                "(hash-ref (host-request \"echo-upper\" (hash 'text \"quiet\")) 'text)",
+                "(hash-ref (%host-request \"echo-upper\" (hash 'text \"quiet\")) 'text)",
                 options(None, None),
             )
             .await
             .unwrap();
         let refused = kernel
             .execute(
-                "(host-request \"always-fails\" (hash))",
+                "(%host-request \"always-fails\" (hash))",
                 options(None, None),
             )
             .await

@@ -19,7 +19,7 @@
 ;; rides in the payload too (some handlers read it there), set last so a
 ;; payload key cannot reroute the request.
 (define (%host-call type payload)
-  (%exact-integers (host-request type (hash-insert payload 'type type))))
+  (%exact-integers (%host-request type (hash-insert payload 'type type))))
 
 ;; `payload` plus each `key value` pair whose value was given: #f and void
 ;; (an omitted keyword argument) add nothing.

@@ -1,5 +1,5 @@
 //! The tools a session's Scheme kernel runs itself, in this process, rather
-//! than asking the session for them through `(host-request ...)`.
+//! than asking the session for them through `(%host-request ...)`.
 //!
 //! - `(bash command [options])` runs a shell command in the session's working
 //!   directory and returns a hash: `'exit-code`, `'output` (stdout and stderr
@@ -17,18 +17,17 @@
 //!   Options: `'path`, `'glob`, `'type`, `'case`, `'literal`, `'word`,
 //!   `'multiline`, `'context`, `'before`, `'after`, `'hidden`, `'gitignore`,
 //!   `'max-results`, `'max-per-file`, `'max-columns`.
-//! - `(fs-glob pattern [options])` and `(fs-find [options])` return
-//!   `'entries` (each a hash of `'path`, `'kind`, and for files `'size`),
-//!   `'truncated`, `'text`. Options of both: `'path`, `'hidden`, `'gitignore`,
-//!   `'max-results`; of `fs-find` also `'name`, `'kind`, `'ignore-case`,
-//!   `'max-depth`.
+//! - `(fs-find [options])` returns `'entries` (each a hash of `'path`,
+//!   `'kind`, and for files `'size`), `'truncated`, `'text`. Options: `'path`,
+//!   `'hidden`, `'gitignore`, `'max-results`, and either `'glob` (a path
+//!   glob) or `'name`, `'kind`, `'ignore-case`, `'max-depth`.
 //! - `(fs-edit path edits)` applies one atomic patch of anchored edits (one
 //!   hash, or a list of them): `(hash 'replace anchor 'text new)`, with
 //!   `(list first last)` for a range, `(hash 'delete anchor)`,
 //!   `(hash 'insert-after anchor 'text new)`, `(hash 'insert-before ...)`,
 //!   `(hash 'append text)`. Returns `'applied`, `'path`, `'edits`, `'removed`,
 //!   `'added`, `'total-lines`, `'hunks`, `'text`.
-//! - `fs-symbol`, `fs-anchor`, `edit`, and the rest of `fs-edit` are listed
+//! - `fs-symbol` and the rest of `fs-edit` are listed
 //!   in `native/files.rs`.
 //!
 //! Every failure raises a Scheme error naming the tool and the reason. Paths
@@ -108,7 +107,6 @@ const TOOLS: &str = r#"
 
 (define (fs-read path [options (hash)]) (%native "fs-read" (hash-insert options 'path path)))
 (define (fs-grep pattern [options (hash)]) (%native "fs-grep" (hash-insert options 'pattern pattern)))
-(define (fs-glob pattern [options (hash)]) (%native "fs-glob" (hash-insert options 'pattern pattern)))
 (define (fs-find [options (hash)]) (%native "fs-find" options))
 "#;
 
@@ -194,7 +192,7 @@ pub(super) fn register(
                         let done = files.run(file_tool, &signal, &options);
                         // A file the kernel wrote itself: no cached command
                         // result outlives it.
-                        if done.is_ok() && matches!(file_tool, "fs-edit" | "fs-write" | "edit") {
+                        if done.is_ok() && matches!(file_tool, "fs-edit" | "fs-write") {
                             commands.wrote();
                         }
                         done

@@ -1,5 +1,5 @@
-//! The session's file tools: `fs-read`, `fs-grep`, `fs-glob`, `fs-find`,
-//! `fs-symbol`, `fs-edit`, `fs-write`, and `edit`.
+//! The session's file tools: `fs-read`, `fs-grep`, `fs-find`, `fs-symbol`,
+//! `fs-edit`, and `fs-write`.
 //!
 //! Every `fs-*` call is answered by the session's `fs.*` host request
 //! handler: a whole-file
@@ -27,7 +27,9 @@
 //!   `ctx-page`), `'truncated`, `'partial` (the index is still building),
 //!   `'text`. Option: `'max-references` (default 50).
 //! - `(fs-edit path edits [options])` also takes a row of `fs-read`'s
-//!   `'lines` (or of a hunk) wherever it takes an anchor. Its result carries
+//!   `'lines` (or of a hunk) wherever it takes an anchor, and with the option
+//!   `'view` (an `fs-read` view) a 1-based line number of that view. Its
+//!   result carries
 //!   `'check`: the edited file's check (`[check: ...]` and any diagnostics,
 //!   also the last lines of `'text`), or `#f`. With `(hash 'on-stale
 //!   'return)` a patch with stale anchors returns its rejection (`'applied`
@@ -36,13 +38,13 @@
 //!   `text` (missing directories are created): `'path`, `'created`,
 //!   `'total-lines`, `'bytes`, `'check`, `'text`.
 //! - An `fs-edit` or `fs-write` that changed a text file shows the change
-//!   on the cell's card, as `edit` does.
-//! - `(fs-anchor view line)` is the anchor of a 1-based line of an `fs-read`
-//!   view.
-//! - `(edit path old-str new-str)` replaces one unique occurrence of a
-//!   string, found exactly or, failing that, by the first normalization that
-//!   finds it (`edit_replace`): `'path`, `'start-line`, `'matched-by`,
-//!   `'check`, `'text`.
+//!   on the cell's card.
+//! - `(fs-edit path (hash 'old old-str 'new new-str))` replaces one unique
+//!   occurrence of a string instead, found exactly or, failing that, by the
+//!   first normalization that finds it (`edit_replace`): `'path`,
+//!   `'start-line`, `'matched-by`, `'check`, `'text`.
+//! - `(fs-find (hash 'glob pattern ...))` lists the paths matching a glob
+//!   (`"**/*.rs"`) instead of matching file names.
 
 use std::path::{Path, PathBuf};
 
@@ -66,16 +68,6 @@ pub(super) const TOOLS: &str = r#"
 (define (fs-edit path edits [options (hash)])
   (%native "fs-edit" (hash-insert (hash-insert options 'path path) 'edits edits)))
 (define (fs-write path text) (%native "fs-write" (hash 'path path 'text text)))
-(define (edit path old-str new-str)
-  (%native "edit" (hash 'path path 'old-str old-str 'new-str new-str)))
-
-(define (fs-anchor view line)
-  (let ([rows (filter (lambda (row) (equal? (hash-ref row 'line) line)) (hash-ref view 'lines))])
-    (if (null? rows)
-        (error (string-append "fs-anchor: line " (number->string line) " is not in this view (lines "
-                              (number->string (hash-ref view 'start)) "-"
-                              (number->string (hash-ref view 'end)) ")"))
-        (hash-ref (car rows) 'anchor))))
 "#;
 
 /// The options a tool accepts besides `path`: each one's Scheme name and the
@@ -100,14 +92,18 @@ const GREP: Accepted = &[
     ("max-columns", "maxColumns"),
 ];
 
+/// `fs-find`'s options when it is given a `'glob`.
 const GLOB: Accepted = &[
-    ("pattern", "pattern"),
+    ("glob", "pattern"),
     ("hidden", "hidden"),
     ("gitignore", "gitignore"),
     ("max-results", "maxResults"),
 ];
 
+/// `fs-find`'s options; `'glob` is listed so a refusal names it, and a call
+/// that gives it takes [`GLOB`] instead.
 const FIND: Accepted = &[
+    ("glob", "pattern"),
     ("name", "name"),
     ("kind", "kind"),
     ("ignore-case", "ignoreCase"),
@@ -119,7 +115,11 @@ const FIND: Accepted = &[
 
 const READ: Accepted = &[("start", "start"), ("end", "end")];
 
-const EDIT: Accepted = &[("edits", "edits"), ("on-stale", "onStale")];
+const EDIT: Accepted = &[
+    ("edits", "edits"),
+    ("on-stale", "onStale"),
+    ("view", "view"),
+];
 
 const WRITE: Accepted = &[("text", "text")];
 /// The operations one edit may name, as Scheme spells them.
@@ -184,8 +184,8 @@ impl FileReads {
         ))
     }
 
-    /// Run the reader `operation` (`fs-read`, `fs-grep`, `fs-glob`,
-    /// `fs-find`, `fs-symbol`) with a call's `options`. Blocks until the
+    /// Run the reader `operation` (`fs-read`, `fs-grep`, `fs-find`,
+    /// `fs-symbol`) with a call's `options`. Blocks until the
     /// reply: call it off the async threads.
     ///
     /// # Errors
@@ -193,7 +193,7 @@ impl FileReads {
     /// Any other operation, bad options, or the reader's own failure.
     pub(crate) fn run(&self, operation: &str, options: &Value) -> anyhow::Result<Value> {
         match operation {
-            "fs-read" | "fs-grep" | "fs-glob" | "fs-find" | "fs-symbol" => {
+            "fs-read" | "fs-grep" | "fs-find" | "fs-symbol" => {
                 self.0.run(operation, &AbortSignal::new(), options)
             }
             other => Err(anyhow!("{other} is not a read")),
@@ -316,9 +316,9 @@ impl Files {
                 }
                 self.request("fs.grep", Value::Object(payload), cell)
             }
-            "fs-glob" => self.request(
+            "fs-find" if options.get("glob").is_some() => self.request(
                 "fs.glob",
-                Value::Object(payload("fs-glob", options, GLOB, "root", &self.cwd)?),
+                Value::Object(payload("fs-find", options, GLOB, "root", &self.cwd)?),
                 cell,
             ),
             "fs-find" => self.request(
@@ -327,6 +327,7 @@ impl Files {
                 cell,
             ),
             "fs-symbol" => self.symbol(cell, options),
+            "fs-edit" if options["edits"].get("old").is_some() => self.replace(cell, options),
             "fs-edit" => self.edit(cell, options),
             "fs-write" => {
                 let payload = payload("fs-write", options, WRITE, "path", &self.cwd)?;
@@ -336,61 +337,86 @@ impl Files {
                 self.attach_check(&mut reply, &file, cell);
                 Ok(reply)
             }
-            "edit" => {
-                let replaced = edit_replace::replace(&self.cwd, options);
-                // How it matched, or why nothing did (adoption telemetry):
-                // nothing waits for the count, and one the host refuses
-                // changes nothing here.
-                let outcome = match &replaced {
-                    Ok(replaced) => replaced.reply["matchedBy"].as_str(),
-                    Err(error) => error
-                        .downcast_ref::<edit_replace::Miss>()
-                        .map(|miss| match miss.outcome {
-                            edit_replace::MissOutcome::AnchorPrefix => "anchor-prefix",
-                            edit_replace::MissOutcome::Ambiguous => "ambiguous",
-                            edit_replace::MissOutcome::NotFound => "not-found",
-                            edit_replace::MissOutcome::AlreadyApplied => "already-applied",
-                        }),
-                };
-                if let (Some(outcome), Some(handler)) = (
-                    outcome,
-                    self.handlers
-                        .get(crate::kernel::edit_matches::EDIT_FACT_REQUEST_TYPE),
-                ) {
-                    let counted = handler(HostRequestPayload {
-                        data: json!({ "outcome": outcome }),
-                    });
-                    self.runtime.spawn(async move {
-                        if let Err(error) = counted.await {
-                            tracing::debug!("edit fact was refused: {error:#}");
-                        }
-                    });
-                }
-                let edit_replace::Replaced {
-                    file,
-                    mut reply,
-                    old,
-                    new,
-                } = replaced?;
-                // The edit shows on the running cell's card, as the Python
-                // kernel's `edit` skill displayed it: the text that was
-                // replaced, which a normalized match spells differently from
-                // `old-str`.
-                if let Some(kernel) = crate::kernel::scheme::cell::current() {
-                    kernel.record(crate::kernel::scheme::cell::CellRecord::Diff(
-                        KernelDiffDisplay {
-                            path: file.to_string_lossy().into_owned(),
-                            old_str: old,
-                            new_str: new,
-                            start_line: reply["startLine"].as_u64(),
-                        },
-                    ));
-                }
-                self.attach_check(&mut reply, &file, cell);
-                Ok(reply)
-            }
             unknown => Err(anyhow!("unknown file tool: {unknown}")),
         }
+    }
+
+    /// `(fs-edit path (hash 'old old-str 'new new-str))`: replace one unique
+    /// occurrence of `old-str`, found exactly or by the first normalization
+    /// that finds it.
+    fn replace(&self, cell: &AbortSignal, options: &Value) -> anyhow::Result<Value> {
+        if let Some(unknown) = options.as_object().and_then(|fields| {
+            fields
+                .keys()
+                .find(|key| !matches!(key.as_str(), "path" | "edits"))
+        }) {
+            bail!("the option '{unknown}' does not apply to an 'old/'new edit");
+        }
+        let edit = &options["edits"];
+        if let Some(unknown) = edit.as_object().and_then(|fields| {
+            fields
+                .keys()
+                .find(|key| !matches!(key.as_str(), "old" | "new"))
+        }) {
+            bail!("an 'old/'new edit takes no '{unknown}'");
+        }
+        let mut wire = Map::new();
+        wire.insert("path".to_string(), options["path"].clone());
+        wire.insert("old-str".to_string(), edit["old"].clone());
+        wire.insert("new-str".to_string(), edit["new"].clone());
+        let replaced = edit_replace::replace(&self.cwd, &Value::Object(wire));
+        // How it matched, or why nothing did (adoption telemetry):
+        // nothing waits for the count, and one the host refuses
+        // changes nothing here.
+        let outcome = match &replaced {
+            Ok(replaced) => replaced.reply["matchedBy"].as_str(),
+            Err(error) => {
+                error
+                    .downcast_ref::<edit_replace::Miss>()
+                    .map(|miss| match miss.outcome {
+                        edit_replace::MissOutcome::AnchorPrefix => "anchor-prefix",
+                        edit_replace::MissOutcome::Ambiguous => "ambiguous",
+                        edit_replace::MissOutcome::NotFound => "not-found",
+                        edit_replace::MissOutcome::AlreadyApplied => "already-applied",
+                    })
+            }
+        };
+        if let (Some(outcome), Some(handler)) = (
+            outcome,
+            self.handlers
+                .get(crate::kernel::edit_matches::EDIT_FACT_REQUEST_TYPE),
+        ) {
+            let counted = handler(HostRequestPayload {
+                data: json!({ "outcome": outcome }),
+            });
+            self.runtime.spawn(async move {
+                if let Err(error) = counted.await {
+                    tracing::debug!("edit fact was refused: {error:#}");
+                }
+            });
+        }
+        let edit_replace::Replaced {
+            file,
+            mut reply,
+            old,
+            new,
+        } = replaced?;
+        // The edit shows on the running cell's card, as the Python
+        // kernel's `edit` skill displayed it: the text that was
+        // replaced, which a normalized match spells differently from
+        // `old-str`.
+        if let Some(kernel) = crate::kernel::scheme::cell::current() {
+            kernel.record(crate::kernel::scheme::cell::CellRecord::Diff(
+                KernelDiffDisplay {
+                    path: file.to_string_lossy().into_owned(),
+                    old_str: old,
+                    new_str: new,
+                    start_line: reply["startLine"].as_u64(),
+                },
+            ));
+        }
+        self.attach_check(&mut reply, &file, cell);
+        Ok(reply)
     }
 
     /// Run the check of `file`, just edited, and attach what it says to the
@@ -491,6 +517,16 @@ impl Files {
             Some(Value::String(choice)) if choice == "return" => true,
             Some(_) => bail!("on-stale must be 'raise or 'return"),
         };
+        // Line numbers of a view stand for that view's anchors.
+        let view_rows = match payload.remove("view") {
+            None => None,
+            Some(view) => Some(
+                view.get("lines")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("view must be an fs-read view, with its 'lines"))?,
+            ),
+        };
         let edits = match payload.remove("edits") {
             Some(Value::Array(edits)) => edits,
             Some(one @ Value::Object(_)) => vec![one],
@@ -528,11 +564,17 @@ impl Files {
                         "edit {number}: an anchor is a string like \"12:abc\", or a row of fs-read's lines"
                     )
                 }),
-                Value::Null
-                | Value::Bool(_)
-                | Value::Number(_)
-                | Value::String(_)
-                | Value::Array(_) => Ok(place.clone()),
+                Value::Number(line) => match &view_rows {
+                    Some(rows) => rows
+                        .iter()
+                        .find(|row| row.get("line").and_then(Value::as_u64) == line.as_u64())
+                        .and_then(|row| row.get("anchor").cloned())
+                        .ok_or_else(|| anyhow!("edit {number}: line {line} is not in the view")),
+                    None => Ok(place.clone()),
+                },
+                Value::Null | Value::Bool(_) | Value::String(_) | Value::Array(_) => {
+                    Ok(place.clone())
+                }
             }
             };
             let mut entry = Map::new();

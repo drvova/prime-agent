@@ -26,7 +26,7 @@ The harness often sends messages to the agent. These are user messages starting 
 
 {{calls:fs}}
 
-`fs-read` tags every line with an anchor (`12:abc|text`) and `fs-edit` edits by pointing at anchors, so old text is never retyped: `(fs-edit path (hash 'replace "12:abc" 'text "new"))`, also `'delete`, `'insert-after`, `'insert-before`, `'append`, ranges as `(list first last)`, several edits as a list. A patch with a stale anchor is rejected whole, with the current lines under fresh anchors. Every result carries `'text`, its readable rendering. `fs-edit` and `edit` change existing files only; `(api-help "fs")` shows how to create one. Search with `fs-grep` (ripgrep's regex engine and `.gitignore` rules), `fs-glob`, `fs-find`, and `fs-symbol` rather than `rg`/`grep`/`find` through `bash`.
+`fs-read` tags every line with an anchor (`12:abc|text`) and `fs-edit` edits by pointing at anchors, so old text is never retyped: `(fs-edit path (hash 'replace "12:abc" 'text "new"))`, also `'delete`, `'insert-after`, `'insert-before`, `'append`, ranges as `(list first last)`, several edits as a list. A patch with a stale anchor is rejected whole, with the current lines under fresh anchors. Every result carries `'text`, its readable rendering. `fs-edit` changes existing files only (`(fs-edit path (hash 'old old-str 'new new-str))` replaces a unique string); `(api-help "fs")` shows how to create one. Search with `fs-grep` (ripgrep's regex engine and `.gitignore` rules), `fs-find`, and `fs-symbol` rather than `rg`/`grep`/`find` through `bash`.
 
 ## Cells and turns
 

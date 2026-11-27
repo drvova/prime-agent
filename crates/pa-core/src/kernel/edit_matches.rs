@@ -1,4 +1,4 @@
-//! The `edit.fact` host request: the kernel's `(edit path old-str new-str)`
+//! The `edit.fact` host request: the kernel's `(fs-edit path (hash 'old old-str 'new new-str))`
 //! reports how it found the text it replaced (the step of its normalization
 //! ladder) or why it found nothing, so the session can count it (adoption
 //! telemetry). The kernel sends it without awaiting the reply.

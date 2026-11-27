@@ -1,5 +1,5 @@
 //! The kernel API reference ([`API_DOCS`]) cut into passages: the entries `(api-help name)`
-//! prints, and the units `(api-search query)` ranks.
+//! prints, and the units `(api-help #:search query)` ranks.
 //!
 //! A passage is one top-level bullet with the bullets nested under it, or one paragraph, tagged
 //! with its topic and the section heading above it. A bullet that opens with a call form is that
@@ -158,7 +158,7 @@ fn singular(word: &str) -> String {
     }
 }
 
-/// What `(api-search query #:limit)` prints: at most `limit` passages that share a word with
+/// What `(api-help #:search query #:limit)` prints: at most `limit` passages that share a word with
 /// `query`, best first, each under its topic and section; `None` when no passage does.
 pub(crate) fn api_search(query: &str, limit: usize) -> Option<String> {
     let index = &*INDEX;
@@ -210,7 +210,7 @@ pub(crate) fn api_search(query: &str, limit: usize) -> Option<String> {
         return None;
     }
     let mut printed = format!(
-        "api-search: {} passage{} of the reference for {query:?}, best first. \
+        "api-help: {} passage{} of the reference for {query:?}, best first. \
          (api-help \"<function>\") prints an entry, (api-help \"<topic>\") a topic.\n",
         ranked.len(),
         if ranked.len() == 1 { "" } else { "s" },

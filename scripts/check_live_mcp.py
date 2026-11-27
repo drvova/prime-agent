@@ -24,7 +24,7 @@ from check_restore_notice import texts
 MARKER = 'LIVE_MCP_PARITY_RESULT='
 CELL = """(define probes-so-far (with-handler (lambda (e) 0) (eval 'kept-probe-count)))
 (eval (list 'define 'kept-probe-count (+ 1 probes-so-far)))
-(define (live-mcp-config name) (host-request "mcp.config" (hash 'server name)))
+(define (live-mcp-config name) (%host-request "mcp.config" (hash 'server name)))
 (displayln (string-append "LIVE_MCP_PARITY_RESULT="
                           (value->jsexpr-string
                             (hash 'probe (+ 1 probes-so-far)

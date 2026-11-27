@@ -296,7 +296,7 @@ pub fn interrupted_call_results<'a>(
                 ),
                 Effect::File => (
                     "file",
-                    "it writes files (`fs-write`, `fs-edit` or `edit`): each write replaces its file whole, so a file it wrote holds its old text or its new, never part of either; read the files to see which writes landed".to_string(),
+                    "it writes files (`fs-write` or `fs-edit`): each write replaces its file whole, so a file it wrote holds its old text or its new, never part of either; read the files to see which writes landed".to_string(),
                 ),
                 Effect::Subagent => (
                     "subagent",
@@ -462,7 +462,7 @@ mod tests {
                             "ran",
                             format!(
                                 "{head}it runs `bash`: a command it started may have done part of its work; 2 programs the session's commands left running were stopped with the session\n\
-                                 - it writes files (`fs-write`, `fs-edit` or `edit`): each write replaces its file whole, so a file it wrote holds its old text or its new, never part of either; read the files to see which writes landed\n\
+                                 - it writes files (`fs-write` or `fs-edit`): each write replaces its file whole, so a file it wrote holds its old text or its new, never part of either; read the files to see which writes landed\n\
                                  - it calls an MCP tool or the web: a request it sent may have reached the other side; check there before you send it again"
                             ),
                         ],

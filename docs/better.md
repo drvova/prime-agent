@@ -27,7 +27,7 @@ it found.
 
 - It runs on the session's own model, provider, thinking level, and credential. Nothing
   switches implicitly.
-- It only reads. Its `eval` tool accepts `fs-read`, `fs-grep`, `fs-glob`, and `fs-find`
+- It only reads. Its `eval` tool accepts `fs-read`, `fs-grep`, and `fs-find`
   calls with literal arguments, and its `bash` accepts one read-only `git` command (`log`,
   `show`, `diff`, `status`, `ls-files`, `grep`, `rev-parse`) with no pipes, redirects, or
   substitutions. The host refuses every edit and write.

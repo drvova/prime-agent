@@ -43,27 +43,11 @@
 (define (goal-complete)
   (%host-call "goal.complete" (hash)))
 
-;; The session model: {id, provider, input, contextWindow, thinkingLevel}.
-(define (model-info)
-  (%host-call "model.info" (hash)))
-
 ;; Change this session's thinking level from the next model call ("off",
 ;; "minimal", "low", "medium", "high", "xhigh", "max"); the effective level.
 ;; Raises unless the user allowed it.
 (define (model-set-effort level)
   (hash-ref (%host-call "model.set_effort" (hash 'level level)) 'thinkingLevel))
-
-;; The session's effective settings: {session, host}, each as the host
-;; reports it.
-(define (settings-get)
-  (hash 'session (%host-call "settings.session" (hash))
-        'host (%host-call "settings.host" (hash))))
-
-;; This session's cost and tokens and the provider quota windows:
-;; {session, quotas}. #:refresh #t re-reads every provider's quota now.
-(define (usage-get #:refresh [refresh #f])
-  (hash 'session (%host-call "usage.session" (hash))
-        'quotas (%host-call "usage.quotas" (hash 'refresh refresh))))
 
 ;; One paged-out output read, or an error saying why the handle has no
 ;; stored text.

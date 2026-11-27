@@ -16,7 +16,7 @@
 //! skipped, the other skills still load, and the failure is reported per
 //! skill, once per start or reload, through the session's
 //! [`UnavailableSchemeSkillsCallback`] (the model is told before its next
-//! turn) and at any time by `(skills-unavailable)`. What a failed file
+//! turn) and at any time by `(session-info "skills-unavailable")`. What a failed file
 //! defined before it failed stays defined, and so does everything a
 //! removed skill defined: the engine cannot take a definition back.
 //!
@@ -28,7 +28,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use anyhow::anyhow;
 use pa_types::session::CustomMessage;
 use serde_json::json;
 use steel::steel_vm::engine::Engine;
@@ -93,7 +92,7 @@ pub fn notice_content(errors: &UnavailableSchemeSkills) -> String {
     }
     lines.push(String::new());
     lines.push(
-        "Fix the source and call `(rlm-reload)` to load it again, or use another approach. `(skills-unavailable)` lists what is still failing; each skill's SKILL.md stays readable.".to_string(),
+        "Fix the source and call `(rlm-reload)` to load it again, or use another approach. `(session-info \"skills-unavailable\")` lists what is still failing; each skill's SKILL.md stays readable.".to_string(),
     );
     lines.join("\n")
 }
@@ -236,14 +235,11 @@ impl SkillLoader {
         }
     }
 
-    /// Define `(skills-unavailable)` in the engine and load every skill's
-    /// source: the kernel's start.
-    ///
-    /// # Errors
-    ///
-    /// The loader's own Scheme definition failed to load. A skill's failure
-    /// is not an error here: it is reported and the kernel starts.
-    pub(super) fn start(&self, engine: &mut Engine) -> anyhow::Result<()> {
+    /// Define `%skills-unavailable-json` (what `(session-info
+    /// "skills-unavailable")` reads) in the engine and load every skill's
+    /// source: the kernel's start. A skill's failure is reported, and the
+    /// kernel starts.
+    pub(super) fn start(&self, engine: &mut Engine) {
         let unavailable = Arc::clone(&self.unavailable);
         engine.register_fn("%skills-unavailable-json", move || -> String {
             let rows: Vec<serde_json::Value> = unavailable
@@ -254,17 +250,7 @@ impl SkillLoader {
                 .collect();
             json!(rows).to_string()
         });
-        super::contracts::load(
-            engine,
-            "
-;; The skills whose Scheme source failed to load, each {skill, error};
-;; empty when every skill loaded.
-(define (skills-unavailable) (string->jsexpr (%skills-unavailable-json)))
-",
-        )
-        .map_err(|error| anyhow!("the Scheme skill loader failed to load: {error}"))?;
         self.load(engine);
-        Ok(())
     }
 
     /// Load the sources again when a reload asked for it since the last

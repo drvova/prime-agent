@@ -427,7 +427,7 @@ public API.
 Kernel API reference (`prompts::layers`): one doc file per topic under `src/prompts/capabilities/`
 documents every model-facing function of the Scheme kernel. The core prompt layer splices each
 function's call form from them, and the kernel serves a function's full entry on demand through
-`(api-help ...)`, and `(api-search query)` ranks its passages (function entries, bullets,
+`(api-help ...)`, and `(api-help #:search query)` ranks its passages (function entries, bullets,
 paragraphs) against a query with BM25 (`prompts/layers/reference.rs`), so a cell finds a function
 by what it does. `tests/prompt_guards.rs` holds the reference equal to the functions the kernel's
 sources define. Public surface: `API_DOCS`, `documented_calls`, `CORE_LAYER`.
@@ -533,7 +533,7 @@ level and records the session row. Adoption counts ride `agent repl notify`.
 In-process Scheme kernel (`kernel::scheme`): one Steel engine per session inside this
 process, taken from a spare built ahead of time (never a copy of another engine: copies
 share interpreter state across sessions). Cells run on a blocking thread with their output
-captured, an abort or the per-call timeout interrupts them, and `(host-request type payload)`
+captured, an abort or the per-call timeout interrupts them, and `(%host-request type payload)`
 reaches the same `HostRequestHandlers` the Python kernel's host requests do. It implements the
 tool seam's executor and provisioner traits, and every session exposes it as the `eval` tool
 (`tools::scheme`) beside `python_repl`.

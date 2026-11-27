@@ -124,7 +124,7 @@ fn start(dir: &Path) -> Pane {
 (todo-update "1" #:status "done")
 (todo-update "2" #:status "in_progress")
 (define r (ask "Which database should the cache use?" (list "sqlite" "postgres")))
-(fs-write (string-append (session-cwd) "/answer.txt") (string-append (hash-ref r 'status) ":" (hash-ref r 'answer)))"#,
+(fs-write (string-append (session-info "cwd") "/answer.txt") (string-append (hash-ref r 'status) ":" (hash-ref r 'answer)))"#,
                 plan = plan.map(|item| format!("{item:?}")).join(" "),
             )),
             { "text": "asked" },
@@ -132,7 +132,7 @@ fn start(dir: &Path) -> Pane {
                 r#"(todo-set (map (lambda (item) (hash 'text (hash-ref item 'text) 'status "done"))
                (hash-ref (todo-get) 'items)))
 (define checks (ask "Which checks?" (list "fmt" "clippy") #:multi #t))
-(fs-write (string-append (session-cwd) "/checks.txt") (string-append (hash-ref checks 'status) ":" (string-join (hash-ref checks 'answer) ",")))"#,
+(fs-write (string-append (session-info "cwd") "/checks.txt") (string-append (hash-ref checks 'status) ":" (string-join (hash-ref checks 'answer) ",")))"#,
             ),
             { "text": "finished" },
             { "text": "you are welcome" },

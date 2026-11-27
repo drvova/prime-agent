@@ -59,7 +59,7 @@ pub(in crate::catalog) const AGENT_KERNEL_WAITS: EventRule = EventRule {
 
 /// Reads of the kernel API reference from cells (v2), emitted at session end beside `agent
 /// session ended` (which sits near the backend's 128-key cap) only when a cell read it:
-/// `api-help` calls, `api-search` calls, and the searches that matched no passage. Counts only:
+/// `api-help` calls, `api-help #:search` calls, and the searches that matched no passage. Counts only:
 /// never a topic, a query, or what was printed.
 pub(in crate::catalog) const AGENT_KERNEL_REFERENCE_LOOKUPS: EventRule = EventRule {
     name: "agent kernel reference lookups",

@@ -234,7 +234,7 @@ async fn read_grep_glob_and_find_see_the_session_tree() {
                       (hash-ref view 'lines)))
            (map (lambda (found) (list (hash-ref found 'path) (hash-ref found 'line) (hash-ref found 'text)))
                 (hash-ref (fs-grep \"needle\" (hash 'glob \"*.rs\")) 'matches))
-           (map (lambda (entry) (hash-ref entry 'path)) (hash-ref (fs-glob \"**/*.txt\") 'entries))
+           (map (lambda (entry) (hash-ref entry 'path)) (hash-ref (fs-find (hash 'glob \"**/*.txt\")) 'entries))
            (map (lambda (entry) (list (hash-ref entry 'path) (hash-ref entry 'kind)))
                 (hash-ref (fs-find (hash 'name \"*.md\" 'kind 'file)) 'entries)))",
         None,

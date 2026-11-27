@@ -88,9 +88,9 @@ pub type CellWaitObserver = Arc<dyn Fn(CellWaitFact) + Send + Sync>;
 pub enum ReferenceLookupFact {
     /// An `api-help` call.
     Help,
-    /// An `api-search` call that printed at least one passage.
+    /// An `(api-help #:search ...)` call that printed at least one passage.
     SearchFound,
-    /// An `api-search` call that matched nothing.
+    /// An `(api-help #:search ...)` call that matched nothing.
     SearchMissed,
 }
 

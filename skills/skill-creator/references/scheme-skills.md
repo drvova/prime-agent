@@ -7,7 +7,7 @@ A skill with Scheme source is a regular markdown skill that also carries code fo
 - The source is `skill.scm` beside `SKILL.md`, and any `*.scm` files in a `scheme/` directory beside it. The `scheme/` files load first, in file-name order, then `skill.scm`. A skill with neither is documentation only.
 - Each file is one program evaluated in the session's engine: every top-level `define` is global to the session. Name every function after the skill (`word-count-run`, `word-count-top`), so it cannot replace a kernel function or another skill's.
 - Sources load when the kernel starts and again after a cell that called `(rlm-reload)`: a reload evaluates the files that are new or changed.
-- A file that fails to read, parse, or evaluate makes its skill unavailable: the skill's remaining files are skipped, the other skills still load, and the failure is reported in a `[scheme-skills-unavailable]` notice and by `(skills-unavailable)`. What a file defined before it failed stays defined, and so does everything a removed skill defined, until the kernel restarts.
+- A file that fails to read, parse, or evaluate makes its skill unavailable: the skill's remaining files are skipped, the other skills still load, and the failure is reported in a `[scheme-skills-unavailable]` notice and by `(session-info "skills-unavailable")`. What a file defined before it failed stays defined, and so does everything a removed skill defined, until the kernel restarts.
 - Skills in the project's own directory are never loaded: only personal, package, and built-in skills run code.
 - `SKILL.md` must describe each function: its call form, what it returns, and when to use it. The model learns of the functions only from there.
 
@@ -45,5 +45,5 @@ word-count/
 ## Verifying
 
 1. Write the files, then run `(rlm-reload)`.
-2. In the next cell, check `(skills-unavailable)` is empty for the skill and call its function with a small input.
+2. In the next cell, check `(session-info "skills-unavailable")` is empty for the skill and call its function with a small input.
 3. Fix a failure in the source and run `(rlm-reload)` again; the changed file is evaluated again.

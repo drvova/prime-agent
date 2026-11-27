@@ -14,7 +14,7 @@ fn a_cell_of_literal_reader_calls_parses_to_its_calls() {
     let calls = parse_eval_cell(
         "; look around\n(displayln (hash-ref (fs-read \"src/lib.rs\" (hash 'start 1 'end 40)) 'text))\n\
          (fs-grep \"fn \\\\w+\" (hash 'path \"src\" 'glob (list \"*.rs\" \"!target/**\")\n  'case \"smart\" 'word #t))\n\
-         [fs-find (hash 'kind \"file\" 'max-depth 2)] (fs-glob \"**/*.toml\") (display (fs-symbol \"parse\"))",
+         [fs-find (hash 'kind \"file\" 'max-depth 2)] (fs-find (hash 'glob \"**/*.toml\")) (display (fs-symbol \"parse\"))",
     );
     assert_eq!(
         calls,
@@ -38,8 +38,8 @@ fn a_cell_of_literal_reader_calls_parses_to_its_calls() {
                 options: options(json!({ "kind": "file", "max-depth": 2 })),
             },
             FsCall {
-                op: FsOp::Glob,
-                options: options(json!({ "pattern": "**/*.toml" })),
+                op: FsOp::Find,
+                options: options(json!({ "glob": "**/*.toml" })),
             },
             FsCall {
                 op: FsOp::Symbol,
@@ -51,8 +51,8 @@ fn a_cell_of_literal_reader_calls_parses_to_its_calls() {
 
 #[test]
 fn anything_but_a_literal_reader_call_is_refused() {
-    const SHAPE: &str = "each form must be one fs-read/fs-grep/fs-glob/fs-find/fs-symbol call";
-    const NOT_A_READ: &str = "is not a read; only fs-read, fs-grep, fs-glob, fs-find, fs-symbol";
+    const SHAPE: &str = "each form must be one fs-read/fs-grep/fs-find/fs-symbol call";
+    const NOT_A_READ: &str = "is not a read; only fs-read, fs-grep, fs-find, fs-symbol";
     for (code, reason) in [
         ("(define x (fs-read \"a\"))", SHAPE.to_string()),
         ("(bash \"rm -rf .\")", SHAPE.to_string()),
@@ -62,7 +62,6 @@ fn anything_but_a_literal_reader_call_is_refused() {
         ("fs-read", SHAPE.to_string()),
         ("(fs-edit \"a\" (list))", format!("fs-edit {NOT_A_READ}")),
         ("(fs-write \"a\" \"x\")", format!("fs-write {NOT_A_READ}")),
-        ("(edit \"a\" \"x\" \"y\")", format!("edit {NOT_A_READ}")),
         (
             "(fs-read path)",
             "`path` is a name, and only literal arguments are accepted".to_string(),

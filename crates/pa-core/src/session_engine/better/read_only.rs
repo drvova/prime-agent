@@ -8,7 +8,7 @@
 //! flags (`rg --pre`, `find -exec`, `git grep -O`, a repository-configured fsmonitor hook or
 //! diff driver). So the helper never reaches either:
 //!
-//! - `eval` accepts only calls of `fs-read`/`fs-grep`/`fs-glob`/`fs-find`/`fs-symbol` with
+//! - `eval` accepts only calls of `fs-read`/`fs-grep`/`fs-find`/`fs-symbol` with
 //!   literal arguments (`(displayln (hash-ref (fs-read "src/lib.rs" (hash 'start 1 'end 80))
 //!   'text))`, one per form). The host reads the cell as data (nothing evaluates it) and runs
 //!   each call through the readers the kernel's own functions use ([`scheme_reads`]). Anything
