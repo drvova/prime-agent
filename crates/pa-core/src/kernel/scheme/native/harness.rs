@@ -649,14 +649,22 @@ pub(super) fn register(engine: &mut Engine, session: &crate::kernel::scheme::Ses
         artifact_dir: session.artifact_dir.clone(),
         reuse: session.reuse.clone(),
     };
+    let admission = session.admission.clone();
     engine.register_fn(
         "%harness-call",
         move |operation: String, payload: String| -> String {
+            let who = operation
+                .split_once(':')
+                .map_or(operation.as_str(), |(_, who)| who);
             let outcome = serde_json::from_str::<Value>(&payload)
                 .map_err(|error| anyhow!("the payload is not JSON: {error}"))
                 .and_then(|options| {
                     // These calls write files without the session's runtime.
                     pa_types::session_scope::ensure_live()?;
+                    admission.admit(crate::kernel::call_policy::CallKind::Native {
+                        family: crate::kernel::call_policy::NativeFamily::Harness,
+                        name: who,
+                    })?;
                     // The user's master switch, read on every call so a
                     // change in /settings applies at once.
                     let disabled = harness
@@ -683,9 +691,6 @@ pub(super) fn register(engine: &mut Engine, session: &crate::kernel::scheme::Ses
                         unknown => Err(anyhow!("unknown harness operation: {unknown}")),
                     }
                 });
-            let who = operation
-                .split_once(':')
-                .map_or(operation.as_str(), |(_, who)| who);
             super::reply_json(who, outcome)
         },
     );

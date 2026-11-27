@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use pa_types::event_log::{AgentInput, AgentTarget, Task, TaskFailure, TaskState};
+use pa_types::event_log::{AgentInput, AgentTarget, Task, TaskFailure, TaskState, Trust};
 
 use super::host::{Ran, TaskEnd};
 use super::{done_event, SessionBuilder, SessionSpec, SessionTopics, Sessions};
@@ -96,7 +96,8 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
 /// subagent of the event's session). It starts from the route's prompt at
 /// the route's priority; an empty prompt takes the event's [`AgentInput`]:
 /// its text and images, and its priority when it names one. Its trust is
-/// the request's.
+/// the request's; an untrusted task's prompt is wrapped as
+/// `<untrusted-event source="<the event's source>">…</untrusted-event>`.
 pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
     pub(crate) queue: TaskQueue<SessionRunner<B>, LogTaskStore>,
     pub(crate) sessions: Arc<Sessions<B>>,
@@ -137,6 +138,22 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
             )
         } else {
             (request.prompt, request.priority, Vec::new())
+        };
+        // Outside content reaches the model marked as such, with where it
+        // came from; it cannot close the mark early. (The system prompt is
+        // untouched: it stays cache-stable.)
+        let prompt = match request.trust {
+            Trust::Owner => prompt,
+            Trust::Untrusted => {
+                let attribute = event
+                    .source
+                    .replace('&', "&amp;")
+                    .replace('"', "&quot;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                let body = prompt.replace("</untrusted-event", "&lt;/untrusted-event");
+                format!("<untrusted-event source=\"{attribute}\">{body}</untrusted-event>")
+            }
         };
         let id = uuid::Uuid::now_v7().to_string();
         self.sessions.attach_images(&id, images);

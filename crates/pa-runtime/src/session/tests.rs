@@ -6,6 +6,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use pa_core::kernel::CallPolicy;
 use pa_core::session::manager::SessionManager;
 use pa_types::event_log::{
     AgentDone, AgentInput, EventId, NewEvent, Priority, TaskFailure, TaskState, Topic, Trust,
@@ -21,6 +22,10 @@ const PANIC_PROMPT: &str = "panic now";
 
 /// The prompt whose model calls wait at the builder's [`Hold`].
 const HOLD_PROMPT: &str = "hold on";
+
+/// A host request every bed's sessions answer that the trust table does not
+/// list.
+const UNLISTED_REQUEST: &str = "bed.unlisted";
 
 /// Where a model call of a turn holding [`HOLD_PROMPT`] waits: it says it
 /// has started, then waits for one permit, which it gives back.
@@ -38,7 +43,12 @@ struct FauxBuilder {
 }
 
 impl SessionBuilder for FauxBuilder {
-    async fn build(&self, id: &str, spec: &SessionSpec) -> anyhow::Result<BuiltSession> {
+    async fn build(
+        &self,
+        id: &str,
+        spec: &SessionSpec,
+        call_policy: Arc<dyn CallPolicy>,
+    ) -> anyhow::Result<BuiltSession> {
         let sessions = spec.cwd.join("sessions");
         let inner =
             pa_core::session_engine::provider_adapter::real_stream_fn(None, self.model.clone());
@@ -81,7 +91,17 @@ impl SessionBuilder for FauxBuilder {
                     &sessions,
                     &pa_core::session::manager::get_session_file_path(&sessions, id),
                 )),
-                extra_host_handlers: None,
+                extra_host_handlers: Some({
+                    // A request the trust table does not list.
+                    let mut handlers = pa_core::kernel::HostRequestHandlers::new();
+                    handlers.register(
+                        UNLISTED_REQUEST,
+                        pa_core::kernel::shared::host_handler(|_payload| async {
+                            Ok(json!("answered"))
+                        }),
+                    );
+                    handlers
+                }),
                 conversation_log_path: None,
                 additional_skill_paths: Vec::new(),
                 additional_prompt_paths: Vec::new(),
@@ -97,6 +117,7 @@ impl SessionBuilder for FauxBuilder {
                 prewarm_kernel: Some(true),
                 on_background_work_settled: None,
                 bash_notice_wake: None,
+                call_policy: Some(call_policy),
                 queued_goal_context_purge: None,
                 queued_steering_probe: None,
                 should_stop_after_turn: None,
@@ -218,6 +239,12 @@ impl<B: SessionBuilder> Bed<B> {
     /// Publishes `text` as the session's input, at `priority`; the input
     /// event's id.
     async fn input(&self, text: &str, priority: Option<Priority>) -> EventId {
+        self.input_with(text, priority, Trust::Owner).await
+    }
+
+    /// Publishes `text` as the session's input, at `priority`, with
+    /// `trust`; the input event's id.
+    async fn input_with(&self, text: &str, priority: Option<Priority>, trust: Trust) -> EventId {
         self.runtime
             .publish(NewEvent {
                 topic: Topic::new(format!("agent/{}/input", self.session)).unwrap(),
@@ -229,7 +256,7 @@ impl<B: SessionBuilder> Bed<B> {
                     priority,
                 })
                 .unwrap(),
-                trust: Trust::Owner,
+                trust,
                 cause: None,
                 reply: None,
             })
@@ -481,8 +508,13 @@ async fn settling_reports_how_the_run_ended() {
 struct FailingAfterSeed(FauxBuilder);
 
 impl SessionBuilder for FailingAfterSeed {
-    async fn build(&self, id: &str, spec: &SessionSpec) -> anyhow::Result<BuiltSession> {
-        let built = self.0.build(id, spec).await?;
+    async fn build(
+        &self,
+        id: &str,
+        spec: &SessionSpec,
+        call_policy: Arc<dyn CallPolicy>,
+    ) -> anyhow::Result<BuiltSession> {
+        let built = self.0.build(id, spec, call_policy).await?;
         built
             .engine
             .session
@@ -573,6 +605,7 @@ impl SessionBuilder for FailingBuild {
         &self,
         _id: &str,
         _spec: &SessionSpec,
+        _call_policy: Arc<dyn CallPolicy>,
     ) -> impl std::future::Future<Output = anyhow::Result<BuiltSession>> + Send {
         std::future::ready(Err(anyhow::anyhow!("no engine here")))
     }
@@ -640,5 +673,198 @@ async fn a_second_runtime_on_the_database_leaves_other_sessions_tasks_alone() {
         )
     );
     second.shutdown().await;
+    bed.runtime.shutdown().await;
+}
+
+/// A faux reply that runs `code` in one `eval` cell.
+fn eval_cell(code: &str) -> Value {
+    json!({ "content": [{ "type": "toolCall", "id": "cell", "name": "eval", "arguments": { "code": code } }] })
+}
+
+/// What each cell of a task's stream answered, as text.
+fn cell_answers(stream: &[Value]) -> Vec<String> {
+    stream
+        .iter()
+        .filter(|payload| payload["type"] == "tool_execution_end")
+        .map(|payload| payload["result"].to_string())
+        .collect()
+}
+
+/// An untrusted task's prompt reaches the model marked as outside content,
+/// and its `bash` cell is refused before the command starts; the owner's
+/// next task runs the same command.
+#[tokio::test]
+async fn an_untrusted_tasks_bash_is_refused_while_an_owners_runs() {
+    let mut bed = bed(json!([
+        eval_cell("(bash \"echo untrusted > untrusted-made\")"),
+        { "text": "refused" },
+        eval_cell("(bash \"echo owner > owner-made\")"),
+        { "text": "ran" },
+    ]))
+    .await;
+    bed.input_with("run it", None, Trust::Untrusted).await;
+    let (untrusted, _) = bed.until_done().await;
+    bed.input("run it", None).await;
+    let (owner, _) = bed.until_done().await;
+    let refused = cell_answers(&untrusted);
+    let ran = cell_answers(&owner);
+    assert_eq!(
+        (
+            bed.transcript().first().cloned(),
+            refused.len(),
+            refused[0].contains("refused for an untrusted turn: bash"),
+            bed.cwd.join("untrusted-made").exists(),
+            ran.iter().any(|answer| answer.contains("refused")),
+            std::fs::read_to_string(bed.cwd.join("owner-made")).ok(),
+        ),
+        (
+            Some((
+                "user".to_string(),
+                "<untrusted-event source=\"test\">run it</untrusted-event>".to_string()
+            )),
+            1,
+            true,
+            false,
+            false,
+            Some("owner\n".to_string()),
+        ),
+        "untrusted: {refused:?}, owner: {ran:?}"
+    );
+    bed.runtime.shutdown().await;
+}
+
+/// An untrusted task's cell writes no file.
+#[tokio::test]
+async fn an_untrusted_tasks_file_write_is_refused() {
+    let mut bed = bed(json!([
+        eval_cell("(fs-write \"written.txt\" \"outside content\")"),
+        { "text": "refused" },
+    ]))
+    .await;
+    bed.input_with("write it", None, Trust::Untrusted).await;
+    let (stream, _) = bed.until_done().await;
+    let answers = cell_answers(&stream);
+    assert_eq!(
+        (
+            answers.len(),
+            answers[0].contains("refused for an untrusted turn: fs-write"),
+            bed.cwd.join("written.txt").exists(),
+        ),
+        (1, true, false),
+        "{answers:?}"
+    );
+    bed.runtime.shutdown().await;
+}
+
+/// An untrusted task reads files under its session's working directory and
+/// none outside it.
+#[tokio::test]
+async fn an_untrusted_tasks_reads_stay_under_the_sessions_directory() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let outside = dir.path().join("outside.txt");
+    std::fs::write(&outside, "the outside secret\n").unwrap();
+    let mut bed = bed(json!([
+        eval_cell("(hash-ref (fs-read \"inside.txt\") 'text)"),
+        eval_cell(&format!("(fs-read {:?})", outside.to_string_lossy())),
+        { "text": "read" },
+    ]))
+    .await;
+    std::fs::write(bed.cwd.join("inside.txt"), "the inside text\n").unwrap();
+    bed.input_with("read them", None, Trust::Untrusted).await;
+    let (stream, _) = bed.until_done().await;
+    let answers = cell_answers(&stream);
+    assert_eq!(
+        (
+            answers.len(),
+            answers[0].contains("the inside text"),
+            answers[1].contains("refused for an untrusted turn: fs.read"),
+            answers[1].contains("the outside secret"),
+        ),
+        (2, true, true, false),
+        "{answers:?}"
+    );
+    bed.runtime.shutdown().await;
+}
+
+/// A host request the trust table does not list is refused to an untrusted
+/// task, though the session answers it.
+#[tokio::test]
+async fn an_unlisted_host_request_is_refused_to_an_untrusted_task() {
+    let mut bed = bed(json!([
+        eval_cell(&format!("(host-request {UNLISTED_REQUEST:?} (hash))")),
+        { "text": "refused" },
+    ]))
+    .await;
+    bed.input_with("ask it", None, Trust::Untrusted).await;
+    let (stream, _) = bed.until_done().await;
+    let answers = cell_answers(&stream);
+    assert_eq!(
+        (
+            answers.len(),
+            answers[0].contains(&format!(
+                "refused for an untrusted turn: {UNLISTED_REQUEST}"
+            )),
+            answers[0].contains("answered"),
+        ),
+        (1, true, false),
+        "{answers:?}"
+    );
+    bed.runtime.shutdown().await;
+}
+
+/// An untrusted steer is not taken into a running owner's turn, where its
+/// cells would run with the owner's reach: it runs as its own task after.
+#[tokio::test]
+async fn an_untrusted_steer_runs_as_its_own_task() {
+    let mut bed = bed(json!([
+        { "text": "first reply" },
+        { "text": "steer reply" },
+    ]))
+    .await;
+    bed.input(HOLD_PROMPT, None).await;
+    bed.hold.entered.notified().await;
+    bed.input_with("change course", Some(Priority::Steer), Trust::Untrusted)
+        .await;
+    bed.hold.release.add_permits(1);
+    let (_, first) = bed.until_done().await;
+    let (_, steer) = bed.until_done().await;
+    assert_eq!(
+        (outcome(&first), outcome(&steer), bed.transcript()),
+        (
+            (TaskState::Done, None, None),
+            (TaskState::Done, None, None),
+            pairs(&[
+                ("user", HOLD_PROMPT),
+                ("assistant", "first reply"),
+                (
+                    "user",
+                    "<untrusted-event source=\"test\">change course</untrusted-event>"
+                ),
+                ("assistant", "steer reply"),
+            ])
+        )
+    );
+    bed.runtime.shutdown().await;
+}
+
+/// An untrusted task reaches no web: a URL could carry out what it read.
+#[tokio::test]
+async fn an_untrusted_tasks_web_read_is_refused() {
+    let mut bed = bed(json!([
+        eval_cell("(web-read \"https://example.invalid/\")"),
+        { "text": "refused" },
+    ]))
+    .await;
+    bed.input_with("fetch it", None, Trust::Untrusted).await;
+    let (stream, _) = bed.until_done().await;
+    let answers = cell_answers(&stream);
+    assert_eq!(
+        (
+            answers.len(),
+            answers[0].contains("refused for an untrusted turn: web.read"),
+        ),
+        (1, true),
+        "{answers:?}"
+    );
     bed.runtime.shutdown().await;
 }

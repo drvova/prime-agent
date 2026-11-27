@@ -143,8 +143,10 @@ pub(super) fn register(
     engine: &mut Engine,
     executor: Executor,
     cell: CellSignal,
+    admission: &crate::kernel::call_policy::Admission,
 ) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Handle::current();
+    let admission = admission.clone();
     engine.register_fn(
         "%factory-request-json",
         move |operation: String, payload: String| -> String {
@@ -156,6 +158,10 @@ pub(super) fn register(
             let answered = serde_json::from_str::<Value>(&payload)
                 .map_err(|error| anyhow!("the payload is not JSON: {error}"))
                 .and_then(|payload| {
+                    admission.admit(crate::kernel::call_policy::CallKind::Native {
+                        family: crate::kernel::call_policy::NativeFamily::Factory,
+                        name: &operation,
+                    })?;
                     runtime.block_on(async move {
                         let work =
                             tokio::spawn(

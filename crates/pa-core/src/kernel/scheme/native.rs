@@ -45,6 +45,7 @@ use steel::rvals::SteelVal;
 use steel::steel_vm::engine::Engine;
 use steel::steel_vm::register_fn::RegisterFn;
 
+use crate::kernel::call_policy::{CallKind, NativeFamily};
 use crate::tools::tool_definition::AbortSignal;
 
 mod bash;
@@ -92,8 +93,8 @@ pub(super) fn register_session_tools(
     harness::register(engine, session);
     reuse::register(engine, session);
     let worktrees = Arc::new(worktree::Worktrees::new(handlers.clone(), session));
-    worktree::register(engine, Arc::clone(&worktrees));
-    hypothesis::register(engine, handlers.clone(), worktrees);
+    worktree::register(engine, Arc::clone(&worktrees), &session.admission);
+    hypothesis::register(engine, handlers.clone(), worktrees, &session.admission);
 }
 
 /// The Scheme side of the native tools, defined in every session engine
@@ -166,7 +167,8 @@ pub(super) fn register(
 ) -> anyhow::Result<BashJobs> {
     let runtime = tokio::runtime::Handle::current();
     let (commands, jobs) = bash::open(runtime.clone(), handlers.clone(), session);
-    let files = files::Files::new(cwd, handlers, runtime, agent_dir);
+    let files = files::Files::new(cwd, handlers, runtime, agent_dir, &session.admission);
+    let admission = session.admission.clone();
     engine.register_fn(
         "%native-call",
         move |operation: String, options: SteelVal| -> SteelVal {
@@ -177,6 +179,10 @@ pub(super) fn register(
                     // stop, or woke from a call that ignored it) runs no command and
                     // touches no file: the workspace belongs to the rebuilt session.
                     pa_types::session_scope::ensure_live()?;
+                    admission.admit(CallKind::Native {
+                        family: NativeFamily::of_native_call(&operation),
+                        name: &operation,
+                    })?;
                     Ok(options)
                 })
                 .and_then(|options| match operation.as_str() {

@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
 use pa_core::autonomous::AgentAutonomousConfig;
+use pa_core::kernel::CallPolicy;
 use pa_core::session_engine::engine::SessionEngine;
 use pa_core::session_engine::headless::HeadlessTerminalResult;
 use pa_types::ai::{ImageContent, Model};
@@ -161,12 +162,18 @@ pub struct Finished {
 /// time. It must not copy another engine (each engine is built on its own;
 /// its kernel comes from pa-core's spare pool), and an error fails the task
 /// that needed the engine, with the error as its reason.
+///
+/// `call_policy` is the session's trust gate: the engine's kernel must ask
+/// it before every call a cell makes past the kernel
+/// (`SessionEngineConfig::call_policy`), or an untrusted task's cells run
+/// with an owner's reach.
 pub trait SessionBuilder: Send + Sync + 'static {
     /// Builds session `id`'s engine.
     fn build(
         &self,
         id: &str,
         spec: &SessionSpec,
+        call_policy: Arc<dyn CallPolicy>,
     ) -> impl Future<Output = anyhow::Result<BuiltSession>> + Send;
 }
 

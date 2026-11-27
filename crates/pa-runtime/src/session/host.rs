@@ -22,7 +22,7 @@ use pa_agent::agent::Agent;
 use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
 use pa_core::session_engine::session_events::agent_event_json;
 use pa_types::ai::ImageContent;
-use pa_types::event_log::{EventId, NewEvent, Task, TaskFailure, Trust};
+use pa_types::event_log::{EventId, NewEvent, Task, TaskFailure};
 use pa_types::session_scope::{self, SessionScope};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -33,6 +33,7 @@ use super::{
 };
 use crate::lock;
 use crate::tasks::{Steered, TaskOutcome};
+use crate::trust::{TaskTrust, TrustGate};
 use crate::turn::autonomous::{latest_assistant_error, HeadlessAutonomous};
 use crate::turn::boundary::TurnBoundary;
 use crate::turn::continuation::{wire_continuation_hook, UnsettledWork};
@@ -105,6 +106,9 @@ pub(crate) struct SessionHost {
 #[derive(Default)]
 struct TurnControl {
     turn: Mutex<Turn>,
+    /// The running task's trust: what its events carry and what its
+    /// kernel's trust gate admits.
+    trust: TaskTrust,
 }
 
 #[derive(Default)]
@@ -126,8 +130,6 @@ struct Turn {
     /// The input event of the task the host finished last, and whether a
     /// settle may follow it.
     finished: Option<(EventId, bool)>,
-    /// What the running task's events may carry: its trust.
-    trust: Option<Trust>,
 }
 
 impl SessionHost {
@@ -259,11 +261,16 @@ impl SessionHost {
     }
 
     /// Hands `steer`'s prompt to `running`'s turn while it still reads
-    /// steering.
+    /// steering, unless it carries less trust than `running`: it would run
+    /// with the running task's, so it runs as its own task instead.
     pub(crate) fn steer(&self, running: &Task, steer: &Task) -> Steered {
         let mut turn = lock(&self.control.turn);
         match (&turn.agent, &turn.task) {
-            (Some(agent), Some(task)) if turn.steerable && *task == running.id => {
+            (Some(agent), Some(task))
+                if turn.steerable
+                    && *task == running.id
+                    && steer.trust.lowest(running.trust) == running.trust =>
+            {
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |since| {
@@ -464,8 +471,8 @@ impl<B: SessionBuilder> Lifetime<B> {
                     turn.steerable = true;
                     turn.cancelled = false;
                     turn.steered = false;
-                    turn.trust = Some(task.trust);
                 }
+                self.control.trust.set(Some(task.trust));
                 let ran = session_scope::catching_panics(AssertUnwindSafe(|| {
                     runtime.block_on(self.run_task(session, &task, images))
                 }));
@@ -473,9 +480,9 @@ impl<B: SessionBuilder> Lifetime<B> {
                     let mut turn = lock(&self.control.turn);
                     turn.task = None;
                     turn.steerable = false;
-                    turn.trust = None;
                     std::mem::take(&mut turn.cancelled)
                 };
+                self.control.trust.set(None);
                 let (end, panicked) = match ran {
                     Ok(_) if cancelled => (TaskEnd::CANCELLED, Ok(())),
                     Ok(end) => (end, Ok(())),
@@ -561,7 +568,8 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// that order after the stream.
     fn build(&self, runtime: &tokio::runtime::Runtime) -> Result<Hosted, String> {
         let built = session_scope::catching_panics(AssertUnwindSafe(|| {
-            runtime.block_on(self.builder.build(&self.id, &self.spec))
+            let gate = TrustGate::new(self.control.trust.clone(), &self.spec.cwd);
+            runtime.block_on(self.builder.build(&self.id, &self.spec, Arc::new(gate)))
         }));
         let built = match built {
             Ok(Ok(built)) => built,
@@ -630,7 +638,7 @@ impl<B: SessionBuilder> Lifetime<B> {
         let topic = self.topics.stream.clone();
         let id = self.id.clone();
         Arc::new(move |payload: &Value| {
-            let trust = lock(&control.turn).trust.unwrap_or(Trust::Owner);
+            let trust = control.trust.current();
             outbox.send(NewEvent {
                 topic: topic.clone(),
                 source: id.clone(),
