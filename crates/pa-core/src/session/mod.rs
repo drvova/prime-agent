@@ -8,6 +8,7 @@ pub mod hosted;
 pub mod lease;
 pub mod manager;
 pub mod manager_ext;
+pub mod navigation;
 pub mod revival;
 pub mod store;
 pub mod tree;

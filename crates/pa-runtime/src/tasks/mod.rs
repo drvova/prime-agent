@@ -444,6 +444,17 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
         self.session_idle_and(session, || true).await;
     }
 
+    /// Waits until no task of `session` runs; its queued ones may stay
+    /// queued (a held or parked lane starts none).
+    pub(crate) async fn session_not_running(&self, session: &str) {
+        // Subscribed before the lane is read, as in `session_idle_and`.
+        let mut busy = self.inner.busy.subscribe();
+        while lock(&self.inner.lanes).state(session).running.is_some() {
+            // The sender lives in `self`, so the wait cannot see it closed.
+            let _ = busy.changed().await;
+        }
+    }
+
     /// Waits until no task of `session` is queued or running and `also`
     /// holds, read again on every change to a lane: `also` must turn true
     /// on its own or by work that changes a lane.

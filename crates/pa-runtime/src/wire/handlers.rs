@@ -79,6 +79,12 @@ pub enum Query {
     /// `usage`: one half of the `/usage` page (the provider quotas or the
     /// local spend history).
     Usage,
+    /// `session.fork_messages`: the user messages an open session can be
+    /// forked before (the `/fork` selector's list).
+    SessionForkMessages,
+    /// `session.last_assistant_text`: the newest reply text on an open
+    /// session's branch.
+    SessionLastAssistantText,
 }
 
 /// A name that is not a query or call this runtime answers.
@@ -118,6 +124,8 @@ impl FromStr for Query {
             "session.mcp_connections" => Query::SessionMcpConnections,
             "session.model_catalog" => Query::SessionModelCatalog,
             "usage" => Query::Usage,
+            "session.fork_messages" => Query::SessionForkMessages,
+            "session.last_assistant_text" => Query::SessionLastAssistantText,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "query",
@@ -229,6 +237,14 @@ pub enum Call {
     /// `session.mark_anthropic_warning_shown`: records that a client drew an
     /// open session's Anthropic subscription warning.
     SessionMarkAnthropicWarningShown,
+    /// `session.navigate_tree`: moves an open session's leaf onto an entry of
+    /// its tree, summarizing the branch it leaves when asked.
+    SessionNavigateTree,
+    /// `session.abort_branch_summary`: aborts the summary a navigation runs.
+    SessionAbortBranchSummary,
+    /// `session.export_html`: writes an open session as a standalone HTML
+    /// file.
+    SessionExportHtml,
 }
 
 impl FromStr for Call {
@@ -273,6 +289,9 @@ impl FromStr for Call {
             "session.set_auto_retry" => Call::SessionSetAutoRetry,
             "session.reload" => Call::SessionReload,
             "session.mark_anthropic_warning_shown" => Call::SessionMarkAnthropicWarningShown,
+            "session.navigate_tree" => Call::SessionNavigateTree,
+            "session.abort_branch_summary" => Call::SessionAbortBranchSummary,
+            "session.export_html" => Call::SessionExportHtml,
             unknown => {
                 return Err(UnknownOperation {
                     kind: "call",

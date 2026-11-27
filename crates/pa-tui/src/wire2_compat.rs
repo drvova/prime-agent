@@ -99,6 +99,9 @@
 //! | `set_auto_retry` | `session.set_auto_retry` | none |
 //! | `reload` | `session.reload` | none |
 //! | `mark_anthropic_warning_shown` | `session.mark_anthropic_warning_shown` | none |
+//! | `navigate_tree` | `session.navigate_tree` | `{cancelled, aborted?, editorText?, summaryEntry?}` |
+//! | `abort_branch_summary` | `session.abort_branch_summary` | none |
+//! | `export_html` | `session.export_html` | `{path}` |
 //!
 //! What the TUI reads beside a session's turns becomes one query each, built the same way (the
 //! command's members, plus `session` for a session's), whose reply's result is the old response's
@@ -110,6 +113,8 @@
 //! | `get_mcp_connections` | `session.mcp_connections` | `{connections, services, credentials, catalogDiagnostics}` |
 //! | `get_model_catalog` | `session.model_catalog` | `{models, configuredProviders, billing, accounts, accountChoices}` |
 //! | `get_usage` | `usage` (`section`, `forceRefresh`; no session) | the `QuotaReport` or `SpendHistory` |
+//! | `get_user_messages_for_forking` | `session.fork_messages` | `{messages: [{entryId, text}]}` |
+//! | `get_last_assistant_text` | `session.last_assistant_text` | `{text}` |
 //!
 //! `model_catalog_changed`, a broadcast on the old wire, is the live-only `runtime/models`: a
 //! transport follows it for the connection's life (subscription `compat:models`, `Since::Now`).
@@ -124,8 +129,9 @@
 //!   (`heartbeats_list`, `heartbeats_changed`, `list_kernel_bash`, `factory_activity`),
 //!   `get_session_stats`, `get_rlm_children`.
 //! - Calls: `create`, `stop`/`kill`, `rename`, `delete`, `set_model`, `set_thinking_level`,
-//!   `fork`, `label`, `export`, the auth commands, `abort`/`abort_and_send_queued`,
-//!   `abort_compaction`, `compact`, the queue mutations, `detach`.
+//!   `fork` (the whole session's and an entry's), `label`, `export`, `import_jsonl`, the auth
+//!   commands, `abort`/`abort_and_send_queued`, `abort_compaction`, `abort_retry`, `compact`,
+//!   the queue mutations (`mutate_queued_message`), `answer_question`, `detach`.
 //! - `prompt_and_wait`: a publish plus a wait for the turn's `agent_end` on `agent/<id>/stream`.
 //! - Connection frames: `daemon_hello` from `welcome`, `daemon_closing` from `closing`, the
 //!   direct worker link (retired: wire2 has one connection), `history_import`,
@@ -561,6 +567,56 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 &command,
             )
         }
+        DaemonCommand::GetUserMessagesForForking {
+            active_session_id, ..
+        } => {
+            return command_query(
+                request_id,
+                "session.fork_messages",
+                Some(active_session_id),
+                &command,
+            )
+        }
+        DaemonCommand::GetLastAssistantText {
+            active_session_id, ..
+        } => {
+            return command_query(
+                request_id,
+                "session.last_assistant_text",
+                Some(active_session_id),
+                &command,
+            )
+        }
+        DaemonCommand::NavigateTree {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.navigate_tree",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::AbortBranchSummary {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.abort_branch_summary",
+                active_session_id,
+                &command,
+            )
+        }
+        DaemonCommand::ExportHtml {
+            active_session_id, ..
+        } => {
+            return session_call(
+                request_id,
+                "session.export_html",
+                active_session_id,
+                &command,
+            )
+        }
         DaemonCommand::GetUsage { .. } => {
             return command_query(request_id, "usage", None, &command);
         }
@@ -643,7 +699,7 @@ fn command_query(
 
 /// The commands the old daemon answered without `data`: their call's `null` result is left out
 /// of the response again.
-const ANSWERED_WITHOUT_DATA: [&str; 9] = [
+const ANSWERED_WITHOUT_DATA: [&str; 10] = [
     "set_scoped_models",
     "set_service_tier",
     "set_transport",
@@ -653,6 +709,7 @@ const ANSWERED_WITHOUT_DATA: [&str; 9] = [
     "set_auto_retry",
     "reload",
     "mark_anthropic_warning_shown",
+    "abort_branch_summary",
 ];
 
 /// Following `feed` (its subscription id, topic and query): live from now, then its state.

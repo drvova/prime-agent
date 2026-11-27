@@ -106,7 +106,7 @@ fn iso_ms(iso: &str) -> u64 {
 
 /// What the attach reads of the session's transcript: its rows as stored
 /// and the active branch through `leaf`.
-struct Transcript {
+pub(super) struct Transcript {
     rows: Vec<Value>,
     /// The active branch's rows, root first.
     branch: Vec<BranchRow>,
@@ -116,7 +116,11 @@ struct Transcript {
 impl Transcript {
     /// Reads the transcript at `path`; the branch runs back from `leaf`
     /// (the session's own leaf; the last row's when it has none).
-    fn read(path: &std::path::Path, open: bool, leaf: Option<String>) -> anyhow::Result<Self> {
+    pub(super) fn read(
+        path: &std::path::Path,
+        open: bool,
+        leaf: Option<String>,
+    ) -> anyhow::Result<Self> {
         let rows = transcript_rows(path, open)?;
         let leaf = leaf.or_else(|| {
             rows.last()
@@ -162,7 +166,7 @@ impl Transcript {
     /// `messages`): a `compactionSummary` message with the retained count,
     /// the retained messages from `firstKeptEntryId`, then everything
     /// appended after; without a compaction, the plain message list.
-    fn context_messages(&self) -> Vec<Value> {
+    pub(super) fn context_messages(&self) -> Vec<Value> {
         let Some(at) = self.branch.iter().rposition(|row| row.kind == "compaction") else {
             return self
                 .branch

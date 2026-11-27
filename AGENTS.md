@@ -325,6 +325,16 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `session.reload` and `session.mark_anthropic_warning_shown` (`pa-runtime`
   `daemon/handlers/info.rs`) serve them, and a changed catalog is the old
   `model_catalog_changed` broadcast or the runtime's live-only `runtime/models`.
+- One set of tree-move rules: where a `navigate_tree` lands and the text it re-enters, the
+  `/fork` selector's user messages and the `/copy` text (`pa_core::session::navigation`), the
+  abandoned branch's summary run (`branch_summarization::run_branch_summary`, its entry carrying
+  the serving model) and the export's tool renderer (`export_html::RegistryToolRenderer`) are
+  pa-core's; the old worker and the runtime daemon's `session.fork_messages`,
+  `session.last_assistant_text`, `session.navigate_tree`, `session.abort_branch_summary` and
+  `session.export_html` (`pa-runtime` `daemon/handlers/tree.rs`) apply them. A runtime
+  navigation holds the session's lane for the move and aborts a running turn first, rebuilds
+  the context onto the new branch and publishes a changed goal as the old `goal_update`; the
+  runtime keeps no workspace checkpoints, so its `restoreFiles` restores nothing yet.
 - Two daemons until phase 8: `prime-agent --mode daemon` is the supervisor (`pa-daemon`, the
   old wire on `daemon.sock`) unless `PRIME_AGENT_RUNTIME_DAEMON=1` or the global setting
   `"daemon": "runtime"` selects the runtime daemon and its launcher did not ask for the

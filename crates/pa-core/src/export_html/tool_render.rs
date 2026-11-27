@@ -5,6 +5,36 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+/// The live session's custom-tool renderer both daemons' `export_html` use:
+/// resolves a tool by name against the session's live registry. The Rust
+/// tool surface carries no render functions, so the export falls back to the
+/// template's generic tool rendering.
+pub struct RegistryToolRenderer<'a> {
+    /// The session's live tool registry (TS `getToolDefinition` source).
+    pub tools: &'a [std::sync::Arc<dyn pa_agent::types::AgentTool>],
+}
+
+impl ToolHtmlRenderer for RegistryToolRenderer<'_> {
+    fn render_call(&self, _tool_call_id: &str, tool_name: &str, _args: &Value) -> Option<String> {
+        // Registry lookup first (TS `getToolDefinition`): an unregistered tool never
+        // renders; a registered one has no render function.
+        self.tools.iter().find(|tool| tool.name() == tool_name)?;
+        None
+    }
+
+    fn render_result(
+        &self,
+        _tool_call_id: &str,
+        tool_name: &str,
+        _result: &[Value],
+        _details: &Value,
+        _is_error: bool,
+    ) -> Option<RenderedToolResult> {
+        self.tools.iter().find(|tool| tool.name() == tool_name)?;
+        None
+    }
+}
+
 /// Tools the export template renders natively (its `bash`/`edit` cards);
 /// their calls and results never go through the pre-render.
 pub const TEMPLATE_RENDERED_TOOLS: [&str; 2] = ["bash", "edit"];

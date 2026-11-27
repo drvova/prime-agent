@@ -48,6 +48,7 @@ mod saved;
 mod state;
 mod summary;
 mod switches;
+mod tree;
 
 /// The most entries one `transcript.page` returns, and how many it returns
 /// when the client names no `limit`.
@@ -71,6 +72,8 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     /// The `/model` picker catalog's background refresh, coalesced across
     /// the daemon's sessions.
     catalog: Arc<pa_core::models::CatalogRefresh>,
+    /// The branch summaries the sessions' navigations run.
+    branch_summaries: tree::BranchSummaries,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     cwd: PathBuf,
@@ -99,6 +102,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             holds: input::InputHolds::default(),
             feeds,
             catalog: Arc::default(),
+            branch_summaries: tree::BranchSummaries::default(),
             agent_dir,
             session_dir,
             cwd,
@@ -493,6 +497,8 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Query::SessionMcpConnections => self.mcp_connections(&args).await,
             Query::SessionModelCatalog => self.model_catalog(&args).await,
             Query::Usage => self.usage_page(&args).await,
+            Query::SessionForkMessages => self.fork_messages(&args).await,
+            Query::SessionLastAssistantText => self.last_assistant_text(&args).await,
         }
     }
 
@@ -546,6 +552,9 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionMarkAnthropicWarningShown => {
                 self.mark_anthropic_warning_shown(&args).await
             }
+            Call::SessionNavigateTree => self.navigate_tree(&args).await,
+            Call::SessionAbortBranchSummary => self.abort_branch_summary(&args),
+            Call::SessionExportHtml => self.export_html(&args).await,
         }
     }
 

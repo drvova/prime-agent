@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 
 use crate::engine::{BranchSummaryRequest, SessionEngine};
 use crate::protocol::{response_failure, response_success, DaemonResponse};
-use crate::session_store::{SessionEntry, SessionFile};
+use crate::session_store::SessionFile;
 use crate::session_tree;
 use crate::worker::{SessionCore, Worker};
 use crate::workspace_checkpoints::WorkspaceCheckpoints;
@@ -94,9 +94,13 @@ impl TreeNavigation {
             Some(store) => response_success(
                 None,
                 "get_user_messages_for_forking",
-                Some(json!({
-                    "messages": session_tree::user_messages_for_forking(store),
-                })),
+                Some(pa_core::session::navigation::fork_messages(
+                    &store
+                        .entries()
+                        .iter()
+                        .map(session_tree::entry_json)
+                        .collect::<Vec<_>>(),
+                )),
             ),
             None => response_failure(
                 None,
@@ -136,20 +140,15 @@ impl TreeNavigation {
     /// abandoned branch first (TS `_navigateTree`). A tree move is NOT a runtime replacement:
     /// the kernel stays warm (`fork` is the only teardown flow).
     pub(crate) async fn navigate_tree(&self, payload: &Value) -> DaemonResponse {
-        let target_id = payload
-            .get("targetId")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let summarize = payload.get("summarize").and_then(Value::as_bool) == Some(true);
-        let custom_instructions = payload
-            .get("customInstructions")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let label = payload
-            .get("label")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let restore_files = payload.get("restoreFiles").and_then(Value::as_bool) == Some(true);
+        let pa_core::session::navigation::NavigateRequest {
+            target_id,
+            summarize,
+            custom_instructions,
+            replace_instructions,
+            label,
+            restore_files,
+        } = pa_core::session::navigation::NavigateRequest::from_payload(payload);
+        let target_id = target_id.as_str();
 
         // Snapshot the tree state under one lock pass; the model call below runs without it.
         let (target, old_leaf, entries, session_id) = {
@@ -182,12 +181,11 @@ impl TreeNavigation {
         // `acquireQueuedWorkPause` + `waitForIdle`).
         self.wait_turn_end().await;
 
-        let (new_leaf, editor_text) = navigation_point(&target);
+        let (new_leaf, editor_text) =
+            pa_core::session::navigation::navigation_point(&session_tree::entry_json(&target));
 
         // The abandoned-branch summary (TS `generateBranchSummary`).
         let mut summary: Option<PendingBranchSummary> = None;
-        let replace_instructions =
-            payload.get("replaceInstructions").and_then(Value::as_bool) == Some(true);
         if summarize {
             let file_entries: Vec<_> = entries
                 .iter()
@@ -553,36 +551,6 @@ async fn rebuild_engine_context(
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| format!("{error:#}"))
-}
-
-/// Where a navigation lands (TS `_navigateTreeUnderPause`): a user/custom message target
-/// re-enters its text with the leaf at its parent; others keep their own id.
-fn navigation_point(target: &SessionEntry) -> (Option<String>, Option<String>) {
-    if let Some(text) = session_tree::user_entry_text(target) {
-        return (target.parent_id.clone(), Some(text));
-    }
-    if target.type_ == "custom_message" {
-        let text = custom_message_text(target);
-        return (target.parent_id.clone(), text);
-    }
-    (Some(target.id.clone()), None)
-}
-
-/// The text of a custom-message entry (TS: string content, or the
-/// concatenated text blocks).
-fn custom_message_text(entry: &SessionEntry) -> Option<String> {
-    match entry.fields.get("content") {
-        Some(Value::String(text)) => Some(text.clone()),
-        Some(Value::Array(blocks)) => {
-            let text: String = blocks
-                .iter()
-                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|block| block.get("text").and_then(Value::as_str))
-                .collect();
-            Some(text).filter(|text| !text.is_empty())
-        }
-        _ => None,
-    }
 }
 
 impl Worker {

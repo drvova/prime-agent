@@ -431,6 +431,20 @@ impl AgentSession {
         Ok(())
     }
 
+    /// Rebuilds the loop's context from the session's active branch as its
+    /// leaf now stands: a tree move in place, which keeps the session's other
+    /// branches in its store (`rebuild_branch_context` adopts the branch it is
+    /// given as the whole store).
+    pub async fn rebuild_context_at_leaf(&self) {
+        let rebuilt = {
+            let session = self.session.lock().await;
+            crate::session_engine::compact_session::rebuilt_context_after_compaction(&session)
+        };
+        self.agent
+            .set_messages(rebuilt_loop_messages(rebuilt))
+            .await;
+    }
+
     /// Start ephemeral background refinement; awaiting the returned task is
     /// optional for hosts that deliver completion through their event stream.
     /// Planning never reserves a user turn. Committed rows append at full-run idle.

@@ -784,3 +784,61 @@ fn the_session_info_reads_query_and_the_catalog_change_comes_back() {
         )
     );
 }
+
+#[test]
+fn the_tree_reads_query_and_the_tree_moves_call() {
+    let command = |value: Value| serde_json::from_value::<DaemonCommand>(value).unwrap();
+    let frames: Vec<Outgoing> = [
+        json!({ "type": "get_user_messages_for_forking", "activeSessionId": "s1" }),
+        json!({ "type": "get_last_assistant_text", "activeSessionId": "s1" }),
+        json!({ "type": "navigate_tree", "activeSessionId": "s1", "targetId": "e1",
+                "summarize": true, "restoreFiles": true }),
+        json!({ "type": "abort_branch_summary", "activeSessionId": "s1" }),
+        json!({ "type": "export_html", "activeSessionId": "s1", "outputPath": "/tmp/s.html" }),
+    ]
+    .into_iter()
+    .map(|value| outgoing("i".to_string(), command(value)).unwrap())
+    .collect();
+    let query = |name: &str| {
+        Outgoing::Query(ClientFrame::Query {
+            id: "i".to_string(),
+            name: name.to_string(),
+            args: json!({ "session": "s1" }),
+        })
+    };
+    let call = |method: &str, args: Value| {
+        Outgoing::Call(ClientFrame::Call {
+            id: "i".to_string(),
+            method: method.to_string(),
+            args,
+        })
+    };
+    let aborted = serde_json::to_value(response_from_reply(
+        "abort_branch_summary",
+        None,
+        Outcome::Ok {
+            result: Value::Null,
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        (frames, aborted),
+        (
+            vec![
+                query("session.fork_messages"),
+                query("session.last_assistant_text"),
+                call(
+                    "session.navigate_tree",
+                    json!({ "session": "s1", "targetId": "e1", "summarize": true,
+                            "restoreFiles": true })
+                ),
+                call("session.abort_branch_summary", json!({ "session": "s1" })),
+                call(
+                    "session.export_html",
+                    json!({ "session": "s1", "outputPath": "/tmp/s.html" })
+                ),
+            ],
+            json!({ "type": "response", "command": "abort_branch_summary", "success": true }),
+        )
+    );
+}

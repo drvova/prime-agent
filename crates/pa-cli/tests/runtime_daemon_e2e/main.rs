@@ -39,6 +39,10 @@
 //!   model catalog, the `/usage` page), its reload and the Anthropic
 //!   warning's marker, answered as the old daemon answers them (phase
 //!   8d-1b): [`info`].
+//! - A session's tree moves and the reads beside them (the fork list, the
+//!   copy text, `navigate_tree` with its branch summary, the HTML export),
+//!   answered and recorded as the old daemon answers and records them
+//!   (phase 8d-2): [`tree`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -56,6 +60,7 @@ mod stream;
 #[path = "../support/mod.rs"]
 mod support;
 mod switches;
+mod tree;
 mod turns;
 
 use std::path::{Path, PathBuf};

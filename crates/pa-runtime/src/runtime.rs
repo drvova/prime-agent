@@ -574,6 +574,21 @@ impl<B: SessionBuilder> Runtime<B> {
         Ok(true)
     }
 
+    /// Aborts `session`'s running turn, if it has one, and waits until it
+    /// ended; nothing queued starts meanwhile only while the caller holds the
+    /// lane (the steers the turn took and had not read go back to its front).
+    ///
+    /// # Errors
+    ///
+    /// The database failed to save a steer put back.
+    pub(crate) async fn interrupt(&self, session: &str) -> anyhow::Result<()> {
+        if let Some(running) = self.queue.lane(session).running {
+            self.cancel_task(session, &running.id).await?;
+        }
+        self.queue.session_not_running(session).await;
+        Ok(())
+    }
+
     /// What `session`'s lane holds now.
     pub(crate) fn lane(&self, session: &str) -> crate::tasks::LaneState {
         self.queue.lane(session)

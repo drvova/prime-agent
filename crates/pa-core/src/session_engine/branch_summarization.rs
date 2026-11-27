@@ -518,6 +518,102 @@ pub fn branch_summary_presentation(summary: &str) -> String {
     format!("{BRANCH_SUMMARY_PREFIX}{summary}{BRANCH_SUMMARY_SUFFIX}")
 }
 
+/// One branch-summary run's inputs, as a navigation collected them.
+#[derive(Debug, Clone)]
+pub struct BranchSummaryRequest {
+    pub entries: Vec<FileEntry>,
+    pub custom_instructions: Option<String>,
+    /// Replace the default prompt instead of appending the custom focus.
+    pub replace_instructions: bool,
+    /// The session's durable id: the summary call carries it like the main requests
+    /// (opencode rejects a request without `x-opencode-session`).
+    pub session_id: String,
+}
+
+/// One completed branch summary: the final summary text, the summarizer
+/// usage, and the file-operation details block persisted on the entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BranchSummaryRun {
+    pub summary: String,
+    pub usage: Option<serde_json::Value>,
+    pub details: Option<serde_json::Value>,
+    /// The model that served the call (`provider`, `modelId`), persisted
+    /// on the `branch_summary` entry for the per-model cost fold.
+    pub model: Option<(String, String)>,
+}
+
+/// How one branch-summary run ended (TS `BranchSummaryResult` outcomes).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BranchSummaryOutcome {
+    /// Summary generated; the run carries text, usage, and details.
+    Complete { run: BranchSummaryRun },
+    /// Aborted mid-run (`abort_branch_summary`).
+    Aborted,
+    /// Failed; the string is the user-facing error.
+    Failed { error: String },
+}
+
+/// Runs a navigation's abandoned-branch summary on the session's `model`
+/// (with its request `api_key`) until it ends or `signal` aborts it, as both
+/// daemons' `navigate_tree` runs it: the reserve is the settings'
+/// `branchSummary.reserveTokens` (read over `cwd` and `agent_dir`), and the
+/// call resolves its model through the `auxiliaryModel` setting.
+pub async fn run_branch_summary(
+    request: BranchSummaryRequest,
+    model: &pa_types::ai::Model,
+    api_key: Option<String>,
+    (cwd, agent_dir): (std::path::PathBuf, std::path::PathBuf),
+    signal: &pa_agent::abort::AbortSignal,
+) -> BranchSummaryOutcome {
+    let settings = crate::settings::SettingsManager::create(&cwd, &agent_dir);
+    let reserve_tokens = settings
+        .settings()
+        .branch_summary
+        .as_ref()
+        .and_then(|branch_summary| branch_summary.reserve_tokens)
+        .unwrap_or(DEFAULT_BRANCH_RESERVE_TOKENS);
+    // TS #2411: the branch summary resolves its model through the
+    // `auxiliaryModel` setting, keeping its one-off prompt off the
+    // prompt-cache prefix.
+    let auxiliary = super::auxiliary_model::AuxiliaryModelContext { cwd, agent_dir };
+    let run = generate_branch_summary(
+        &request.entries,
+        GenerateBranchSummaryOptions {
+            model,
+            api_key,
+            custom_instructions: request.custom_instructions.as_deref(),
+            replace_instructions: request.replace_instructions,
+            reserve_tokens,
+            auxiliary: Some(&auxiliary),
+            session_id: Some(&request.session_id),
+        },
+    );
+    let Ok(result) = pa_agent::abort::race_with_abort(run, signal).await else {
+        return BranchSummaryOutcome::Aborted;
+    };
+    if result.aborted {
+        return BranchSummaryOutcome::Aborted;
+    }
+    if let Some(error) = result.error {
+        return BranchSummaryOutcome::Failed { error };
+    }
+    BranchSummaryOutcome::Complete {
+        run: BranchSummaryRun {
+            summary: result
+                .summary
+                .unwrap_or_else(|| "No summary generated".to_string()),
+            usage: result
+                .usage
+                .and_then(|usage| serde_json::to_value(usage).ok()),
+            details: Some(serde_json::json!({
+                "readFiles": result.read_files,
+                "modifiedFiles": result.modified_files,
+            })),
+            model: result.model,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

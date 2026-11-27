@@ -478,7 +478,14 @@ SQLite implementations over `pa-log`.
   history of the daemon's sessions dir, `pa_core::usage_report`), `session.reload` (`reload`: the
   MCP manager reads its auth store and settings again, a failed auth reload failing the call, then
   the skills, prompt templates and context files) and `session.mark_anthropic_warning_shown`
-  (the marker row, written once, `SessionManager::mark_anthropic_warning_shown`). A root session stopped and opened again waits for its new engine's
+  (the marker row, written once, `SessionManager::mark_anthropic_warning_shown`). A session's
+  tree moves and the reads beside them (`daemon/handlers/tree.rs`, the old worker's commands,
+  pa-core's `session::navigation` rules): `session.fork_messages`
+  (`get_user_messages_for_forking`), `session.last_assistant_text` (`get_last_assistant_text`),
+  `session.navigate_tree` (`navigate_tree`: the lane held for the move and a running turn aborted
+  first, the abandoned branch summarized on the session's model when asked, the context rebuilt
+  onto the new branch and a changed goal published as `goal_update`; no workspace checkpoints, so
+  `restoreFiles` restores nothing), `session.abort_branch_summary` and `session.export_html`. A root session stopped and opened again waits for its new engine's
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
@@ -655,7 +662,9 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `session.set_scoped_models`, `session.cycle_effort`, `session.set_service_tier`,
   `session.set_transport`, `session.set_steering_mode`, `session.set_follow_up_mode`,
   `session.set_auto_compaction`, `session.set_auto_retry`, `session.reload`,
-  `session.mark_anthropic_warning_shown`.
+  `session.mark_anthropic_warning_shown`, and (8d-2) the queries `session.fork_messages` and
+  `session.last_assistant_text` and the calls `session.navigate_tree`,
+  `session.abort_branch_summary` and `session.export_html`.
 - `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
   engine streams from, which the runtime daemon's model and tier switches write.
 

@@ -209,7 +209,8 @@ impl SessionManager {
         self.set_leaf_id(None);
     }
 
-    /// Branch with a summary message describing what the abandoned branch held.
+    /// Branch with a summary message describing what the abandoned branch held;
+    /// `model` is the one that served the summary call (`provider`, `modelId`).
     ///
     /// # Errors
     ///
@@ -225,6 +226,7 @@ impl SessionManager {
         details: Option<serde_json::Value>,
         from_hook: Option<bool>,
         usage: Option<pa_types::ai::Usage>,
+        model: Option<(&str, &str)>,
     ) -> std::io::Result<String> {
         let previous_leaf = self.get_leaf_id().map(str::to_string);
         if let Some(branch_from_id) = branch_from_id {
@@ -245,6 +247,8 @@ impl SessionManager {
                 details,
                 from_hook,
                 usage,
+                provider: model.map(|(provider, _)| provider.to_string()),
+                model_id: model.map(|(_, model_id)| model_id.to_string()),
             },
             base,
         });
@@ -329,7 +333,7 @@ mod tests {
         manager.branch(&a);
         assert_eq!(manager.get_branch(None).len(), 1);
         let summary_id = manager
-            .branch_with_summary(Some(&a), "went back", None, None, None)
+            .branch_with_summary(Some(&a), "went back", None, None, None, None)
             .unwrap();
         assert!(manager.get_entry_by_id(&summary_id).is_some());
         assert!(manager.get_entry_by_id(&b).is_some());

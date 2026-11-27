@@ -4,10 +4,10 @@
 
 use super::{
     artifact_reference, json, map_thinking_level, now_millis, AgentSessionEngine, Arc,
-    BranchSummaryOutcome, BranchSummaryRequest, BranchSummaryRun, CompactionOutcome,
-    CompactionRequest, CompactionRun, EngineEvent, EngineModelSelection, ParentIdentity,
-    PromptContextBoundary, PromptRequest, ProviderTarget, SessionEngine, SideQuestionOutcome,
-    SideQuestionRequest, StartupScope, TurnPrompt, Value, DEFAULT_RLM_MAX_DEPTH,
+    BranchSummaryOutcome, BranchSummaryRequest, CompactionOutcome, CompactionRequest,
+    CompactionRun, EngineEvent, EngineModelSelection, ParentIdentity, PromptContextBoundary,
+    PromptRequest, ProviderTarget, SessionEngine, SideQuestionOutcome, SideQuestionRequest,
+    StartupScope, TurnPrompt, Value, DEFAULT_RLM_MAX_DEPTH,
 };
 
 impl SessionEngine for AgentSessionEngine {
@@ -564,7 +564,7 @@ impl SessionEngine for AgentSessionEngine {
             self.ensure_core_session_async(&model).await.ok()?;
             let session = self.session.try_lock().ok()?;
             let state = session.as_deref()?.session.agent().state().await;
-            let renderer = crate::session_export::ExportToolRenderer {
+            let renderer = pa_core::export_html::RegistryToolRenderer {
                 tools: &state.tools,
             };
             pa_core::export_html::pre_render_custom_tools(&entries, &renderer)
@@ -747,72 +747,15 @@ impl SessionEngine for AgentSessionEngine {
             }
         };
         let (model, api_key) = self.resolve_request_target(model);
-        let settings =
-            pa_core::settings::SettingsManager::create(self.cwd(), &self.config.agent_dir);
-        let reserve_tokens = settings
-            .settings()
-            .branch_summary
-            .as_ref()
-            .and_then(|branch_summary| branch_summary.reserve_tokens)
-            .unwrap_or(
-                pa_core::session_engine::branch_summarization::DEFAULT_BRANCH_RESERVE_TOKENS,
-            );
-        let entries = request.entries;
-        let custom_instructions = request.custom_instructions;
-        let replace_instructions = request.replace_instructions;
-        let session_id = request.session_id;
-        // TS #2411: the branch summary resolves its model through the
-        // `auxiliaryModel` setting, keeping its one-off prompt off the
-        // prompt-cache prefix.
-        let auxiliary = pa_core::session_engine::auxiliary_model::AuxiliaryModelContext {
-            cwd: self.cwd(),
-            agent_dir: self.config.agent_dir.clone(),
-        };
-        let run = async {
-            pa_core::session_engine::branch_summarization::generate_branch_summary(
-                &entries,
-                pa_core::session_engine::branch_summarization::GenerateBranchSummaryOptions {
-                    model: &model,
-                    api_key,
-                    custom_instructions: custom_instructions.as_deref(),
-                    replace_instructions,
-                    reserve_tokens,
-                    auxiliary: Some(&auxiliary),
-                    session_id: Some(&session_id),
-                },
-            )
-            .await
-        };
-        match self
-            .runtime
-            .block_on(pa_agent::abort::race_with_abort(run, signal))
-        {
-            Ok(result) => {
-                if result.aborted {
-                    return BranchSummaryOutcome::Aborted;
-                }
-                if let Some(error) = result.error {
-                    return BranchSummaryOutcome::Failed { error };
-                }
-                let summary = result
-                    .summary
-                    .unwrap_or_else(|| "No summary generated".to_string());
-                BranchSummaryOutcome::Complete {
-                    run: BranchSummaryRun {
-                        summary,
-                        usage: result
-                            .usage
-                            .and_then(|usage| serde_json::to_value(usage).ok()),
-                        details: Some(json!({
-                            "readFiles": result.read_files,
-                            "modifiedFiles": result.modified_files,
-                        })),
-                        model: result.model,
-                    },
-                }
-            }
-            Err(_) => BranchSummaryOutcome::Aborted,
-        }
+        self.runtime.block_on(
+            pa_core::session_engine::branch_summarization::run_branch_summary(
+                request,
+                &model,
+                api_key,
+                (self.cwd(), self.config.agent_dir.clone()),
+                signal,
+            ),
+        )
     }
 
     fn rebuild_session_context(

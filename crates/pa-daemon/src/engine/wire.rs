@@ -298,43 +298,6 @@ pub enum CompactionOutcome {
     Failed { error: String },
 }
 
-/// One branch-summary request (`navigate_tree` with `summarize`): the
-/// abandoned branch's durable entries (wire `FileEntry` form) and the
-/// summarizer guidance from the client.
-#[derive(Debug, Clone)]
-pub struct BranchSummaryRequest {
-    pub entries: Vec<pa_types::session::FileEntry>,
-    pub custom_instructions: Option<String>,
-    /// Replace the default prompt instead of appending the custom focus.
-    pub replace_instructions: bool,
-    /// The session's durable id: the summary call carries it like the main requests
-    /// (opencode rejects a request without `x-opencode-session`).
-    pub session_id: String,
-}
-
-/// One completed branch summary: the final summary text, the summarizer
-/// usage, and the file-operation details block persisted on the entry.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BranchSummaryRun {
-    pub summary: String,
-    pub usage: Option<Value>,
-    pub details: Option<Value>,
-    /// The model that served the call (`provider`, `modelId`), persisted
-    /// on the `branch_summary` entry for the per-model cost fold.
-    pub model: Option<(String, String)>,
-}
-
-/// How one branch-summary run ended (TS `BranchSummaryResult` outcomes).
-#[derive(Debug, Clone, PartialEq)]
-pub enum BranchSummaryOutcome {
-    /// Summary generated; the run carries text, usage, and details.
-    Complete { run: BranchSummaryRun },
-    /// Aborted mid-run (`abort_branch_summary`).
-    Aborted,
-    /// Failed; the string is the user-facing error.
-    Failed { error: String },
-}
-
 /// One side-question request (the `start_side_question` command fields).
 #[derive(Debug, Clone)]
 pub struct SideQuestionRequest {

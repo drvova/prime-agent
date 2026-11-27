@@ -132,7 +132,11 @@ fn old_answers(bed: &Bed) -> (Vec<Value>, String) {
 
 /// The runtime daemon's responses to `commands` on session `id`, through
 /// the compat layer.
-async fn runtime_answers(client: &mut Client, id: &str, commands: Vec<Value>) -> Vec<Value> {
+pub(super) async fn runtime_answers(
+    client: &mut Client,
+    id: &str,
+    commands: Vec<Value>,
+) -> Vec<Value> {
     let mut answers = Vec::new();
     for (index, mut command) in commands.into_iter().enumerate() {
         command["activeSessionId"] = json!(id);

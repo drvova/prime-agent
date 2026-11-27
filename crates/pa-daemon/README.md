@@ -266,6 +266,11 @@ broadcast owns its surface here too (the worker's cron-store
 to every client, so any heartbeat mutation anywhere in the daemon reaches
 attached UIs daemon-wide).
 
+Tree moves (`branch_navigation.rs`): `navigate_tree`'s landing point, the fork list, the copy
+text (`get_last_assistant_text`), the branch summary run and the export's tool renderer are
+pa-core's (`session::navigation`, `branch_summarization::run_branch_summary`,
+`export_html::RegistryToolRenderer`), shared with the runtime daemon.
+
 Workspace checkpoints (`workspace_checkpoints.rs`): a shadow git store per
 workspace (own git dir, one index per session, user git config shut out)
 snapshots the files before and after every turn, on the turn's blocking thread;
