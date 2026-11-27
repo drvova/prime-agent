@@ -1,0 +1,1 @@
+- Fixed opening or resuming a session sometimes failing with "Daemon worker socket closed": a session that registered with the daemon before its launch finished was taken for dead and restarted under its own open.

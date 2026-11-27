@@ -40,6 +40,10 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "15000",
         )
+        // Every roster push lands late (the debug-only gap seam): beta's last wait walks the
+        // supervisor's roster right after its send returns, so it reads alpha's withdrawn
+        // `waitingOn` only if the delivery published it before acknowledging.
+        .env("PA_WORKER_ROSTER_PUSH_GAP_MS", "400")
         .stdout(Stdio::null())
         .stderr(Stdio::from(log))
         .spawn()
@@ -225,28 +229,31 @@ fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
     );
     let beta = create(&mut client, root, "beta", &[beta_call, beta_done, filler]);
 
-    // Alpha parks on beta; the roster reports its `waitingOn` (the readiness beta's walk needs).
+    // Alpha parks on beta; the supervisor's roster reports its `waitingOn` (the readiness beta's
+    // walk needs: the walk reads that roster, which `list`'s live pull can run ahead of).
     client.request(
         &json!({ "type": "prompt", "activeSessionId": alpha, "message": "wait for beta" }),
     );
+    let mut roster_probe = Client::connect(&socket);
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let listed = client.request(&json!({ "type": "list" }));
-        let waiting_on = listed["sessions"]
+        let snapshot = roster_probe.request(&json!({ "type": "roster_subscribe" }));
+        let waiting_on = snapshot["roster"]
             .as_array()
-            .expect("sessions")
+            .expect("roster")
             .iter()
-            .find(|session| session["activeSessionId"] == alpha.as_str())
-            .and_then(|session| session.get("waitingOn").cloned());
+            .find(|entry| entry["summary"]["activeSessionId"] == alpha.as_str())
+            .and_then(|entry| entry["summary"].get("waitingOn").cloned());
         if waiting_on == Some(json!(beta)) {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "alpha never reported waitingOn beta: {listed}"
+            "alpha never reported waitingOn beta: {snapshot}"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    drop(roster_probe);
 
     client
         .request(&json!({ "type": "prompt", "activeSessionId": beta, "message": "talk to alpha" }));
