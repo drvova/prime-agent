@@ -187,20 +187,31 @@ async fn a_prompt_queued_behind_a_turn_streams_the_old_queue_view_through_its_ph
 /// A steer the running turn takes is listed under `steering` while it waits
 /// on the agent, as the old worker's view listed its agent's steers, and
 /// leaves the view once its row settles: a client never reads the session
-/// as idle while a steer it sent is still to run.
+/// as idle while a steer it sent is still to run. It arrives after the run's
+/// first reply, so the running turn reads it at its next steering point.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_steer_the_running_turn_takes_is_listed_until_its_row_settles() {
     let bed = Bed::new();
     let cwd = bed.dir.path().join("work");
     std::fs::create_dir_all(&cwd).unwrap();
     let _daemon = bed.runtime_daemon(&json!({ "responses": [
+        cell("First.", "(displayln \"one\")"),
         cell("Sleeping.", "(bash \"sleep 2\" (hash 'wait-ms #f))\n(displayln \"slept\")"),
         "the steered reply",
     ]}));
     let mut session = Attached::open(&bed, &cwd).await;
     let prompt = session.publish("sleep first", None).await;
-    session.until_streamed("tool_execution_start").await;
-    session.publish("steer this", Some("steer")).await;
+    session
+        .until(|session| {
+            session
+                .payloads("stream")
+                .iter()
+                .filter(|event| event["type"] == "tool_execution_start")
+                .count()
+                == 2
+        })
+        .await;
+    let steer = session.publish("steer this", Some("steer")).await;
     session.done(&prompt["task"]).await;
 
     let stream = session.payloads("stream");
@@ -222,6 +233,7 @@ async fn a_steer_the_running_turn_takes_is_listed_until_its_row_settles() {
         .collect();
     assert_eq!(
         (
+            steer["admission"].clone(),
             views
                 .iter()
                 .map(|(view, _)| view.clone())
@@ -229,6 +241,7 @@ async fn a_steer_the_running_turn_takes_is_listed_until_its_row_settles() {
             views.last().map(|(_, after)| after.clone()),
         ),
         (
+            json!("steered"),
             vec![
                 json!({ "queuedCount": 1, "steering": ["steer this"], "followUps": [] }),
                 json!({ "queuedCount": 0, "steering": [], "followUps": [] }),

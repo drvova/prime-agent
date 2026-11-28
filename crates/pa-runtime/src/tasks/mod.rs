@@ -47,6 +47,16 @@ pub enum TaskOutcome {
     Cancelled,
 }
 
+/// How a `Steer` task comes to be offered to a running task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SteerOffer {
+    /// It waited behind the steer the lane starts now, and goes with it as
+    /// one delivery (the old daemon's batch of queued steers).
+    Behind,
+    /// It arrived while the task runs.
+    Arrived,
+}
+
 /// What a running task did with a `Steer` task offered to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Steered {
@@ -96,8 +106,9 @@ pub trait TaskRunner: Send + Sync + 'static {
     /// Runs `task`.
     fn run(&self, task: Task) -> impl Future<Output = TaskOutcome> + Send;
 
-    /// Offers the `Steer` task `steer` to the running `running`.
-    fn steer(&self, running: &Task, steer: &Task) -> Steered;
+    /// Offers the `Steer` task `steer` to the running `running`, as `offer`
+    /// says it came.
+    fn steer(&self, running: &Task, steer: &Task, offer: SteerOffer) -> Steered;
 
     /// Reports the end of `task`, cancelled while it was queued.
     fn cancelled(&self, task: &Task);
@@ -181,6 +192,10 @@ struct Lane {
     reported: Option<String>,
     /// Whether a worker task serves this lane.
     served: bool,
+    /// The queued tasks that joined the lane while it held no work: each is
+    /// delivered alone, as the old daemon ran an idle session's prompt by
+    /// itself, so no steer queued behind it joins its delivery.
+    direct: HashSet<String>,
 }
 
 impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
@@ -247,7 +262,11 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                 .get(&task.session)
                 .and_then(|lane| lane.running.clone());
             if let Some(running) = running {
-                match self.inner.runner.steer(&running, &task) {
+                match self
+                    .inner
+                    .runner
+                    .steer(&running, &task, SteerOffer::Arrived)
+                {
                     Steered::Taken => {
                         let taken = Task {
                             state: TaskState::Done,
@@ -595,6 +614,9 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
             lanes.next_order += 1;
             let suspended = lanes.stopped(&session);
             let lane = lanes.by_session.entry(session.clone()).or_default();
+            if lane.running.is_none() && lane.queued.is_empty() && lane.reported.is_none() {
+                lane.direct.insert(task.id.clone());
+            }
             lane.queued.insert((task.priority, order), task);
             let start = !lane.served && !suspended;
             lane.served |= start;
@@ -651,9 +673,15 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
                 attempts: task.attempts + 1,
                 ..task
             };
-            // The steers that waited behind a steer go with it.
+            // The steers that waited behind a queued steer go with it; one
+            // that joined an idle lane is delivered alone.
+            let direct = lane.direct.remove(&task.id);
+            let queued = &lane.queued;
+            lane.direct
+                .retain(|id| queued.values().any(|queued| queued.id == *id));
             let mut behind = Vec::new();
-            while task.priority == Priority::Steer
+            while !direct
+                && task.priority == Priority::Steer
                 && lane
                     .queued
                     .first_key_value()
@@ -673,7 +701,7 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
         }
         let mut declined = Vec::new();
         for (key, steer) in behind {
-            match inner.runner.steer(&task, &steer) {
+            match inner.runner.steer(&task, &steer, SteerOffer::Behind) {
                 Steered::Taken => {
                     let id = steer.id.clone();
                     let taken = Task {

@@ -60,7 +60,7 @@ use crate::subagents::{
     dispose, drive_to_quiescence, has_unsettled_rlm_work, kernel_notice_sink,
     late_sent_agent_message_sink, FamilyMessages, FamilyObserve, Node, Rest, SessionSubagents,
 };
-use crate::tasks::{Steered, TaskOutcome};
+use crate::tasks::{SteerOffer, Steered, TaskOutcome};
 use crate::trust::{RunningTask, TaskTrust, TrustGate, WorkingDir};
 use crate::turn::autonomous::{latest_assistant_error, HeadlessAutonomous};
 use crate::turn::boundary::TurnBoundary;
@@ -198,6 +198,8 @@ struct TurnControl {
     /// The running task's trust: what its events carry and what its
     /// kernel's trust gate admits.
     trust: TaskTrust,
+    /// The session's stream: its queue view lists the deferred steers.
+    stream: Arc<super::stream::SessionStream>,
 }
 
 #[derive(Default)]
@@ -219,6 +221,12 @@ struct Turn {
     cancelled_ahead: Option<String>,
     /// Whether the running task's turn took a steer.
     steered: bool,
+    /// Until the running task's run begins its first reply, the steers its
+    /// turn took (`None` once it has): they reach its agent as that reply
+    /// begins, so the run's opening read of its steering never folds them
+    /// into the prompt's first reply (the old daemon kept a client's steer in
+    /// its own lane until the turn it arrived during had answered).
+    deferred: Option<Vec<(String, pa_agent::types::AgentMessage)>>,
     /// The steers the running task's turn took, each with the message it
     /// handed the agent: the ones still unread when the turn is cancelled
     /// go back to the lane ([`SessionHost::cancel_running`]).
@@ -260,6 +268,7 @@ impl SessionHost {
         let control = Arc::new(TurnControl {
             turn: Mutex::new(Turn::default()),
             trust: node.trust.clone(),
+            stream: Arc::clone(&node.stream),
         });
         let thread = std::thread::Builder::new()
             .name(format!(
@@ -423,7 +432,7 @@ impl SessionHost {
     /// An empty steer is a wake over rows already on the agent (a root's in
     /// the runtime daemon): a turn that still reads steering takes it with
     /// nothing to hand over, and any other runs it as its own task.
-    pub(crate) fn steer(&self, running: &Task, steer: &Task) -> Steered {
+    pub(crate) fn steer(&self, running: &Task, steer: &Task, offer: SteerOffer) -> Steered {
         if steer.trust.lowest(running.trust) != running.trust {
             return Steered::Declined;
         }
@@ -450,13 +459,25 @@ impl SessionHost {
         ));
         match (&turn.agent, &turn.task) {
             (Some(agent), Some(task)) if turn.steerable && *task == running.id => {
-                steer_as_a_client(agent, message.clone());
+                let agent = Arc::clone(agent);
+                let deferred = if let Some(deferred) = turn.deferred.as_mut() {
+                    deferred.push((steer.prompt.clone(), message.clone()));
+                    Some(deferred.iter().map(|(text, _)| text.clone()).collect())
+                } else {
+                    steer_as_a_client(&agent, message.clone());
+                    None
+                };
                 turn.steered = true;
                 turn.taken.push((steer.clone(), message));
+                drop(turn);
+                if let Some(deferred) = deferred {
+                    self.control.stream.steers_deferred(deferred);
+                }
                 Steered::Taken
             }
             (_, None)
-                if turn.ended.as_deref() != Some(running.id.as_str())
+                if offer == SteerOffer::Behind
+                    && turn.ended.as_deref() != Some(running.id.as_str())
                     && turn.cancelled_ahead.as_deref() != Some(running.id.as_str()) =>
             {
                 turn.pending
@@ -498,12 +519,25 @@ impl SessionHost {
         turn.cancelled = true;
         turn.steerable = false;
         let taken = std::mem::take(&mut turn.taken);
+        let mut unread: Vec<_> = turn
+            .deferred
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect();
+        if !unread.is_empty() {
+            self.control.stream.steers_deferred(Vec::new());
+        }
         let Some(agent) = &turn.agent else {
             return Some(Vec::new());
         };
         agent.abort();
-        let unread = agent
-            .remove_queued_messages(|message| taken.iter().any(|(_, handed)| handed == message));
+        unread.extend(
+            agent.remove_queued_messages(|message| {
+                taken.iter().any(|(_, handed)| handed == message)
+            }),
+        );
         Some(
             taken
                 .into_iter()
@@ -904,6 +938,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                     turn.cancelled = turn.cancelled_ahead.take().as_ref() == Some(&task.id);
                     turn.steerable = !turn.cancelled;
                     turn.steered = false;
+                    turn.deferred = Some(Vec::new());
                     // The steers kept for this task: its run reads them as
                     // it starts. Any kept for another never reached here.
                     let pending = std::mem::take(&mut turn.pending);
@@ -1101,11 +1136,38 @@ impl<B: SessionBuilder> Lifetime<B> {
                 .subscribe({
                     let control = Arc::clone(&self.control);
                     move |event, _signal| {
-                        if matches!(event, pa_agent::types::AgentEvent::AgentStart) {
-                            let turn = lock(&control.turn);
-                            if let Some(agent) = turn.agent.as_ref().filter(|_| turn.cancelled) {
-                                agent.abort();
+                        match event {
+                            pa_agent::types::AgentEvent::AgentStart => {
+                                let turn = lock(&control.turn);
+                                if let Some(agent) = turn.agent.as_ref().filter(|_| turn.cancelled)
+                                {
+                                    agent.abort();
+                                }
                             }
+                            // The run's first reply began (or the run ended
+                            // without one): its opening read of the steering
+                            // is past, and the steers it took wait on its
+                            // agent for its next steering point.
+                            pa_agent::types::AgentEvent::MessageStart {
+                                message:
+                                    pa_agent::types::AgentMessage::Standard(
+                                        pa_agent::types::Message::Assistant(_),
+                                    ),
+                            }
+                            | pa_agent::types::AgentEvent::AgentEnd { .. } => {
+                                let mut turn = lock(&control.turn);
+                                let deferred = turn.deferred.take().unwrap_or_default();
+                                if !deferred.is_empty() {
+                                    if let Some(agent) = &turn.agent {
+                                        for (_, message) in deferred {
+                                            steer_as_a_client(agent, message);
+                                        }
+                                    }
+                                    drop(turn);
+                                    control.stream.steers_deferred(Vec::new());
+                                }
+                            }
+                            _ => {}
                         }
                         Box::pin(std::future::ready(Ok(())))
                     }

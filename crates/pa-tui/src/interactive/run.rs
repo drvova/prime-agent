@@ -1721,6 +1721,18 @@ async fn run_interactive_surface(
             }
             maybe_prompt = prompt_rx.recv() => {
                 if let Some(note) = maybe_prompt {
+                    // The frames the daemon sent ahead of the reply apply first: the reply and
+                    // the session's events reach this loop on separate channels, and a submit's
+                    // outcome read before the turn it follows would misjudge the turn state (a
+                    // prior turn's end read after the ack settles the run while this prompt
+                    // still runs).
+                    while let Some(Ok(event)) = events.as_mut().map(mpsc::UnboundedReceiver::try_recv) {
+                        session.apply_client_event(event, &mut view);
+                    }
+                    if was_active && !session.turn_active {
+                        session.spawn_stats_refresh();
+                        session.rebuild_tray(&mut view);
+                    }
                     // Protocol corruption stays fatal exactly like the inline submit's ladder.
                     session.apply_prompt_outcome(note, &mut view).await?;
                 }

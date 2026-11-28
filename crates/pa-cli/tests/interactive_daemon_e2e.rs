@@ -4092,50 +4092,23 @@ async fn tui_two_back_to_back_submits_reach_the_daemon_in_order() {
         rendered.contains("first scripted reply"),
         "the first turn rendered:\n{rendered}"
     );
-    // The daemon received the prompts in submit order, and the settled run
-    // answered the second. Enter submits a steer, and a steer is read at the
-    // turn's next steering point: one that lands before the first turn's
-    // opening read joins that turn (one reply answers both), a later one
-    // starts the scripted second reply. Either way the transcript's last
-    // message is a reply that follows both prompts.
-    let messages: Vec<(String, String)> = support::session_texts(&session_dir)
-        .iter()
-        .flat_map(|(_path, content)| content.lines().map(str::to_string).collect::<Vec<_>>())
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
-        .filter(|row| row["type"] == "message")
-        .map(|row| {
-            let message = &row["message"];
-            let text = match &message["content"] {
-                serde_json::Value::String(text) => text.clone(),
-                content => content
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|block| block["text"].as_str())
-                    .collect(),
-            };
-            (
-                message["role"].as_str().unwrap_or_default().to_string(),
-                text,
-            )
-        })
-        .collect();
-    let position = |text: &str| {
-        messages
-            .iter()
-            .position(|(role, said)| role == "user" && said == text)
-            .unwrap_or_else(|| panic!("the session persisted {text:?}: {messages:?}"))
+    assert!(
+        rendered.contains("second scripted reply"),
+        "the queued second turn rendered:\n{rendered}"
+    );
+    // The daemon received the prompts in order: "first submit" before "second submit".
+    let mut first_index = None;
+    let mut second_index = None;
+    for (_path, content) in support::session_texts(&session_dir) {
+        first_index = first_index.or_else(|| content.find("first submit"));
+        second_index = second_index.or_else(|| content.find("second submit"));
+    }
+    let (Some(first_index), Some(second_index)) = (first_index, second_index) else {
+        panic!("the session file persisted both prompts:\n{rendered}");
     };
     assert!(
-        position("first submit") < position("second submit"),
-        "the daemon received the prompts in submit order: {messages:?}"
-    );
-    let last = messages.last().expect("the session persisted its messages");
-    assert!(
-        last.0 == "assistant"
-            && ["first scripted reply", "second scripted reply"].contains(&last.1.as_str())
-            && rendered.contains(&last.1),
-        "the run settled with a rendered reply after both prompts: {messages:?}\n{rendered}"
+        first_index < second_index,
+        "the daemon received the prompts in submit order"
     );
     drop(daemon);
 }
