@@ -10,8 +10,8 @@
 mod support;
 
 use std::collections::HashSet;
-use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
+use support::UnixListener;
 
 use pa_tui::interactive::{
     run_interactive, HeadlessPlan, HeadlessStep, InteractiveOptions, SessionSelection, UiMode,

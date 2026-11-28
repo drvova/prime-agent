@@ -168,7 +168,7 @@ fn spawn_leftover_worker(dir: &Path, daemon_socket: &Path, name: &str) -> Leftov
     std::fs::create_dir_all(&socket_dir).expect("socket dir");
     let socket = socket_dir.join(format!(
         "worker-{}-{name}.sock",
-        pa_daemon::paths::hash_key(&daemon_socket.to_string_lossy(), 12)
+        pa_core::platform::daemon_endpoint::hash_key(&daemon_socket.to_string_lossy(), 12)
     ));
     let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
         .arg("worker")
@@ -309,8 +309,10 @@ fn boot_reap_clears_a_leftover_worker_process_and_its_session_reopens() {
     let inherited_env_child_alive = process_alive(inherited_env_child.id());
     let _ = inherited_env_child.kill();
     let _ = inherited_env_child.wait();
-    let log = std::fs::read_to_string(pa_daemon::paths::daemon_log_path(&socket, &agent_dir))
-        .unwrap_or_default();
+    let log = std::fs::read_to_string(pa_core::platform::daemon_endpoint::daemon_log_path(
+        &socket, &agent_dir,
+    ))
+    .unwrap_or_default();
     assert_eq!(
         (
             reopened["success"].clone(),

@@ -431,7 +431,7 @@ fn a_due_scheduled_job_never_boots_its_session_at_daemon_start() {
         "the not-running session's file changed at boot"
     );
 
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
     let log = std::fs::read_to_string(&log_path).unwrap_or_default();
     for needle in [
         "job-stale-heartbeat",

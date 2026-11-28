@@ -7,10 +7,11 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use pa_core::session::usage_summary::SessionUsageSummary;
+use pa_core::session_engine::rlm_roster::attach_deleted_descendant_usage;
 use pa_types::daemon::agent_roster::{
     classify_summary_value, roster_agent_id_for_summary, slim_roster_summary, AgentRosterEntry,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 
 /// The supervisor-owned roster. `Write()` classifies once and its file index
 /// converges seed and worker keys.
@@ -457,32 +458,6 @@ fn canonical_roster_path(path: &str) -> String {
         |_| path.to_string(),
         |canonical| canonical.to_string_lossy().to_string(),
     )
-}
-
-/// Set or clear the row's `deletedDescendantUsage`; `true` when it
-/// changed. One rule for both writers: the store attach and the event
-/// refresh rewrite the same key the same way, so a re-stored row and a
-/// refreshed one can never disagree.
-fn attach_deleted_descendant_usage(
-    summary: &mut Value,
-    usage: Option<&SessionUsageSummary>,
-) -> bool {
-    let Value::Object(object) = summary else {
-        return false;
-    };
-    let next = usage.map(|usage| json!(usage));
-    if object.get("deletedDescendantUsage") == next.as_ref() {
-        return false;
-    }
-    match next {
-        Some(value) => {
-            object.insert("deletedDescendantUsage".to_string(), value);
-        }
-        None => {
-            object.remove("deletedDescendantUsage");
-        }
-    }
-    true
 }
 
 #[cfg(test)]

@@ -86,7 +86,7 @@ fn a_publication_reaches_the_matching_subscriptions_of_other_sessions() {
     let dir = tempfile::tempdir().unwrap();
     let bus = EventBus::load(
         dir.path().join(EVENT_BUS_FILE_NAME),
-        &crate::paths::RotatingLog::new(dir.path().join("log")),
+        &pa_core::platform::daemon_endpoint::RotatingLog::new(dir.path().join("log")),
     );
     let (owner, prod, any, staging) = (
         requester("owner"),
@@ -130,7 +130,7 @@ fn the_bus_refuses_what_its_rules_do_not_allow() {
     let dir = tempfile::tempdir().unwrap();
     let bus = EventBus::load(
         dir.path().join(EVENT_BUS_FILE_NAME),
-        &crate::paths::RotatingLog::new(dir.path().join("log")),
+        &pa_core::platform::daemon_endpoint::RotatingLog::new(dir.path().join("log")),
     );
     let (owner, other) = (requester("owner"), requester("other"));
     define(&bus, &owner);
@@ -233,7 +233,7 @@ fn the_bus_refuses_what_its_rules_do_not_allow() {
 fn the_bus_survives_a_reload_and_drops_gone_subscribers() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(EVENT_BUS_FILE_NAME);
-    let log = crate::paths::RotatingLog::new(dir.path().join("log"));
+    let log = pa_core::platform::daemon_endpoint::RotatingLog::new(dir.path().join("log"));
     let (owner, kept, gone) = (requester("owner"), requester("kept"), requester("gone"));
     let bus = EventBus::load(path.clone(), &log);
     define(&bus, &owner);

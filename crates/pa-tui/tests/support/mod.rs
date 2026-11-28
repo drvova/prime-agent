@@ -7,7 +7,7 @@
 )]
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,10 @@ use pa_tui::interactive::{
     SessionSelection, UiMode,
 };
 use serde_json::{json, Value};
+
+mod wire2;
+
+pub use wire2::UnixListener;
 
 /// Write one newline-delimited JSON frame to the client.
 pub fn write_json(writer: &mut UnixStream, value: &Value) {
@@ -198,7 +202,8 @@ pub fn attach_response(id: &str, session_name: &str) -> Value {
     })
 }
 
-/// A mock daemon listening on the test's socket; each test binary adds its own `serve`.
+/// A mock daemon listening on the test's socket over wire2 ([`UnixListener`]); each test binary
+/// adds its own `serve`.
 pub struct MockSupervisor {
     pub listener: UnixListener,
 }
@@ -243,7 +248,8 @@ pub fn accept_within_idle_window(listener: &UnixListener) -> Option<UnixStream> 
     }
 }
 
-/// Serve one client connection until it hangs up: send the protocol-7 `daemon_hello` advertising
+/// Serve one client connection until it hangs up: send the protocol-7 `daemon_hello` (the
+/// runtime's identity on wire2) advertising
 /// `capabilities`, then hand each request to `handle`. A request `handle` declines (returns
 /// `false`) gets the generic `success: true, data: {}` reply.
 pub fn serve_connection(

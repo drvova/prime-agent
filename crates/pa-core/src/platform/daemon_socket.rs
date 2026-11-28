@@ -1,5 +1,6 @@
-//! Daemon socket lifecycle: endpoint naming and identity live in
-//! [`crate::platform`]; the bind/connect calls go through the shared transport
+//! Daemon socket lifecycle, shared by the runtime daemon and the supervisor:
+//! endpoint naming lives in [`super::daemon_endpoint`], the file identity in
+//! `pa_types::platform::socket_identity`; the bind/connect calls go through the shared transport
 //! traits in `pa_types::platform`, so Unix socket files today and named pipes later
 //! differ only in the implementation module.
 
@@ -11,10 +12,9 @@ use anyhow::anyhow;
 use anyhow::Result;
 
 #[cfg(unix)]
-pub use crate::platform::socket_dir;
-pub use crate::platform::{
-    default_daemon_socket_path, socket_identity, worker_socket_path, SocketIdentity,
-};
+use super::daemon_endpoint::socket_dir;
+use pa_types::daemon::SocketIdentity;
+use pa_types::platform::socket_identity;
 
 /// Try to connect to an endpoint within `timeout`; true when a peer accepts.
 /// A peer refused as another user's still counts as live, so stale-socket
@@ -47,9 +47,9 @@ const LOCK_RETRIES: u32 = 600;
 /// `{path}.lock` directory): held for the whole probe/unlink sequence, so a
 /// competing startup worker cannot bind a live listener in between.
 #[cfg(unix)]
-async fn acquire_cleanup_lock(path: &Path) -> Result<pa_core::platform::LockDir> {
+async fn acquire_cleanup_lock(path: &Path) -> Result<crate::platform::LockDir> {
     for attempt in 0..=LOCK_RETRIES {
-        match pa_core::platform::LockDir::acquire(path, LOCK_STALE_AFTER) {
+        match crate::platform::LockDir::acquire(path, LOCK_STALE_AFTER) {
             Ok(lock) => return Ok(lock),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => return Err(anyhow!("Daemon socket cleanup lock: {error}")),
@@ -80,7 +80,8 @@ pub async fn prepare_socket_path(path: &Path) -> Result<()> {
         if parent == socket_dir() || !parent.exists() {
             prepare_owned_socket_dir(parent)?;
         } else {
-            crate::paths::ensure_dir(parent)?;
+            std::fs::create_dir_all(parent)?;
+            let _ = crate::platform::perms::restrict_dir(parent);
         }
     }
     // lstat, not `Path::exists()`: a dangling symlink still blocks `bind`
@@ -114,7 +115,7 @@ fn prepare_owned_socket_dir(dir: &Path) -> Result<()> {
             dir.display()
         ));
     }
-    let uid = pa_core::platform::process::current_user_id();
+    let uid = crate::platform::process::current_user_id();
     if metadata.uid() != uid {
         return Err(anyhow!(
             "Daemon socket directory {} is owned by uid {}, not the current user (uid {uid}); remove it or set TMPDIR",
@@ -122,7 +123,7 @@ fn prepare_owned_socket_dir(dir: &Path) -> Result<()> {
             metadata.uid()
         ));
     }
-    pa_core::platform::perms::restrict_dir(dir)?;
+    crate::platform::perms::restrict_dir(dir)?;
     Ok(())
 }
 
@@ -218,7 +219,7 @@ pub fn cleanup_socket_path(path: &Path, expected_identity: Option<SocketIdentity
         return;
     }
     #[cfg(unix)]
-    let Ok(_cleanup_lock) = pa_core::platform::LockDir::acquire(path, LOCK_STALE_AFTER) else {
+    let Ok(_cleanup_lock) = crate::platform::LockDir::acquire(path, LOCK_STALE_AFTER) else {
         return;
     };
     if let Some(expected) = expected_identity {
@@ -266,7 +267,7 @@ pub fn cleanup_socket_path_after_close(_path: &Path, _expected_identity: Option<
 /// Restrict the bound socket file to its owner (Unix mode 0o600; Windows
 /// named pipes use ACLs on the pipe object instead).
 pub fn restrict_socket_path(path: &Path) {
-    let _ = pa_core::platform::perms::restrict_file(path);
+    let _ = crate::platform::perms::restrict_file(path);
 }
 
 /// The bind-capture gap seam (the `PA_DAEMON_EVENT_LOG` seam family): a

@@ -1482,8 +1482,8 @@ fn session_open_guard(
                     "could not verify the session file is not held: {error:#}"
                 ));
             };
-            Err(pa_daemon::hold_refusal::refusal_message(
-                &pa_daemon::hold_refusal::HoldIdentity {
+            Err(pa_core::session::hold_refusal::refusal_message(
+                &pa_core::session::hold_refusal::HoldIdentity {
                     pid: active.holder_pid,
                     active_session_id: active.active_session_id.clone(),
                 },

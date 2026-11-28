@@ -135,6 +135,7 @@ impl RlmSubagentHost for SessionSubagents {
                     replied_since_task: false,
                 }),
                 published: std::sync::Mutex::new(None),
+                reopened: std::sync::atomic::AtomicBool::new(false),
             });
             // Teardown can run while the engine is being built. Checked
             // while the roster is held so disposal either takes this child
@@ -512,6 +513,10 @@ impl Subagents {
         let max_depth = node.delegation.max_depth();
         let mut reopened = 0;
         for edge in edges {
+            // A parent stopped while its family reopens opens no more of it.
+            if node.is_disposed() {
+                break;
+            }
             let child_file = std::path::PathBuf::from(&edge.child);
             let Some(session_id) = child_file
                 .file_stem()
@@ -586,6 +591,7 @@ impl Subagents {
                     replied_since_task: false,
                 }),
                 published: std::sync::Mutex::new(None),
+                reopened: std::sync::atomic::AtomicBool::new(true),
             });
             if let Err(error) = outcome {
                 tracing::warn!(
@@ -595,7 +601,18 @@ impl Subagents {
                 dispose_child(&child).await;
                 continue;
             }
-            node.children.lock().await.push(Arc::clone(&child));
+            {
+                // Pushed under the parent's children, which its disposal walks
+                // once it reads disposed: a child opened as the parent stopped
+                // is disposed here instead.
+                let mut children = node.children.lock().await;
+                if node.is_disposed() {
+                    drop(children);
+                    dispose_child(&child).await;
+                    break;
+                }
+                children.push(Arc::clone(&child));
+            }
             self.tree
                 .insert(session_id.clone(), node.session_id.clone());
             subscribe_done(self, &session_id, &node.session_id)?;

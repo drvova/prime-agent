@@ -4,8 +4,8 @@
 //!
 //! The corpus generator writes the product's real on-disk layout under an
 //! isolated agent dir, using the product's own serializers and writers
-//! (pa-types payloads, pa-daemon `SessionEntry`/`session_header_line`/
-//! `RlmSpawnLedger`, pa-core's `WindowedSessionStore` for the warm
+//! (pa-types payloads in the `FileEntry` rows pa-core's session manager
+//! writes, pa-core's `RlmSpawnLedger` and `WindowedSessionStore` for the warm
 //! sidecars). The bench harness drives the real release binary under a pty.
 //! The trials aggregation reads saved session files through pa-core's run
 //! metrics and aggregates them the `FrontierHarness` Eval way.

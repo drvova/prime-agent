@@ -5,8 +5,8 @@
 
 mod support;
 
-use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
+use support::UnixListener;
 
 use pa_tui::interactive::{
     run_interactive, HeadlessPlan, HeadlessStep, InteractiveOptions, UiMode,

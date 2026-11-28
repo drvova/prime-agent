@@ -40,7 +40,7 @@ fn lost_exit_ms_from(raw: Option<&str>) -> u64 {
 /// Whether the supervisor socket accepts connections (TS `canConnectToSupervisor`): a
 /// connect that lands proves a live supervisor owns the socket.
 async fn supervisor_reachable(socket: &Path) -> bool {
-    crate::socket::can_connect(socket, CONNECT_TIMEOUT).await
+    pa_core::platform::daemon_socket::can_connect(socket, CONNECT_TIMEOUT).await
 }
 
 /// Arm the orphan-exit monitor for `worker`: it runs for the process's whole lifetime,
