@@ -596,10 +596,9 @@ fn ledger_child_records(
                 |display| display.created_at,
             ),
             run: RunState::reseeded(
-                if display
-                    .as_ref()
-                    .is_some_and(|display| display.status == "running")
-                {
+                if display.as_ref().is_some_and(
+                    pa_core::session_engine::rlm_ledger::RlmSubagentDisplayEntry::interrupted,
+                ) {
                     RunVerdict::Error(None)
                 } else {
                     RunVerdict::Done

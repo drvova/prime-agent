@@ -69,6 +69,17 @@ pub struct RlmSubagentDisplayEntry {
     pub created_at: u64,
 }
 
+impl RlmSubagentDisplayEntry {
+    /// Whether the child's run was still going when its display entry was
+    /// last written (`running`): a family read again lists such a child as
+    /// failed (TS exposes the interrupted task as an error), every other one
+    /// as done.
+    #[must_use]
+    pub fn interrupted(&self) -> bool {
+        self.status == "running"
+    }
+}
+
 /// Read one child's display entry; `None` when absent, unreadable, or not
 /// describing the requested child (a stale file from a re-used session dir).
 #[must_use]

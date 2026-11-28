@@ -1,0 +1,1 @@
+- A subagent whose turn was cut off by a daemon restart is now listed as failed under its reopened parent on the default daemon, instead of as completed.
