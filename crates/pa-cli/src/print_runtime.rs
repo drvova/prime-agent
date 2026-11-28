@@ -1408,14 +1408,34 @@ fn lease_fresh_manager(
     (manager, lease)
 }
 
-/// Guard an in-process open: probe the daemon's live roster, then acquire the
-/// runtime lease. Returns the HELD lease — the caller owns its lifetime.
+/// Guard an in-process open: probe the selected daemon's live roster, then
+/// acquire the runtime lease. Returns the HELD lease — the caller owns its
+/// lifetime.
 fn session_open_guard(
     socket_path: Option<&str>,
     session_path: &std::path::Path,
 ) -> Result<pa_core::session::lease::SessionLease, String> {
     let socket = crate::interactive_mode::resolve_socket_path(socket_path);
-    if let Ok(mut client) = crate::daemon_client::DaemonClient::connect(&socket) {
+    let rows = |data: Option<serde_json::Value>| {
+        data.and_then(|data| data.get("sessions").cloned())
+            .and_then(|sessions| sessions.as_array().cloned())
+            .unwrap_or_default()
+    };
+    // The selected daemon's live sessions: the runtime daemon's open ones (on its socket beside
+    // `socket`), else the supervisor's `list`; none when no daemon answers or the list is refused.
+    let selected = crate::daemon_mode::DaemonKind::selected(&crate::config::get_agent_dir());
+    let live = if selected == crate::daemon_mode::DaemonKind::Runtime {
+        crate::runtime_daemon_client::RuntimeDaemonClient::connect(
+            &pa_runtime::daemon::socket_path(&socket),
+        )
+        .ok()
+        .and_then(|mut client| {
+            client
+                .query("sessions.list", serde_json::json!({ "open": true }))
+                .ok()
+        })
+        .map(|data| rows(Some(data)))
+    } else if let Ok(mut client) = crate::daemon_client::DaemonClient::connect(&socket) {
         let list = client
             .request(pa_types::daemon::DaemonCommand::List {
                 id: None,
@@ -1426,43 +1446,38 @@ fn session_open_guard(
                 rest: serde_json::Map::default(),
             })
             .map_err(|error| format!("Could not check active sessions: {error:#}"))?;
-        if list.success {
-            let target = pa_core::session::lease::canonical_session_path(session_path);
-            for row in list
-                .data
-                .and_then(|data| data.get("sessions").cloned())
-                .and_then(|sessions| sessions.as_array().cloned())
-                .unwrap_or_default()
+        list.success.then(|| rows(list.data))
+    } else {
+        None
+    };
+    if let Some(live) = live {
+        let target = pa_core::session::lease::canonical_session_path(session_path);
+        for row in live {
+            let Some(file) = row.get("sessionFile").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if pa_core::session::lease::canonical_session_path(std::path::Path::new(file)) != target
             {
-                let Some(file) = row.get("sessionFile").and_then(serde_json::Value::as_str) else {
-                    continue;
-                };
-                if pa_core::session::lease::canonical_session_path(std::path::Path::new(file))
-                    != target
-                {
-                    continue;
-                }
-                let active_session_id = row
-                    .get("activeSessionId")
-                    .or_else(|| row.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                // The descriptive refusal (operator-directed): attach to the live session instead
-                // of reopening its file.
-                let message = match pa_tui::session_open_error::holder_from_roster(
-                    std::slice::from_ref(&row),
-                    &target,
-                ) {
-                    Some(holder) => {
-                        pa_tui::session_open_error::already_active_error(&holder, &target)
-                    }
-                    None => format!(
-                        "Session is already active in {active_session_id}: {}",
-                        target.display()
-                    ),
-                };
-                return Err(message);
+                continue;
             }
+            let active_session_id = row
+                .get("activeSessionId")
+                .or_else(|| row.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            // The descriptive refusal (operator-directed): attach to the live session instead
+            // of reopening its file.
+            let message = match pa_tui::session_open_error::holder_from_roster(
+                std::slice::from_ref(&row),
+                &target,
+            ) {
+                Some(holder) => pa_tui::session_open_error::already_active_error(&holder, &target),
+                None => format!(
+                    "Session is already active in {active_session_id}: {}",
+                    target.display()
+                ),
+            };
+            return Err(message);
         }
     }
     // The daemon's roster covers only its own sessions; the session store is

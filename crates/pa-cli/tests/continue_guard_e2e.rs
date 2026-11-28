@@ -1,123 +1,35 @@
 //! End-to-end verifier for the print-mode active-session guard (B-11): a
 //! headless `-c`/`-r` must refuse to open a session file that a live daemon
-//! worker already hosts, with the exact TS `SessionAlreadyActiveError`
-//! message.
+//! daemon already hosts (the runtime daemon, the default), with the exact TS
+//! `SessionAlreadyActiveError` message.
 #![cfg(unix)]
 
 mod support;
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
 
-use serde_json::{json, Value};
+use serde_json::json;
+use support::runtime_daemon::RuntimeDaemon;
 
-struct Daemon {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // The launcher strips inherited worker role env vars before spawning the
-    // supervisor; a CLI running inside a daemon worker must not leak them.
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    // A supervisor killed at teardown must not leak its session workers into
-    // later test binaries: the worker's supervisor-lost exit runs on this
-    // short window instead of the 5-minute default.
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(socket, &mut child);
-    Daemon {
-        child,
-        socket: socket.to_path_buf(),
-    }
-}
-
-/// Open a session file as a live daemon worker (create with sessionPath),
-/// so the print path's guard has an active session to find. Returns the
-/// worker's active session id.
-fn make_session_active(socket: &Path, session_path: &Path, cwd: &Path) -> String {
-    let stream = UnixStream::connect(socket).expect("connect daemon");
-    let write_half = stream.try_clone().expect("clone");
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    reader.read_line(&mut hello).expect("hello");
-    let command = json!({
-        "type": "command",
-        "id": "guard-create",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": {
-            "type": "create",
-            "sessionPath": session_path.to_string_lossy(),
-            "config": {
+/// Open a session file on the live runtime daemon (`session.create` naming its
+/// transcript), so the print path's guard has an active session to find.
+/// Returns the daemon's session id, the lease's holder.
+fn make_session_active(daemon: &RuntimeDaemon, session_path: &Path, cwd: &Path) -> String {
+    let created = daemon
+        .client()
+        .call(
+            "session.create",
+            &json!({
+                "path": session_path.to_string_lossy(),
                 "cwd": cwd.to_string_lossy(),
-                "sessionDir": session_path.parent().expect("sessions dir").to_string_lossy(),
-            },
-        },
-    });
-    let mut line = serde_json::to_string(&command).expect("serialize");
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("send");
-    writer.flush().expect("flush");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut line = String::new();
-    loop {
-        assert!(Instant::now() < deadline, "no create response");
-        reader
-            .get_mut()
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .expect("timeout");
-        match reader.read_line(&mut line) {
-            Ok(0) => panic!("daemon closed during create"),
-            Ok(_) if line.trim().is_empty() => line.clear(),
-            Ok(_) => {
-                let response: Value = serde_json::from_str(line.trim()).expect("parse");
-                assert_eq!(response["success"], true, "create failed: {response}");
-                return response["data"]["id"]
-                    .as_str()
-                    .or_else(|| response["data"]["activeSessionId"].as_str())
-                    .expect("active session id")
-                    .to_string();
-            }
-            Err(_) => {}
-        }
-    }
+            }),
+        )
+        .unwrap_or_else(|error| panic!("create failed: {error}"));
+    created["session"]
+        .as_str()
+        .expect("the created session's id")
+        .to_string()
 }
 
 fn run_print(args: &[&str], env: &[(String, String)]) -> (String, String, i32) {
@@ -193,8 +105,8 @@ fn print_continue_refuses_an_active_daemon_session() {
 
     // A live daemon worker hosting the file makes -c refuse it with the
     // exact TS `SessionAlreadyActiveError` message.
-    let _daemon = spawn_daemon(&socket, &agent_dir);
-    let active_session_id = make_session_active(&socket, &session_path, &work);
+    let daemon = RuntimeDaemon::spawn(dir.path());
+    let active_session_id = make_session_active(&daemon, &session_path, &work);
     let (stdout, stderr, code) = run_print(
         &[
             "-p",
