@@ -673,22 +673,21 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         if read.tool_calls > 0 {
             put("toolUseCount", json!(read.tool_calls));
         }
-        // A root opened from a child's transcript names the parent its header
-        // records, as the old worker's summary did, so the agents view lists
-        // it under that parent.
-        let recorded_parent = read
+        // A root opened from a subagent's transcript keeps the parent its
+        // header names, as the old worker's summary did, so a client nests it
+        // under that parent.
+        let header_parent = read
             .header
             .as_ref()
-            .and_then(|header| header.parent_session.as_ref());
-        match (&lineage, recorded_parent) {
-            (Some(lineage), _) => {
-                put("parentSessionPath", json!(lineage.parent_file));
-                put("parentActiveSessionId", json!(lineage.parent_id));
-                put("parentSessionId", json!(lineage.parent_id));
-                put("rlmChildId", json!(lineage.child_id));
-            }
-            (None, Some(parent)) => put("parentSessionPath", json!(parent)),
-            (None, None) => {}
+            .and_then(|header| header.parent_session.clone());
+        if let (None, Some(parent)) = (&lineage, &header_parent) {
+            put("parentSessionPath", json!(parent));
+        }
+        if let Some(lineage) = &lineage {
+            put("parentSessionPath", json!(lineage.parent_file));
+            put("parentActiveSessionId", json!(lineage.parent_id));
+            put("parentSessionId", json!(lineage.parent_id));
+            put("rlmChildId", json!(lineage.child_id));
         }
         if let Some(usage) = &usage {
             put("usage", json!(usage));

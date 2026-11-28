@@ -24,8 +24,10 @@ impl Supervisor {
         tokio::spawn(async move {
             supervisor.wait_for_boot_reap().await;
             let agent_dir = supervisor.options.agent_dir.clone();
-            let descriptor_dir =
-                crate::descriptor::descriptor_dir(&agent_dir, &supervisor.options.socket_path);
+            let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(
+                &agent_dir,
+                &supervisor.options.socket_path,
+            );
             let daemon_files = vec![
                 (
                     StateFile::EventBus,

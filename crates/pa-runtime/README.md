@@ -378,10 +378,15 @@ SQLite implementations over `pa-log`.
   (`daemon/handlers/feeds.rs`): `runtime.roster` answers `{roster}`, one old `AgentRosterEntry`
   per open session and per subagent below one (`agentId`, the attach's summary without
   `sessionActions` and with a subagent's `parentSessionPath`, `parentActiveSessionId`,
-  `rlmChildId` and `runtimeKind: "subagent"`, `status`, `workerId`), and the live-only
-  `runtime/roster` carries `{changed: [entry]}` when an entry composed again after its session's
-  stream events differs from the one published last, and `{changed: [], removed}` when a session
-  stops or is given up on, or a subagent is deleted, with the subagents below it;
+  `rlmChildId` and `runtimeKind: "subagent"`, a root's header `parentSessionPath`, `status`,
+  `workerId`), then the rows it keeps by pa-core's `rlm_roster` rules: an open root's ledger
+  family seeded with its first entry (edge-only, then hydrated; a child reopened as settled and
+  not run since is listed as this row, and a client opening its transcript gets it as its own
+  session) and a stopped root's passivated row (`status: inactive`), each row with its deleted
+  descendants' spend; the live-only `runtime/roster` carries `{changed: [entry]}` when an entry
+  composed again after its session's stream events differs from the one published last, and
+  `{changed: [...], removed}` when a session stops (its row passivated unless it is ephemeral)
+  or is given up on, or a subagent is deleted, with the subagents and seeded rows below it;
   `runtime.traffic` answers `{entries}`, each root's newest 200 traffic entries, roots in order.
   Neither waits on a turn: one task hears the bus and marks entries due, another composes them;
   the agents view's saved-session catalog, which `wire2_compat` maps `list_saved_sessions` to
@@ -682,7 +687,12 @@ SQLite implementations over `pa-log`.
   `pa_log::Log::task_saved_at`; `host_death` by its run count): run again as queued, continued
   as the same task behind `TURN_INTERRUPTED_NOTICE`, stored done when its answer was saved, or,
   on its second death in a row, stored failed with the crash's reason. A kept launch is kept by
-  pa-daemon's restart owner (`keeper::KeptDaemon::Runtime`), its records under `daemon2.sock`.
+  the restart owner (`daemon::keeper`, moved from pa-daemon: `KEEPER_ENV`, `enter`, `run_keeper`,
+  `KeeperOptions`, `KeptDaemon`, `CountSessions`, `keeper_pid`, `boot_death`,
+  `record_stop_intent`, `DAEMON_DEATH_LOG`), its records under `daemon2.sock`
+  (`KeptDaemon::Runtime`). It keeps the supervisor too while that exists
+  (`KeptDaemon::Supervisor`), counting a dead supervisor's sessions with the count its launcher
+  hands in, so it reads none of the supervisor's records itself.
   **Its own end** (`daemon/handlers/lifecycle.rs`): `daemon.shutdown` and `daemon.restart` (the
   old `shutdown` and `restart`, the same stop; `force` accepted and, as on the old supervisor,
   unused) are answered without a result, then request the stop (`wire::after_reply`, so the

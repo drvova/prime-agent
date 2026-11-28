@@ -116,8 +116,9 @@ pub(crate) struct DaemonInfo {
 /// directory would otherwise stop each other).
 pub(crate) fn current_state_root() -> DaemonStateRoot {
     let default_socket_path = config::resolve_daemon_socket_path(None);
-    let socket_dir = (default_socket_path == pa_daemon::platform::default_daemon_socket_path())
-        .then_some(pa_daemon::platform::socket_dir());
+    let socket_dir = (default_socket_path
+        == pa_core::platform::daemon_endpoint::default_daemon_socket_path())
+    .then_some(pa_core::platform::daemon_endpoint::socket_dir());
     DaemonStateRoot {
         agent_dir: config::get_agent_dir(),
         socket_dir,
@@ -187,7 +188,7 @@ pub(crate) fn is_worker_socket_path(socket_path: &Path, socket_dir: &Path) -> bo
 /// discovery directory: an agent-dir override can contain the shared worker
 /// directory even when the root is pinned elsewhere.
 pub(crate) fn scan_listening_daemons(root: &DaemonStateRoot) -> Vec<DiscoveredDaemonProcess> {
-    let worker_socket_dir = pa_daemon::platform::socket_dir();
+    let worker_socket_dir = pa_core::platform::daemon_endpoint::socket_dir();
     scan::scan_all_listening_daemons(config::APP_NAME, root)
         .into_iter()
         .filter(|daemon| !is_worker_socket_path(&daemon.socket_path, &worker_socket_dir))

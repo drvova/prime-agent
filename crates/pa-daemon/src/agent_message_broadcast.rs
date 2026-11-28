@@ -9,9 +9,7 @@ use serde_json::Value;
 use pa_types::daemon::DaemonWorkerLifecycle;
 
 use crate::backpressure::RouteAdmission;
-use crate::protocol::{
-    command_type_name, response_failure, response_line, response_success, DaemonResponse,
-};
+use crate::protocol::{response_failure, response_line, response_success, DaemonResponse};
 use crate::registry::ResidentWorker;
 use crate::supervisor::{client_command_payload, Supervisor, ROUTE_TIMEOUT_MS};
 
@@ -68,9 +66,7 @@ impl Supervisor {
                     Err(error) => response_failure(None, command_type, &error.to_string(), None),
                 }
             }
-            Err(error) => {
-                response_failure(None, command_type_name(command), &error.to_string(), None)
-            }
+            Err(error) => response_failure(None, command.type_name(), &error.to_string(), None),
         }
     }
 

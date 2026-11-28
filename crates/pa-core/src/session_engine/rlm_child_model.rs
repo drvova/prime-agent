@@ -4,9 +4,17 @@
 
 use std::path::Path;
 
+use crate::kernel::rlm_runtime::{find_rlm_model_matches, RlmModelInfo};
 use anyhow::{anyhow, bail, Result};
 use pa_ai::models::{get_supported_thinking_levels, thinking_level_from_str};
-use pa_core::kernel::rlm_runtime::{find_rlm_model_matches, RlmModelInfo};
+
+/// The registry a child's model resolves against: the agent dir's auth and `models.json`.
+fn model_registry(agent_dir: &Path) -> crate::models::ModelRegistry {
+    crate::models::ModelRegistry::create(
+        crate::auth::AuthStorage::create(agent_dir),
+        agent_dir.join("models.json"),
+    )
+}
 
 /// Close matches listed in model-resolution errors.
 const MODEL_ERROR_SUGGESTION_LIMIT: usize = 3;
@@ -15,7 +23,7 @@ const MODEL_ERROR_SUGGESTION_LIMIT: usize = 3;
 /// credential-backed list `rlm.find_models` searches (entitled `internal/*` models resolve).
 #[must_use]
 pub fn catalog_models(agent_dir: &Path) -> Vec<RlmModelInfo> {
-    let registry = crate::state_getters::worker_model_registry(agent_dir);
+    let registry = model_registry(agent_dir);
     registry
         .get_rlm_searchable_models()
         .into_iter()
@@ -43,10 +51,10 @@ pub fn resolve_child_model(
     reference: Option<&str>,
     parent_model: Option<&str>,
     target: &str,
-    allowlist: &pa_core::models::ModelAllowlist,
+    allowlist: &crate::models::ModelAllowlist,
 ) -> Result<String> {
     let model = resolve_child_model_unchecked(agent_dir, reference, parent_model, target)?;
-    pa_core::models::assert_model_allowed(allowlist, &model)?;
+    crate::models::assert_model_allowed(allowlist, &model)?;
     Ok(model)
 }
 
@@ -107,7 +115,7 @@ pub fn resolve_child_model_unchecked(
             let parent_provider = parent_model
                 .and_then(|parent| parent.split_once('/'))
                 .map(|(provider, _)| provider);
-            if let Some(model) = pa_core::models::pick_bare_model_id(
+            if let Some(model) = crate::models::pick_bare_model_id(
                 reference,
                 &short_matches,
                 |model| (model.provider.as_str(), model.id.as_str()),
@@ -137,7 +145,7 @@ pub fn assert_thinking_supported(
     let Some((provider, id)) = selector.split_once('/') else {
         return Ok(());
     };
-    let registry = crate::state_getters::worker_model_registry(agent_dir);
+    let registry = model_registry(agent_dir);
     let Some(model) = registry
         .get_rlm_searchable_models()
         .into_iter()
@@ -190,7 +198,7 @@ fn model_unavailable_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pa_core::models::ModelAllowlist;
+    use crate::models::ModelAllowlist;
     use serde_json::json;
 
     /// A models.json custom provider, like the pa-core registry tests.
@@ -275,7 +283,7 @@ mod tests {
     fn the_allowlist_refuses_resolved_models_loudly() {
         let dir = tempfile::TempDir::new().unwrap();
         write_catalog(dir.path());
-        let allow = pa_core::models::ModelAllowlist::Allowed(vec!["prime-inference/*".to_string()]);
+        let allow = crate::models::ModelAllowlist::Allowed(vec!["prime-inference/*".to_string()]);
         // An explicit reference outside the allowlist fails with the typed refusal.
         let error = resolve_child_model(
             dir.path(),
@@ -286,7 +294,7 @@ mod tests {
         )
         .unwrap_err();
         let refusal = error
-            .downcast_ref::<pa_core::models::ModelAllowlistRefusal>()
+            .downcast_ref::<crate::models::ModelAllowlistRefusal>()
             .expect("typed refusal");
         assert_eq!(refusal.selector, "test-provider/glm-5.3");
         assert!(
@@ -307,7 +315,7 @@ mod tests {
         .unwrap_err();
         assert!(
             error
-                .downcast_ref::<pa_core::models::ModelAllowlistRefusal>()
+                .downcast_ref::<crate::models::ModelAllowlistRefusal>()
                 .is_some(),
             "{error}"
         );
@@ -316,7 +324,7 @@ mod tests {
             Some("test-provider/glm-5.3"),
             None,
             "subagent",
-            &pa_core::models::ModelAllowlist::Allowed(vec!["test-provider/*".to_string()]),
+            &crate::models::ModelAllowlist::Allowed(vec!["test-provider/*".to_string()]),
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
@@ -406,7 +414,7 @@ mod tests {
         .unwrap();
         // The entitled private model: the compiled fallback lacks it, the
         // account's scoped Prime Inference snapshot carries it.
-        let mut auth = pa_core::auth::AuthStorage::create(dir.path());
+        let mut auth = crate::auth::AuthStorage::create(dir.path());
         let api_key = auth.get_api_key("prime-inference").expect("api key");
         // The snapshot below is written for whatever pair resolves (an
         // ambient `PRIME_API_KEY` on a dogfood box changes the pair).
@@ -439,7 +447,7 @@ mod tests {
         std::fs::write(
             dir.path().join("models/prime-inference-models-cache.json"),
             json!({
-                "url": format!("{}/models", pa_core::models::PRIME_INFERENCE_BASE_URL),
+                "url": format!("{}/models", crate::models::PRIME_INFERENCE_BASE_URL),
                 "scope": pa_models::prime_inference::scope_key(&api_key, &team_id),
                 "fetchedAt": 1,
                 "payload": { "data": data },

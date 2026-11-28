@@ -16,7 +16,9 @@
 //!   `deleted`.
 //! - **Passive children**: the saved catalog walks the ledger from its rows
 //!   and the sessions the runtime runs for the children no root it runs or
-//!   lists keeps (pa-core's `rlm_roster`, the old supervisor's walk).
+//!   lists keeps (pa-core's `rlm_roster`, the old supervisor's walk), and
+//!   the live roster seeds an open root's ledger family
+//!   ([`DaemonFamily::family_below`], `daemon/handlers/feeds.rs`).
 //!
 //! The ledger's own writes are durable, single `O_APPEND` records, and run
 //! on the blocking pool. A family with no transcripts (a parent kept in
@@ -191,6 +193,28 @@ impl DaemonFamily {
     ) -> anyhow::Result<Vec<PassiveRlmChild>> {
         self.on_ledger(move |ledger| walk_passive_rlm_children(ledger, &roots))
             .await
+    }
+
+    /// The live family the ledger records below the root transcript
+    /// `root_file` (every depth, canonical endpoints, walk order): the
+    /// roster's seed for an open root (the old supervisor's registration
+    /// seed).
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read.
+    pub(crate) async fn family_below(
+        &self,
+        root_file: PathBuf,
+    ) -> anyhow::Result<Vec<RlmLedgerEdge>> {
+        self.on_ledger(move |ledger| {
+            Ok(ledger
+                .family_edges([root_file])?
+                .into_iter()
+                .filter(|edge| ledger.edge_is_live(&edge.child_id, &edge.child))
+                .collect())
+        })
+        .await
     }
 
     /// The live children the ledger records under the parent transcript

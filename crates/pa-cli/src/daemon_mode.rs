@@ -77,22 +77,29 @@ pub fn run_daemon_mode(options: &RunOptions) -> Result<i32> {
     // it, with the records of the daemon it keeps. Nothing of the session engine is built on
     // this path.
     #[cfg(unix)]
-    if std::env::var_os(pa_daemon::keeper::KEEPER_ENV).is_some() {
+    if std::env::var_os(pa_runtime::daemon::keeper::KEEPER_ENV).is_some() {
         let (socket_path, daemon) = if runtime_selected {
             (
                 pa_runtime::daemon::socket_path(&socket_path),
-                pa_daemon::keeper::KeptDaemon::Runtime,
+                pa_runtime::daemon::keeper::KeptDaemon::Runtime,
             )
         } else {
-            (socket_path, pa_daemon::keeper::KeptDaemon::Supervisor)
+            (
+                socket_path,
+                pa_runtime::daemon::keeper::KeptDaemon::Supervisor {
+                    count_sessions: pa_daemon::descriptor::hosted_session_counts,
+                },
+            )
         };
-        return pa_daemon::keeper::run_keeper(&pa_daemon::keeper::KeeperOptions {
-            exe: std::env::current_exe()?,
-            args: std::env::args_os().skip(1).collect(),
-            socket_path,
-            agent_dir,
-            daemon,
-        });
+        return pa_runtime::daemon::keeper::run_keeper(
+            &pa_runtime::daemon::keeper::KeeperOptions {
+                exe: std::env::current_exe()?,
+                args: std::env::args_os().skip(1).collect(),
+                socket_path,
+                agent_dir,
+                daemon,
+            },
+        );
     }
     if runtime_selected {
         return crate::print_runtime::daemon_session::run_runtime_daemon(

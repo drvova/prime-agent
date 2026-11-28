@@ -7,9 +7,9 @@
 
 mod support;
 
-use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use support::UnixListener;
 
 /// Mouse tracking is process-global state, so the headless runs serialize (each asserts on the
 /// tracking-active branch it drives).

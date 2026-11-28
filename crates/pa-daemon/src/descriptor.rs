@@ -200,13 +200,6 @@ pub struct PersistedSupervisorConfig {
     pub default_session_dir: Option<String>,
 }
 
-#[must_use]
-pub fn descriptor_dir(agent_dir: &Path, socket_path: &Path) -> PathBuf {
-    agent_dir
-        .join("daemon-workers")
-        .join(crate::paths::hash_key(&socket_path.to_string_lossy(), 12))
-}
-
 /// The temp file's durability posture before the rename: the port of TS
 /// `writeFileAtomicSync`'s per-call-site `fsync` option (the same
 /// per-site variance the worker journal's `Finalize` enum models for its
@@ -391,6 +384,28 @@ pub(crate) fn clear_identity_pending(descriptor_path: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(anyhow!("remove the identity-pending record: {error}")),
     }
+}
+
+/// The sessions a dead supervisor's records show, for its keeper's death
+/// record (`pa_runtime::daemon::keeper::KeptDaemon::Supervisor`): the workers
+/// it hosted that had not failed, and how many of them were mid-turn.
+#[must_use]
+pub fn hosted_session_counts(dir: &Path, supervisor_socket_path: &Path) -> (u64, u64) {
+    let hosted: Vec<_> = load_descriptors(dir, supervisor_socket_path)
+        .into_iter()
+        .filter(|(_, descriptor)| {
+            descriptor.lifecycle != pa_types::daemon::DaemonWorkerLifecycle::Failed
+        })
+        .collect();
+    let busy = hosted
+        .iter()
+        .filter(|(_, descriptor)| {
+            crate::journal::WorkerRecoveryJournal::read_interrupted(Path::new(
+                &descriptor.recovery_journal_path,
+            ))
+        })
+        .count();
+    (hosted.len() as u64, busy as u64)
 }
 
 #[must_use]

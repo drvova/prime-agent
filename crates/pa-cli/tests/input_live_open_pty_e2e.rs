@@ -5,7 +5,7 @@
 //! mounted — the session open (create, attach, the dock folds, every
 //! daemon readiness behind them) runs in the background, so the echo
 //! never waits on it (TS `init()`: `ui.start()` is live before
-//! `rebindCurrentSession()` awaits). The mock supervisor stalls the
+//! `rebindCurrentSession()` awaits). The mock runtime stalls the
 //! `attach` response far past the echo deadline, so an open-gated input
 //! path cannot fake a pass.
 //!
@@ -15,7 +15,10 @@
 
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader, Read, Write};
+#[path = "support/mock_runtime.rs"]
+mod mock_runtime;
+
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -27,6 +30,7 @@ use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
 
+use mock_runtime::{Answer, MockRuntime};
 use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
 };
@@ -35,7 +39,7 @@ use pa_tui::interactive::{
 /// binary is re-executed as the product-under-test.
 const CHILD_SOCKET_ENV: &str = "PA_INPUT_LIVE_CHILD_SOCKET";
 
-/// How long the mock supervisor holds the `attach` response: far past the
+/// How long the mock runtime holds the `attach` response: far past the
 /// echo deadline below, so the open is provably still in flight while the
 /// keystrokes are expected to echo.
 const OPEN_STALL_MS: u64 = 2_500;
@@ -50,7 +54,7 @@ const PTY_ROWS: usize = 24;
 const PTY_COLS: usize = 80;
 
 /// The child half of the e2e: runs the real interactive loop in terminal
-/// mode against the parent's mock supervisor. A plain `cargo test` run
+/// mode against the parent's mock runtime. A plain `cargo test` run
 /// (no `CHILD_SOCKET_ENV`) passes trivially — only the parent test drives
 /// the real path.
 #[test]
@@ -58,6 +62,7 @@ fn input_live_open_child_mode() {
     let Ok(socket) = std::env::var(CHILD_SOCKET_ENV) else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = child_options(PathBuf::from(socket));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -119,7 +124,7 @@ fn typing_echoes_while_the_session_open_is_stalled() {
         "the keystroke echo (byte {echo_at}) painted only after the          attach's content frame (byte {content_at}): the input path was          open-gated"
     );
 
-    // The typed-ahead submit was delivered: the mock supervisor saw the
+    // The typed-ahead submit was delivered: the mock runtime saw the
     // prompt carrying the typed text.
     let deadline = Instant::now() + Duration::from_secs(10);
     let submitted = loop {
@@ -153,7 +158,7 @@ fn session_runner() -> bool {
     true
 }
 
-/// One pty-backed product child plus the mock supervisor it opens against.
+/// One pty-backed product child plus the mock runtime it opens against.
 struct InputLiveHarness {
     child: Child,
     server: Option<std::thread::JoinHandle<()>>,
@@ -172,11 +177,11 @@ impl InputLiveHarness {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let socket = dir.path().join("tui.sock");
         let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let supervisor = MockSupervisor::bind(&socket);
+        let mock = MockRuntime::bind(&socket);
         let server = {
             let connected = Arc::clone(&connected);
             Some(std::thread::spawn(move || {
-                supervisor.serve(&commands, &connected);
+                serve(&mock, &commands, &connected);
             }))
         };
         let pty = openpty(
@@ -430,13 +435,15 @@ impl PtyReader {
     }
 }
 
-/// The mock's recorded commands: one line per received command envelope.
+/// The mock's recorded requests: one line per received request, the prompt's as a publish.
 fn find_prompt_with(commands: &Arc<Mutex<Vec<String>>>, text: &str) -> Option<String> {
     commands
         .lock()
         .expect("commands")
         .iter()
-        .find(|line| line.contains("\"prompt\"") && line.contains(text))
+        .find(|line| {
+            line.starts_with(&format!("{}: ", mock_runtime::PUBLISH)) && line.contains(text)
+        })
         .cloned()
 }
 
@@ -507,137 +514,44 @@ fn child_options(socket: PathBuf) -> InteractiveOptions {
     }
 }
 
-/// The supervisor stand-in: the `create` answers immediately, the
-/// `attach` stalls past the echo deadline, everything else answers
-/// generically. Every received command is recorded for the typed-ahead
-/// submit assertion.
-struct MockSupervisor {
-    listener: std::os::unix::net::UnixListener,
-    socket_path: std::path::PathBuf,
-}
-
-impl MockSupervisor {
-    fn bind(socket: &std::path::Path) -> MockSupervisor {
-        MockSupervisor {
-            listener: std::os::unix::net::UnixListener::bind(socket).expect("bind mock socket"),
-            socket_path: socket.to_path_buf(),
-        }
-    }
-
-    fn serve(self, commands: &Arc<Mutex<Vec<String>>>, connected: &std::sync::atomic::AtomicBool) {
-        let (stream, _) = self.listener.accept().expect("accept");
-        connected.store(true, std::sync::atomic::Ordering::SeqCst);
-        let write_stream = stream.try_clone().expect("clone mock socket");
-        let mut writer = write_stream;
-        let mut reader = BufReader::new(stream);
-
-        let hello = json!({
-            "type": "daemon_hello",
-            "socketPath": self.socket_path.display().to_string(),
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "serverCapabilities": ["kernel_bash_activity"],
-            "clientId": "mock",
-        });
-        write_json(&mut writer, &hello);
-
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
+/// The runtime stand-in: `session.create` answers immediately, `session.attach` stalls past the
+/// echo deadline, everything else answers generically. Every received request is recorded for the
+/// typed-ahead submit assertion.
+fn serve(
+    mock: &MockRuntime,
+    commands: &Arc<Mutex<Vec<String>>>,
+    connected: &std::sync::atomic::AtomicBool,
+) {
+    let (stream, _) = mock.listener().accept().expect("accept");
+    connected.store(true, std::sync::atomic::Ordering::SeqCst);
+    let identity = mock_runtime::identity(&["kernel_bash_activity"]);
+    mock_runtime::serve_connection(stream, &identity, None, |request| {
+        commands
+            .lock()
+            .expect("commands")
+            .push(format!("{}: {}", request.name, request.args));
+        match request.name {
+            "session.create" => Answer::Result(mock_runtime::created()),
+            "session.attach" => {
+                // The stall: the open is provably in flight while the
+                // keystrokes are expected to echo.
+                std::thread::sleep(Duration::from_millis(OPEN_STALL_MS));
+                Answer::Result(attach_data())
             }
-            let Ok(envelope) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            let id = envelope.get("id").and_then(Value::as_str).unwrap_or("");
-            let command = envelope.get("command").cloned().unwrap_or(Value::Null);
-            let command_type = command
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            commands
-                .lock()
-                .expect("commands")
-                .push(format!("{command_type}: {command}"));
-            match command_type.as_str() {
-                "create" => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "create",
-                            "success": true,
-                            "data": { "activeSessionId": "s1", "sessionId": "sess-1" },
-                        }),
-                    );
-                }
-                "attach" => {
-                    // The stall: the open is provably in flight while the
-                    // keystrokes are expected to echo.
-                    std::thread::sleep(Duration::from_millis(OPEN_STALL_MS));
-                    write_json(&mut writer, &attach_data(id));
-                }
-                _ => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": command_type,
-                            "success": true,
-                            "data": {},
-                        }),
-                    );
-                }
-            }
+            _ => Answer::Default,
         }
-    }
-}
-
-fn write_json(writer: &mut std::os::unix::net::UnixStream, value: &Value) {
-    let mut line = serde_json::to_string(value).expect("serialize mock frame");
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("write mock frame");
-    writer.flush().expect("flush mock frame");
+    });
 }
 
 /// The attach result: one live session whose transcript carries a marker
 /// row — the content frame the fold paints once the stall ends.
-fn attach_data(id: &str) -> Value {
-    json!({
-        "type": "response",
-        "id": id,
-        "command": "attach",
-        "success": true,
-        "data": {
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "activeSessionId": "s1",
-            "snapshot": {
-                "activeSessionId": "s1",
-                "summary": { "id": "s1", "cwd": "/tmp" },
-                "state": {
-                    "activeSessionId": "s1",
-                    "cwd": "/tmp",
-                    "sessionId": "sess-1",
-                    "sessionName": "input live probe",
-                    "model": "faux-1",
-                    "isStreaming": false,
-                    "isCompacting": false,
-                    "sessionActions": { "queuedCount": 0, "steering": [], "followUps": [] },
-                },
-                "messages": [
-                    { "role": "user", "content": "openprobe marker question", "timestamp": 1 },
-                    { "role": "assistant", "content": "openprobe settled answer", "provider": "scripted", "model": "faux-1", "timestamp": 2 },
-                ],
-                "lastEventSequence": 0,
-                "lastEventCursor": null,
-            },
-            "client": { "id": "mock", "capabilities": [] },
-            "lastEventSequence": 0,
-            "lastEventCursor": null,
-        },
-    })
+fn attach_data() -> Value {
+    mock_runtime::attached(
+        "input live probe",
+        Some("faux-1"),
+        &[
+            json!({ "role": "user", "content": "openprobe marker question", "timestamp": 1 }),
+            json!({ "role": "assistant", "content": "openprobe settled answer", "provider": "scripted", "model": "faux-1", "timestamp": 2 }),
+        ],
+    )
 }

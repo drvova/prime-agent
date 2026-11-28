@@ -69,7 +69,7 @@ pub fn spawn_supervisor(
     // The successor runs under its own restart owner (see `pa_daemon::keeper`); a rollback
     // binary that predates the owner ignores the variable and runs unkept.
     #[cfg(unix)]
-    command.env(pa_daemon::keeper::KEEPER_ENV, "1");
+    command.env(pa_runtime::daemon::keeper::KEEPER_ENV, "1");
     #[cfg(unix)]
     pa_core::platform::process::set_new_session(&mut command);
     #[cfg(not(unix))]

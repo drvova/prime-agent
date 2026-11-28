@@ -15,6 +15,7 @@ use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::registry::ResidentWorker;
 use crate::supervisor::{ClientRouting, Supervisor, ROUTE_TIMEOUT_MS};
 use pa_core::session::lease::canonical_session_path;
+use pa_core::session_engine::rlm_roster::passivated_summary;
 
 /// `worker_roster_delta`'s parsed frame. `sequence` feeds the stale-delta
 /// gate (the per-worker watermark drops a delayed older snapshot);
@@ -476,71 +477,6 @@ impl Supervisor {
             std::sync::Arc::new(payload),
         ));
     }
-}
-
-/// TS `passivatedWorkerRosterEntry`: keep every durable display field,
-/// strip only the live-runtime fields (heartbeat/cron marks survive).
-fn passivated_summary(summary: Value) -> Value {
-    let mut summary = summary;
-    let Some(object) = summary.as_object_mut() else {
-        return summary;
-    };
-    let keep_heartbeat = object
-        .get("hasRegisteredHeartbeat")
-        .and_then(Value::as_bool)
-        == Some(true);
-    let keep_cron = object.get("hasRegisteredCronJob").and_then(Value::as_bool) == Some(true);
-    for key in [
-        "activeSessionId",
-        "directAttachedClients",
-        "hasActiveHeartbeat",
-        "hasRegisteredHeartbeat",
-        "hasRegisteredCronJob",
-        "hasRunningRlmChildren",
-        "isBashRunning",
-        "isRunningTools",
-        "workerState",
-        "workerPid",
-    ] {
-        object.remove(key);
-    }
-    object.insert("activity".to_string(), json!("idle"));
-    object.insert("isSessionActive".to_string(), json!(false));
-    object.insert("isStreaming".to_string(), json!(false));
-    object.insert("isCompacting".to_string(), json!(false));
-    object.insert("attachedClients".to_string(), json!(0));
-    if keep_heartbeat {
-        object.insert("hasRegisteredHeartbeat".to_string(), json!(true));
-    }
-    if keep_cron {
-        object.insert("hasRegisteredCronJob".to_string(), json!(true));
-    }
-    if let Some(session_id) = object.get("sessionId").and_then(Value::as_str) {
-        object.insert("id".to_string(), json!(session_id));
-    }
-    normalize_model_to_durable_pair(object);
-    summary
-}
-
-/// The passivated row's `model` is the DURABLE pair `{provider, modelId}` the ledger-seed hydrate
-/// writes and the agents view reads; a live summary's fuller descriptor collapses to it.
-fn normalize_model_to_durable_pair(object: &mut serde_json::Map<String, Value>) {
-    let Some(model) = object.get("model") else {
-        return;
-    };
-    let Some(provider) = model.get("provider").and_then(Value::as_str) else {
-        return;
-    };
-    if model.get("modelId").and_then(Value::as_str).is_some() {
-        return;
-    }
-    let Some(model_id) = model.get("id").and_then(Value::as_str) else {
-        return;
-    };
-    object.insert(
-        "model".to_string(),
-        json!({ "provider": provider, "modelId": model_id }),
-    );
 }
 
 /// Drain the pushed roster frames (the events a subscribed client

@@ -44,7 +44,7 @@ pub(super) fn force_kill_daemon(pid: u32) -> bool {
 /// intent itself; this covers the one that never answered. The kill proceeds either way.
 pub(super) fn mark_deliberate_stop(socket_path: &Path) {
     if let Err(error) =
-        pa_daemon::keeper::record_stop_intent(&crate::config::get_agent_dir(), socket_path)
+        pa_runtime::daemon::keeper::record_stop_intent(&crate::config::get_agent_dir(), socket_path)
     {
         eprintln!(
             "Warning: could not record the stop for the daemon's restart owner ({error:#}); the daemon may be started again."

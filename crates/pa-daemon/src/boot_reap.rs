@@ -303,9 +303,10 @@ pub(crate) fn is_our_worker_socket(path: &str, supervisor_socket: &Path) -> bool
     let Some(name) = Path::new(path).file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    let key = crate::paths::hash_key(&supervisor_socket.to_string_lossy(), 12);
+    let key =
+        pa_core::platform::daemon_endpoint::hash_key(&supervisor_socket.to_string_lossy(), 12);
     normalize_socket_spelling(Path::new(path).parent().unwrap_or(Path::new(path)))
-        == normalize_socket_spelling(&crate::platform::socket_dir())
+        == normalize_socket_spelling(&pa_core::platform::daemon_endpoint::socket_dir())
         && name.starts_with(&format!("worker-{key}-"))
         && Path::new(name).extension().is_some_and(|ext| ext == "sock")
 }
@@ -356,7 +357,7 @@ fn same_socket_supervisor_targets(
     for pid in numeric_proc_entries() {
         // This daemon's restart owner runs the same command line; it is not a predecessor.
         if pid == std::process::id()
-            || Some(pid) == crate::keeper::keeper_pid()
+            || Some(pid) == pa_runtime::daemon::keeper::keeper_pid()
             || runtime_daemon.contains(&pid)
         {
             continue;
@@ -793,8 +794,10 @@ mod tests {
     #[test]
     fn our_worker_socket_names_only() {
         let supervisor = Path::new("/tmp/prime-agent-1000/daemon.sock");
-        let key = crate::paths::hash_key(&supervisor.to_string_lossy(), 12);
-        let dir = crate::platform::socket_dir().to_string_lossy().to_string();
+        let key = pa_core::platform::daemon_endpoint::hash_key(&supervisor.to_string_lossy(), 12);
+        let dir = pa_core::platform::daemon_endpoint::socket_dir()
+            .to_string_lossy()
+            .to_string();
         let ours = format!("{dir}/worker-{key}-abcdef123456.sock");
         assert!(
             is_our_worker_socket(&ours, supervisor),

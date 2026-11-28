@@ -34,7 +34,7 @@ pub fn resolve_daemon_socket_path(daemon_socket: Option<&str>) -> PathBuf {
                 .as_deref()
                 .map(expand_tilde_path_os)
         })
-        .unwrap_or_else(pa_daemon::socket::default_daemon_socket_path)
+        .unwrap_or_else(pa_core::platform::daemon_endpoint::default_daemon_socket_path)
 }
 
 /// [`expand_tilde_path`] over a raw environment value: anything but a
@@ -169,7 +169,7 @@ mod tests {
     /// The flag/env/default order is the co-existence contract (the launcher pins the env).
     #[test]
     fn daemon_socket_resolution_prefers_flag_then_env_then_default() {
-        let default = pa_daemon::socket::default_daemon_socket_path();
+        let default = pa_core::platform::daemon_endpoint::default_daemon_socket_path();
         std::env::set_var(ENV_DAEMON_SOCKET, "/tmp/rust-launcher.sock");
         assert_eq!(
             resolve_daemon_socket_path(None),

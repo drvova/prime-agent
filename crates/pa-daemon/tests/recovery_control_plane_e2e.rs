@@ -228,7 +228,7 @@ fn control_plane_stays_responsive_while_a_large_adoption_pass_recovers() {
     let restart_before = pa_daemon::util::now_iso();
     let _daemon2 = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
 
     // The control plane answers mid-recovery: hello within the latency bound while
     // the pass is visibly unfinished (fewer than twelve revived sessions registered).

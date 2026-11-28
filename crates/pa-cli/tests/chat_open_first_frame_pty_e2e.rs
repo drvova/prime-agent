@@ -1,11 +1,14 @@
 //! Real-pty e2e for the chat-open first frame (the operator's 2026-09-26
-//! layout-shift report): a direct open over a mock supervisor that delays
+//! layout-shift report): a direct open over a mock runtime that delays
 //! the dock's data responses must paint ONE complete frame (transcript,
 //! pinned title row, dock) and never paint the brand splash.
 
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
+#[path = "support/mock_runtime.rs"]
+mod mock_runtime;
+
+use std::io::Read;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -17,6 +20,7 @@ use nix::pty::{openpty, Winsize};
 use nix::unistd::Pid;
 use serde_json::{json, Value};
 
+use mock_runtime::{Answer, MockRuntime, Request};
 use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
 };
@@ -29,13 +33,14 @@ const CHILD_SOCKET_ENV: &str = "PA_CHAT_OPEN_CHILD_SOCKET";
 /// past any honest first frame, inside the attach's bounded waits.
 const DOCK_DATA_DELAY_MS: u64 = 300;
 
-/// The child half: runs the real interactive loop against the parent's mock supervisor; a
+/// The child half: runs the real interactive loop against the parent's mock runtime; a
 /// plain `cargo test` run passes trivially.
 #[test]
 fn chat_open_first_frame_child_mode() {
     let Ok(socket) = std::env::var(CHILD_SOCKET_ENV) else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = child_options(PathBuf::from(socket));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -125,10 +130,10 @@ fn session_runner() -> bool {
     true
 }
 
-/// One pty-backed product child plus the mock supervisor it attaches to.
+/// One pty-backed product child plus the mock runtime it attaches to.
 struct ChatOpenHarness {
     child: Child,
-    /// The mock-supervisor server thread's join handle (it exits with the child's connection).
+    /// The mock-runtime server thread's join handle (it exits with the child's connection).
     _server: std::thread::JoinHandle<()>,
     master: PtyReader,
     /// The socket's temp dir, removed whenever the harness drops (after
@@ -140,8 +145,8 @@ impl ChatOpenHarness {
     fn start() -> ChatOpenHarness {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let socket = dir.path().join("tui.sock");
-        let supervisor = MockSupervisor::bind(&socket);
-        let server = std::thread::spawn(move || supervisor.serve());
+        let mock = MockRuntime::bind(&socket).with_capabilities(&["kernel_bash_activity"]);
+        let server = std::thread::spawn(move || mock.serve_first(answer));
 
         let pty = openpty(
             Some(&Winsize {
@@ -335,162 +340,51 @@ fn child_options(socket: PathBuf) -> InteractiveOptions {
     }
 }
 
-/// One attached session behind a mock supervisor socket: the attach snapshot
-/// carries a settled exchange; the dock's data requests answer after the delay.
-struct MockSupervisor {
-    listener: std::os::unix::net::UnixListener,
-}
-
-impl MockSupervisor {
-    fn bind(socket: &std::path::Path) -> Self {
-        MockSupervisor {
-            listener: std::os::unix::net::UnixListener::bind(socket).expect("bind mock socket"),
+/// One attached session behind the mock runtime: the attach snapshot carries a settled exchange;
+/// the dock's data requests answer after the delay.
+fn answer(request: &Request<'_>) -> Answer {
+    match request.name {
+        "session.attach" => Answer::Result(attach_data()),
+        "schedules" => {
+            std::thread::sleep(Duration::from_millis(DOCK_DATA_DELAY_MS));
+            Answer::Result(json!({
+                "jobs": [
+                    {
+                        "id": "hb-1",
+                        "status": "active",
+                        "source": "heartbeat",
+                        "activeSessionId": "s1",
+                        "sessionId": "sess-1",
+                        "schedule": {"kind": "interval", "expression": "every 30m"},
+                    },
+                ],
+            }))
         }
-    }
-
-    fn serve(self) {
-        let Ok((stream, _)) = self.listener.accept() else {
-            return;
-        };
-        let write_stream = stream.try_clone().expect("clone mock socket");
-        let mut writer = write_stream;
-        let mut reader = std::io::BufReader::new(stream);
-        write_json(
-            &mut writer,
-            &json!({
-                "type": "daemon_hello",
-                "protocol": { "name": "prime-agent.daemon", "version": 7 },
-                "serverCapabilities": ["kernel_bash_activity"],
-                "clientId": "mock",
-            }),
-        );
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let Ok(envelope) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            let id = envelope.get("id").and_then(Value::as_str).unwrap_or("");
-            let command = envelope.get("command").cloned().unwrap_or(Value::Null);
-            let command_type = command
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            match command_type.as_str() {
-                "attach" => {
-                    write_json(&mut writer, &attach_data(id));
-                }
-                "heartbeats_list" => {
-                    std::thread::sleep(Duration::from_millis(DOCK_DATA_DELAY_MS));
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "heartbeats_list",
-                            "success": true,
-                            "data": {
-                                "heartbeats": [
-                                    {
-                                        "job": {
-                                            "id": "hb-1",
-                                            "status": "active",
-                                            "source": "heartbeat",
-                                            "activeSessionId": "s1",
-                                            "sessionId": "sess-1",
-                                            "schedule": {"kind": "interval", "expression": "every 30m"},
-                                        },
-                                        "sessionName": "layout probe",
-                                    },
-                                ],
-                            },
-                        }),
-                    );
-                }
-                "list_kernel_bash" => {
-                    std::thread::sleep(Duration::from_millis(DOCK_DATA_DELAY_MS));
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "list_kernel_bash",
-                            "success": true,
-                            "data": {
-                                "activities": [
-                                    {
-                                        "id": "run-1",
-                                        "command": "echo settled",
-                                        "status": "finished",
-                                        "exitCode": 0,
-                                    },
-                                ],
-                            },
-                        }),
-                    );
-                }
-                _ => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": command_type,
-                            "success": true,
-                            "data": {},
-                        }),
-                    );
-                }
-            }
+        "session.kernel_bash" => {
+            std::thread::sleep(Duration::from_millis(DOCK_DATA_DELAY_MS));
+            Answer::Result(json!({
+                "activities": [
+                    {
+                        "id": "run-1",
+                        "command": "echo settled",
+                        "status": "finished",
+                        "exitCode": 0,
+                    },
+                ],
+            }))
         }
+        _ => Answer::Default,
     }
-}
-
-fn write_json(writer: &mut std::os::unix::net::UnixStream, value: &Value) {
-    let mut line = serde_json::to_string(value).expect("serialize mock frame");
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("write mock frame");
-    writer.flush().expect("flush mock frame");
 }
 
 /// The attach result: one live session with a settled exchange — a direct open into content.
-fn attach_data(id: &str) -> Value {
-    json!({
-        "type": "response",
-        "id": id,
-        "command": "attach",
-        "success": true,
-        "data": {
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "activeSessionId": "s1",
-            "snapshot": {
-                "activeSessionId": "s1",
-                "summary": { "id": "s1", "cwd": "/tmp" },
-                "state": {
-                    "activeSessionId": "s1",
-                    "cwd": "/tmp",
-                    "sessionId": "sess-1",
-                    "sessionName": "layout probe",
-                    "model": "faux-1",
-                    "isStreaming": false,
-                    "isCompacting": false,
-                    "sessionActions": { "queuedCount": 0, "steering": [], "followUps": [] },
-                },
-                "messages": [
-                    { "role": "user", "content": "hello", "timestamp": 1 },
-                    { "role": "assistant", "content": "settled answer", "provider": "scripted", "model": "faux-1", "timestamp": 2 },
-                ],
-                "lastEventSequence": 0,
-                "lastEventCursor": null,
-            },
-            "client": { "id": "mock", "capabilities": [] },
-            "lastEventSequence": 0,
-            "lastEventCursor": null,
-        },
-    })
+fn attach_data() -> Value {
+    mock_runtime::attached(
+        "layout probe",
+        Some("faux-1"),
+        &[
+            json!({ "role": "user", "content": "hello", "timestamp": 1 }),
+            json!({ "role": "assistant", "content": "settled answer", "provider": "scripted", "model": "faux-1", "timestamp": 2 }),
+        ],
+    )
 }

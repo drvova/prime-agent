@@ -306,7 +306,7 @@ fn the_client_launch_env_reaches_only_its_own_session() {
     run_one_turn(&mut client, &session_b, "b");
     run_one_turn(&mut client, &session_a, "a");
 
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket);
     let hosted = |session: &str| {
         let bytes = std::fs::read_to_string(descriptor_dir.join(format!("{session}.json")))
             .expect("descriptor");

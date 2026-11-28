@@ -202,7 +202,7 @@ fn session_file_of(client: &mut Client, active_id: &str) -> PathBuf {
 /// The descriptor's path and the worker pid it names (the retirement
 /// removes the file when the stop proves the process gone).
 fn worker_descriptor_of(agent_dir: &Path, socket: &Path, session_id: &str) -> (PathBuf, u32) {
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket);
     let found = std::fs::read_dir(&descriptor_dir)
         .expect("descriptor dir readable")
         .flatten()
@@ -275,8 +275,10 @@ fn a_well_behaved_worker_keeps_the_clean_stop() {
         "the cleanly stopped worker's descriptor must be gone"
     );
     assert_eq!(session_state(&session_file), "archived");
-    let log = std::fs::read_to_string(pa_daemon::paths::daemon_log_path(&socket, &agent_dir))
-        .unwrap_or_default();
+    let log = std::fs::read_to_string(pa_core::platform::daemon_endpoint::daemon_log_path(
+        &socket, &agent_dir,
+    ))
+    .unwrap_or_default();
     assert!(
         !log.contains("survived the shutdown escalation"),
         "the clean stop must not log a survivor: {log}"

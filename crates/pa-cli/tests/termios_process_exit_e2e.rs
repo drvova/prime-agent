@@ -21,6 +21,8 @@
 mod harness;
 #[path = "terminal_state_differential_e2e/ledger.rs"]
 mod ledger;
+#[path = "support/mock_runtime.rs"]
+mod mock_runtime;
 
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
@@ -43,7 +45,7 @@ const KITTY_QUERY: &[u8] = b"\x1b[?u";
 const KITTY_ANSWER: &[u8] = b"\x1b[?7u\x1b[?62;c";
 /// The child-mode env: which surface the re-executed binary runs.
 const CHILD_MODE_ENV: &str = "PA_TERMIOS_CHILD_MODE";
-/// The mock-supervisor socket for the chat/view surfaces.
+/// The mock-runtime socket for the chat/view surfaces.
 const CHILD_SOCKET_ENV: &str = "PA_TERMIOS_CHILD_SOCKET";
 /// TERM the children run with: answers the kitty query, no shortcut.
 const CHILD_TERM: &str = "xterm-256color";
@@ -60,12 +62,13 @@ const PREMOUNT_MARKER: &[u8] = b"termios-premount-gate\r\n";
 // The child modes (spawn_child maps the mode names to these tests).
 
 /// The chat child: the real interactive surface against the mock
-/// supervisor (a plain run passes trivially).
+/// runtime (a plain run passes trivially).
 #[test]
 fn diff_chat_child_mode() {
     let Some(socket) = std::env::var(CHILD_SOCKET_ENV).ok() else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     // The pre-mount gate: the child sits in the cooked window until the
     // harness arms the Ctrl+S stop and releases it.
     if std::env::var(CHILD_PREMOUNT_GATE_ENV).is_ok() {
@@ -98,6 +101,7 @@ fn diff_view_child_mode() {
     let Some(socket) = std::env::var(CHILD_SOCKET_ENV).ok() else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = harness::view_options(PathBuf::from(socket), None);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -383,7 +387,7 @@ impl SuspendCycleHarness {
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind mock socket");
         let server = std::thread::spawn({
             let listener = listener.try_clone().expect("clone mock listener");
-            move || harness::MockSupervisor::serve(&listener, &[])
+            move || harness::serve_mock_runtime(&listener, &[])
         });
         drop(listener);
 
