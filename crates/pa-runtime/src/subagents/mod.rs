@@ -202,6 +202,14 @@ impl Subagents {
         lock(&self.nodes).get(id).cloned()
     }
 
+    /// Records `name` as open session `id`'s name (a client's rename): what
+    /// its family's `agent_observe.*` and its delivered rows name it by.
+    pub(crate) fn set_session_name(&self, id: &str, name: &str) {
+        if let Some(node) = self.node(id) {
+            *lock(&node.session_name) = Some(name.to_string());
+        }
+    }
+
     /// The stream of the open session `id`.
     pub(crate) fn stream(&self, id: &str) -> Option<Arc<SessionStream>> {
         self.node(id).map(|node| Arc::clone(&node.stream))

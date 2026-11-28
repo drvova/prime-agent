@@ -350,11 +350,22 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 
     async fn rename(&self, args: &Value) -> anyhow::Result<Value> {
         let name = string_arg(args, "name")?;
-        self.change(args, move |manager| {
-            manager.append_session_info(&name)?;
-            Ok(json!({ "session": manager.get_session_id(), "name": name }))
-        })
-        .await
+        let id = string_arg(args, "session")?;
+        if let Some(renamed) = self.runtime.subagents().rename_subagent(&id, &name).await {
+            renamed?;
+            return Ok(json!({ "session": id, "name": name }));
+        }
+        let renamed = name.clone();
+        let reply = self
+            .change(args, move |manager| {
+                manager.append_session_info(&renamed)?;
+                Ok(json!({ "session": manager.get_session_id(), "name": renamed }))
+            })
+            .await?;
+        if let Some(id) = reply["session"].as_str() {
+            self.runtime.subagents().set_session_name(id, &name);
+        }
+        Ok(reply)
     }
 
     async fn label(&self, args: &Value) -> anyhow::Result<Value> {

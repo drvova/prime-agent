@@ -394,6 +394,16 @@ impl RlmSubagentHost for SessionSubagents {
     }
 }
 
+impl Subagents {
+    /// A client's rename of running subagent `id` (`session.rename`), as its
+    /// own `rlm.rename` does: the name row, the node's name and the spawn
+    /// ledger's edge. `None` when the runtime runs no subagent `id`.
+    pub(crate) async fn rename_subagent(&self, id: &str, name: &str) -> Option<anyhow::Result<()>> {
+        let node = self.node(id).filter(|node| node.is_subagent())?;
+        Some(rename_session(&node, name).await)
+    }
+}
+
 /// Appends one durable `session_info` name row to a node's session.
 async fn rename_session(node: &Arc<Node>, name: &str) -> anyhow::Result<()> {
     let parent = node.parent_node();

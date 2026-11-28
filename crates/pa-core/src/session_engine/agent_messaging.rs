@@ -738,10 +738,10 @@ use rate_limit::{AgentMessageClock, AgentMessageRateLimiter, RETRY_AFTER_MS_FIEL
 // every external agent_messaging:: path stable.
 mod observe;
 pub use observe::{
-    create_agent_observe_message_preview, normalize_observe_limit, normalize_observe_max_chars,
-    register_agent_observe_host_handlers, AgentFamilyStatus, AgentObserveActivity,
-    AgentObserveController, AgentObserveListResult, AgentObserveMessagePreview,
-    AgentObserveRecentMessagesResult, AgentObserveSummary,
+    create_agent_observe_message_preview, find_observe_target, normalize_observe_limit,
+    normalize_observe_max_chars, register_agent_observe_host_handlers, AgentFamilyStatus,
+    AgentObserveActivity, AgentObserveController, AgentObserveListResult,
+    AgentObserveMessagePreview, AgentObserveRecentMessagesResult, AgentObserveSummary,
 };
 
 #[cfg(test)]
