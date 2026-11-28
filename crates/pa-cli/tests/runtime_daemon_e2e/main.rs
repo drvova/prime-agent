@@ -85,6 +85,8 @@
 //!   daemon (phase 8d-5c): [`history_import`].
 //! - A kernel webhook source: an authenticated `POST` runs an untrusted
 //!   turn, a bad token none (phase 9): [`webhooks`].
+//! - A subagent spawn's gates: its `#:cwd`, the recursion bound and a name
+//!   admitted once (phase 10): [`spawn_gates`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -113,6 +115,7 @@ mod saved_list;
 mod schedules;
 mod shutdown_flush;
 mod side_questions;
+mod spawn_gates;
 mod stream;
 #[path = "../support/mod.rs"]
 mod support;

@@ -1,0 +1,1 @@
+- On the runtime daemon `session.system_prompt` answers for a running subagent too, as the old daemon's `get_system_prompt` did for a child's session, instead of refusing it as not open.
