@@ -26,7 +26,8 @@
 //!   retry writes no second one; a plain stop ends it, keeps its edge and
 //!   writes its transcript's catalog sidecar, as the old child worker's
 //!   lease release did;
-//! - `session.wait_idle` waits on a subagent's session too.
+//! - `session.wait_idle` waits on a subagent's session too;
+//! - a child whose turn a restart cut off is listed again as failed.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -431,6 +432,51 @@ async fn a_stop_cuts_off_a_running_subagents_turn() {
     );
     ok(client.call("daemon.shutdown", json!({})).await);
     assert_eq!(super::lifecycle::exit_code(&mut daemon), Some(0));
+}
+
+/// The old daemon's `a_daemon_restart_marks_a_still_running_child_as_failed`:
+/// a child whose turn the daemon's stop cut off is listed again under its
+/// reopened parent as failed (its display entry still reads `running`), never
+/// as a completed child.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_child_still_running_at_a_restart_is_listed_as_failed_after_it() {
+    let bed = Bed::new();
+    let (daemon, mut client, id, handle, kid) = held_kid(&bed).await;
+    ok(client.call("daemon.shutdown", json!({})).await);
+    let mut daemon = daemon;
+    assert_eq!(super::lifecycle::exit_code(&mut daemon), Some(0));
+    drop(client);
+
+    let _daemon = bed.runtime_daemon(&json!({ "responses": ["idle"], "repeatLastResponse": true }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    ok(client
+        .call("session.create", json!({ "session": id }))
+        .await);
+    let children = until(WAIT, "the reopened child", async || {
+        match client
+            .query("session.children", json!({ "session": id }))
+            .await
+        {
+            Outcome::Ok { result } if !result["children"].as_array()?.is_empty() => Some(result),
+            Outcome::Ok { .. } | Outcome::Error { .. } => None,
+        }
+    })
+    .await;
+    assert_eq!(
+        (
+            display_status(&bed.agent_dir(), &id, &handle),
+            children["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|child| json!([child["id"], child["activeSessionId"], child["status"]]))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            Some("running".to_string()),
+            vec![json!([handle, kid, "error"])]
+        )
+    );
 }
 
 /// A daemon whose session `id` has spawned `kid`, whose turn is held: the
