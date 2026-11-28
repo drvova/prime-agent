@@ -348,13 +348,49 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         }))
     }
 
+    /// `session.rename`: the name row and, for a name that replaces another,
+    /// the renamed notice (pa-core's rule, the old worker's too); an open
+    /// session's clients hear `session_info_changed`, then the notice's
+    /// frames, as the old worker sent them.
     async fn rename(&self, args: &Value) -> anyhow::Result<Value> {
         let name = string_arg(args, "name")?;
-        self.change(args, move |manager| {
-            manager.append_session_info(&name)?;
-            Ok(json!({ "session": manager.get_session_id(), "name": name }))
-        })
-        .await
+        let (id, _, open) = self.session(args)?;
+        let mut renamed = self
+            .change(args, move |manager| {
+                let previous = manager.get_session_name();
+                manager.append_session_info(&name)?;
+                let notice = pa_core::session_engine::messages::session_renamed_notice(
+                    previous.as_deref(),
+                    &name,
+                    None,
+                );
+                if let Some(notice) = &notice {
+                    manager.append_custom_message_entry(
+                        pa_core::session_engine::messages::SESSION_RENAMED_CUSTOM_TYPE,
+                        pa_types::ai::UserContent::Text(
+                            notice["content"].as_str().unwrap_or_default().to_string(),
+                        ),
+                        /*display*/ true,
+                        None,
+                    )?;
+                }
+                Ok(json!({ "session": manager.get_session_id(), "name": name, "notice": notice }))
+            })
+            .await?;
+        let notice = renamed
+            .as_object_mut()
+            .and_then(|reply| reply.remove("notice"))
+            .filter(|notice| !notice.is_null());
+        if open {
+            let stream = self.runtime.stream_sender(&id)?;
+            stream(json!({ "type": "session_info_changed", "name": renamed["name"] }));
+            if let Some(notice) = notice {
+                for kind in ["message_start", "message_end"] {
+                    stream(json!({ "type": kind, "message": notice }));
+                }
+            }
+        }
+        Ok(renamed)
     }
 
     async fn label(&self, args: &Value) -> anyhow::Result<Value> {
@@ -525,6 +561,13 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
         }
         self.abort_connection_side_runs(connection);
         self.end_owned_sessions(connection).await;
+    }
+
+    fn published(
+        &self,
+        _topic: &pa_types::event_log::Topic,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        self.runtime.flushed()
     }
 
     fn admit_publish(&self, topic: &pa_types::event_log::Topic) -> anyhow::Result<()> {

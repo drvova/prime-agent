@@ -147,9 +147,19 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
     }
 
     fn steer(&self, running: &Task, steer: &Task) -> Steered {
-        self.sessions
+        let steered = self
+            .sessions
             .host(&running.session)
-            .map_or(Steered::Declined, |host| host.steer(running, steer))
+            .map_or(Steered::Declined, |host| host.steer(running, steer));
+        // A steer the turn took waits on its agent: the queue view lists it
+        // until its row settles, so no client reads the session as idle
+        // while it is still to run.
+        if steered == Steered::Taken {
+            if let Some(stream) = self.sessions.subagents().stream(&running.session) {
+                stream.queue_changed();
+            }
+        }
+        steered
     }
 
     fn lane_changed(&self, session: &str, lane: &LaneState) {

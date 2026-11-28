@@ -66,6 +66,10 @@ impl Handlers for Echo {
     fn admit_publish(&self, _topic: &pa_types::event_log::Topic) -> anyhow::Result<()> {
         Ok(())
     }
+
+    fn published(&self, _topic: &pa_types::event_log::Topic) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
 }
 
 /// A log whose next `since` or `before` read can be held at a sync point.

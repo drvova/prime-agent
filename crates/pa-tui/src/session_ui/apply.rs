@@ -512,6 +512,7 @@ impl SessionUi {
                 }
             }
             TurnUpdate::UserMessage { text, images } => {
+                self.user_rows_seen += 1;
                 match crate::custom_message::skill_invocation_entries(&text) {
                     Some(entries) => {
                         for entry in entries {

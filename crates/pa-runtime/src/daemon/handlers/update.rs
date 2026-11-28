@@ -137,13 +137,19 @@ pub(super) fn admit(
 
 impl<B: SessionBuilder> RuntimeHandlers<B> {
     /// The gate in front of a client's publish on `topic`: input is the old
-    /// `prompt`.
+    /// `prompt`, and input for a session the daemon does not hold open is
+    /// refused as the old daemon refused a prompt to an unknown session (a
+    /// client re-attaches and sends it again, or keeps its draft).
     pub(super) fn admit_input(&self, topic: &Topic) -> anyhow::Result<()> {
         let mut levels = topic.levels();
-        if let (Some("agent"), Some(_), Some("input"), None) =
+        if let (Some("agent"), Some(session), Some("input"), None) =
             (levels.next(), levels.next(), levels.next(), levels.next())
         {
             drop(admit(&self.update, "prompt")?);
+            anyhow::ensure!(
+                self.runtime.is_open(session),
+                "Unknown active session: {session}"
+            );
         }
         Ok(())
     }

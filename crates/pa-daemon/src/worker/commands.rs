@@ -873,25 +873,11 @@ impl Worker {
         // notice, ordering the notice against a contradicted name history.
         // The frames share that lock so a compaction cannot include the
         // notice before its broadcast; `session_info_changed` still comes first.
-        let renamed_notice = previous
-            .as_deref()
-            .filter(|previous| *previous != name)
-            .map(|previous| {
-                let content = if payload.get("renamedBy").and_then(Value::as_str)
-                    == Some(
-                        pa_core::session_engine::agent_messaging::AgentFamilyRelationship::Parent
-                            .as_str(),
-                    ) {
-                    format!("Session renamed `{previous}` -> `{name}` by parent")
-                } else {
-                    format!("Session renamed `{previous}` -> `{name}`")
-                };
-                json!({
-                    "customType": pa_core::session_engine::messages::SESSION_RENAMED_CUSTOM_TYPE,
-                    "content": content,
-                    "display": true,
-                })
-            });
+        let renamed_notice = pa_core::session_engine::messages::session_renamed_notice(
+            previous.as_deref(),
+            name,
+            payload.get("renamedBy").and_then(Value::as_str),
+        );
         if let Some(notice) = renamed_notice.as_ref() {
             persist_custom_row(&mut core, notice);
         }

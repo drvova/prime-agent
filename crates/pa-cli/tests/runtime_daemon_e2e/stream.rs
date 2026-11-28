@@ -183,3 +183,55 @@ async fn a_prompt_queued_behind_a_turn_streams_the_old_queue_view_through_its_ph
         "the stream: {stream:?}"
     );
 }
+
+/// A steer the running turn takes is listed under `steering` while it waits
+/// on the agent, as the old worker's view listed its agent's steers, and
+/// leaves the view once its row settles: a client never reads the session
+/// as idle while a steer it sent is still to run.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steer_the_running_turn_takes_is_listed_until_its_row_settles() {
+    let bed = Bed::new();
+    let cwd = bed.dir.path().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let _daemon = bed.runtime_daemon(&json!({ "responses": [
+        cell("Sleeping.", "(bash \"sleep 2\" (hash 'wait-ms #f))\n(displayln \"slept\")"),
+        "the steered reply",
+    ]}));
+    let mut session = Attached::open(&bed, &cwd).await;
+    let prompt = session.publish("sleep first", None).await;
+    session.until_streamed("tool_execution_start").await;
+    session.publish("steer this", Some("steer")).await;
+    session.done(&prompt["task"]).await;
+
+    let stream = session.payloads("stream");
+    let views: Vec<(Value, String)> = stream
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event["type"] == "session_action_update")
+        .map(|(at, event)| {
+            let before = &stream[at - 1];
+            (
+                event["actions"].clone(),
+                format!(
+                    "{} {}",
+                    before["type"].as_str().unwrap_or_default(),
+                    before["message"]["role"].as_str().unwrap_or_default()
+                ),
+            )
+        })
+        .collect();
+    assert_eq!(
+        (
+            views.iter().map(|(view, _)| view.clone()).collect::<Vec<_>>(),
+            views.last().map(|(_, after)| after.clone()),
+        ),
+        (
+            vec![
+                json!({ "queuedCount": 1, "steering": ["steer this"], "followUps": [] }),
+                json!({ "queuedCount": 0, "steering": [], "followUps": [] }),
+            ],
+            Some("message_end user".to_string()),
+        ),
+        "the stream: {stream:?}"
+    );
+}

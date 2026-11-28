@@ -513,6 +513,13 @@ pub trait Handlers: Send + Sync + 'static {
     ///
     /// The publish is refused now (the runtime daemon's update gate).
     fn admit_publish(&self, topic: &pa_types::event_log::Topic) -> anyhow::Result<()>;
+
+    /// Resolves once what a client's publish on `topic` set off has reached
+    /// the bus as far as it reached before the publish returned (a session's
+    /// stream events queued ahead of it): the publish's reply goes out after
+    /// them, so a client never reads the reply before the events that
+    /// preceded it, as the old wire's one ordered channel guaranteed.
+    fn published(&self, topic: &pa_types::event_log::Topic) -> impl Future<Output = ()> + Send;
 }
 
 /// Shared handlers answer as the handlers they share: the runtime daemon's
@@ -541,5 +548,9 @@ impl<H: Handlers> Handlers for std::sync::Arc<H> {
 
     fn admit_publish(&self, topic: &pa_types::event_log::Topic) -> anyhow::Result<()> {
         H::admit_publish(self, topic)
+    }
+
+    fn published(&self, topic: &pa_types::event_log::Topic) -> impl Future<Output = ()> + Send {
+        H::published(self, topic)
     }
 }

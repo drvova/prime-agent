@@ -47,6 +47,31 @@ pub const NESTED_CONTEXT_CUSTOM_TYPE: &str = "nested_context_file";
 /// rename that changed an existing name leaves in the renamed session's
 /// transcript.
 pub const SESSION_RENAMED_CUSTOM_TYPE: &str = "session_renamed";
+
+/// The [`SESSION_RENAMED_CUSTOM_TYPE`] notice a rename from `previous` to
+/// `name` leaves (TS #2529 `applyStateSessionName`), as both daemons persist
+/// and broadcast it: `None` for a first name or an unchanged one, and
+/// " by parent" when `renamed_by` names the parent session.
+#[must_use]
+pub fn session_renamed_notice(
+    previous: Option<&str>,
+    name: &str,
+    renamed_by: Option<&str>,
+) -> Option<serde_json::Value> {
+    let previous = previous.filter(|previous| *previous != name)?;
+    let by_parent = renamed_by
+        == Some(super::agent_messaging::AgentFamilyRelationship::Parent.as_str());
+    let content = if by_parent {
+        format!("Session renamed `{previous}` -> `{name}` by parent")
+    } else {
+        format!("Session renamed `{previous}` -> `{name}`")
+    };
+    Some(serde_json::json!({
+        "customType": SESSION_RENAMED_CUSTOM_TYPE,
+        "content": content,
+        "display": true,
+    }))
+}
 /// TS `ASYNC_BASH_COMPLETION_PREVIEW_LABEL`: the queue-strip label the
 /// notice's queued row carries (the TUI renders it with its own label,
 /// no lane prefix).

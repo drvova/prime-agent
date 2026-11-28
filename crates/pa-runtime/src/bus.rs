@@ -111,6 +111,18 @@ pub struct Listener {
 }
 
 impl Listener {
+    /// The next event already heard, without waiting: `None` when none is
+    /// waiting (or the bus is gone).
+    pub fn try_recv(&mut self) -> Option<Heard> {
+        match self.receiver.try_recv() {
+            Ok(event) => Some(Heard::Event(event)),
+            Err(broadcast::error::TryRecvError::Lagged(missed)) => Some(Heard::Lagged { missed }),
+            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
+                None
+            }
+        }
+    }
+
     /// The next event, or how many were lost; `None` once the bus is gone.
     pub async fn recv(&mut self) -> Option<Heard> {
         match self.receiver.recv().await {
