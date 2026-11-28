@@ -156,6 +156,10 @@ pub struct SessionCreate {
     /// absent, the runtime's own session dir.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_dir: Option<String>,
+    /// A new session's name (the old daemon's create `name`): its first
+    /// `session_info` row. A session opened again keeps its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// The environment of the client that asked (the old daemon's
     /// `launchEnv`, `daemon::launch_env`): the session runs in it over the
     /// runtime's own process environment, minus the daemon-internal vars and
@@ -181,6 +185,7 @@ impl std::fmt::Debug for SessionCreate {
             .field("cwd", &self.cwd)
             .field("ephemeral", &self.ephemeral)
             .field("session_dir", &self.session_dir)
+            .field("name", &self.name)
             .field(
                 "launch_env",
                 &self

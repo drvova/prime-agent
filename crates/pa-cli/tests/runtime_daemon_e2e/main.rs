@@ -87,6 +87,8 @@
 //!   turn, a bad token none (phase 9): [`webhooks`].
 //! - A session's lease after its daemon was killed or gave it up, and the
 //!   crash count of a revived session's lifetime (phase 10): [`leases`].
+//! - A subagent spawn's gates: its `#:cwd`, the recursion bound and a name
+//!   admitted once (phase 10): [`spawn_gates`].
 //! - A goal rehydrated after its session's rebuild, and a prompt queued
 //!   behind the goal's continuations (phase 10): [`goal_recovery`].
 #![cfg(unix)]
@@ -119,6 +121,7 @@ mod saved_list;
 mod schedules;
 mod shutdown_flush;
 mod side_questions;
+mod spawn_gates;
 mod stream;
 #[path = "../support/mod.rs"]
 mod support;

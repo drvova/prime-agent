@@ -31,20 +31,9 @@ const FRAME_WAIT: Duration = Duration::from_mins(1);
 /// How long a stopped daemon may take to exit before it is killed.
 const EXIT_WAIT: Duration = Duration::from_secs(15);
 
-/// Env keys a test's own environment may carry that must not reach the daemon: the old worker's
-/// role and leases, the daemon selection, a package dir pointing outside the fixture, and a
-/// sessions dir (fleet shells export one) that would put the daemon's default sessions dir, and
-/// the subagent ledger resolved against it, outside the agent dir.
-pub const SCRUB_ENV: [&str; 8] = [
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
-    "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
-    "PRIME_AGENT_INTERNAL_SESSION_LEASES",
-    "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",
-    "PRIME_AGENT_RUNTIME_DAEMON",
-    "PI_PACKAGE_DIR",
-    "PRIME_AGENT_SESSION_DIR",
-    "PRIME_AGENT_CODING_AGENT_SESSION_DIR",
-];
+/// The env keys a test's own environment may carry that must not reach the daemon
+/// ([`super::RUNTIME_DAEMON_SCRUB_ENV`]).
+pub use super::RUNTIME_DAEMON_SCRUB_ENV as SCRUB_ENV;
 
 /// The runtime socket beside daemon socket `daemon_socket` (`daemon2.sock` in its directory).
 #[must_use]

@@ -141,6 +141,34 @@ fn flush_now_durability_without_assistant() {
     assert_eq!(manager.get_session_name().as_deref(), Some("my session"));
 }
 
+/// A transcript the store holds whole (written at its create) takes each row as it is
+/// appended, answered or not; a new one still waits for its first answer.
+#[test]
+fn a_held_transcript_takes_rows_before_any_answer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("sessions");
+    let mut fresh = SessionManager::persisted(tmp.path(), &dir);
+    fresh.append_model_change("faux", "lazy").unwrap();
+    let mut held = SessionManager::persisted(tmp.path(), &dir);
+    held.flush_now().unwrap();
+    let path = held.get_session_file().unwrap().to_path_buf();
+    let mut opened = SessionManager::open(tmp.path(), &dir, &path);
+    opened.append_model_change("faux", "held").unwrap();
+    let store = crate::session::store::store();
+    let rows = String::from_utf8(store.read(&path).unwrap()).unwrap();
+    assert_eq!(
+        (
+            store.exists(fresh.get_session_file().unwrap()),
+            rows.lines().count(),
+            rows.lines()
+                .last()
+                .is_some_and(|row| row.contains(r#""modelId":"held""#)),
+        ),
+        (false, 2, true),
+        "{rows}"
+    );
+}
+
 #[test]
 fn iso_format_round_trips() {
     let stamp = format_iso(1_704_067_200_012);
