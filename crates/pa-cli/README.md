@@ -9,7 +9,7 @@ Argument parsing, mode selection (interactive/headless/json/daemon subcommands),
 No business logic; it composes pa-daemon, pa-runtime, pa-core, pa-tui, pa-ai via their public APIs only.
 
 ## Public API
-The `prime-agent` executable surface (flags, subcommands, exit codes). Internal lib types `pub(crate)`, plus the daemon wiring (`interactive_mode::{ensure_daemon_running, ensure_daemon_running_with, resolve_socket_path}`) exported for the integration verifier.
+The `prime-agent` executable surface (flags, subcommands, exit codes). Internal lib types `pub(crate)`, plus the daemon wiring (`interactive_mode::{ensure_daemon_running, ensure_daemon_running_with, ensure_runtime_daemon_running_with, resolve_socket_path}`) exported for the integration verifier.
 
 ## Depends on
 pa-types, pa-ai, pa-agent, pa-core, pa-daemon, pa-runtime, pa-tui (one-way, composition root).

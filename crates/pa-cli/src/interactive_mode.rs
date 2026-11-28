@@ -23,6 +23,7 @@ mod daemon;
 
 pub use daemon::{
     ensure_daemon_running, ensure_daemon_running_with, ensure_runtime_daemon_running,
+    ensure_runtime_daemon_running_with,
 };
 
 mod onboarding;

@@ -9,19 +9,21 @@
     unix,
     expect(
         clippy::cast_possible_truncation,
-        reason = "the supervisor pid read back from the wire is a kernel-bounded pid"
+        clippy::cast_possible_wrap,
+        reason = "the daemon pids read back from its lock are kernel-bounded pids"
     )
 )]
 
 //! End-to-end containment tests for the daemon-discovery commands. Every
 //! daemon lives in a test-created fixture directory. A discovery scan or
 //! `shutdown --force` run from a *different* fixture root must never see or
-//! stop it — nor any other live daemon on the machine.
+//! stop it — nor any other live daemon on the machine. Each daemon is the
+//! runtime daemon (the default), listening on the socket beside the one it
+//! is given (`daemon2.sock`).
 #![cfg(unix)]
 
 mod support;
 
-use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -29,8 +31,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-/// Environment keys this box's own prime-agent worker sets; they must not
-/// leak into spawned supervisors.
+/// Environment keys this box's own prime-agent session sets; they must not
+/// leak into spawned daemons.
 const SCRUB_ENV: [&str; 9] = [
     "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
     "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN",
@@ -44,7 +46,7 @@ const SCRUB_ENV: [&str; 9] = [
 ];
 
 /// Child-mode env var for the launcher test's re-exec'd client (below):
-/// the socket the client must launch a supervisor on.
+/// the daemon socket the client must launch the runtime daemon beside.
 const LAUNCHER_CLIENT_SOCKET_ENV: &str = "PRIME_AGENT_TEST_LAUNCHER_CLIENT_SOCKET";
 
 fn cli_binary() -> PathBuf {
@@ -62,8 +64,8 @@ fn fixture_dir() -> tempfile::TempDir {
     .expect("fixture dir")
 }
 
-/// A spawned supervisor, killed on drop so a failed test never leaks a
-/// daemon into the machine.
+/// A spawned daemon, killed on drop so a failed test never leaks a daemon
+/// into the machine.
 struct Daemon {
     child: Child,
 }
@@ -75,64 +77,57 @@ impl Drop for Daemon {
     }
 }
 
-/// Which daemon a test spawns: `--mode daemon` is the runtime daemon (on
-/// `daemon2.sock` beside the socket it is given) unless the supervisor is
-/// selected by name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Supervisor,
-    Runtime,
-}
-
-/// Spawn the real supervisor on a fixture socket the way production does
+/// Spawn the real runtime daemon on a fixture socket the way production does
 /// (`prime-agent --mode daemon --daemon-socket`), with agent dir and TMPDIR
 /// pinned inside the fixture root so every socket it ever makes stays there.
+/// Its sessions answer the faux script `<agent dir>/faux-script.json`; it
+/// listens on the socket [`runtime_socket`] names.
 fn spawn_daemon(socket: &Path, agent_dir: &Path, tmp_dir: &Path) -> Daemon {
-    spawn_daemon_of(Kind::Supervisor, socket, agent_dir, tmp_dir)
-}
-
-/// [`spawn_daemon`] for `kind`; it listens on the socket [`daemon_socket`]
-/// names.
-fn spawn_daemon_of(kind: Kind, socket: &Path, agent_dir: &Path, tmp_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     std::fs::create_dir_all(tmp_dir).expect("tmp dir");
+    let script = agent_dir.join("faux-script.json");
+    std::fs::write(
+        &script,
+        json!({ "responses": [{ "text": "ok", "delayMs": 0 }] }).to_string(),
+    )
+    .expect("write script");
     let mut command = Command::new(cli_binary());
     command
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env("TMPDIR", tmp_dir)
+        .env("PRIME_AGENT_FAUX_SCRIPT", &script)
+        .env_remove("PRIME_AGENT_RUNTIME_DAEMON")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     for key in SCRUB_ENV {
         command.env_remove(key);
     }
-    // A supervisor killed at teardown must not leak its session workers into
-    // later test binaries: the worker's supervisor-lost exit runs on this
-    // short window instead of the 5-minute default.
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    command.env(
-        "PRIME_AGENT_RUNTIME_DAEMON",
-        match kind {
-            Kind::Supervisor => "0",
-            Kind::Runtime => "1",
-        },
-    );
-    let mut child = command.spawn().expect("spawn daemon supervisor");
-    support::await_listening(&daemon_socket(kind, socket), &mut child);
+    let mut child = command.spawn().expect("spawn the daemon");
+    support::await_listening(&runtime_socket(socket), &mut child);
     Daemon { child }
 }
 
-/// The socket `kind` listens on when it is started with `--daemon-socket socket`.
-fn daemon_socket(kind: Kind, socket: &Path) -> PathBuf {
-    match kind {
-        Kind::Supervisor => socket.to_path_buf(),
-        Kind::Runtime => socket.with_file_name("daemon2.sock"),
-    }
+/// The socket the runtime daemon listens on when it is started with
+/// `--daemon-socket socket`.
+fn runtime_socket(socket: &Path) -> PathBuf {
+    pa_runtime::daemon::socket_path(socket)
+}
+
+/// The pids the runtime daemon on `agent_dir` records in its lock: its
+/// restart owner (when kept) and the daemon.
+fn lock_holder(agent_dir: &Path) -> (Option<i32>, i32) {
+    let holder: Value = serde_json::from_str(
+        &std::fs::read_to_string(agent_dir.join("runtime-daemon.lock"))
+            .expect("the runtime-daemon lock"),
+    )
+    .expect("the lock's record");
+    (
+        holder["keeper"].as_i64().map(|pid| pid as i32),
+        holder["pid"].as_i64().expect("the daemon's pid") as i32,
+    )
 }
 
 /// Run the CLI with its state root pinned inside `root`: agent dir and TMPDIR
@@ -156,21 +151,20 @@ fn run_cli(root: &Path, args: &[&str]) -> Output {
     command.output().expect("spawn CLI binary")
 }
 
-/// The same launcher used before the TUI attaches must create a supervisor
+/// The same launcher used before the TUI attaches must create the daemon
 /// outside the TUI's terminal session. Otherwise closing that terminal can
 /// hang up a daemon that still serves other clients.
 ///
 /// The launching client is a separate process: this test binary re-exec'd
 /// in the child mode below, with the fixture's state environment pinned on
-/// its spawn the same way `spawn_daemon` pins its children. The supervisor
+/// its spawn the same way `spawn_daemon` pins its children. The daemon
 /// the client launches inherits that pinned environment — never this
 /// process's ambient one, which on a dev box points at the real agent dir —
 /// and afterwards the whole client process is gone, not just its runtime:
-/// the terminal-close scenario. Only the supervisor it spawned may remain.
+/// the terminal-close scenario. Only the daemon it spawned (under its restart
+/// owner) may remain.
 #[test]
-fn interactive_launcher_detaches_supervisor_from_client_session() {
-    use std::io::{BufRead as _, BufReader};
-
+fn interactive_launcher_detaches_the_daemon_from_client_session() {
     let fixture = fixture_dir();
     let agent_dir = fixture.path().join("agent");
     let tmp_dir = fixture.path().join("tmp");
@@ -178,7 +172,7 @@ fn interactive_launcher_detaches_supervisor_from_client_session() {
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     std::fs::create_dir_all(&tmp_dir).expect("tmp dir");
     let _daemon = DetachedDaemon {
-        socket: socket.clone(),
+        agent_dir: agent_dir.clone(),
     };
 
     let mut client = Command::new(std::env::current_exe().expect("test binary"));
@@ -195,13 +189,7 @@ fn interactive_launcher_detaches_supervisor_from_client_session() {
     for key in SCRUB_ENV {
         client.env_remove(key);
     }
-    // A supervisor killed at teardown must not leak its session workers
-    // into later test binaries: the worker's supervisor-lost exit runs on
-    // this short window instead of the 5-minute default.
-    client.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
+    client.env_remove("PRIME_AGENT_RUNTIME_DAEMON");
     let client = client.output().expect("spawn launcher client");
     assert!(
         client.status.success(),
@@ -211,19 +199,19 @@ fn interactive_launcher_detaches_supervisor_from_client_session() {
     );
     // The spawning client's process, runtime, and probe connection are gone.
 
-    let stream = UnixStream::connect(&socket).expect("daemon socket");
-    let mut hello = String::new();
-    BufReader::new(stream)
-        .read_line(&mut hello)
-        .expect("read daemon hello");
-    let hello: Value = serde_json::from_str(&hello).expect("parse daemon hello");
-    let pid = hello["supervisorPid"].as_i64().expect("supervisor pid") as i32;
+    let socket = runtime_socket(&socket);
+    assert!(UnixStream::connect(&socket).is_ok(), "daemon socket");
+    // The daemon leads its own session, and so does the restart owner it
+    // runs under: neither shares the launching client's terminal session.
+    let (keeper, pid) = lock_holder(&agent_dir);
     assert_eq!(unsafe { libc::getsid(pid) }, pid, "daemon owns its session");
-    assert_ne!(
-        unsafe { libc::getsid(0) },
-        pid,
-        "daemon must not share the launching client's terminal session"
-    );
+    for process in keeper.into_iter().chain([pid]) {
+        assert_ne!(
+            unsafe { libc::getsid(0) },
+            unsafe { libc::getsid(process) },
+            "the daemon's process {process} must not share the launching client's terminal session"
+        );
+    }
     assert!(
         UnixStream::connect(&socket).is_ok(),
         "daemon remains available"
@@ -234,7 +222,7 @@ fn interactive_launcher_detaches_supervisor_from_client_session() {
 /// var passes trivially): this binary re-exec'd as the launching client —
 /// run the real launcher (`ensure_daemon_running_with`, the interactive
 /// mode's pre-TUI path) against the fixture socket and exit, leaving only
-/// the detached supervisor behind.
+/// the detached daemon behind.
 #[test]
 fn launcher_client_child_mode() {
     let Some(socket) = std::env::var_os(LAUNCHER_CLIENT_SOCKET_ENV) else {
@@ -247,86 +235,38 @@ fn launcher_client_child_mode() {
         .build()
         .expect("runtime");
     runtime
-        .block_on(pa_cli::ensure_daemon_running_with(
+        .block_on(pa_cli::ensure_runtime_daemon_running_with(
             &cli_binary(),
             &socket,
             &spawn_cwd,
         ))
-        .expect("launch supervisor");
+        .expect("launch the daemon");
 }
 
 /// Cleanup for a daemon spawned by the interactive launcher rather than by
-/// this test process's `Command`, including a failed assertion's unwind:
-/// write the force-shutdown command over the wire, wait for the supervisor
-/// to stop listening (its listener is torn down as it exits), and SIGKILL
-/// it when the bound passes — a hung daemon must not leak into later test
-/// binaries, nor outlive the fixture tempdir's removal below.
+/// this test process's `Command`, including a failed assertion's unwind: its
+/// restart owner is sent the deliberate stop, and the cleanup waits (bounded)
+/// for both to be gone, so a daemon never leaks into later test binaries nor
+/// outlives the fixture tempdir's removal below.
 struct DetachedDaemon {
-    socket: PathBuf,
+    agent_dir: PathBuf,
 }
 
 impl Drop for DetachedDaemon {
     fn drop(&mut self) {
-        // `None`: the daemon is already gone, or wedged before its hello
-        // with no pid to kill — nothing left to clean up.
-        let Some(pid) = run_shutdown_on_socket(&self.socket) else {
-            return;
-        };
-        if socket_stops_accepting(&self.socket, Duration::from_secs(10)) {
-            return;
-        }
-        // The shutdown was accepted but the supervisor never exited. The
-        // supervisor owns its own session (the property under test), so the
-        // process-group kill takes any session workers with it.
-        // SAFETY: the pid comes from the shutdown handshake above; this
-        // test's own fixture supervisor.
-        unsafe {
-            libc::kill(-pid, libc::SIGKILL);
-            libc::kill(pid, libc::SIGKILL);
-        }
-        socket_stops_accepting(&self.socket, Duration::from_secs(5));
+        support::stop_runtime_daemon(&self.agent_dir);
     }
 }
 
-/// Connect to the daemon on `socket`, read its hello for the supervisor
-/// pid, and write the force-shutdown command. `None`: the daemon is
-/// already gone, or wedged before its hello.
-fn run_shutdown_on_socket(socket: &Path) -> Option<i32> {
-    use std::io::{BufRead as _, BufReader, Write as _};
-    let mut stream = UnixStream::connect(socket).ok()?;
-    // A wedged daemon must not hang the cleanup handshake: the hello is
-    // read under a short bound.
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    let mut hello = String::new();
-    BufReader::new(stream.try_clone().ok()?)
-        .read_line(&mut hello)
-        .ok()?;
-    let pid = serde_json::from_str::<Value>(&hello)
-        .ok()?
-        .get("supervisorPid")?
-        .as_i64()? as i32;
-    let command = serde_json::json!({
-        "type": "command", "id": "test-cleanup",
-        "protocol": { "name": "prime-agent.daemon", "version": pa_types::daemon::DAEMON_PROTOCOL_VERSION },
-        "command": { "type": "shutdown", "force": true }
-    });
-    // The write is best-effort: a failed write leaves the kill path above
-    // as the safety net.
-    let _ = writeln!(stream, "{command}");
-    Some(pid)
-}
-
-/// Wait until nothing accepts connections on `socket`, bounded; `false`
-/// means the bound passed with the socket still live.
-fn socket_stops_accepting(socket: &Path, bound: Duration) -> bool {
-    let deadline = Instant::now() + bound;
-    while UnixStream::connect(socket).is_ok() {
-        if Instant::now() > deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    true
+/// Stop the runtime daemon on `socket` by protocol (`daemon.shutdown`).
+///
+/// # Panics
+///
+/// The daemon does not answer.
+fn shutdown_on_socket(socket: &Path) {
+    support::runtime_daemon::Wire2::connect(socket)
+        .call("daemon.shutdown", &json!({}))
+        .expect("daemon.shutdown");
 }
 
 fn stdout(output: &Output) -> String {
@@ -356,29 +296,15 @@ fn reported_socket_paths(report: &Value) -> Vec<String> {
         .collect()
 }
 
+/// `status` lists the runtime daemon and `doctor --fix` reaps it.
 #[test]
 fn doctor_lists_and_then_reaps_an_idle_root_owned_daemon() {
-    doctor_lists_and_then_reaps_an_idle_root_owned(Kind::Supervisor);
-}
-
-/// `status` lists the runtime daemon and `doctor --fix` reaps it, as it does the supervisor.
-#[test]
-fn doctor_lists_and_then_reaps_an_idle_root_owned_runtime_daemon() {
-    doctor_lists_and_then_reaps_an_idle_root_owned(Kind::Runtime);
-}
-
-fn doctor_lists_and_then_reaps_an_idle_root_owned(kind: Kind) {
     let fixture = fixture_dir();
     let agent_dir = fixture.path().join("agent");
     // Non-default: not <socket-dir>/daemon.sock (or the runtime daemon's daemon2.sock beside it).
     let daemon_socket_arg = agent_dir.join("daemon.sock");
-    let mut daemon = spawn_daemon_of(
-        kind,
-        &daemon_socket_arg,
-        &agent_dir,
-        &fixture.path().join("tmp"),
-    );
-    let socket = daemon_socket(kind, &daemon_socket_arg);
+    let mut daemon = spawn_daemon(&daemon_socket_arg, &agent_dir, &fixture.path().join("tmp"));
+    let socket = runtime_socket(&daemon_socket_arg);
 
     // Inspect-only doctor: the daemon shows up in the table and survives.
     let inspect = run_cli(fixture.path(), &["doctor"]);
@@ -440,8 +366,12 @@ fn doctor_lists_and_then_reaps_an_idle_root_owned(kind: Kind) {
 fn shutdown_without_force_requires_confirmation_and_harms_nothing() {
     let fixture = fixture_dir();
     let agent_dir = fixture.path().join("agent");
-    let socket = agent_dir.join("daemon.sock");
-    let mut daemon = spawn_daemon(&socket, &agent_dir, &fixture.path().join("tmp"));
+    let mut daemon = spawn_daemon(
+        &agent_dir.join("daemon.sock"),
+        &agent_dir,
+        &fixture.path().join("tmp"),
+    );
+    let socket = runtime_socket(&agent_dir.join("daemon.sock"));
 
     // Non-interactive stdin: the router refuses before any discovery.
     let tty_error = run_cli(fixture.path(), &["shutdown"]);
@@ -489,7 +419,7 @@ fn shutdown_without_force_requires_confirmation_and_harms_nothing() {
 
 #[test]
 fn discovery_and_shutdown_from_another_root_leave_a_foreign_daemon_alive() {
-    // Fixture A holds a live supervisor; fixture B is a completely different
+    // Fixture A holds a live daemon; fixture B is a completely different
     // state root. Everything run from B must leave A untouched.
     let fixture_a = fixture_dir();
     let fixture_b = fixture_dir();
@@ -497,8 +427,12 @@ fn discovery_and_shutdown_from_another_root_leave_a_foreign_daemon_alive() {
     // The socket must sit inside A's state root (the agent dir) so root-A
     // discovery is expected to own it; anything at the fixture root itself
     // is outside the root by the TS state-root rules.
-    let socket_a = agent_a.join("daemon.sock");
-    let mut daemon = spawn_daemon(&socket_a, &agent_a, &fixture_a.path().join("tmp"));
+    let mut daemon = spawn_daemon(
+        &agent_a.join("daemon.sock"),
+        &agent_a,
+        &fixture_a.path().join("tmp"),
+    );
+    let socket_a = runtime_socket(&agent_a.join("daemon.sock"));
 
     // `status` from root B: A is not in B's root, so nothing is reported.
     let status = run_cli(fixture_b.path(), &["status", "--json"]);
@@ -560,12 +494,12 @@ fn discovery_and_shutdown_from_another_root_leave_a_foreign_daemon_alive() {
         stdout(&shutdown)
     );
 
-    // The supervisor exits and stops listening.
+    // The daemon exits and stops listening.
     wait_until_stopped(&socket_a, &mut daemon);
 }
 
 /// Wait for the daemon's socket to stop accepting connections and its
-/// process to exit, bounded at 10s (a supervisor shutdown handshake is fast;
+/// process to exit, bounded at 10s (a daemon shutdown handshake is fast;
 /// the bound only guards a stuck test).
 fn wait_until_stopped(socket: &Path, daemon: &mut Daemon) {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -615,174 +549,51 @@ fn run_cli_state_env(
     command.output().expect("spawn CLI binary")
 }
 
-/// A raw JSONL protocol client: connect, then wait for the response
-/// carrying the request id (the hello line on a fresh connection is
-/// skipped on the way).
-struct Wire {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
-}
-
-impl Wire {
-    fn connect(socket: &Path) -> Wire {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            match UnixStream::connect(socket) {
-                Ok(stream) => {
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(10)))
-                        .expect("set read timeout");
-                    let writer = stream.try_clone().expect("clone socket");
-                    return Wire {
-                        reader: BufReader::new(stream),
-                        writer,
-                    };
-                }
-                Err(_) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Err(error) => panic!("connect daemon at {}: {error}", socket.display()),
-            }
-        }
-    }
-
-    fn request(&mut self, id: &str, command: &Value) -> Value {
-        let envelope = json!({
-            "type": "command",
-            "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": pa_types::daemon::DAEMON_PROTOCOL_VERSION },
-            "command": command,
-        });
-        let mut line = serde_json::to_string(&envelope).expect("serialize command");
-        line.push('\n');
-        self.writer.write_all(line.as_bytes()).expect("send");
-        self.writer.flush().expect("flush");
-        loop {
-            let mut line = String::new();
-            self.reader.read_line(&mut line).expect("read daemon line");
-            if let Ok(value) = serde_json::from_str::<Value>(line.trim()) {
-                if value.get("id").and_then(Value::as_str) == Some(id) {
-                    return value;
-                }
-            }
-        }
-    }
-}
-
-/// One live scripted (faux) session: the supervisor hosts a real session
-/// whose engine answers from the script file, so a session serving its own
-/// socket exists without any model traffic.
-fn create_scripted_session(socket: &Path, agent_dir: &Path) -> String {
+/// One live scripted (faux) session on the runtime daemon on `socket`: a
+/// real session whose engine answers from the daemon's script, so a session
+/// exists without any model traffic.
+fn create_scripted_session(socket: &Path, agent_dir: &Path) -> HostedSession {
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
-    let script = agent_dir.join("faux-script.json");
-    std::fs::write(
-        &script,
-        json!({ "responses": [{ "text": "ok", "delayMs": 0 }] }).to_string(),
-    )
-    .expect("write script");
-    let mut wire = Wire::connect(socket);
-    let response = wire.request(
-        "create-faux",
-        &json!({
-            "type": "create",
-            "name": "scope",
-            "config": {
+    let created = support::runtime_daemon::Wire2::connect(socket)
+        .call(
+            "session.create",
+            &json!({
                 "cwd": agent_dir.to_string_lossy(),
                 "sessionDir": sessions.to_string_lossy(),
-                "script": script.to_string_lossy(),
-            }
-        }),
-    );
-    assert_eq!(response["success"], true, "create failed: {response}");
-    response["data"]["activeSessionId"]
-        .as_str()
-        .or_else(|| response["data"]["id"].as_str())
-        .expect("session id")
-        .to_string()
-}
-
-/// The worker descriptors a supervisor persists under
-/// `<agent-dir>/daemon-workers/<key>/` (`supervisor-config` has no .json and
-/// is skipped); unreadable or unparsable files are not safe targets either.
-fn worker_descriptors(agent_dir: &Path) -> Vec<Value> {
-    let mut descriptors = Vec::new();
-    let Ok(directories) = std::fs::read_dir(agent_dir.join("daemon-workers")) else {
-        return descriptors;
-    };
-    for directory in directories.flatten() {
-        let Ok(files) = std::fs::read_dir(directory.path()) else {
-            continue;
-        };
-        for file in files.flatten() {
-            if !file.file_name().to_string_lossy().ends_with(".json") {
-                continue;
-            }
-            if let Ok(content) = std::fs::read_to_string(file.path()) {
-                if let Ok(descriptor) = serde_json::from_str::<Value>(&content) {
-                    descriptors.push(descriptor);
-                }
-            }
-        }
+            }),
+        )
+        .unwrap_or_else(|error| panic!("create failed: {error}"));
+    HostedSession {
+        socket: socket.to_path_buf(),
+        id: created["session"]
+            .as_str()
+            .expect("the created session's id")
+            .to_string(),
     }
-    descriptors
 }
 
-/// A live session a supervisor hosts: sessions run inside their daemon, so
-/// "the worker process" is the socket the session serves and the hosted
-/// lifetime serving it (a rebuilt session keeps the socket and gets a new
-/// lifetime id).
+/// A live session a runtime daemon hosts: sessions run inside their daemon,
+/// so the session is alive while its daemon answers and lists it open.
 struct HostedSession {
-    agent_dir: PathBuf,
-    supervisor_socket: String,
     socket: PathBuf,
-    lifetime: u64,
+    id: String,
 }
 
 impl HostedSession {
-    /// The live session `supervisor_socket`'s daemon tracks in its own descriptors.
-    fn tracked(agent_dir: &Path, supervisor_socket: &Path) -> Self {
-        let supervisor = supervisor_socket.to_string_lossy().to_string();
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if let Some(session) = Self::served(agent_dir, &supervisor).into_iter().next() {
-                return session;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "no live tracked session for {}",
-                supervisor_socket.display()
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    /// Every session the supervisor's descriptors name whose socket is served.
-    fn served(agent_dir: &Path, supervisor: &str) -> Vec<Self> {
-        worker_descriptors(agent_dir)
-            .into_iter()
-            .filter(|descriptor| descriptor["supervisorSocketPath"].as_str() == Some(supervisor))
-            .filter_map(|descriptor| {
-                Some(Self {
-                    agent_dir: agent_dir.to_path_buf(),
-                    supervisor_socket: supervisor.to_string(),
-                    socket: PathBuf::from(descriptor["socketPath"].as_str()?),
-                    lifetime: descriptor["pid"].as_u64().filter(|pid| *pid > 0)?,
-                })
-            })
-            .filter(|session| UnixStream::connect(&session.socket).is_ok())
-            .collect()
-    }
-
-    /// Whether the same lifetime still serves the session's socket: a session
-    /// that was stopped, or crashed and was rebuilt, is not this one.
+    /// Whether the daemon still answers and holds the session open.
     fn alive(&self) -> bool {
-        Self::served(&self.agent_dir, &self.supervisor_socket)
-            .iter()
-            .any(|session| session.socket == self.socket && session.lifetime == self.lifetime)
+        support::runtime_daemon::Wire2::try_connect(&self.socket)
+            .ok()
+            .and_then(|mut client| client.query("sessions.list", &json!({ "open": true })).ok())
+            .is_some_and(|list| {
+                list["sessions"]
+                    .as_array()
+                    .is_some_and(|rows| rows.iter().any(|row| row["id"] == self.id.as_str()))
+            })
     }
 
-    /// Wait (bounded) until nothing serves the session's socket.
+    /// Wait (bounded) until nothing serves the session's daemon socket.
     fn wait_gone(&self, bound: Duration) -> bool {
         let deadline = Instant::now() + bound;
         while UnixStream::connect(&self.socket).is_ok() && Instant::now() < deadline {
@@ -793,17 +604,14 @@ impl HostedSession {
 }
 
 /// The 2026-10-14 incident, end to end: an isolated test daemon's
-/// `shutdown --force` stopped the shared default daemon and killed every
-/// live worker on the machine — the state root ignored
-/// `PRIME_AGENT_DAEMON_SOCKET`, and the residual sweep treated worker
-/// sockets as daemons. One shared TMPDIR, so every worker socket any daemon
-/// spawns listens in the shared product socket dir, exactly like a real
-/// machine: A owns the product-default socket, B and C are pinned to
-/// sockets inside one shared directory outside the product socket dir, with
-/// live sessions of their own. A shutdown must stop only the daemons its
-/// root owns — the pinned socket, never the pinned directory — and never
-/// another daemon's sessions (each still serves its socket in the shared
-/// product socket dir, where the residual sweep looks).
+/// `shutdown --force` stopped the shared default daemon and every live
+/// session on the machine — the state root ignored
+/// `PRIME_AGENT_DAEMON_SOCKET`. One shared TMPDIR, like a real machine: A owns
+/// the product-default socket, B and C are pinned to sockets outside the
+/// product socket dir, C's directory holding B's, each with a live session of
+/// its own. A shutdown must stop only the daemon its root owns — the pinned
+/// socket's daemon, never the pinned directory's others — and never another
+/// daemon's sessions.
 #[test]
 fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     let shared_tmp = fixture_dir();
@@ -815,44 +623,44 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
         .path()
         .join(format!("prime-agent-{}", unsafe { libc::getuid() }));
 
-    let socket_a = socket_dir.join("daemon.sock"); // the product default
+    let pinned_a = socket_dir.join("daemon.sock"); // the product default
     let agent_a = fixture_a.path().join("agent");
-    let mut daemon_a = spawn_daemon(&socket_a, &agent_a, shared_tmp.path());
-    let _session_a = create_scripted_session(&socket_a, &agent_a);
-    let hosted_a = HostedSession::tracked(&agent_a, &socket_a);
+    let mut daemon_a = spawn_daemon(&pinned_a, &agent_a, shared_tmp.path());
+    let socket_a = runtime_socket(&pinned_a);
+    let hosted_a = create_scripted_session(&socket_a, &agent_a);
 
-    // B and C are pinned inside one shared pins directory OUTSIDE the
-    // product socket dir: a pinned root must own its pinned socket, never
-    // the whole directory (B's shutdown must not see C in there).
+    // B and C are pinned OUTSIDE the product socket dir, B's socket inside
+    // the directory of C's: a pinned root must own its pinned socket's daemon,
+    // never a directory (C's shutdown must not see B in its subdirectory, nor
+    // B's see C beside it). The runtime daemon listens beside its socket, so
+    // the two cannot share one directory.
     let pins_dir = shared_tmp.path().join("pins");
-    std::fs::create_dir_all(&pins_dir).expect("pins dir");
+    std::fs::create_dir_all(pins_dir.join("b")).expect("pins dir");
 
     let agent_b = fixture_b.path().join("agent");
-    let socket_b = pins_dir.join("b.sock"); // env-pinned, isolated
-    let mut daemon_b = spawn_daemon(&socket_b, &agent_b, shared_tmp.path());
-    let _session_b = create_scripted_session(&socket_b, &agent_b);
-    let hosted_b = HostedSession::tracked(&agent_b, &socket_b);
+    let pinned_b = pins_dir.join("b").join("b.sock"); // env-pinned, isolated
+    let mut daemon_b = spawn_daemon(&pinned_b, &agent_b, shared_tmp.path());
+    let socket_b = runtime_socket(&pinned_b);
+    let hosted_b = create_scripted_session(&socket_b, &agent_b);
 
-    // Like the launcher-pinned daemon of the incident: C's supervisor socket
-    // sits outside the product socket dir, but its worker still listens
-    // there. C shares B's pins directory.
+    // Like the launcher-pinned daemon of the incident: C's socket sits
+    // outside the product socket dir.
     let agent_c = fixture_c.path().join("agent");
-    let socket_c = pins_dir.join("c.sock");
-    let mut daemon_c = spawn_daemon(&socket_c, &agent_c, shared_tmp.path());
-    let _session_c = create_scripted_session(&socket_c, &agent_c);
-    let hosted_c = HostedSession::tracked(&agent_c, &socket_c);
+    let pinned_c = pins_dir.join("c.sock");
+    let mut daemon_c = spawn_daemon(&pinned_c, &agent_c, shared_tmp.path());
+    let socket_c = runtime_socket(&pinned_c);
+    let hosted_c = create_scripted_session(&socket_c, &agent_c);
 
     assert!(
         hosted_a.alive() && hosted_b.alive() && hosted_c.alive(),
         "all three sessions must be live before any shutdown"
     );
 
-    // (a) B's env-pinned shutdown stops only B: A and C — supervisors and
-    // workers alike — are outside B's root.
+    // (a) B's env-pinned shutdown stops only B: A and C are outside B's root.
     let shutdown = run_cli_state_env(
         shared_tmp.path(),
         &agent_b,
-        Some(&socket_b),
+        Some(&pinned_b),
         &["shutdown", "--force", "--json"],
     );
     assert_eq!(
@@ -872,7 +680,7 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     wait_until_stopped(&socket_b, &mut daemon_b);
     assert!(
         hosted_b.wait_gone(Duration::from_secs(10)),
-        "B's session must stop with B (through its tracked descriptor)"
+        "B's session must stop with B"
     );
     assert!(
         daemon_a
@@ -880,11 +688,7 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
             .try_wait()
             .expect("wait on daemon A")
             .is_none(),
-        "A's supervisor must survive B's env-pinned shutdown"
-    );
-    assert!(
-        UnixStream::connect(&socket_a).is_ok(),
-        "A must still accept connections"
+        "A's daemon must survive B's env-pinned shutdown"
     );
     assert!(
         hosted_a.alive(),
@@ -896,20 +700,15 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
             .try_wait()
             .expect("wait on daemon C")
             .is_none(),
-        "C's supervisor must survive B's env-pinned shutdown"
-    );
-    assert!(
-        UnixStream::connect(&socket_c).is_ok(),
-        "C must still accept connections"
+        "C's daemon must survive B's env-pinned shutdown"
     );
     assert!(
         hosted_c.alive(),
         "C's session must survive B's env-pinned shutdown"
     );
 
-    // (b) The default-rooted shutdown from A stops A and its worker, and
-    // must leave C's worker alone even though it listens in A's socket dir:
-    // the sweep only ever sees supervisors.
+    // (b) The default-rooted shutdown from A stops A and its session, and
+    // must leave C alone.
     let shutdown = run_cli_state_env(
         shared_tmp.path(),
         &agent_a,
@@ -929,11 +728,11 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
             .try_wait()
             .expect("wait on daemon C")
             .is_none(),
-        "C's supervisor must survive A's default-rooted shutdown"
+        "C's daemon must survive A's default-rooted shutdown"
     );
     assert!(
         hosted_c.alive(),
-        "C's session must survive A's default-rooted shutdown (the residual sweep may not stop another daemon's workers)"
+        "C's session must survive A's default-rooted shutdown"
     );
     let report: Value = serde_json::from_str(&stdout(&shutdown)).expect("shutdown report");
     assert_eq!(
@@ -945,18 +744,14 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     wait_until_stopped(&socket_a, &mut daemon_a);
     assert!(
         hosted_a.wait_gone(Duration::from_secs(10)),
-        "A's session must stop with A (through its tracked descriptor)"
-    );
-    assert!(
-        UnixStream::connect(&socket_c).is_ok(),
-        "C must still accept connections"
+        "A's session must stop with A"
     );
 
-    // (c) Cleanup: C's own env-pinned shutdown stops C and its worker.
+    // (c) Cleanup: C's own env-pinned shutdown stops C and its session.
     let shutdown = run_cli_state_env(
         shared_tmp.path(),
         &agent_c,
-        Some(&socket_c),
+        Some(&pinned_c),
         &["shutdown", "--force", "--json"],
     );
     assert_eq!(
@@ -976,35 +771,36 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     wait_until_stopped(&socket_c, &mut daemon_c);
     assert!(
         hosted_c.wait_gone(Duration::from_secs(10)),
-        "C's session must stop with C (through its tracked descriptor)"
+        "C's session must stop with C"
     );
 }
 
-/// An agent-dir override can contain the shared worker directory while its
-/// own supervisor is pinned elsewhere. Such a root must still exclude other
-/// supervisors' workers from both discovery and the force residual sweep.
+/// An agent-dir override can contain the shared TMPDIR while its own daemon
+/// is pinned elsewhere. Such a root must still exclude other daemons from
+/// both discovery and the force shutdown.
 #[test]
 fn a_pinned_root_with_an_overlapping_agent_dir_never_stops_foreign_workers() {
     let shared_tmp = fixture_dir();
     let pins = fixture_dir();
     let foreign_fixture = fixture_dir();
-    let own_socket = pins.path().join("own.sock");
-    let foreign_socket = pins.path().join("foreign.sock");
-    // Every worker socket is below shared_tmp, which is also this root's
-    // agent dir. Neither supervisor socket is below it.
+    std::fs::create_dir_all(pins.path().join("foreign")).expect("foreign pins dir");
+    let own_pinned = pins.path().join("own.sock");
+    let foreign_pinned = pins.path().join("foreign").join("foreign.sock");
+    // The shared TMPDIR is also this root's agent dir. Neither daemon socket
+    // is below it.
     let own_agent = shared_tmp.path();
     let foreign_agent = foreign_fixture.path().join("agent");
-    let mut own_daemon = spawn_daemon(&own_socket, own_agent, shared_tmp.path());
-    let _own_session = create_scripted_session(&own_socket, own_agent);
-    let own_hosted = HostedSession::tracked(own_agent, &own_socket);
-    let mut foreign_daemon = spawn_daemon(&foreign_socket, &foreign_agent, shared_tmp.path());
-    let _foreign_session = create_scripted_session(&foreign_socket, &foreign_agent);
-    let foreign_hosted = HostedSession::tracked(&foreign_agent, &foreign_socket);
+    let mut own_daemon = spawn_daemon(&own_pinned, own_agent, shared_tmp.path());
+    let own_socket = runtime_socket(&own_pinned);
+    let own_hosted = create_scripted_session(&own_socket, own_agent);
+    let mut foreign_daemon = spawn_daemon(&foreign_pinned, &foreign_agent, shared_tmp.path());
+    let foreign_socket = runtime_socket(&foreign_pinned);
+    let foreign_hosted = create_scripted_session(&foreign_socket, &foreign_agent);
 
     let status = run_cli_state_env(
         shared_tmp.path(),
         own_agent,
-        Some(&own_socket),
+        Some(&own_pinned),
         &["status", "--json"],
     );
     assert!(status.status.success(), "{}", stderr(&status));
@@ -1016,14 +812,14 @@ fn a_pinned_root_with_an_overlapping_agent_dir_never_stops_foreign_workers() {
     assert_eq!(
         sockets,
         vec![own_socket.to_str().expect("fixture path")],
-        "a pinned root must discover supervisors only: {}",
+        "a pinned root must discover its own daemon only: {}",
         stdout(&status)
     );
 
     let shutdown = run_cli_state_env(
         shared_tmp.path(),
         own_agent,
-        Some(&own_socket),
+        Some(&own_pinned),
         &["shutdown", "--force", "--json"],
     );
     assert!(shutdown.status.success(), "{}", stderr(&shutdown));
@@ -1033,26 +829,26 @@ fn a_pinned_root_with_an_overlapping_agent_dir_never_stops_foreign_workers() {
         foreign_daemon
             .child
             .try_wait()
-            .expect("foreign supervisor wait")
+            .expect("foreign daemon wait")
             .is_none()
             && foreign_hosted.alive(),
-        "the foreign supervisor and its original session must survive"
+        "the foreign daemon and its original session must survive"
     );
     assert!(UnixStream::connect(&foreign_socket).is_ok());
 
     // Teardown names the exact fixture socket; no machine-wide discovery.
-    run_shutdown_on_socket(&foreign_socket).expect("foreign shutdown handshake");
+    shutdown_on_socket(&foreign_socket);
     wait_until_stopped(&foreign_socket, &mut foreign_daemon);
     assert!(foreign_hosted.wait_gone(Duration::from_secs(10)));
 }
 
 /// A fresh top-level invocation must not inherit an ancestor worker's
-/// identity: a kernel bash hands a worker's full environment to every
+/// identity: a kernel bash hands a session's full environment to every
 /// child, so `prime-agent --mode daemon --daemon-socket B` launched from
-/// inside a worker must come up as B's supervisor — never as a second
-/// worker of the live supervisor the inherited env points at.
+/// inside an old supervisor's worker must come up as B's daemon — never as a
+/// second worker of the live supervisor the inherited env points at.
 #[test]
-fn a_daemon_launched_with_an_inherited_worker_env_comes_up_as_a_supervisor() {
+fn a_daemon_launched_with_an_inherited_worker_env_comes_up_as_the_daemon() {
     let fixture = fixture_dir();
     let agent_dir = fixture.path().join("agent");
     let tmp_dir = fixture.path().join("tmp");
@@ -1067,33 +863,32 @@ fn a_daemon_launched_with_an_inherited_worker_env_comes_up_as_a_supervisor() {
         .arg(&socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
         .env("TMPDIR", &tmp_dir)
-        // The inherited worker handshake set (what a kernel bash sees).
-        .env(pa_daemon::worker::WORKER_ROLE_ENV, "1")
+        // The old worker's inherited handshake set (what a kernel bash sees).
+        .env("PRIME_AGENT_INTERNAL_DAEMON_WORKER", "1")
         .env(
-            pa_daemon::worker::WORKER_TOKEN_ENV,
+            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN",
             "inherited-worker-token",
         )
         .env(
-            pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
+            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
             "inherited-instance",
         )
         .env(
-            pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
+            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
             "inherited-session",
         )
-        .env(pa_daemon::worker::WORKER_CWD_ENV, fixture.path())
+        .env("PRIME_AGENT_INTERNAL_DAEMON_WORKER_CWD", fixture.path())
         .env(
-            pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
+            "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
             &ancestor_socket,
         )
-        .env(pa_daemon::worker::WORKER_SOCKET_ENV, &worker_socket)
+        .env("PRIME_AGENT_INTERNAL_DAEMON_WORKER_SOCKET", &worker_socket)
         .env(
-            pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
+            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
             fixture.path().join("recovery.jsonl"),
         )
-        .env(pa_daemon::worker::WORKER_TELEMETRY_DISABLED_ENV, "1")
-        // The supervisor, selected by name (the runtime daemon is the default).
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
+        .env("PRIME_AGENT_INTERNAL_DAEMON_WORKER_TELEMETRY_DISABLED", "1")
+        .env_remove("PRIME_AGENT_RUNTIME_DAEMON")
         .env(
             pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
             "inherited-session",
@@ -1109,21 +904,15 @@ fn a_daemon_launched_with_an_inherited_worker_env_comes_up_as_a_supervisor() {
     let pid = child.id();
     let mut daemon = Daemon { child };
 
-    // The invocation must come up as B's supervisor. On a routing
-    // regression (an inherited worker env rerouting it into worker mode) the
-    // process starts as a worker instead and nothing ever listens here.
-    support::await_listening(&socket, &mut daemon.child);
+    // The invocation must come up as B's daemon. On a routing regression (an
+    // inherited worker env rerouting it into worker mode) the process starts
+    // as a worker instead and nothing ever listens here.
+    support::await_listening(&runtime_socket(&socket), &mut daemon.child);
 
-    // The hello names this child as the supervisor.
-    let stream = UnixStream::connect(&socket).expect("connect the supervisor");
-    let mut hello = String::new();
-    BufReader::new(stream)
-        .read_line(&mut hello)
-        .expect("read the daemon hello");
-    let hello: Value = serde_json::from_str(hello.trim()).expect("parse the daemon hello");
+    // The daemon's lock names this child as the daemon.
     assert_eq!(
-        hello["supervisorPid"].as_i64(),
-        Some(i64::from(pid)),
-        "the hello must name this child as the supervisor: {hello}"
+        lock_holder(&agent_dir).1,
+        pid as i32,
+        "the lock must name this child as the daemon"
     );
 }
