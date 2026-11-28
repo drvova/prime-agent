@@ -121,7 +121,6 @@ def validate_query(call, root, expected, *, ordered=False, remaining=None, curso
 
 def observe(binary, root, observed):
     env = env_for(root)
-    del env['PRIME_AGENT_RUNTIME_DAEMON']  # the runtime daemon, the default
     env[TAG] = str(root)
     (root / 'agent/settings.json').write_text(json.dumps({
         'prewarmPythonKernel': False, 'sessionArchiveMaxSessions': 'off',
@@ -168,7 +167,7 @@ def observe(binary, root, observed):
                 target, = [row for row in rows if row['id'] == expected[-1]['id']]
                 assert target['name'] == TARGET
             scope.discover()
-            assert set(scope.targets) == set(scope.direct), 'catalog unexpectedly spawned a worker/kernel'
+            assert set(scope.targets) == set(scope.direct), 'catalog unexpectedly spawned a process or kernel'
             observed['behavior_verified'] = True
         finally:
             observed['wire'] = list(client.wire) if client else []

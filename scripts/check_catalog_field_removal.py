@@ -88,7 +88,6 @@ def validate(observed, root, expected):
 
 def observe(binary, root, observed):
     env = env_for(root)
-    del env['PRIME_AGENT_RUNTIME_DAEMON']  # the runtime daemon, the default
     env[TAG] = str(root)
     (root / 'agent/settings.json').write_text(json.dumps({
         'prewarmPythonKernel': False, 'sessionArchiveMaxSessions': 'off',
@@ -112,7 +111,7 @@ def observe(binary, root, observed):
             saved_list_capture(client, observed, cwd=CWD, scope='all')
             observed['stable_rows'] = validate(observed, root, expected)
             scope.discover()
-            assert set(scope.targets) == set(scope.direct), 'catalog unexpectedly spawned worker/kernel'
+            assert set(scope.targets) == set(scope.direct), 'catalog unexpectedly spawned a process or kernel'
             observed['behavior_verified'] = True
         finally:
             finish(scope, client, daemon, observed)

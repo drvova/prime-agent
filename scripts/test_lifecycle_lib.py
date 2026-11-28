@@ -162,7 +162,10 @@ class FakeRuntime:
                     replies = ([{'type': 'welcome', 'version': 1, 'runtimeVersion': 'fixture', 'lastSeq': 0}]
                                if frame['type'] == 'hello' else self.answer(frame))
                     for reply in replies:
-                        sock.sendall(lifecycle.wire2_frame(reply))
+                        # Split inside the prefix: the client reads whole frames only.
+                        data = lifecycle.wire2_frame(reply)
+                        sock.sendall(data[:5])
+                        sock.sendall(data[5:])
 
     def close(self):
         self.listener.close()
@@ -217,6 +220,27 @@ class Wire2ClientTests(unittest.TestCase):
             ({'task': 't1', 'outcome': 'completed'},
              [('subscribe', 'agent/s1/#', None),
               ('publish', 'agent/s1/input', {'text': 'hi', 'priority': 'follow_up'})]))
+
+    def test_a_stream_no_longer_followed_is_dropped(self):
+        def answer(frame):
+            if frame['type'] == 'subscribe':
+                return [{'type': 'backfilled', 'subId': frame['subId'], 'throughSeq': 0}]
+            row = lambda: {'type': 'event', 'subId': 'list:list-1', 'event': {
+                'id': 'live', 'seq': 0, 'ts': 1, 'topic': 'runtime/session_list/list-1',
+                'source': 'runtime', 'payload': {'id': 'list-1', 'loaded': 1, 'total': 1},
+                'trust': 'owner'}}
+            if frame['type'] == 'query':
+                return [row(), ok(frame, {'sessions': []})]
+            # A row the daemon sent before it read the unsubscribe.
+            return [row()]
+        def exercise(client):
+            listed = client.call('list_saved_sessions', cwd='/w')
+            client.wait('the late row', lambda: client.dropped)
+            return listed, [event['payload'] for event in client.events], client.dropped
+        (listed, events, dropped), sent = self.run_client(answer, exercise)
+        self.assertEqual(
+            (listed, len(events), [frame['subId'] for frame in dropped], [frame['type'] for frame in sent]),
+            ({'sessions': []}, 1, ['list:list-1'], ['subscribe', 'query', 'unsubscribe']))
 
     def test_a_refusal_raises_with_its_reply_and_an_unmapped_command_names_itself(self):
         refusal = lambda frame: [{'type': 'reply', 'id': frame['id'], 'status': 'error',

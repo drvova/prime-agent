@@ -96,7 +96,6 @@ def validate(observed):
 
 def observe(binary, root, observed):
     env = env_for(root)
-    del env['PRIME_AGENT_RUNTIME_DAEMON']  # the runtime daemon, the default
     env[TAG] = str(root)
     provider = Provider()
     thread = threading.Thread(target=provider.serve_forever, daemon=True)

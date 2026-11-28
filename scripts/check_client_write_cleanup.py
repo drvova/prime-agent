@@ -16,7 +16,7 @@ import tempfile
 import threading
 
 from check_agent_bounce import Client, Provider, Handler, LIMIT
-from lifecycle_lib import digest, env_for, stop
+from lifecycle_lib import digest, supervisor_env_for, stop
 
 FIRST = 'WRITE_CLEANUP_INITIAL_BUSY_TURN'
 SECOND = 'WRITE_CLEANUP_QUEUED_SECOND_CLIENT'
@@ -132,7 +132,11 @@ def pause_released(client, active, pause_id):
 
 
 def run_case(binary, root, observed):
-    env = env_for(root)
+    # On the supervisor's wire (`check_agent_bounce.Client`):
+    # the runtime daemon's `session.release_input` releases a hold for any
+    # connection (no owner refusal shows a pause still held), and its rename
+    # answers no session summary.
+    env = supervisor_env_for(root)
     provider = Provider()
     provider.RequestHandlerClass = CompletionHandler
     threading.Thread(target=provider.serve_forever, daemon=True).start()

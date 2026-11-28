@@ -103,7 +103,7 @@ def finish_daemon(client, process):
     client.call('shutdown', force=True)
     client.close()
     process.wait(timeout=15)
-    assert process.returncode == 0, 'fixture supervisor failed graceful shutdown'
+    assert process.returncode == 0, 'fixture daemon failed graceful shutdown'
 
 
 # The runtime daemon's wire2 client; a call takes its own request budget

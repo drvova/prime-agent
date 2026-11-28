@@ -54,11 +54,7 @@ def env_for(root):
                PRIME_AGENT_CODING_AGENT_DIR=str(root / "agent"),
                PI_CODING_AGENT_DIR=str(root / "agent"), TERM="xterm-256color",
                PRIME_AGENT_MODEL_PROVIDER="parity-local", PRIME_AGENT_MODEL="parity-1",
-               PI_OFFLINE="1", DO_NOT_TRACK="1",
-               # These checks speak the old supervisor's wire on its socket
-               # (`daemon.sock`); the runtime daemon (wire2, `daemon2.sock`) is
-               # the default, so the supervisor is selected by name.
-               PRIME_AGENT_RUNTIME_DAEMON="0")
+               PI_OFFLINE="1", DO_NOT_TRACK="1")
     (root / "agent/settings.json").write_text(json.dumps({
         "onboardingCompleted": True, "onboardingShown": True,
         "telemetry": {"noticeShown": True}}))
@@ -67,6 +63,13 @@ def env_for(root):
                          "apiKey": "fixture-only", "models": [{"id": "parity-1",
                          "name": "Parity 1", "contextWindow": 128000, "maxTokens": 4096}]}}}))
     return env
+
+
+def supervisor_env_for(root):
+    """`env_for(root)` with the old supervisor selected by name: for the checks
+    that still drive the old wire (`daemon.sock`), a fixture `Supervisor` or
+    `check_agent_bounce.Client`, each saying why at its call."""
+    return dict(env_for(root), PRIME_AGENT_RUNTIME_DAEMON="0")
 
 
 def actual_hello(binary, root, env):
@@ -94,7 +97,6 @@ def actual_hello(binary, root, env):
             raise TimeoutError("hello-discovery socket readiness")
         finally:
             stop(process)
-
 
 
 WIRE2_VERSION = 1
@@ -145,7 +147,6 @@ def wire2_frame(header, payload=b''):
     payload lengths, the JSON header, the payload."""
     data = json.dumps(header).encode()
     return struct.pack('>II', len(data), len(payload)) + data + payload
-
 
 
 def wire2_decode(line):
@@ -294,6 +295,7 @@ class Wire2Client:
                             # Sent before the daemon read the unsubscribe: no
                             # longer followed, so dropped (kept apart).
                             self.dropped.append(frame)
+                            self.lock.notify_all()
                             continue
                         self.raw_received.append(raw.hex())
                         self.wire.append(frame)
@@ -914,7 +916,6 @@ def verify_session(row, active, binary, socket_path, daemon_pid):
     assert generation.startswith('hosted:%d:' % daemon_pid), 'session hosted by another daemon'
     assert session_serving(row['socketPath']), 'hosted session is not serving its socket'
     return row['socketPath'], generation
-
 
 
 def verify_runtime_session(client, active, binary, daemon_pid):

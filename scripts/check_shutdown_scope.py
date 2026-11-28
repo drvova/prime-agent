@@ -159,7 +159,6 @@ def finish_tree(tree, observed):
 
 def launch(binary, root, socket_path, shared_tmp, provider, trees):
     env = env_for(root)
-    del env['PRIME_AGENT_RUNTIME_DAEMON']  # the runtime daemon, the default
     env['TMPDIR'] = str(shared_tmp)
     env['PRIME_AGENT_DAEMON_SOCKET'] = str(socket_path)
     (root / 'agent/models.json').write_text(json.dumps({'providers': {'parity-local': {

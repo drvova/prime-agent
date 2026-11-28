@@ -51,7 +51,6 @@ def seed(root):
 
 def observe(binary, root, receipt):
     env = env_for(root)
-    del env['PRIME_AGENT_RUNTIME_DAEMON']  # the runtime daemon, the default
     env[TAG] = str(root)
     seed(root)
     path = root / 'd.sock'

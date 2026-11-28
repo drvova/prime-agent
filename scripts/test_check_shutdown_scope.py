@@ -19,7 +19,7 @@ class OwnershipTests(unittest.TestCase):
             self.assertIsNone(verifier.owned_identity(10, Path('/fixture')))
             identity.assert_not_called()
 
-    def test_shutdown_ack_closes_client_before_waiting_for_supervisor(self):
+    def test_shutdown_ack_closes_client_before_waiting_for_daemon(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / 'daemon.log').write_text('fixture')
