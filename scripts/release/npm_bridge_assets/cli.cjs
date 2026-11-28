@@ -48,7 +48,7 @@ const failedReceipt = `${receipt}.failed`;
 const legacySocketMarker = path.join(receiptDir, "legacy-daemon-socket");
 const legacySocket = path.join(os.tmpdir(), `prime-agent-${process.getuid()}`, "daemon.sock");
 const rustSocket = path.join(process.env.TMPDIR || "/tmp", `prime-agent-rust-${process.getuid()}`, "daemon.sock");
-// Same rule as pa-daemon socket_dir(): non-Linux sun_path caps a unix
+// Same rule as pa-core daemon_endpoint::socket_dir(): non-Linux sun_path caps a unix
 // socket at 103 bytes, so a too-deep TMPDIR pins /tmp/prime-agent-rust-<uid>.
 const pinnedRustSocket = process.platform !== "linux" && Buffer.byteLength(rustSocket) > 103
   ? path.join("/tmp", `prime-agent-rust-${process.getuid()}`, "daemon.sock") : rustSocket;

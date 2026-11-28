@@ -14,12 +14,10 @@ use serde_json::{json, Value};
 
 use super::info::runtime_answers;
 use super::old_reference::OldReference;
-use super::saved_list::old_list;
-use super::switches::read_as_the_tui_does;
 use super::turns::{cell, Attached};
 use super::Bed;
 
-/// Both daemons run offline.
+/// The runtime daemon runs offline, as the old daemon did for its golden.
 const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
 
 /// Two turns, each a cell that writes files and a reply.
@@ -55,55 +53,10 @@ fn back_onto(forkable: &Value, prompt: &str) -> Value {
             "restoreFiles": true })
 }
 
-/// The old daemon's answer to the navigation, and the files after it.
-fn old_rewind(bed: &Bed) -> (Value, Value, Value) {
-    let workspace = bed.dir.path().join("old-project");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let script = bed.dir.path().join("old-script.json");
-    std::fs::write(
-        &script,
-        json!({ "engine": "faux", "modelId": "faux-1", "modelName": "Faux Model",
-                "reasoning": false, "contextWindow": 128_000, "responses": responses() })
-        .to_string(),
-    )
-    .unwrap();
-    let _daemon = bed.old_daemon_with(OFFLINE);
-    let socket = bed.old_socket();
-    let created = old_list(
-        &socket,
-        "create",
-        &json!({ "type": "create", "config": {
-            "cwd": workspace, "sessionDir": bed.agent_dir().join("sessions"), "script": script,
-        } }),
-    );
-    let created = created.last().unwrap();
-    assert_eq!(created["success"], true, "{created}");
-    let active = created["data"]["id"].as_str().unwrap().to_string();
-    let send = |id: &str, mut command: Value| {
-        command["activeSessionId"] = json!(active);
-        old_list(&socket, id, &command).pop().unwrap()
-    };
-    for prompt in ["first", "second"] {
-        let ran = send(
-            prompt,
-            json!({ "type": "prompt_and_wait", "message": prompt }),
-        );
-        assert_eq!(ran["success"], true, "{ran}");
-    }
-    let written = files(&workspace);
-    let forkable = send(
-        "forkable",
-        json!({ "type": "get_user_messages_for_forking" }),
-    );
-    let rewound = send("back", back_onto(&forkable["data"], "second"));
-    (written, read_as_the_tui_does(&rewound), files(&workspace))
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rewind_restores_the_files_as_the_old_daemons_does() {
     let bed = Bed::new();
-    let mut reference = OldReference::open("checkpoint_rewind", &bed);
-    let old: (Value, Value, Value) = reference.take("rewind", || old_rewind(&bed));
+    let old: (Value, Value, Value) = OldReference::open("checkpoint_rewind", &bed).take("rewind");
 
     let workspace = bed.dir.path().join("runtime-project");
     std::fs::create_dir_all(&workspace).unwrap();

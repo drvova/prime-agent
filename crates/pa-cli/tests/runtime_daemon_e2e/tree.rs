@@ -17,8 +17,6 @@ use serde_json::{json, Value};
 
 use super::info::runtime_answers;
 use super::old_reference::OldReference;
-use super::saved_list::old_list;
-use super::switches::read_as_the_tui_does;
 use super::{ok, Bed, Client};
 
 /// The seeded rows' ids: two questions and their answers.
@@ -249,7 +247,9 @@ fn exported(path: &Path) -> (Vec<Value>, bool) {
 async fn the_tree_moves_answer_and_record_as_the_old_daemons_do() {
     let bed = Bed::new();
     models(&bed.agent_dir(), summary_provider());
-    let old_path = seed(
+    // The old daemon's session, which the agent dir held beside the runtime
+    // daemon's when the golden was recorded.
+    seed(
         &bed.agent_dir(),
         bed.dir.path(),
         "0199a000-0000-7000-8000-00000000000a",
@@ -261,33 +261,9 @@ async fn the_tree_moves_answer_and_record_as_the_old_daemons_do() {
     );
     let export = bed.dir.path().join("export.html");
 
-    let mut reference = OldReference::open("tree_moves", &bed);
-    let (old, old_export): (Vec<Value>, (Vec<Value>, bool)) = reference.take("answers", || {
-        let _daemon = bed.old_daemon_with(LOCAL);
-        let socket = bed.old_socket();
-        let created = old_list(
-            &socket,
-            "create",
-            &json!({ "type": "create", "sessionPath": old_path, "config": {
-                "cwd": bed.dir.path(), "sessionDir": bed.agent_dir().join("sessions"),
-                "provider": "loop", "model": "m-1",
-            } }),
-        );
-        let created = created.last().unwrap();
-        assert_eq!(created["success"], true, "{created}");
-        let active = created["data"]["id"].as_str().unwrap().to_string();
-        let answers: Vec<Value> = commands(&export)
-            .into_iter()
-            .enumerate()
-            .map(|(index, mut command)| {
-                command["activeSessionId"] = json!(active);
-                let frames = old_list(&socket, &format!("t{index}"), &command);
-                comparable(read_as_the_tui_does(frames.last().unwrap()))
-            })
-            .collect();
-        (answers, exported(&export))
-    });
-    let old_rows: Vec<Value> = reference.take("tree_rows", || tree_rows(&old_path));
+    let reference = OldReference::open("tree_moves", &bed);
+    let (old, old_export): (Vec<Value>, (Vec<Value>, bool)) = reference.take("answers");
+    let old_rows: Vec<Value> = reference.take("tree_rows");
 
     let _daemon = bed.runtime_daemon_with(&json!({ "responses": ["hi"] }), LOCAL);
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;

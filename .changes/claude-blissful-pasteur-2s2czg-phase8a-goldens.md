@@ -1,1 +1,1 @@
-- With the opt-in runtime daemon selected (`PRIME_AGENT_RUNTIME_DAEMON=1` or `"daemon": "runtime"`), launching the interactive `prime-agent` no longer times out after 30 seconds waiting for a daemon that never answers: it starts the daemon it talks to.
+- Launching the interactive `prime-agent` no longer times out after 30 seconds waiting for a daemon that never answers: it starts the runtime daemon it talks to.

@@ -2,20 +2,44 @@
 """Mock product modes: daemon shutdown waits for its held UI connection.
 
 Only used by the Rust harness regression; never loads or launches the product.
+The daemon mode speaks the runtime daemon's wire2 on `daemon2.sock` beside the
+run's socket: private frames (two big-endian u32 lengths, a JSON header, a
+payload), a `hello` answered with a `welcome`, and the `daemon.shutdown` call.
 """
 import json
 from pathlib import Path
 import select
 import socket
+import struct
 import sys
 import time
 
-path = Path(sys.argv[sys.argv.index('--daemon-socket') + 1])
+path = Path(sys.argv[sys.argv.index('--daemon-socket') + 1]).with_name('daemon2.sock')
+
+
+def frame(header):
+    body = json.dumps(header).encode()
+    return struct.pack('>II', len(body), 0) + body
+
+
+def frames(buffer):
+    """The complete frames' headers in `buffer`, and the bytes left over."""
+    headers = []
+    while len(buffer) >= 8:
+        header_len, payload_len = struct.unpack('>II', buffer[:8])
+        end = 8 + header_len + payload_len
+        if len(buffer) < end:
+            break
+        headers.append(json.loads(buffer[8:8 + header_len]))
+        buffer = buffer[end:]
+    return headers, buffer
+
+
 if '--mode' not in sys.argv:
     with socket.socket(socket.AF_UNIX) as peer:
         peer.connect(str(path))
+        peer.sendall(frame({'type': 'hello', 'version': 1, 'client': 'mock-ui'}))
         peer.recv(4096)
-        peer.sendall(b'held-ui\n')
         sys.stdout.write('▗▄▄█▀ mock paint ?/1.0M\n')
         sys.stdout.flush()
         # The mock UI remains connected until its owned process is stopped.
@@ -38,11 +62,6 @@ try:
             if peer is listener:
                 client, _ = listener.accept()
                 peers[client] = b''
-                try:
-                    client.sendall(b'{"type":"daemon_hello"}\n')
-                except (BrokenPipeError, ConnectionResetError):
-                    client.close()
-                    del peers[client]
                 continue
             try:
                 data = peer.recv(4096)
@@ -52,19 +71,22 @@ try:
                 peer.close()
                 del peers[peer]
                 continue
-            peers[peer] += data
-            if peers[peer] == b'held-ui\n':
-                continue
-            if b'\n' not in peers[peer]:
-                continue
-            request = json.loads(peers[peer])
-            assert request['command']['type'] == 'shutdown'
-            peer.sendall((json.dumps({'type': 'response', 'id': request['id'],
-                                     'success': True}) + '\n').encode())
-            listener.close()
-            accepting = False
-            shutdown = True
-    assert shutdown, 'mock daemon never received protocol shutdown'
+            headers, peers[peer] = frames(peers[peer] + data)
+            for header in headers:
+                try:
+                    if header['type'] == 'hello':
+                        peer.sendall(frame({'type': 'welcome', 'version': 1,
+                                            'runtimeVersion': 'mock', 'lastSeq': 0}))
+                        continue
+                    assert header['type'] == 'call' and header['method'] == 'daemon.shutdown', header
+                    peer.sendall(frame({'type': 'reply', 'id': header['id'],
+                                        'status': 'ok', 'result': {}}))
+                except (BrokenPipeError, ConnectionResetError):
+                    continue
+                listener.close()
+                accepting = False
+                shutdown = True
+    assert shutdown, 'mock daemon never received the daemon.shutdown call'
     path.with_suffix('.drained').write_text('all UI/control connections closed\n')
 finally:
     listener.close()

@@ -6,10 +6,9 @@
 //!   turn's stream and its `done`, then `transcript.page` holds the turn; a
 //!   second client subscribing `after` a sequence number replays the same
 //!   stored events, gap-free, in order.
-//! - Ownership between the old daemon and the runtime daemon, and the old
-//!   daemon only a blessing starts: [`old_daemon`]. The tests that compare
-//!   the runtime daemon with the old daemon read the old daemon's answers
-//!   from committed goldens: [`old_reference`].
+//! - The tests that compare the runtime daemon with the old daemon (the
+//!   deleted supervisor) read the old daemon's answers from committed,
+//!   frozen goldens: [`old_reference`].
 //! - One runtime daemon per agent dir.
 //! - Interactive turn semantics (phase 7b): [`turns`].
 //! - Reliability (phase 7c): crashes, heals, give-ups, stuck cells and the
@@ -126,7 +125,6 @@ mod leases;
 mod legacy_update;
 mod lifecycle;
 mod mcp_catalog;
-mod old_daemon;
 mod old_reference;
 mod openai_mock;
 mod parent_death;
@@ -168,8 +166,7 @@ const FRAME_WAIT: Duration = Duration::from_secs(60);
 
 /// Env keys the test's own environment may carry that must not reach the
 /// daemons it starts.
-const SCRUB_ENV: [&str; 5] = [
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
+const SCRUB_ENV: [&str; 4] = [
     "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
     "PRIME_AGENT_INTERNAL_SESSION_LEASES",
     "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",

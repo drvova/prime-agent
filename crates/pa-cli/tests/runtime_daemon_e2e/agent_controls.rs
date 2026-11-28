@@ -27,13 +27,11 @@ use serde_json::{json, Value};
 
 use super::kernel_activity::runtime_answer;
 use super::old_reference::OldReference;
-use super::saved_list::old_list;
-use super::side_questions::OldClient;
 use super::switches::read_as_the_tui_does;
 use super::turns::{cell, Attached};
 use super::Bed;
 
-/// Both daemons run offline.
+/// The runtime daemon runs offline, as the old daemon did for its golden.
 const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
 
 /// A form that holds its cell until `marker` exists: short checks in a loop,
@@ -70,33 +68,6 @@ fn normalized(response: &Value) -> Value {
     response
 }
 
-/// An old daemon's faux script file at `path`.
-fn write_script(path: &Path, responses: &Value) {
-    std::fs::write(
-        path,
-        json!({ "engine": "faux", "modelId": "faux-1", "modelName": "Faux Model",
-                "reasoning": false, "contextWindow": 128_000, "responses": responses,
-                "repeatLastResponse": true })
-        .to_string(),
-    )
-    .unwrap();
-}
-
-/// Creates a session on the old daemon at `socket`; its id.
-fn old_session(bed: &Bed, socket: &Path, config: Value) -> String {
-    let mut config = config;
-    config["cwd"] = json!(bed.dir.path());
-    config["sessionDir"] = json!(bed.agent_dir().join("sessions"));
-    let created = old_list(
-        socket,
-        "create",
-        &json!({ "type": "create", "config": config }),
-    );
-    let created = created.last().unwrap();
-    assert_eq!(created["success"], true, "{created}");
-    created["data"]["id"].as_str().unwrap().to_string()
-}
-
 /// The ingest scenario's turn: it holds in a kernel cell until `release`.
 fn ingest_responses(release: &Path) -> Value {
     json!([cell("Holding.", &hold_until(release)), "held"])
@@ -115,77 +86,6 @@ fn ingest_steps() -> Vec<(Value, bool)> {
         (json!({ "type": "agent_messages_resume" }), true),
         (json!({ "type": "agent_messages_status" }), false),
     ]
-}
-
-/// The old daemon's ingest answers.
-fn old_ingest(bed: &Bed) -> Vec<Value> {
-    let release = bed.dir.path().join("release");
-    let script = bed.dir.path().join("old-script.json");
-    write_script(&script, &ingest_responses(&release));
-    let _daemon = bed.old_daemon_with(OFFLINE);
-    let socket = bed.old_socket();
-    let mut answers = vec![normalized(
-        old_list(
-            &socket,
-            "unscoped",
-            &json!({ "type": "agent_messages_status" }),
-        )
-        .last()
-        .unwrap(),
-    )];
-    let active = old_session(bed, &socket, json!({ "script": script }));
-    let mut client = OldClient::connect(&socket);
-    let scoped = |mut command: Value| {
-        if command["type"] == "send_message" {
-            command["targetActiveSessionId"] = json!(active);
-        } else {
-            command["activeSessionId"] = json!(active);
-        }
-        command
-    };
-    for (index, (command, with_session)) in ingest_steps().into_iter().enumerate() {
-        let command = if with_session {
-            scoped(command)
-        } else {
-            command
-        };
-        answers.push(normalized(&client.send(&format!("s{index}"), &command)));
-    }
-    let attached = client.send(
-        "attach",
-        &scoped(json!({ "type": "attach", "clientId": "tui:1" })),
-    );
-    assert_eq!(attached["success"], true, "{attached}");
-    let prompted = client.send(
-        "hold",
-        &scoped(json!({ "type": "prompt", "message": "hold" })),
-    );
-    assert_eq!(prompted["success"], true, "{prompted}");
-    client.until(|seen| {
-        seen.iter().any(|frame| {
-            frame["type"] == "session_event" && frame["event"]["type"] == "tool_execution_start"
-        })
-    });
-    let sent = client.send(
-        "queued",
-        &scoped(json!({ "type": "send_message", "message": "behind the turn" })),
-    );
-    assert_eq!(
-        (&sent["success"], &sent["data"]["deliveryStatus"]),
-        (&json!(true), &json!("queued")),
-        "{sent}"
-    );
-    answers.push(normalized(
-        &client.send("clear", &scoped(json!({ "type": "agent_messages_clear" }))),
-    ));
-    std::fs::write(&release, "go").unwrap();
-    let idle = client.send("idle", &scoped(json!({ "type": "wait_for_idle" })));
-    assert_eq!(idle["success"], true, "{idle}");
-    answers.push(normalized(&client.send(
-        "cleared",
-        &scoped(json!({ "type": "agent_messages_clear" })),
-    )));
-    answers
 }
 
 /// What the runtime daemon answers `session.send` with `message` (the
@@ -269,8 +169,7 @@ async fn runtime_unscoped_status(bed: &Bed) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_agent_message_ingest_answers_as_the_old_daemons_does() {
     let old_bed = Bed::new();
-    let mut reference = OldReference::open("agent_message_ingest", &old_bed);
-    let old: Vec<Value> = reference.take("answers", || old_ingest(&old_bed));
+    let old: Vec<Value> = OldReference::open("agent_message_ingest", &old_bed).take("answers");
     let mut runtime = vec![runtime_unscoped_status(&Bed::new()).await];
     runtime.extend(runtime_ingest(&Bed::new()).await);
 
@@ -372,55 +271,6 @@ fn global_depth(bed: &Bed) -> Value {
     settings["rlmMaxDepth"].clone()
 }
 
-fn old_depth(bed: &Bed) -> Depth {
-    let release = bed.dir.path().join("release");
-    let script = bed.dir.path().join("old-script.json");
-    let child_script = bed.dir.path().join("old-child.json");
-    write_script(&script, &depth_responses());
-    write_script(&child_script, &kid_responses(&release));
-    let _daemon = bed.old_daemon_with(OFFLINE);
-    let socket = bed.old_socket();
-    let active = old_session(
-        bed,
-        &socket,
-        json!({ "script": script, "childScript": child_script }),
-    );
-    let mut client = OldClient::connect(&socket);
-    let scoped = |mut command: Value| {
-        command["activeSessionId"] = json!(active);
-        command
-    };
-    let ran = client.send(
-        "turn",
-        &scoped(json!({ "type": "prompt_and_wait", "message": "spawn" })),
-    );
-    assert_eq!(ran["success"], true, "{ran}");
-    let child = kid(
-        &client.send("children", &scoped(json!({ "type": "get_rlm_children" })))["data"]
-            ["children"],
-    );
-    let mut answers = Vec::new();
-    for (index, command) in depth_steps().iter().enumerate() {
-        let command = scoped(with_child(command, &child));
-        answers.push(normalized(&client.send(&format!("d{index}"), &command)));
-    }
-    std::fs::write(&release, "go").unwrap();
-    // The barrier holds until the kid settled and its notice turn ran.
-    let idle = client.send(
-        "idle",
-        &scoped(json!({ "type": "wait_for_idle", "waitForRlmQuiescence": true })),
-    );
-    assert_eq!(idle["success"], true, "{idle}");
-    for (index, command) in after_settle().iter().enumerate() {
-        let command = scoped(with_child(command, &child));
-        answers.push(normalized(&client.send(&format!("a{index}"), &command)));
-    }
-    Depth {
-        answers,
-        global: global_depth(bed),
-    }
-}
-
 async fn runtime_depth(bed: &Bed) -> Depth {
     let release = bed.dir.path().join("release");
     let _daemon = bed.runtime_daemon_with(
@@ -453,8 +303,7 @@ async fn runtime_depth(bed: &Bed) -> Depth {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_depth_bound_and_the_subagent_delete_answer_as_the_old_daemons_do() {
     let old_bed = Bed::new();
-    let mut reference = OldReference::open("depth_bound", &old_bed);
-    let old: Depth = reference.take("depth", || old_depth(&old_bed));
+    let old: Depth = OldReference::open("depth_bound", &old_bed).take("depth");
     let runtime = runtime_depth(&Bed::new()).await;
 
     let answered = |command: &str, data: Value| json!({ "type": "response", "command": command, "success": true, "data": data });

@@ -213,12 +213,12 @@ class SelectionReportingTestCase(unittest.TestCase):
         env["GITHUB_OUTPUT"] = str(output)
         result = subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "ci_test_shard.py"),
-             "--shard", "3", "--total", str(TOTAL), "--crates", "pa-daemon",
+             "--shard", "3", "--total", str(TOTAL), "--crates", "pa-cli",
              "--print-selection"],
             capture_output=True, text=True, env=env, cwd=REPO, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("SELECTED=", result.stdout)
-        self.assertIn("crate selection: pa-daemon", result.stdout)
+        self.assertIn("crate selection: pa-cli", result.stdout)
         count = int(next(line for line in result.stdout.splitlines()
                          if line.startswith("SELECTED=")).split("=")[1])
         self.assertGreater(count, 0)

@@ -209,7 +209,7 @@ takeovers no row of that run named yet, and a start with takeovers reports `tui 
 takeovers` (`takeovers`, a count).
 
 ## Non-goals
-No session logic, no providers, no loop policy. The interactive UI renders daemon events and sends user intents (prompts, abort, switch) as daemon commands; the session loop itself lives in the pa-daemon worker. It never computes agent behavior and never spawns the supervisor (launch semantics live in pa-cli).
+No session logic, no providers, no loop policy. The interactive UI renders daemon events and sends user intents (prompts, abort, switch) as daemon commands; the session loop itself lives in the runtime daemon's sessions (pa-runtime). It never computes agent behavior and never spawns the supervisor (launch semantics live in pa-cli).
 
 The client commands of the clipboard/auth/update group: `/copy` (the last assistant text through the platform clipboard tool chain with the OSC 52 fallback — `clipboard.rs` + `osc52.rs`, the same emitter the selection-copy work can reuse; the daemon `get_last_assistant_text` supplies the text), `/import` (the path argument parse, the TS confirm, the typed error surfaces — the missing file, the missing session cwd with its fallback-cwd retry — and the post-import transcript rebuild through the daemon's `import_jsonl`), `/login` + `/logout` (the TS providers selector — `provider_auth.rs`, the panel `showConfigurationMenu("providers")` mounts: the tab bar, the search, the status indicators, the in-panel API-key prompt — over the composition root's auth flows), `/traces` (the TS status block and settings writes; the upload subsystem stays unported, its arms keep the TS state shapes and report the unavailability), and `/update` (the TS busy guard, the split-CLI child mapping — packages then the binary — and the self-update relaunch through the composition root's hook).
 
@@ -221,13 +221,14 @@ pa-types only (the daemon wire protocol types live there). The headless `UiMode`
 
 ## The wire2 port (phase 8)
 
-`daemon_client::DaemonClient` has two transports (`daemon_client::Transport`): the old wire to
-the supervisor's `daemon.sock`, and wire2 to the runtime daemon's `daemon2.sock`
-(`src/daemon_client/wire2.rs`), which carries every command the TUI sends through the compat
-layer below and maps the runtime's topics back to `DaemonClientEvent`. A socket speaks the
-transport the composition root declared for it (`daemon_client::use_transport`; undeclared, the
-old wire; since phase 8f pa-cli declares the runtime daemon's socket unless the supervisor is
-selected), so the views, the reconnect driver and the agents view are the same on both. On wire2
+`daemon_client::DaemonClient` has two transports (`daemon_client::Transport`): wire2 to the
+runtime daemon's `daemon2.sock` (`src/daemon_client/wire2.rs`), which the UI runs on, carries
+every command the TUI sends through the compat layer below and maps the runtime's topics back to
+`DaemonClientEvent`; and the old wire on `daemon.sock`, which only pa-cli's calls to a supervisor
+an earlier release left running use (the launch retiring an idle one, the update stopping one). A
+socket speaks the transport the composition root declared for it (`daemon_client::use_transport`;
+undeclared, the old wire; pa-cli declares the runtime daemon's socket), so the views, the
+reconnect driver and the agents view are the same on both. On wire2
 the hello is the runtime's `welcome` and `daemon.identity` (its `serverCapabilities`, never the
 direct worker link's); an attach follows the session's `agent/<id>/#` first (its stream live, its
 stored topics after the last stored event this process saw on the socket, so a reconnect replays a
@@ -236,7 +237,7 @@ the snapshot already holds (the old attach window); `prompt_and_wait` is a publi
 task's `agent/<id>/done`. `src/wire2_compat/guard_tests.rs` finds every command the crate's own
 code builds and fails on one with no wire2 form (the deliberate exception, the direct worker link's
 ticket, is listed with its reason). `tests/goldens/inbound/*.jsonl` are five streams recorded from
-the supervisor on the faux engine with a debug build's `PA_TUI_RECORD_INBOUND` tap
+the old supervisor (deleted in phase 10 C2; the recordings are frozen) on the faux engine with a debug build's `PA_TUI_RECORD_INBOUND` tap
 (`src/inbound_recording.rs`, absent from release builds), each with the frame it ends on;
 `tests/inbound_goldens_headless.rs` replays them through the real client decode and event pump,
 on the old wire and again through the wire2 transport against a small wire2 mock that serves the

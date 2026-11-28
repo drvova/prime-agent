@@ -56,17 +56,6 @@ pub enum Scenario {
     WarmFirstEval,
 }
 
-/// The daemon a bench drives: the product's default, the runtime daemon
-/// (wire2, on `daemon2.sock` beside the run's socket), or the supervisor
-/// selected by name (the old wire, on the run's socket). Every scenario runs
-/// on either, so the two compare on the same corpus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum Daemon {
-    Runtime,
-    Supervisor,
-}
-
 /// Every bench knob for one scenario over one corpus.
 #[derive(Debug, Clone)]
 pub struct BenchOptions {
@@ -82,8 +71,6 @@ pub struct BenchOptions {
     /// The per-run liveness deadline (seconds) — a broken run fails
     /// instead of hanging.
     pub liveness_secs: u64,
-    /// The daemon the product runs on.
-    pub daemon: Daemon,
 }
 
 /// The whole-suite driver: generates the cold and warm corpora, runs every
@@ -104,8 +91,6 @@ pub struct RunOptions {
     pub runs: usize,
     /// The per-run liveness deadline (seconds).
     pub liveness_secs: u64,
-    /// The daemon the product runs on.
-    pub daemon: Daemon,
 }
 
 /// The measured outcome of one scenario over one corpus.

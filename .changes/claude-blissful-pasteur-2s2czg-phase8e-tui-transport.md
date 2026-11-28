@@ -1,1 +1,1 @@
-- With the runtime daemon opted in (`PRIME_AGENT_RUNTIME_DAEMON=1` or `"daemon": "runtime"`), the interactive TUI and its agents view now run on the runtime daemon over its own socket; the default stays the supervisor.
+- The interactive TUI and its agents view run on the runtime daemon over its own socket.

@@ -91,8 +91,8 @@ records (`parentSession`/`child` are canonical paths).
   over every openable session file, writing real `<id>.window-cache.json`
   sidecars. On a real store warm window-cache sidecars are the common state
   (the operator's live store: 71 of 111 sessions carry one).
-- The `<id>.info-cache.json` sidecar is written only at worker lease
-  release (pa-daemon, no public writer), so generated corpora carry none —
+- The `<id>.info-cache.json` sidecar is written only at a session lease's
+  release (no public writer), so generated corpora carry none —
   matching real stores (9 of 111). The `agents-view-warm` scenario measures
   the warm scan via the daemon's in-process cache instead.
 - `pa-perf run` generates BOTH corpora (cold for the cold scenarios, warm
@@ -109,11 +109,8 @@ pa-perf run --binary target/release/prime-agent --profile medium --out DIR [--ru
 pa-perf bench --binary target/release/prime-agent --corpus DIR --scenario S --runs 10 --json OUT
 ```
 
-Both take `--daemon runtime|supervisor` (default `runtime`): every run waits on that daemon's
-socket (`daemon2.sock` beside the run's socket for the runtime daemon) and stops it on its own
-wire. The product starts only the runtime daemon since phase 10 C1, so a `supervisor` run fails
-loudly: the run's socket is answered by the runtime daemon's legacy greeter. The `supervisor`
-choice and its old-wire bench client go with pa-daemon (phase 10 C2).
+Every run waits on the runtime daemon's socket (`daemon2.sock` beside the run's socket) and
+stops it with wire2's `daemon.shutdown`.
 
 Scenarios (timed from a triggering action to an observable needle — literal
 paints as byte needles, cell-diffed content through a vt100 screen model;
@@ -134,14 +131,13 @@ the liveness deadline only fails broken runs):
 | `transcript-top` | cold | `--resume <huge session>`, then the `tui.viewport.top` key -> the first frame showing the session's first block (ordinal 0); the head is never in the attach tail, so this is a daemon page fetch |
 | `idle-cost` | cold | owned daemon + TUI, ready, then a 30 s idle window: CPU ms (utime+stime) of the daemon, its descendants, and the TUI, plus their context switches (medium only, Linux only) |
 | `first-eval` | cold | daemon wire, no TUI: the `create` command -> the first `eval` result event of the new session, on a daemon started just before (session build + the in-process Scheme engine + the cell; the daemon's spare engine may still be building) |
-| `warm-first-eval` | cold | the same measurement on a daemon that reports a built spare engine (`spareKernels` above zero in its `list` answer): what a session started on a running daemon waits for |
+| `warm-first-eval` | cold | the same measurement on a daemon that reports a built spare engine (`spareKernels` above zero in its `sessions.list` answer): what a session started on a running daemon waits for |
 | `subagent-first-eval` | cold | daemon wire: a parent cell's `rlm-spawn` -> the child's first `eval` cell end (both stamps are the kernels' own wall clocks; the child's task is delivered when the spawning cell returns) |
 
-The kernel scenarios drive the daemon over its wire protocol (the supervisor's old wire, the
-runtime daemon's wire2: `session.create`, a publish on `agent/<id>/input`, the eval cell's events
-on `agent/<id>/stream`, `spareKernels` in `sessions.list`) with a faux-scripted session
-(`{"engine": "faux"}` scripts, on the create for the supervisor and in the runtime daemon's
-environment for the runtime daemon, which runs it per session: the real agent
+The kernel scenarios drive the runtime daemon over wire2 (`session.create`, a publish on
+`agent/<id>/input`, the eval cell's events on `agent/<id>/stream`, `spareKernels` in
+`sessions.list`) with a faux-scripted session (`{"engine": "faux"}` scripts in the daemon's
+environment, which it runs per session: the real agent
 loop and the real kernel behind the `eval` tool, with only the provider
 scripted), so they stay offline and need no setup: the kernel is built into
 the binary. Each run starts its own daemon, which hosts the session in its

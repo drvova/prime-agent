@@ -6,13 +6,13 @@ The `prime-agent` binary.
 Argument parsing, mode selection (interactive/headless/json/daemon subcommands), binary wiring of crates into processes, exit codes and user-facing errors. The daemon-forensics CLI (`incident.rs`, TS `src/cli/incident.ts`): the `prime-agent incident` timeline command — log-source discovery (agent.jsonl plus its `.old` rotation, falling back to the newest per-daemon log), `--since`/`--until` window and `--session` filter parsing, and the report rendering; the shared classifier lives in pa-types (`pa_types::incident`) and the agents-view notice in pa-tui. Client-side MCP auth flows (`mcp_login.rs`): the `/mcp login`/`/mcp logout` hook the TUI calls — the TS interactive client's placement — resolving a server (settings `mcpServers` + the builtin catalog), running the pa-core OAuth login on the suspended terminal, and persisting through the shared auth store. The same placement serves the TUI's client-command hooks: provider auth (`provider_login.rs` — the `/login`/`/logout` catalog, the API-key store, the MCP device flow, the Prime Inference terminal login (`prime_inference_login.rs` — the API-key flow: prime-cli credential reuse, the paste prompt with the whoami access check, the numbered team selector); the subscription OAuth and the Prime browser challenge stay unported and report it), trace-sharing state (`client_traces.rs` — the settings flag writes and the credential resolution `/traces` shows; the upload subsystem stays unported), and the `/update` runner (`client_update.rs` — the out-of-band installer funnel with the output captured, the same body `prime-agent update` runs; `installer_update.rs` is that CLI command's own driver, `--check` included), plus the staged update flow (`update_flow/`, `self_update.rs` — the `package update` self target's body). The descriptor OAuth commands (`descriptor_login.rs`): `login <provider> [--device]` and `logout <provider>`, plus the `/login` panel flow for models.json providers whose `auth` block declares `oauth`; the sign-in itself is pa-core's.
 
 ## Non-goals
-No business logic; it composes pa-runtime, pa-core, pa-tui, pa-ai via their public APIs only. It links no pa-daemon code (the dependency goes with that crate, phase 10 C2).
+No business logic; it composes pa-runtime, pa-core, pa-tui, pa-ai via their public APIs only.
 
 ## Public API
 The `prime-agent` executable surface (flags, subcommands, exit codes). Internal lib types `pub(crate)`, plus the daemon wiring (`interactive_mode::{ensure_runtime_daemon_running_with, resolve_socket_path}`) exported for the integration verifier.
 
 ## Depends on
-pa-types, pa-ai, pa-agent, pa-core, pa-daemon (no code linked; removed in phase 10 C2), pa-runtime, pa-tui (one-way, composition root).
+pa-types, pa-ai, pa-agent, pa-core, pa-runtime, pa-tui, pa-telemetry (one-way, composition root).
 
 ## Runtime daemon
 `--mode daemon` starts the runtime daemon, the only daemon this release starts
@@ -149,8 +149,8 @@ live holder, dead-holder steal), the status file keeps the TS schema plus
 Mechanism support (version/channel policy, install-root layout, manifest
 fetch, archive staging) lives in pa-core's `update` module, and so do the
 daemon side's prepare transaction and boot restore pass (`update::restart`),
-which both daemons serve: the coordinator's `Restoring` phase polls the
-successor's `update_restore_status` RPC for the real per-session counts.
+which the runtime daemon serves: the coordinator's `Restoring` phase polls the
+successor's `daemon.update_restore_status` for the real per-session counts.
 The daemon the update restarts is the runtime daemon (`update_flow/endpoint.rs`)
 on `daemon2.sock`, greeted with `daemon.identity` and sent the update commands
 through pa-tui's `wire2_compat` (a connection per request); the update's lock

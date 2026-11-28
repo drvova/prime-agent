@@ -1,1 +1,1 @@
-- The opt-in runtime daemon now answers the interactive TUI's `/fork` onto a message, `/clone` and `/import` with the same replies and refusals as the default daemon: the session goes on from the forked or imported transcript under the same id, with a fresh kernel.
+- The runtime daemon now answers the interactive TUI's `/fork` onto a message, `/clone` and `/import` with the same replies and refusals as the old daemon: the session goes on from the forked or imported transcript under the same id, with a fresh kernel.

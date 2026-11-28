@@ -1,0 +1,1 @@
+- Removed the old supervisor daemon from the product: Prime Agent ships only the runtime daemon, and an old daemon an earlier release left running is still retired by a launch or an update and found and stopped by `status`, `doctor --fix` and `shutdown`.

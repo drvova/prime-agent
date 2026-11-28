@@ -20,8 +20,6 @@ use serde_json::{json, Value};
 
 use super::info::runtime_answers;
 use super::old_reference::OldReference;
-use super::saved_list::old_list;
-use super::switches::read_as_the_tui_does;
 use super::tree::{seed, SEEDED};
 use super::{ok, run_turn, Bed, Client};
 
@@ -98,34 +96,6 @@ fn message_ids(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The old daemon's answers to [`commands`] on a session it opens on the
-/// transcript at `path`, its import file named as the runtime daemon's is.
-fn old_answers(bed: &Bed, sessions: &Path, path: &Path) -> Value {
-    let _daemon = bed.old_daemon_with(OFFLINE);
-    let socket = bed.old_socket();
-    let created = old_list(
-        &socket,
-        "create",
-        &json!({ "type": "create", "sessionPath": path, "config": {
-            "cwd": bed.dir.path(), "sessionDir": sessions,
-            "provider": "battery", "model": "mock-1",
-        } }),
-    );
-    let created = created.last().unwrap();
-    assert_eq!(created["success"], true, "{created}");
-    let active = created["data"]["id"].as_str().unwrap().to_string();
-    let answers: Vec<Value> = commands(bed, &importable(bed, "old"))
-        .into_iter()
-        .enumerate()
-        .map(|(index, mut command)| {
-            command["activeSessionId"] = json!(active);
-            let frames = old_list(&socket, &format!("f{index}"), &command);
-            read_as_the_tui_does(frames.last().unwrap())
-        })
-        .collect();
-    named_alike(&answers, "old")
-}
-
 /// What the old daemon answers to [`commands`], as the TUI reads it.
 fn expected(bed: &Bed, sessions: &Path) -> Value {
     let gone = bed.dir.path().join("gone");
@@ -166,7 +136,9 @@ fn expected(bed: &Bed, sessions: &Path) -> Value {
 async fn the_replacements_answer_and_fork_as_the_old_daemons_do() {
     let bed = Bed::new();
     let sessions = bed.agent_dir().join("sessions");
-    let old_path = seed(
+    // The old daemon's session, which the agent dir held beside the runtime
+    // daemon's when the golden was recorded.
+    seed(
         &bed.agent_dir(),
         bed.dir.path(),
         "0199a000-0000-7000-8000-00000000000c",
@@ -177,9 +149,9 @@ async fn the_replacements_answer_and_fork_as_the_old_daemons_do() {
         "0199a000-0000-7000-8000-00000000000d",
     );
 
-    let mut reference = OldReference::open("replacements", &bed);
-    let old: Value = reference.take("answers", || old_answers(&bed, &sessions, &old_path));
-    let old_ids: Vec<String> = reference.take("message_ids", || message_ids(&old_path));
+    let reference = OldReference::open("replacements", &bed);
+    let old: Value = reference.take("answers");
+    let old_ids: Vec<String> = reference.take("message_ids");
 
     let _daemon = bed.runtime_daemon_with(&json!({ "responses": ["after the import"] }), OFFLINE);
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;

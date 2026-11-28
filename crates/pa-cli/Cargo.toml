@@ -11,7 +11,6 @@ pa-types = { path = "../pa-types" }
 pa-core = { path = "../pa-core" }
 pa-ai = { path = "../pa-ai" }
 pa-agent = { path = "../pa-agent" }
-pa-daemon = { path = "../pa-daemon" }
 pa-runtime = { path = "../pa-runtime" }
 pa-tui = { path = "../pa-tui" }
 pa-telemetry = { path = "../pa-telemetry" }
