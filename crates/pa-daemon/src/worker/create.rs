@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::agent_engine::CreateSessionResources;
 use crate::protocol::DaemonResponse;
+use pa_core::session::hold_refusal::{refusal_message, HoldIdentity};
 
 impl Worker {
     pub(super) async fn handle_create(&self, payload: &Value) -> DaemonResponse {
@@ -361,7 +362,7 @@ impl Worker {
                         .await;
                         opened
                     }
-                    Err(error) => return crate::hold_refusal::create_failure_response(&error),
+                    Err(error) => return create_failure_response(&error),
                 }
             }
             (Some(path), false) => {
@@ -389,7 +390,7 @@ impl Worker {
                 };
                 match acquired {
                     Ok(lease) => created.lease = Some(Arc::new(lease)),
-                    Err(error) => return crate::hold_refusal::create_failure_response(&error),
+                    Err(error) => return create_failure_response(&error),
                 }
                 if let Err(error) = created.rewrite() {
                     return response_failure(None, "create", &error.to_string(), None);
@@ -433,7 +434,7 @@ impl Worker {
                 };
                 match acquired {
                     Ok(lease) => created.lease = Some(Arc::new(lease)),
-                    Err(error) => return crate::hold_refusal::create_failure_response(&error),
+                    Err(error) => return create_failure_response(&error),
                 }
                 // One durable write instead of three: the prefix, the `active` state,
                 // and the session name land in a single rewrite; the create stays
@@ -957,6 +958,60 @@ fn append_creation_prefix(
             "service_tier_change",
             json!({ "serviceTier": service_tier }),
         );
+    }
+}
+
+/// The create response for a refused create: the typed rejection answers
+/// with the refusal and its wire info; other failures keep their raw text.
+fn create_failure_response(error: &anyhow::Error) -> DaemonResponse {
+    match error.downcast_ref::<pa_core::session::lease::SessionAlreadyActiveError>() {
+        Some(active) => response_failure(
+            None,
+            "create",
+            &refusal_message(
+                &HoldIdentity::from_error(active),
+                Some(std::path::Path::new(&active.session_path)),
+            ),
+            Some(active.error_info()),
+        ),
+        None => response_failure(None, "create", &error.to_string(), None),
+    }
+}
+
+#[cfg(test)]
+mod failure_response_tests {
+    use super::*;
+    use pa_core::session::lease::SessionAlreadyActiveError;
+    use pa_types::daemon::DaemonErrorInfo;
+
+    #[test]
+    fn the_create_failure_response_splits_typed_and_untyped() {
+        let hold = SessionAlreadyActiveError {
+            session_path: "/tmp/s.jsonl".to_string(),
+            active_session_id: Some("ts01ab".to_string()),
+            owner: "ts01ab".to_string(),
+            holder_pid: Some(4242),
+        };
+        let response = create_failure_response(&hold.into());
+        assert!(!response.success);
+        assert_eq!(response.command, "create");
+        assert_eq!(
+            response.error_info,
+            Some(DaemonErrorInfo::SessionAlreadyActive {
+                session_path: "/tmp/s.jsonl".to_string(),
+                active_session_id: Some("ts01ab".to_string()),
+            })
+        );
+        let message = response.error.expect("refusal text");
+        assert!(
+            message.starts_with("This session is currently open"),
+            "{message}"
+        );
+
+        let raw = anyhow::anyhow!("corrupt session file");
+        let response = create_failure_response(&raw);
+        assert_eq!(response.error.as_deref(), Some("corrupt session file"));
+        assert_eq!(response.error_info, None);
     }
 }
 

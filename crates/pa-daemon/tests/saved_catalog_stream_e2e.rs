@@ -56,7 +56,7 @@ fn spawn_daemon(socket: &std::path::Path, agent_dir: &std::path::Path) -> Daemon
     // The boot import brings the fixture files into the store (each one's
     // generation changes with it): the catalog is read after it settled, so
     // a fold and the sidecar it backfills see one generation.
-    let log = pa_daemon::paths::daemon_log_path(socket, agent_dir);
+    let log = pa_core::platform::daemon_endpoint::daemon_log_path(socket, agent_dir);
     let deadline = Instant::now() + Duration::from_secs(60);
     while !std::fs::read_to_string(&log).is_ok_and(|text| text.contains("transcript import:")) {
         assert!(

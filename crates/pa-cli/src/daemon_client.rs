@@ -81,7 +81,7 @@ impl DaemonClient {
         command: DaemonCommand,
         timeout_ms: u64,
     ) -> Result<DaemonResponse> {
-        let command_type = command_type_name(&command).to_string();
+        let command_type = command.type_name().to_string();
         let operation = Operation::Command(&command_type);
         let hello = self.wait_for_hello(HELLO_TIMEOUT_MS)?;
         let protocol = daemon_protocol(&hello)?;
@@ -228,10 +228,6 @@ impl Operation<'_> {
     }
 }
 
-fn command_type_name(command: &DaemonCommand) -> &str {
-    pa_daemon::protocol::command_type_name(command)
-}
-
 fn daemon_protocol(hello: &serde_json::Value) -> Result<DaemonProtocolInfo> {
     hello
         .get("protocol")
@@ -242,7 +238,8 @@ fn daemon_protocol(hello: &serde_json::Value) -> Result<DaemonProtocolInfo> {
 
 /// `Socket: <path>. Daemon log: <log path>.`
 pub(crate) fn endpoint_details(socket_path: &Path) -> String {
-    let log = pa_daemon::paths::daemon_log_path(socket_path, &config::get_agent_dir());
+    let log =
+        pa_core::platform::daemon_endpoint::daemon_log_path(socket_path, &config::get_agent_dir());
     format!(
         "Socket: {}. Daemon log: {}.",
         socket_path.display(),

@@ -76,7 +76,10 @@ impl EventBus {
     /// The bus kept at `path`: its saved state, or an empty bus when there is
     /// none or it does not parse (that file is renamed aside first, and `log`
     /// says so).
-    pub(crate) fn load(path: PathBuf, log: &crate::paths::RotatingLog) -> Self {
+    pub(crate) fn load(
+        path: PathBuf,
+        log: &pa_core::platform::daemon_endpoint::RotatingLog,
+    ) -> Self {
         let held = pa_core::agent_state::held_event_bus(&path).unwrap_or_else(|error| {
             log.append(&format!(
                 "event bus state for {} is unreadable in the database ({error:#}); starting empty",

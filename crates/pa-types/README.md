@@ -10,6 +10,7 @@ Wire and domain types + serde only: AI messages/content blocks/tool calls/usage/
 
 Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui/pa-cli) live here because pa-tui depends on pa-types alone:
 - `daemon::replay_info`: the attach's replay verdict for a resume cursor (TS `createDaemonReplayInfo`), shared by the supervisor's worker and the runtime daemon's attach snapshot.
+- `daemon::DaemonCommand::type_name`: a command's wire `type` tag without serializing it (the supervisor's responses and pa-cli's wait messages; moved from pa-daemon's `protocol::command_type_name`).
 - `daemon::framing`: the private-frame codec of the worker socket (direct-attach clients speak it too).
 - `daemon::message_delta`: the `message_update_delta` attach capability's codec — the
   per-connection encoder the serving side (supervisor client writer, worker direct link) runs

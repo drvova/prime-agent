@@ -14,105 +14,14 @@
 
 mod support;
 
+use support::runtime_daemon::RuntimeDaemon;
+
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
 
 use pa_core::session_engine::rlm_ledger::{RlmSpawnInput, RlmSpawnLedger};
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewUiMode};
 use serde_json::{json, Value};
-
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        graceful_shutdown(&self.socket);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-/// Stop the daemon on `socket` by protocol; kill the child when it fails.
-fn graceful_shutdown(socket: &Path) {
-    let Ok(stream) = UnixStream::connect(socket) else {
-        return;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    let _ = reader.read_line(&mut hello); // daemon_hello
-    let command = serde_json::json!({
-        "type": "command",
-        "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let Ok(mut line) = serde_json::to_string(&command) else {
-        return;
-    };
-    line.push('\n');
-    if writer.write_all(line.as_bytes()).is_err() {
-        return;
-    }
-    let _ = writer.flush();
-    let _ = reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)));
-    let mut response = String::new();
-    let _ = reader.read_line(&mut response);
-}
-
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    let socket = dir.join("daemon.sock");
-    let agent_dir = dir.join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    // The daemon's default sessions dir must stay the tempdir's agent dir: an
-    // ambient `PRIME_AGENT_SESSION_DIR` (fleet shells export one) would make
-    // the family ledger resolve against the foreign dir, never registering the
-    // seeded family.
-    command.env_remove("PRIME_AGENT_SESSION_DIR");
-    command.env_remove("PRIME_AGENT_CODING_AGENT_SESSION_DIR");
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(&socket, &mut child);
-    Supervisor { child, socket }
-}
 
 /// One saved-session fixture: a version-3 session header (the parent
 /// linkage for subagents), a display name, and a user/assistant exchange.
@@ -150,111 +59,6 @@ fn write_fixture(
     path
 }
 
-/// The client the agents view stands in for: a JSONL protocol client that
-/// keeps every `roster_update` push it reads while awaiting a response.
-struct Client {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
-    roster_updates: Vec<Value>,
-}
-
-impl Client {
-    fn connect(socket: &Path) -> Client {
-        let stream = UnixStream::connect(socket).expect("connect");
-        let writer = stream.try_clone().expect("clone");
-        let mut client = Client {
-            reader: BufReader::new(stream),
-            writer,
-            roster_updates: Vec::new(),
-        };
-        let hello = client.read_line();
-        assert_eq!(hello["type"], "daemon_hello");
-        client
-    }
-
-    fn read_line(&mut self) -> Value {
-        let mut line = String::new();
-        let deadline = Instant::now() + Duration::from_mins(1);
-        self.reader
-            .get_mut()
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .expect("set timeout");
-        loop {
-            match self.reader.read_line(&mut line) {
-                Ok(0) => panic!("supervisor closed the connection"),
-                Ok(_) if line.trim().is_empty() => line.clear(),
-                Ok(_) => return serde_json::from_str(line.trim()).expect("parse line"),
-                Err(error) => {
-                    assert!(Instant::now() < deadline, "timed out reading: {error}");
-                }
-            }
-        }
-    }
-
-    fn try_read_line(&mut self) -> Option<Value> {
-        let mut line = String::new();
-        self.reader
-            .get_mut()
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .expect("set timeout");
-        loop {
-            line.clear();
-            match self.reader.read_line(&mut line) {
-                Ok(0) => panic!("supervisor closed the connection"),
-                Ok(_) if line.trim().is_empty() => {}
-                Ok(_) => return serde_json::from_str(line.trim()).ok(),
-                Err(_) => return None,
-            }
-        }
-    }
-
-    fn send_command(&mut self, id: &str, command: &Value) {
-        let envelope = json!({
-            "type": "command",
-            "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "command": command,
-        });
-        let mut line = serde_json::to_string(&envelope).expect("serialize");
-        line.push('\n');
-        self.writer
-            .write_all(line.as_bytes())
-            .unwrap_or_else(|error| panic!("write command {id}: {error}"));
-    }
-
-    /// The response for one command id; roster pushes read on the way are
-    /// kept, and the stream frames of a saved-catalog scan are drained.
-    fn request(&mut self, id: &str) -> Value {
-        loop {
-            let line = self.read_line();
-            if line["type"] == "roster_update" {
-                self.roster_updates.push(line);
-                continue;
-            }
-            if line["type"] == "session_list_item" || line["type"] == "session_list_progress" {
-                continue;
-            }
-            if line.get("id").and_then(Value::as_str) == Some(id) {
-                return line;
-            }
-        }
-    }
-
-    /// Drain buffered and live `roster_update` pushes until the socket stays quiet for the window.
-    fn drain_roster_pushes(&mut self, quiet: Duration) {
-        self.roster_updates.clear();
-        let mut last_line = Instant::now();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            if self.try_read_line().is_some() {
-                last_line = Instant::now();
-            } else if last_line.elapsed() >= quiet {
-                return;
-            }
-        }
-    }
-}
-
 /// The rows of one roster snapshot whose summary carries the dead family's
 /// marker (a `rlmChildId` under the parent, or the parent's own session file).
 fn family_rows(roster: &[Value], parent_file: &Path, child_prefix: &str) -> usize {
@@ -271,10 +75,32 @@ fn family_rows(roster: &[Value], parent_file: &Path, child_prefix: &str) -> usiz
 }
 
 fn roster_of(response: &Value) -> Vec<Value> {
-    response["data"]["roster"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
+    response["roster"].as_array().cloned().unwrap_or_default()
+}
+
+/// Whether a `runtime/roster` update changes or removes the row of session file `file`, or of
+/// session `id`.
+fn touches(update: &Value, file: &Path, id: Option<&str>) -> bool {
+    let file = file.to_string_lossy();
+    update["changed"].as_array().is_some_and(|changed| {
+        changed
+            .iter()
+            .any(|entry| entry["summary"]["sessionFile"].as_str() == Some(file.as_ref()))
+    }) || id.is_some_and(|id| {
+        update["removed"]
+            .as_array()
+            .is_some_and(|removed| removed.iter().any(|row| row.as_str() == Some(id)))
+    })
+}
+
+/// The create of the fixture session `file`, resumed on the battery's mock model.
+fn create_args(file: &Path, cwd: &Path, sessions_dir: &Path) -> Value {
+    json!({
+        "path": file.to_string_lossy(),
+        "cwd": cwd.to_string_lossy(),
+        "sessionDir": sessions_dir.to_string_lossy(),
+        "options": { "provider": "battery", "model": "mock-1", "thinking": "low" },
+    })
 }
 
 /// The first frame of one headless view run (the mount draw precedes the saved-catalog fetch).
@@ -396,64 +222,57 @@ async fn the_first_agents_view_render_is_clean_behind_hundreds_of_dead_subagents
             .expect("append spawn edge");
     }
 
-    let supervisor = spawn_supervisor(&root);
-    let mut client = Client::connect(&supervisor.socket);
+    let daemon = RuntimeDaemon::spawn(&root);
+    let mut client = daemon.client();
 
-    // Before the worker registers, the roster is clean of the dead family.
-    client.send_command("r0", &json!({ "type": "roster_subscribe" }));
-    let before = client.request("r0");
-    assert_eq!(before["success"], true, "roster_subscribe: {before}");
+    // Before the session opens, the roster is clean of the dead family.
+    let before = client
+        .query("runtime.roster", &json!({}))
+        .expect("runtime.roster");
     assert_eq!(
         family_rows(&roster_of(&before), &parent_file, "sub-"),
         0,
-        "an unregistered family never reaches the roster: {before}"
+        "an unopened family never reaches the roster: {before}"
     );
 
-    // The parent's worker registers (the create resumes the fixture file): the
-    // registration seed walks the live ledger family — TS parity while resident.
-    client.send_command(
-        "c1",
-        &json!({
-            "type": "create",
-            "sessionPath": parent_file.to_string_lossy(),
-            "config": {
-                "cwd": root.to_string_lossy(),
-                "sessionDir": sessions_dir.to_string_lossy(),
-                "provider": "battery",
-                "model": "mock-1",
-                "thinking": "low",
-            },
-        }),
-    );
-    let created = client.request("c1");
-    assert_eq!(created["success"], true, "create failed: {created}");
-    let active_id = created["data"]["activeSessionId"]
+    // The parent opens (the create resumes the fixture file): the registration seed walks the
+    // live ledger family — TS parity while resident.
+    client.subscribe("runtime/roster");
+    let created = client
+        .call(
+            "session.create",
+            &create_args(&parent_file, &root, &sessions_dir),
+        )
+        .expect("create");
+    let active_id = created["session"]
         .as_str()
-        .or_else(|| created["data"]["id"].as_str())
         .expect("the active session id")
         .to_string();
-    client.drain_roster_pushes(Duration::from_millis(500));
-    client.send_command("r1", &json!({ "type": "roster_subscribe" }));
-    let resident = client.request("r1");
+    client.event_until("runtime/roster", |update| {
+        touches(update, &parent_file, None)
+    });
+    let resident = client
+        .query("runtime.roster", &json!({}))
+        .expect("runtime.roster");
     assert_eq!(
         family_rows(&roster_of(&resident), &parent_file, "sub-"),
         DEAD_CHILDREN + 1,
         "a resident root's own row plus its seeded family serves to subscribers: {resident}"
     );
 
-    // The worker departs (the operator's stale-worker stop): the SEEDED rows
+    // The session stops (the operator's stale-worker stop): the SEEDED rows
     // settle out of the roster with the stop, while the parent's own TOP-LEVEL
     // row PASSIVATES and stays (TS `flipWorkerRosterEntriesInactive` keeps every
     // stopped non-ephemeral row visible).
-    client.send_command(
-        "k1",
-        &json!({ "type": "kill", "activeSessionId": active_id }),
-    );
-    let killed = client.request("k1");
-    assert_eq!(killed["success"], true, "kill failed: {killed}");
-    client.drain_roster_pushes(Duration::from_millis(500));
-    client.send_command("r2", &json!({ "type": "roster_subscribe" }));
-    let departed = client.request("r2");
+    client
+        .call("session.stop", &json!({ "session": active_id }))
+        .expect("stop");
+    client.event_until("runtime/roster", |update| {
+        touches(update, &parent_file, Some(&active_id))
+    });
+    let departed = client
+        .query("runtime.roster", &json!({}))
+        .expect("runtime.roster");
     let departed_roster = roster_of(&departed);
     let seeded_children = departed_roster
         .iter()
@@ -481,14 +300,14 @@ async fn the_first_agents_view_render_is_clean_behind_hundreds_of_dead_subagents
     );
 
     // The saved catalog keeps every dead row resumable (the passive ledger walk).
-    client.send_command(
-        "s1",
-        &json!({ "type": "list_saved_sessions", "cwd": root.to_string_lossy() }),
-    );
-    let saved = client.request("s1");
-    assert_eq!(saved["success"], true, "list_saved_sessions: {saved}");
+    let saved = client
+        .query(
+            "sessions.list",
+            &json!({ "shape": "saved", "cwd": root.to_string_lossy() }),
+        )
+        .expect("the saved catalog");
     let parent_path = parent_file.to_string_lossy().to_string();
-    let children = saved["data"]["sessions"].as_array().map_or_default(|rows| {
+    let children = saved["sessions"].as_array().map_or_default(|rows| {
         rows.iter()
             .filter(|row| row["parentSessionPath"].as_str() == Some(parent_path.as_str()))
             .count()
@@ -509,7 +328,7 @@ async fn the_first_agents_view_render_is_clean_behind_hundreds_of_dead_subagents
         height: 36,
     };
     let view = pa_tui::agents_view::run_agents_view(
-        view_options(&supervisor.socket, &sessions_dir),
+        view_options(&daemon.socket, &sessions_dir),
         AgentsViewUiMode::Headless(plan),
         None,
     )
@@ -577,49 +396,37 @@ async fn a_stopped_session_stays_visible_in_the_view() {
         &[("run the drill", "the drill ran")],
     );
 
-    let supervisor = spawn_supervisor(dir.path());
-    let mut client = Client::connect(&supervisor.socket);
+    let daemon = RuntimeDaemon::spawn(dir.path());
+    let mut client = daemon.client();
 
-    // The session runs (its worker registers), then stops: the stop's roster
-    // push must PASSIVATE the row (a `changed` push), never remove it.
-    client.send_command(
-        "c1",
-        &json!({
-            "type": "create",
-            "sessionPath": stopped_file.to_string_lossy(),
-            "config": {
-                "cwd": dir.path().to_string_lossy(),
-                "sessionDir": sessions_dir.to_string_lossy(),
-                "provider": "battery",
-                "model": "mock-1",
-                "thinking": "low",
-            },
-        }),
-    );
-    let created = client.request("c1");
-    assert_eq!(created["success"], true, "create failed: {created}");
-    let active_id = created["data"]["activeSessionId"]
+    // The session opens, then stops: the stop's roster update must PASSIVATE the row (a
+    // `changed` update), never remove it.
+    client.subscribe("runtime/roster");
+    let created = client
+        .call(
+            "session.create",
+            &create_args(&stopped_file, dir.path(), &sessions_dir),
+        )
+        .expect("create");
+    let active_id = created["session"]
         .as_str()
-        .or_else(|| created["data"]["id"].as_str())
         .expect("the active session id")
         .to_string();
-    client.drain_roster_pushes(Duration::from_millis(500));
-    client.send_command(
-        "k1",
-        &json!({ "type": "kill", "activeSessionId": active_id }),
-    );
-    let killed = client.request("k1");
-    assert_eq!(killed["success"], true, "kill failed: {killed}");
-    client.drain_roster_pushes(Duration::from_millis(500));
+    client.event_until("runtime/roster", |update| {
+        touches(update, &stopped_file, None)
+    });
+    client
+        .call("session.stop", &json!({ "session": active_id }))
+        .expect("stop");
+    client.event_until("runtime/roster", |update| {
+        touches(update, &stopped_file, Some(&active_id))
+    });
 
     // The snapshot serves the passivated row (the view's roster half).
-    client.send_command("r1", &json!({ "type": "roster_subscribe" }));
-    let roster = client.request("r1");
-    assert_eq!(roster["success"], true, "roster_subscribe: {roster}");
-    let entries = roster["data"]["roster"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let roster = client
+        .query("runtime.roster", &json!({}))
+        .expect("runtime.roster");
+    let entries = roster["roster"].as_array().cloned().unwrap_or_default();
     let entry = entries
         .iter()
         .find(|entry| entry["summary"]["sessionName"] == json!("kept session"))
@@ -643,7 +450,7 @@ async fn a_stopped_session_stays_visible_in_the_view() {
         height: 36,
     };
     let view = pa_tui::agents_view::run_agents_view(
-        view_options(&supervisor.socket, &sessions_dir),
+        view_options(&daemon.socket, &sessions_dir),
         AgentsViewUiMode::Headless(plan),
         None,
     )

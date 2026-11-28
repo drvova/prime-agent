@@ -100,7 +100,7 @@ fn supervisor_kill9_restart_revives_the_sessions_that_were_mid_turn() {
     wait_socket_ready(&socket);
 
     // The boot revives all three from their journals, under the same ids.
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
     let deadline = Instant::now() + Duration::from_secs(30);
     let registered = loop {
         let registered = distinct(workers_registered_since(&log_path, &restart_before));

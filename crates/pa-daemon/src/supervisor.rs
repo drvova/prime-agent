@@ -98,10 +98,9 @@ use crate::framing::{write_frame, PrivateFrameReader, DEFAULT_PRIVATE_FRAME_LIMI
 use crate::paths;
 use crate::prompt_admission::input_admission_id;
 use crate::protocol::{
-    app_version, command_active_session_id, command_type_name, current_protocol_info,
-    parse_supervisor_command_line, response_failure, response_line, response_success,
-    DaemonResponse, DaemonRuntimeIdentity, EnvelopeParseError, TypedCreateRejection,
-    DAEMON_SCHEMA_ID, DAEMON_SCHEMA_REVISION,
+    app_version, command_active_session_id, current_protocol_info, parse_supervisor_command_line,
+    response_failure, response_line, response_success, DaemonResponse, DaemonRuntimeIdentity,
+    EnvelopeParseError, TypedCreateRejection, DAEMON_SCHEMA_ID, DAEMON_SCHEMA_REVISION,
 };
 use crate::registry::{
     ResidentWorker, SessionRegistry, WorkerRegistration, WorkerReply, WorkerRequest,
@@ -111,7 +110,8 @@ use crate::saved_session_commands::{name_unavailable_error, reservation_key, Nam
 use crate::snapshot_stream::{attach_client_capabilities, stream_attach, wants_chunked};
 use crate::update_roster::{build_update_roster, WorkerSnapshot};
 use crate::update_stop::{stop_workers_gracefully, WorkerStopVerdict, WORKER_REQUEST_TIMEOUT_MS};
-use crate::{socket, util};
+use crate::util;
+use pa_core::platform::daemon_socket as socket;
 use pa_core::session::catalog::list_sessions;
 
 pub struct Supervisor {
@@ -124,7 +124,7 @@ pub struct Supervisor {
     /// after this bind - an external sweep plus a successor's bind - is
     /// never unlinked by this process. `None` until `run` binds (named
     /// pipes keep `None`: there is no file to stat).
-    bound_socket_identity: std::sync::Mutex<Option<socket::SocketIdentity>>,
+    bound_socket_identity: std::sync::Mutex<Option<pa_types::daemon::SocketIdentity>>,
     /// The per-supervisor launch-probe budget override: `None` rides the
     /// process-wide env seam (`PA_DAEMON_WORKER_CONNECT_TIMEOUT_MS`),
     /// a pinned budget keeps a launch oracle's probe immediate without
@@ -195,7 +195,7 @@ pub struct Supervisor {
     /// Wakes the accept loop when [`Supervisor::begin_shutdown`] sets [`Self::accept_exit`]:
     /// a socket blocking in `accept` must be interrupted by the completed shutdown.
     shutdown_notify: tokio::sync::Notify,
-    log: paths::RotatingLog,
+    log: pa_core::platform::daemon_endpoint::RotatingLog,
     /// Memoized ledger over the default sessions dir (ledgers are per
     /// sessions-dir families; another dir gets a fresh instance).
     rlm_ledger: tokio::sync::Mutex<
@@ -265,8 +265,10 @@ impl Supervisor {
     ///
     /// Returns an error when the descriptor dir, sessions dir, or config cannot be opened.
     pub fn new(options: SupervisorOptions) -> Result<Self> {
-        let descriptor_dir =
-            crate::descriptor::descriptor_dir(&options.agent_dir, &options.socket_path);
+        let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(
+            &options.agent_dir,
+            &options.socket_path,
+        );
         paths::ensure_dir(&descriptor_dir)?;
         persist_supervisor_config(
             &descriptor_dir.join(SUPERVISOR_CONFIG_FILE_NAME),
@@ -281,10 +283,12 @@ impl Supervisor {
             },
         )?;
         let (events, _) = broadcast::channel(crate::backpressure::EVENT_RING_CAPACITY);
-        let log = paths::RotatingLog::new(paths::daemon_log_path(
-            &options.socket_path,
-            &options.agent_dir,
-        ));
+        let log = pa_core::platform::daemon_endpoint::RotatingLog::new(
+            pa_core::platform::daemon_endpoint::daemon_log_path(
+                &options.socket_path,
+                &options.agent_dir,
+            ),
+        );
         let admission = crate::provider_admission::AdmissionService::new(&options.agent_dir);
         let event_bus = crate::event_bus::EventBus::load(
             descriptor_dir.join(crate::event_bus::EVENT_BUS_FILE_NAME),
@@ -295,10 +299,12 @@ impl Supervisor {
             options.socket_path.clone(),
             UpdateTimeoutBudget::from_env(),
             {
-                let log = paths::RotatingLog::new(paths::daemon_log_path(
-                    &options.socket_path,
-                    &options.agent_dir,
-                ));
+                let log = pa_core::platform::daemon_endpoint::RotatingLog::new(
+                    pa_core::platform::daemon_endpoint::daemon_log_path(
+                        &options.socket_path,
+                        &options.agent_dir,
+                    ),
+                );
                 Box::new(move |line: &str| {
                     log.append(&format!("[{}] {line}", util::now_iso()));
                 })
@@ -441,7 +447,7 @@ impl Supervisor {
         // against THIS value, never a fresh read, so a successor's file
         // at the same path survives this supervisor's exit.
         *self.bound_socket_identity.lock().unwrap() =
-            socket::socket_identity(&self.options.socket_path);
+            pa_types::platform::socket_identity(&self.options.socket_path);
         socket::restrict_socket_path(&self.options.socket_path);
         match crate::compaction_supervision::TerminalCompactionJournal::open(
             &self.descriptor_dir.join("compaction-supervision.jsonl"),

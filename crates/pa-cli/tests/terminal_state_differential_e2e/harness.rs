@@ -1,8 +1,8 @@
 //! The pty harness: the recording mock terminal, the termios differential,
-//! the mock supervisor, and the child-mode plumbing (this binary
+//! the mock runtime's session, and the child-mode plumbing (this binary
 //! re-executed under the pty as the product under test).
 
-use std::io::{BufRead, Read, Write};
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -17,13 +17,14 @@ use pa_tui::agents_view::AgentsViewOptions;
 use pa_tui::interactive::{InteractiveOptions, ModelSelection, SessionSelection};
 
 use crate::ledger::ModeLedger;
+use crate::mock_runtime;
 use crate::{
     CHILD_MODE_ENV, CHILD_SOCKET_ENV, CHILD_TERM, KITTY_ANSWER, KITTY_FLAGS_PUSH, KITTY_QUERY,
 };
 
 // The pty harness.
 
-/// One pty-backed product child: a mock-supervisor socket, a raw pty, and a
+/// One pty-backed product child: a mock-runtime socket, a raw pty, and a
 /// pre-spawn termios snapshot.
 pub(crate) struct DifferentialHarness {
     pub(crate) child: Child,
@@ -42,7 +43,7 @@ pub(crate) struct DifferentialHarness {
 
 impl DifferentialHarness {
     /// Spawn a child (this binary re-executed in a child mode) on a fresh
-    /// pty against a mock supervisor that answers everything but the stall.
+    /// pty against a mock runtime that answers everything but the stall.
     pub(crate) fn start(spec: &ChildSpec) -> DifferentialHarness {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let socket = dir.path().join("tui.sock");
@@ -50,7 +51,7 @@ impl DifferentialHarness {
         let server = std::thread::spawn({
             let listener = listener.try_clone().expect("clone mock listener");
             let stall = spec.stall;
-            move || MockSupervisor::serve(&listener, stall)
+            move || serve_mock_runtime(&listener, stall)
         });
 
         let pty = openpty(
@@ -344,115 +345,33 @@ impl Termios {
     }
 }
 
-// The mock supervisor.
+// The mock runtime.
 
-/// One attached session behind a mock supervisor socket: `daemon_hello`, a
-/// `create` + `attach` pair with a small transcript, a catch-all, and
-/// stalls answered by silence (the force-quit wedge).
-pub(crate) struct MockSupervisor;
-
-impl MockSupervisor {
-    /// One listener, every connection on its own thread: the accept loop
-    /// must never block inside a connection.
-    pub(crate) fn serve(
-        listener: &std::os::unix::net::UnixListener,
-        stall: &'static [&'static str],
-    ) {
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    std::thread::spawn(move || Self::serve_connection(stream, stall));
-                }
-                Err(_) => return,
-            }
-        }
-    }
-
-    pub(crate) fn serve_connection(
-        stream: std::os::unix::net::UnixStream,
-        stall: &'static [&'static str],
-    ) {
-        let write_stream = stream.try_clone().expect("clone mock socket");
-        let mut writer = write_stream;
-        let mut reader = std::io::BufReader::new(stream);
-        write_json(
-            &mut writer,
-            &json!({
-                "type": "daemon_hello",
-                "protocol": { "name": "prime-agent.daemon", "version": 7 },
-                "serverCapabilities": [],
-                "clientId": "mock",
-            }),
-        );
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let Ok(envelope) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            let id = envelope.get("id").and_then(Value::as_str).unwrap_or("");
-            let command = envelope.get("command").cloned().unwrap_or(Value::Null);
-            let command_type = command
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if stall.contains(&command_type.as_str()) {
+/// One attached session behind the mock runtime: `session.create` + `session.attach` with a small
+/// transcript, a catch-all, and the `stall`'s requests (by wire2 name) answered by silence (the
+/// force-quit wedge). One listener, every connection on its own thread: the accept loop never
+/// blocks inside a connection.
+pub(crate) fn serve_mock_runtime(
+    listener: &std::os::unix::net::UnixListener,
+    stall: &'static [&'static str],
+) {
+    let session = mock_runtime::session(attach_data());
+    mock_runtime::serve_all(
+        listener,
+        &mock_runtime::identity(&[]),
+        None,
+        move |request| {
+            if stall.contains(&request.name) {
                 // Answered by silence: the caller's bounded request hangs.
-                continue;
+                mock_runtime::Answer::Silence
+            } else {
+                session(request)
             }
-            match command_type.as_str() {
-                "create" => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "create",
-                            "success": true,
-                            "data": {
-                                "activeSessionId": "s1",
-                                "id": "s1",
-                                "sessionId": "sess-1",
-                                "sessionFile": "/tmp/sess-1.jsonl",
-                            },
-                        }),
-                    );
-                }
-                "attach" => {
-                    write_json(&mut writer, &attach_data(id));
-                }
-                _ => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": command_type,
-                            "success": true,
-                            "data": {},
-                        }),
-                    );
-                }
-            }
-        }
-    }
+        },
+    );
 }
 
-pub(crate) fn write_json(writer: &mut std::os::unix::net::UnixStream, value: &Value) {
-    let mut line = serde_json::to_string(value).expect("serialize mock frame");
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("write mock frame");
-    writer.flush().expect("flush mock frame");
-}
-
-/// The attach snapshot: a small transcript whose last row carries a
-/// URL (the OSC 8 hyperlink pairs).
-pub(crate) fn attach_data(id: &str) -> Value {
+pub(crate) fn attach_data() -> Value {
     let messages: Vec<Value> = (0..4)
         .map(|index| {
             let text = if index == 3 {
@@ -466,36 +385,7 @@ pub(crate) fn attach_data(id: &str) -> Value {
             })
         })
         .collect();
-    json!({
-        "type": "response",
-        "id": id,
-        "command": "attach",
-        "success": true,
-        "data": {
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "activeSessionId": "s1",
-            "snapshot": {
-                "activeSessionId": "s1",
-                "summary": { "id": "s1", "cwd": "/tmp" },
-                "state": {
-                    "activeSessionId": "s1",
-                    "cwd": "/tmp",
-                    "sessionId": "sess-1",
-                    "sessionName": "terminal state differential",
-                    "model": null,
-                    "isStreaming": false,
-                    "isCompacting": false,
-                    "sessionActions": { "queuedCount": 0, "steering": [], "followUps": [] },
-                },
-                "messages": messages,
-                "lastEventSequence": 0,
-                "lastEventCursor": null,
-            },
-            "client": { "id": "mock", "capabilities": [] },
-            "lastEventSequence": 0,
-            "lastEventCursor": null,
-        },
-    })
+    mock_runtime::attached("terminal state differential", None, &messages)
 }
 
 // The child modes (this binary re-executed as the product under test).

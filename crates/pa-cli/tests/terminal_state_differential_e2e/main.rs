@@ -16,6 +16,8 @@
 
 mod harness;
 mod ledger;
+#[path = "../support/mock_runtime.rs"]
+mod mock_runtime;
 
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -53,7 +55,7 @@ const ALT_SCREEN_LEAVE: &[u8] = b"\x1b[?1049l";
 
 /// The child-mode env: which surface this re-executed binary runs.
 const CHILD_MODE_ENV: &str = "PA_DIFF_CHILD_MODE";
-/// The mock-supervisor socket for the chat/view surfaces.
+/// The mock-runtime socket for the chat/view surfaces.
 const CHILD_SOCKET_ENV: &str = "PA_DIFF_CHILD_SOCKET";
 /// The replay fixture path (the replay child mode).
 const CHILD_FIXTURE_ENV: &str = "PA_DIFF_CHILD_FIXTURE";
@@ -64,7 +66,7 @@ const CHILD_SELECTOR_FLAGS_ENV: &str = "PA_DIFF_CHILD_SELECTOR_FLAGS";
 /// TERM the children run with: answers the kitty query, no shortcut.
 const CHILD_TERM: &str = "xterm-256color";
 
-/// The chat child: the real interactive surface against the mock supervisor,
+/// The chat child: the real interactive surface against the mock runtime,
 /// then the agents view when the exit came through agents-back
 /// (`return_to_agents_view`). A roster-link failure returns quietly: the
 /// error path's restore still ran.
@@ -73,6 +75,7 @@ fn diff_chat_child_mode() {
     let Some(socket) = std::env::var(CHILD_SOCKET_ENV).ok() else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = child_options(PathBuf::from(socket));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -105,6 +108,7 @@ fn diff_view_child_mode() {
     let Some(socket) = std::env::var(CHILD_SOCKET_ENV).ok() else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = view_options(PathBuf::from(socket), None);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -299,7 +303,7 @@ fn the_detach_handoff_then_the_view_exit_restores_every_mode() {
 #[test]
 fn the_force_quit_watchdog_restores_every_mode() {
     let _lock = harness_lock();
-    let mut harness = DifferentialHarness::start(&ChildSpec::new("chat").stall(&["list"]));
+    let mut harness = DifferentialHarness::start(&ChildSpec::new("chat").stall(&["sessions.list"]));
     harness.answer_kitty_query();
     harness.wait_from_start(b"row 0", "the attach snapshot rendered");
 

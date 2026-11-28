@@ -11,8 +11,8 @@ use pa_tui::interactive::{
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
+use support::UnixListener;
 
 use support::options;
 

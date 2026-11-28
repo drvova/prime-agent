@@ -1,9 +1,10 @@
 //! The child half of the kitty-exit self-exec harness: the child-side
-//! dispatcher, the replay fixture, the interactive surface options, the
-//! mock supervisor, and the wire helpers.
+//! dispatcher, the replay fixture, the interactive surface options and the
+//! mock runtime's answers.
 use super::*;
 
 pub(super) fn child_run(route: &str, socket: PathBuf) {
+    mock_runtime::use_wire2(&socket);
     match route {
         "ctrl_d" | "slash_exit" | "ctrl_c_twice" | "late_answer" | "force_quit"
         | "suspend_resume" => {
@@ -223,121 +224,22 @@ fn child_options(socket: PathBuf) -> InteractiveOptions {
     }
 }
 
-/// One attached session behind a mock supervisor socket (the
-/// kitty-release e2e's mock: every command answers; create/attach
-/// carry the shapes the surfaces need).
-pub(super) struct MockSupervisor {
-    listener: std::os::unix::net::UnixListener,
-    /// The attach snapshot's message count: the force-quit route seeds a
-    /// transcript big enough to fill the pty (the exit flush stalls
-    /// mid-write, starving the progress feed the watchdog watches).
+/// The answers of one attached session behind the mock runtime (the kitty-release e2e's mock:
+/// every request answers; create/attach carry the shapes the surfaces need, and the view's roster
+/// lists the session). `seed_messages` is the attach snapshot's message count: the force-quit route
+/// seeds a transcript big enough to fill the pty (the exit flush stalls mid-write, starving the
+/// progress feed the watchdog watches). The runtime serves every connection on its own thread: a
+/// handoff parks the view's roster connection for the flow's next run while the chat it opened
+/// dials its own, so the mock must serve both at once.
+pub(super) fn answers(
     seed_messages: usize,
-}
-
-impl MockSupervisor {
-    pub(super) fn bind(socket: &std::path::Path, seed_messages: usize) -> Self {
-        MockSupervisor {
-            listener: std::os::unix::net::UnixListener::bind(socket).expect("bind mock socket"),
-            seed_messages,
-        }
-    }
-
-    pub(super) fn serve(self) {
-        // One thread per connection (the real daemon's shape): a
-        // handoff parks the view's roster connection for the flow's
-        // next run while the chat it opened dials its own, so the mock
-        // must serve both at once.
-        let seed_messages = self.seed_messages;
-        for stream in self.listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    let seed = seed_messages;
-                    std::thread::spawn(move || Self::serve_connection(stream, seed));
-                }
-                Err(_) => return,
-            }
-        }
-    }
-
-    fn serve_connection(stream: std::os::unix::net::UnixStream, seed_messages: usize) {
-        let write_stream = stream.try_clone().expect("clone mock socket");
-        let mut writer = write_stream;
-        let mut reader = std::io::BufReader::new(stream);
-        write_json(
-            &mut writer,
-            &json!({
-                "type": "daemon_hello",
-                "protocol": { "name": "prime-agent.daemon", "version": 7 },
-                "serverCapabilities": [],
-                "clientId": "mock",
-            }),
-        );
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let Ok(envelope) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            let id = envelope.get("id").and_then(Value::as_str).unwrap_or("");
-            let command = envelope.get("command").cloned().unwrap_or(Value::Null);
-            let command_type = command
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            match command_type.as_str() {
-                "roster_subscribe" => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "roster_subscribe",
-                            "success": true,
-                            "data": {
-                                "roster": [ live_roster_entry() ],
-                            },
-                        }),
-                    );
-                }
-                "create" => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "create",
-                            "success": true,
-                            "data": {
-                                "activeSessionId": "s1",
-                                "id": "s1",
-                                "sessionId": "sess-1",
-                                "sessionFile": "/tmp/sess-1.jsonl",
-                            },
-                        }),
-                    );
-                }
-                "attach" => {
-                    write_json(&mut writer, &attach_data(id, seed_messages));
-                }
-                _ => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": command_type,
-                            "success": true,
-                            "data": {},
-                        }),
-                    );
-                }
-            }
-        }
+) -> impl Fn(&mock_runtime::Request<'_>) -> mock_runtime::Answer + Clone + Send + 'static {
+    let session = mock_runtime::session(attach_data(seed_messages));
+    move |request| match request.name {
+        "runtime.roster" => mock_runtime::Answer::Result(json!({
+            "roster": [ live_roster_entry() ],
+        })),
+        _ => session(request),
     }
 }
 
@@ -359,14 +261,7 @@ fn live_roster_entry() -> Value {
     })
 }
 
-fn write_json(writer: &mut std::os::unix::net::UnixStream, value: &Value) {
-    let mut line = serde_json::to_string(value).expect("serialize mock frame");
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("write mock frame");
-    writer.flush().expect("flush mock frame");
-}
-
-fn attach_data(id: &str, seed_messages: usize) -> Value {
+fn attach_data(seed_messages: usize) -> Value {
     let messages: Vec<Value> = (0..seed_messages)
         .map(|index| {
             json!({
@@ -375,34 +270,5 @@ fn attach_data(id: &str, seed_messages: usize) -> Value {
             })
         })
         .collect();
-    json!({
-        "type": "response",
-        "id": id,
-        "command": "attach",
-        "success": true,
-        "data": {
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "activeSessionId": "s1",
-            "snapshot": {
-                "activeSessionId": "s1",
-                "summary": { "id": "s1", "cwd": "/tmp" },
-                "state": {
-                    "activeSessionId": "s1",
-                    "cwd": "/tmp",
-                    "sessionId": "sess-1",
-                    "sessionName": "kitty exit e2e",
-                    "model": null,
-                    "isStreaming": false,
-                    "isCompacting": false,
-                    "sessionActions": { "queuedCount": 0, "steering": [], "followUps": [] },
-                },
-                "messages": messages,
-                "lastEventSequence": 0,
-                "lastEventCursor": null,
-            },
-            "client": { "id": "mock", "capabilities": [] },
-            "lastEventSequence": 0,
-            "lastEventCursor": null,
-        },
-    })
+    mock_runtime::attached("kitty exit e2e", None, &messages)
 }

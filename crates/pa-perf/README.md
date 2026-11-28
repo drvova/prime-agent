@@ -44,13 +44,13 @@ DIR/
     settings.json                  # onboarding pre-answered, traces off
     sessions/<uuid>.jsonl          # current-format session files (flat)
     sessions-archive/<uuid>.jsonl
-    rlm-ledger/<hash16>.jsonl      # written through pa-daemon's RlmSpawnLedger
+    rlm-ledger/<hash16>.jsonl      # written through pa-core's RlmSpawnLedger
     session-artifacts/...          # kernel-state stubs, harness/, sub-<id>/ trees
 ```
 
 Row payloads are serialized from the product's own types (pa-types message
-shapes inside pa-daemon's `SessionEntry` envelope and `session_header_line`
-header) — no hand-copied JSON. Entry ids are counter-based unique 8-hex: the
+shapes in the `pa_types::session::FileEntry` rows and header that pa-core's
+session manager writes, serialized the way it serializes them) — no hand-copied JSON. Entry ids are counter-based unique 8-hex: the
 product's own ids are uuid4 prefixes with a 100-try collision check, which
 collide around ~22K rows and silently break branch reconstruction.
 

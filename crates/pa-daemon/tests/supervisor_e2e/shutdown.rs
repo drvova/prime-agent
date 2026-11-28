@@ -78,7 +78,7 @@ fn shutdown_command_exits_the_supervisor_process() {
     let session_id = created["data"]["id"].as_str().expect("session id");
     let descriptor: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
-            pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+            pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket)
                 .join(format!("{session_id}.json")),
         )
         .expect("the session's descriptor"),

@@ -2741,7 +2741,7 @@ proptest! {
             .expect("command");
             let (queue_tx, _queue_rx) = tokio::sync::mpsc::channel(4);
             let attached = subscribers::ClientSubscriptions::new("conn".to_string(), queue_tx);
-            let type_name = command_type_name(&command).to_string();
+            let type_name = command.type_name().to_string();
             let (lines, stop) = supervisor
                 .route_client_command(&command, "client", &attached, "c1".into(), type_name, None)
                 .await;

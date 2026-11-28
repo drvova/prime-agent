@@ -530,7 +530,7 @@ fn ledger_child_records(
     parent_file: &Path,
 ) -> Vec<ChildRecord> {
     let Some(sessions_dir) = crate::descriptor::load_supervisor_config(
-        &crate::descriptor::descriptor_dir(agent_dir, supervisor_socket)
+        &pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, supervisor_socket)
             .join(crate::descriptor::SUPERVISOR_CONFIG_FILE_NAME),
         supervisor_socket,
     )
