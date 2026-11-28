@@ -1,0 +1,1 @@
+- Fixed `/export <file>.jsonl` and `/traces preview` on the runtime daemon: the branch export writes the named file and reports its path, and the session's connection state again names its session file.

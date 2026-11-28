@@ -363,7 +363,7 @@ SQLite implementations over `pa-log`.
   `session.snapshot {shape: "attach", clientId?, capabilities?, resumeCursor?}` the attach
   result (summary, connection state, the display window of a `windowed_snapshot` client with
   `historyBeforeEntryId` and `lastUserPromptMs`, `lastEventCursor` from the stream's generation
-  and counter, `replay`), `{shape: "state"}` the summary, and `transcript.page {shape:
+  and counter, `replay`), `{shape: "state"}` the summary, `{shape: "connection"}` the connection state (`get_connection_state`), and `transcript.page {shape:
   "messages", page?, historyLeafId?}` the old cursor page (`firstEntryId`, `lastEntryId`,
   `more`, `historyLeafId`; "History branch changed" for an anchor off the branch), the rows and
   cuts from `pa_core::session::display_transcript`. One row differs from the old daemon's by
@@ -608,7 +608,7 @@ SQLite implementations over `pa-log`.
   build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
   build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
-  `session.export` writes it as JSONL (`export_jsonl`). An open session's turns and queue
+  `session.export` writes an open session's current branch as one linear JSONL file and answers `{path}` (`export_jsonl`, over pa-core's `session::branch_export`). An open session's turns and queue
   (`daemon/handlers/queue.rs`): `session.abort` aborts the running turn (its task ends
   `Cancelled`), puts the steers it had not read back at the front of the lane and parks the lane
   (input published meanwhile is admitted `parked`) until `session.resume_queue`;

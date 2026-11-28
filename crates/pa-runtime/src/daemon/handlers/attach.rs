@@ -19,6 +19,9 @@
 //!   (`chunked_snapshot`) this reply does not offer, as the old worker's own
 //!   reply did not.
 //! - `session.snapshot {session, shape: "state"}`: the summary (`get_state`).
+//! - `session.snapshot {session, shape: "connection"}`: the connection state
+//!   (`get_connection_state`): the session's file and directory, its queue modes,
+//!   service tier, scoped models and the rest the client's commands read.
 //! - `transcript.page {session, shape: "messages", page?, historyLeafId?,
 //!   capabilities?}`: without `page`, the context's messages; with one (the
 //!   old `TranscriptPage`, an end or a start page), the display rows it
@@ -375,7 +378,10 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         match shape {
             "attach" => self.attach_snapshot(args).await,
             "state" => Ok(self.compose(args).await?.summary),
-            other => anyhow::bail!("session.snapshot has no shape {other:?} (attach, state)"),
+            "connection" => Ok(self.compose(args).await?.state),
+            other => {
+                anyhow::bail!("session.snapshot has no shape {other:?} (attach, state, connection)")
+            }
         }
     }
 
