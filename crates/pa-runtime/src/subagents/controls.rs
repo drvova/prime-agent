@@ -21,6 +21,14 @@
 //! - **The delete.** Only a settled child is deleted (with the kernel's
 //!   `rlm.delete_subagent` teardown); one with live work answers `running`,
 //!   and a handle deleted before answers deleted again.
+//! - **A subagent's stop** (`session.stop` of a child, the old `kill` of its
+//!   session). A plain stop ends the child, running or not, and lets it go
+//!   from its family; its ledger edge stays, so it lists as a passive child
+//!   and its parent opened again finds it. A stop that deletes
+//!   (`rlmLedgerDelete`, the old supervisor's marker) writes the child's
+//!   deletion boundary before its teardown, as the kernel's delete does; one
+//!   aimed at a child no session runs (stopped before, or a retry of a delete)
+//!   is the ledger's alone, and a retry writes no second boundary.
 
 use std::sync::Arc;
 
@@ -34,9 +42,10 @@ use pa_core::session_engine::agent_messaging::{
 };
 use pa_core::session_engine::messages::HEARTBEAT_PROMPT_CUSTOM_TYPE;
 use pa_core::session_engine::rlm_host::RlmSubagentHost as _;
+use pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason;
 use serde_json::Value;
 
-use super::host::SessionSubagents;
+use super::host::{delete_child, retire_child, SessionSubagents};
 use super::{child_is_unsettled, lock, Delivery, MessageSender, Node, Subagents};
 
 impl Subagents {
@@ -228,6 +237,69 @@ impl Subagents {
             .delete_subagent(child.to_string())
             .await?;
         Ok(SubagentDeleteOutcome::Deleted)
+    }
+}
+
+/// What a subagent's stop does (see the module documentation).
+pub(crate) enum ChildStop {
+    /// The child ends; its ledger edge stays.
+    Stop,
+    /// The child is deleted for `reason`; `child_id`, when given, is the
+    /// handle the delete names.
+    Delete {
+        reason: RlmLedgerDeleteReason,
+        child_id: Option<String>,
+    },
+}
+
+/// What a subagent's stop found.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ChildStopped {
+    /// The child's session ran and was ended.
+    Session,
+    /// No session ran it: the delete's boundary is the ledger's.
+    Ledger,
+    /// The runtime runs no subagent by that id.
+    Unknown,
+}
+
+impl Subagents {
+    /// `session.stop` of subagent `id` (see the module documentation).
+    ///
+    /// # Errors
+    ///
+    /// The delete names another child's handle, or its deletion boundary
+    /// was not written.
+    pub(crate) async fn stop_child(
+        &self,
+        id: &str,
+        stop: ChildStop,
+    ) -> anyhow::Result<ChildStopped> {
+        let found = self.child_of(id).await;
+        let parent = found.as_ref().and_then(|child| child.node.parent_node());
+        match (stop, found, parent) {
+            (ChildStop::Stop, Some(child), Some(parent)) => {
+                retire_child(&parent, &child, "The subagent's session was stopped").await;
+                Ok(ChildStopped::Session)
+            }
+            (ChildStop::Delete { reason, child_id }, Some(child), Some(parent)) => {
+                if let Some(named) = child_id.filter(|named| *named != child.rlm_child_id) {
+                    anyhow::bail!("session {id} is not RLM subagent {named}");
+                }
+                delete_child(&parent, &child, reason).await?;
+                Ok(ChildStopped::Session)
+            }
+            (ChildStop::Delete { reason, child_id }, _, _) => match self.daemon() {
+                Some(family) => {
+                    family
+                        .deleted_stopped(id.to_string(), child_id, reason)
+                        .await?;
+                    Ok(ChildStopped::Ledger)
+                }
+                None => Ok(ChildStopped::Unknown),
+            },
+            (ChildStop::Stop, _, _) => Ok(ChildStopped::Unknown),
+        }
     }
 }
 

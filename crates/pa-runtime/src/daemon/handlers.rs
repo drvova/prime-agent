@@ -29,6 +29,7 @@ use super::held::OpenSessions;
 use super::schedules::Schedules;
 use crate::runtime::{AfterAbort, Runtime};
 use crate::session::SessionBuilder;
+use crate::subagents::ChildStop;
 use crate::wire::{Attached, Call, ConnectionId, Handlers, Query};
 pub(super) use bash::UserBashes;
 pub(super) use feeds::Feeds;
@@ -223,9 +224,14 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 
     async fn stop(&self, args: &Value) -> anyhow::Result<Value> {
         let id = string_arg(args, "session")?;
+        let stop = Self::child_stop(args)?;
+        if !self.open.contains(&id) {
+            // A subagent's, or a stopped one's delete.
+            return self.stop_subagent(&id, stop).await;
+        }
         anyhow::ensure!(
-            self.open.contains(&id),
-            "session {id} is not open in the runtime daemon"
+            matches!(stop, ChildStop::Stop),
+            "Failed to delete RLM subagent: session {id} is not a subagent"
         );
         // Stopped on purpose: its jobs wake nothing until it is opened again.
         self.schedules.disarm(&id);

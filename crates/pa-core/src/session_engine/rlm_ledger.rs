@@ -108,6 +108,39 @@ pub struct RlmLedgerEdge {
     pub factory: Option<RlmFactoryTag>,
 }
 
+/// The boundary [`RlmSpawnLedger::tombstone_stopped_child`] found for a stopped child: its id
+/// and its recorded transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoppedChildBoundary {
+    /// Its live edge was tombstoned by this call.
+    Written { child_id: String, child: String },
+    /// An earlier attempt tombstoned it; nothing was written.
+    Standing { child_id: String, child: String },
+}
+
+/// The ledger edge a delete addresses, as `(child_id, child_file)`. `rlmChildId` is the durable
+/// key; the selector is the child's LIVE id, NOT the file stem. Order: (1a) edge matching BOTH
+/// the stem and the id; (1b) the LAST edge carrying the id; (2) the stem-matching edge.
+fn resolve_ledger_child(
+    edges: &[RlmLedgerEdge],
+    selector: &str,
+    child_id: Option<&str>,
+) -> Option<(String, String)> {
+    let stem_matches = |edge: &RlmLedgerEdge| {
+        Path::new(&edge.child)
+            .file_stem()
+            .is_some_and(|name| name.to_string_lossy() == selector)
+    };
+    let found = match child_id {
+        Some(id) => edges
+            .iter()
+            .find(|edge| stem_matches(edge) && edge.child_id == id)
+            .or_else(|| edges.iter().rev().find(|edge| edge.child_id == id)),
+        None => edges.iter().find(|edge| stem_matches(edge)),
+    };
+    found.map(|edge| (edge.child_id.clone(), edge.child.clone()))
+}
+
 /// Inputs for `append_spawn` (validated like a record the reader would refuse to read back).
 #[derive(Debug, Clone)]
 pub struct RlmSpawnInput {
@@ -956,6 +989,40 @@ impl RlmSpawnLedger {
             &state.artifact_index,
         );
         resolve_live_edges(&state, &mut resolver)
+    }
+
+    /// The deletion boundary of a delete aimed at a STOPPED child (no session runs it), by the
+    /// session `selector` the delete names and its `child_id`, as both daemons apply it: the
+    /// live edge it addresses is tombstoned now ([`StoppedChildBoundary::Written`]); an edge an
+    /// earlier attempt tombstoned stands, and no second boundary is written
+    /// ([`StoppedChildBoundary::Standing`]: a retry).
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read or the tombstone appended, or no edge, live or tombstoned,
+    /// is the child's.
+    pub fn tombstone_stopped_child(
+        &self,
+        selector: &str,
+        child_id: Option<&str>,
+        reason: RlmLedgerDeleteReason,
+    ) -> Result<StoppedChildBoundary> {
+        let edges = self.live_edges().context("read the spawn ledger edges")?;
+        if let Some((child_id, child)) = resolve_ledger_child(&edges, selector, child_id) {
+            self.append_delete(&child_id, &child, reason)
+                .with_context(|| format!("tombstone RLM subagent {child_id}"))?;
+            return Ok(StoppedChildBoundary::Written { child_id, child });
+        }
+        let tombstoned: Vec<RlmLedgerEdge> = self
+            .edges(true)
+            .context("read the spawn ledger edges")?
+            .into_iter()
+            .filter(|edge| edge.deleted.is_some())
+            .collect();
+        let Some((child_id, child)) = resolve_ledger_child(&tombstoned, selector, child_id) else {
+            bail!("stopped RLM subagent \"{selector}\" is not in the spawn ledger");
+        };
+        Ok(StoppedChildBoundary::Standing { child_id, child })
     }
 
     /// The opened parent file's live edges: only the records of children
