@@ -13,10 +13,26 @@
 //!   meet. A timer's row keeps the `firedAt` of its last fire in its claim
 //!   (`{"lastFiredMs"}`), so a timer started again (in this run or after a
 //!   restart) catches up under pa-sources' rule: missed fires collapse into
-//!   one. Webhook definitions are refused until the daemon hosts them.
+//!   one.
+//! - **Webhooks** are kept definitions only: a run that keeps nothing (a
+//!   headless one) has no long-lived listener to give a sender, and is
+//!   refused one. A webhook's options name its loopback address (the port
+//!   picked when it was defined), its path, its body limit and the
+//!   `auth.json` entry its token or HMAC key is kept under
+//!   ([`secrets`]), never the secret: the row and every listing of it are
+//!   safe to show. It is defined with its credentials
+//!   ([`SourceManager::define_webhook`]), which are stored before the
+//!   definition is, and removed when it is undefined. Started again (in
+//!   this run or after a restart), it listens on its port again when it is
+//!   free, and else on a new one, which its row then records
+//!   ([`SourceManager::webhook_addresses`] says where each listens). Each
+//!   `POST` it publishes is told to the observer the runtime daemon gives
+//!   it ([`SourceManager::observe_webhook_deliveries`]), which counts it
+//!   without blocking.
 //! - **Running**: a source runs while at least one bus subscription's
 //!   filter matches a topic it publishes (`timer/<name>`;
-//!   `source/<name>/changed` and `source/<name>/error` for a watch): it
+//!   `source/<name>/changed` and `source/<name>/error` for a watch;
+//!   `source/<name>/received` for a webhook): it
 //!   starts when the first such subscription is added and stops when the
 //!   last is removed. The bus's registry tells the manager of every
 //!   subscription added and removed without blocking
@@ -31,7 +47,8 @@
 //!   settle is its sessions'.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Arc;
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Context as _;
 use pa_log::{Log, Origin, Receipt, SourceRow, SourceSet};
@@ -40,8 +57,13 @@ use pa_sources::{
     TimerOptions, TimerSource, WatchOptions,
 };
 use pa_types::event_log::{NewEvent, Topic, TopicFilter};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, watch};
+
+pub(crate) mod secrets;
+
+pub(crate) use secrets::{WebhookCredentials, WebhookSecrets, SECRET_PREFIX};
 
 use crate::bus::{Bus, Intake};
 use crate::lock;
@@ -53,8 +75,25 @@ use crate::subscriptions::{SessionTree, SubscriptionChange};
 /// are kept in.
 pub(crate) const SOURCES_PARTITION: &str = "runtime-sources";
 
-/// Why a webhook is neither defined nor started.
-const WEBHOOKS_REFUSED: &str = "webhook sources arrive with the daemon";
+/// Why a webhook that is not kept is refused.
+const WEBHOOKS_KEPT_ONLY: &str = "a webhook source needs a long-lived listener: it runs in the \
+     runtime daemon, not in a headless run (`prime-agent -p`, `--mode json`)";
+
+/// Told of each `POST` a webhook publishes; it must not block.
+pub(crate) type WebhookObserver = Box<dyn Fn() + Send + Sync>;
+
+/// A kept webhook's options: where it listens and the `auth.json` entry
+/// its secrets are kept under, never the secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WebhookDefinition {
+    /// A loopback address, with the port it listens on.
+    pub(crate) bind: SocketAddr,
+    pub(crate) path: String,
+    pub(crate) max_body_bytes: usize,
+    /// Its `auth.json` entry: [`SECRET_PREFIX`] and its name.
+    pub(crate) secret: String,
+}
 
 /// How long a source's definition lasts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,15 +105,17 @@ pub enum SourceLifetime {
     Kept,
 }
 
-/// A source the runtime can run: a timer or a folder watch, by name.
+/// A source the runtime can run: a timer, a folder watch or a webhook, by
+/// name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceDefinition {
     /// One topic level: the source publishes on `timer/<name>` or
     /// `source/<name>/...`.
     pub name: String,
     pub kind: SourceKind,
-    /// The kind's options, as `SourceKind::options_schema` describes them.
-    /// A timer's events are Owner; a watch's carry its `trust` option.
+    /// The kind's options, as `SourceKind::options_schema` describes them;
+    /// a webhook's are a [`WebhookDefinition`]. A timer's events are Owner;
+    /// a watch's carry its `trust` option; a webhook's are Untrusted.
     pub options: Value,
     /// The session that defined it, when one did.
     pub owner: Option<String>,
@@ -117,7 +158,22 @@ fn checked(definition: &SourceDefinition) -> anyhow::Result<Vec<Topic>> {
             ])
         }
         SourceKind::Webhook => {
-            anyhow::bail!("webhook {name:?}: {WEBHOOKS_REFUSED}")
+            anyhow::ensure!(
+                definition.lifetime == SourceLifetime::Kept,
+                "webhook {name:?}: {WEBHOOKS_KEPT_ONLY}"
+            );
+            let webhook = serde_json::from_value::<WebhookDefinition>(options)
+                .map_err(|error| anyhow::anyhow!("webhook {name:?}: {error}"))?;
+            anyhow::ensure!(
+                webhook.bind.ip().is_loopback(),
+                "webhook {name:?}: the runtime listens on a loopback address only, not {}",
+                webhook.bind
+            );
+            anyhow::ensure!(
+                webhook.secret == format!("{SECRET_PREFIX}{name}"),
+                "webhook {name:?}: its secrets are kept as {SECRET_PREFIX}{name}"
+            );
+            Ok(vec![topic(format!("source/{name}/received"))?])
         }
     }
 }
@@ -173,17 +229,21 @@ fn load(log: &Log) -> anyhow::Result<Vec<Defined>> {
 pub(crate) struct SourceManager {
     commands: mpsc::UnboundedSender<Command>,
     running: watch::Receiver<BTreeSet<String>>,
+    webhooks: watch::Receiver<BTreeMap<String, SocketAddr>>,
+    deliveries: Arc<OnceLock<WebhookObserver>>,
 }
 
 enum Command {
     Define {
         definition: SourceDefinition,
         topics: Vec<Topic>,
+        /// A webhook's, stored before its definition.
+        credentials: Option<WebhookCredentials>,
         answer: oneshot::Sender<anyhow::Result<Option<Receipt<bool>>>>,
     },
     Undefine {
         name: String,
-        answer: oneshot::Sender<Option<Receipt<bool>>>,
+        answer: oneshot::Sender<anyhow::Result<Option<Receipt<bool>>>>,
     },
     Shutdown {
         done: oneshot::Sender<()>,
@@ -204,6 +264,23 @@ struct TimerFires {
     fired: mpsc::UnboundedSender<Fired>,
 }
 
+/// A webhook's publisher: the bus's intake, and the observer told of each
+/// `POST` it took.
+struct WebhookDeliveries {
+    intake: Intake,
+    observer: Arc<OnceLock<WebhookObserver>>,
+}
+
+impl Publisher for WebhookDeliveries {
+    fn publish(&self, event: NewEvent) -> Result<(), PublisherClosed> {
+        self.intake.publish(event)?;
+        if let Some(observer) = self.observer.get() {
+            observer();
+        }
+        Ok(())
+    }
+}
+
 impl Publisher for TimerFires {
     fn publish(&self, event: NewEvent) -> Result<(), PublisherClosed> {
         if let Some(fired_at) = event.payload.get("firedAt").and_then(Value::as_u64) {
@@ -219,7 +296,8 @@ impl Publisher for TimerFires {
 
 impl SourceManager {
     /// Runs the sources `log` defines for `bus`'s subscriptions from now on
-    /// (and those on it now), timers on `clock`. The definitions are read on
+    /// (and those on it now), timers on `clock`, webhooks' secrets kept in
+    /// `secrets`. The definitions are read on
     /// the blocking pool before anything else is done; ones that cannot be
     /// read are logged, and the sources start empty, as the kernel's bus
     /// does.
@@ -231,6 +309,7 @@ impl SourceManager {
         log: Arc<Log>,
         bus: &Bus<E, K, G, M, T>,
         clock: Arc<C>,
+        secrets: WebhookSecrets,
     ) -> Self
     where
         E: EventStore,
@@ -245,18 +324,28 @@ impl SourceManager {
         let (commands, commanded) = mpsc::unbounded_channel();
         let (on_fire, timer_fires) = mpsc::unbounded_channel();
         let (shown, running) = watch::channel(BTreeSet::new());
+        let (listening, webhooks) = watch::channel(BTreeMap::new());
+        let deliveries = Arc::new(OnceLock::new());
         let sources = Sources {
             log,
             intake: bus.intake(),
             clock,
+            secrets,
             defined: BTreeMap::new(),
             filters: HashMap::new(),
             handles: BTreeMap::new(),
             on_fire,
             shown,
+            listening,
+            deliveries: Arc::clone(&deliveries),
         };
         tokio::spawn(sources.run(commanded, changes, timer_fires));
-        SourceManager { commands, running }
+        SourceManager {
+            commands,
+            running,
+            webhooks,
+            deliveries,
+        }
     }
 
     /// Defines `definition`'s source, storing a kept one; it runs once a
@@ -266,10 +355,52 @@ impl SourceManager {
     /// # Errors
     ///
     /// The name is not one topic level, the options are not the kind's, the
-    /// kind is a webhook, the name is defined already with another
-    /// definition, the definition could not be stored, or the runtime is
-    /// shutting down.
+    /// kind is a webhook (defined with its credentials:
+    /// [`SourceManager::define_webhook`]), the name is defined already with
+    /// another definition, the definition could not be stored, or the
+    /// runtime is shutting down.
     pub(crate) async fn define(&self, definition: SourceDefinition) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            definition.kind != SourceKind::Webhook,
+            "webhook {:?} is defined with its credentials",
+            definition.name
+        );
+        self.send_define(definition, None).await
+    }
+
+    /// Defines the webhook `definition` names (its options a
+    /// [`WebhookDefinition`]), keeping `credentials` in `auth.json` under
+    /// the entry its options name before the definition is stored; it
+    /// listens once a subscription hears it.
+    ///
+    /// # Errors
+    ///
+    /// It is not kept (a run's webhook is refused), its options are not a
+    /// webhook's, its name is defined already, the credentials or the
+    /// definition could not be stored, or the runtime is shutting down.
+    pub(crate) async fn define_webhook(
+        &self,
+        definition: SourceDefinition,
+        credentials: WebhookCredentials,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            definition.kind == SourceKind::Webhook,
+            "source {:?} is not a webhook",
+            definition.name
+        );
+        anyhow::ensure!(
+            credentials.token.is_some() || credentials.hmac_secret.is_some(),
+            "webhook {:?} needs a token, an HMAC secret, or both",
+            definition.name
+        );
+        self.send_define(definition, Some(credentials)).await
+    }
+
+    async fn send_define(
+        &self,
+        definition: SourceDefinition,
+        credentials: Option<WebhookCredentials>,
+    ) -> anyhow::Result<()> {
         let topics = checked(&definition)?;
         let (answer, answered) = oneshot::channel();
         let stopped = || anyhow::anyhow!("the runtime's sources have stopped");
@@ -277,6 +408,7 @@ impl SourceManager {
             .send(Command::Define {
                 definition,
                 topics,
+                credentials,
                 answer,
             })
             .map_err(|_| stopped())?;
@@ -288,13 +420,14 @@ impl SourceManager {
     }
 
     /// Undefines the source `name`, stopping it when it runs (and removing a
-    /// kept one from the database); a name not defined changes nothing.
-    /// Answers once it is stopped.
+    /// kept one from the database, and a webhook's secrets from
+    /// `auth.json`); a name not defined changes nothing. Answers once it is
+    /// stopped.
     ///
     /// # Errors
     ///
-    /// The database failed to store the change, or the runtime is shutting
-    /// down.
+    /// The database or `auth.json` failed to store the change, or the
+    /// runtime is shutting down.
     pub(crate) async fn undefine(&self, name: &str) -> anyhow::Result<()> {
         let (answer, answered) = oneshot::channel();
         let stopped = || anyhow::anyhow!("the runtime's sources have stopped");
@@ -304,7 +437,7 @@ impl SourceManager {
                 answer,
             })
             .map_err(|_| stopped())?;
-        if let Some(stored) = answered.await.map_err(|_| stopped())? {
+        if let Some(stored) = answered.await.map_err(|_| stopped())?? {
             stored
                 .wait()
                 .await
@@ -316,6 +449,20 @@ impl SourceManager {
     /// The names of the sources running, as it changes.
     pub(crate) fn running(&self) -> watch::Receiver<BTreeSet<String>> {
         self.running.clone()
+    }
+
+    /// Where each webhook defined listens (or will, once a subscription
+    /// hears it), by name: the port it was defined with, or the one it
+    /// moved to when that one was taken.
+    pub(crate) fn webhook_addresses(&self) -> BTreeMap<String, SocketAddr> {
+        self.webhooks.borrow().clone()
+    }
+
+    /// Tells `observer` of each `POST` a webhook publishes from now on.
+    /// Once; a second observer is not kept.
+    pub(crate) fn observe_webhook_deliveries(&self, observer: WebhookObserver) {
+        // The first observer stays: the daemon gives one.
+        let _ = self.deliveries.set(observer);
     }
 
     /// Stops every source and stores the last claims.
@@ -333,12 +480,16 @@ struct Sources<C> {
     log: Arc<Log>,
     intake: Intake,
     clock: Arc<C>,
+    secrets: WebhookSecrets,
     defined: BTreeMap<String, Defined>,
     /// The bus's subscriptions' filters, by subscription id.
     filters: HashMap<String, TopicFilter>,
     handles: BTreeMap<String, SourceHandle>,
     on_fire: mpsc::UnboundedSender<Fired>,
     shown: watch::Sender<BTreeSet<String>>,
+    /// Where each webhook defined listens.
+    listening: watch::Sender<BTreeMap<String, SocketAddr>>,
+    deliveries: Arc<OnceLock<WebhookObserver>>,
 }
 
 impl<C: Clock> Sources<C> {
@@ -365,26 +516,47 @@ impl<C: Clock> Sources<C> {
                 tracing::warn!("reading the runtime's sources failed ({error}); starting empty");
             }
         }
+        // Shows where the webhooks read listen; nothing hears them yet.
+        self.reconcile().await;
         let mut observing = true;
         loop {
             tokio::select! {
                 command = commands.recv() => match command {
                     None => return,
-                    Some(Command::Define { definition, topics, answer }) => {
+                    Some(Command::Define { definition, topics, credentials, answer }) => {
+                        let defined = match credentials {
+                            Some(credentials) => {
+                                self.define_with_secrets(definition, topics, credentials).await
+                            }
+                            None => self.define(definition, topics),
+                        };
                         // A defining caller that went away does not undo it.
-                        let _ = answer.send(self.define(definition, topics));
+                        let _ = answer.send(defined);
                         self.reconcile().await;
                     }
                     Some(Command::Undefine { name, answer }) => {
-                        let stored = self.defined.remove(&name).and_then(|gone| {
+                        let gone = self.defined.remove(&name);
+                        let stored = gone.as_ref().and_then(|gone| {
                             match gone.definition.lifetime {
                                 SourceLifetime::Run => None,
                                 SourceLifetime::Kept => Some(self.store()),
                             }
                         });
                         self.reconcile().await;
+                        let forgotten = match gone.map(|gone| gone.definition.kind) {
+                            Some(SourceKind::Webhook) => {
+                                let secrets = self.secrets.clone();
+                                let key = format!("{SECRET_PREFIX}{name}");
+                                tokio::task::spawn_blocking(move || secrets.remove(&key))
+                                    .await
+                                    .map_err(anyhow::Error::from)
+                                    .flatten()
+                                    .context("remove the webhook's secrets")
+                            }
+                            Some(SourceKind::Timer | SourceKind::Watch) | None => Ok(()),
+                        };
                         // An undefining caller that went away does not undo it.
-                        let _ = answer.send(stored);
+                        let _ = answer.send(forgotten.map(|()| stored));
                     }
                     Some(Command::Shutdown { done }) => {
                         for (name, handle) in std::mem::take(&mut self.handles) {
@@ -428,6 +600,41 @@ impl<C: Clock> Sources<C> {
                 }
             }
         }
+    }
+
+    /// Keeps a new webhook's `credentials`, then defines it; its secrets go
+    /// again when it is not defined.
+    async fn define_with_secrets(
+        &mut self,
+        definition: SourceDefinition,
+        topics: Vec<Topic>,
+        credentials: WebhookCredentials,
+    ) -> anyhow::Result<Option<Receipt<bool>>> {
+        let name = definition.name.clone();
+        anyhow::ensure!(
+            !self.defined.contains_key(&name),
+            "a source {name:?} is defined already; remove it before defining a webhook by its name"
+        );
+        let key = format!("{SECRET_PREFIX}{name}");
+        let secrets = self.secrets.clone();
+        let stored_key = key.clone();
+        tokio::task::spawn_blocking(move || secrets.store(&stored_key, &credentials))
+            .await
+            .map_err(anyhow::Error::from)
+            .flatten()
+            .context("keep the webhook's secrets")?;
+        let defined = self.define(definition, topics);
+        if defined.is_err() {
+            let secrets = self.secrets.clone();
+            let removed = tokio::task::spawn_blocking(move || secrets.remove(&key))
+                .await
+                .map_err(anyhow::Error::from)
+                .flatten();
+            if let Err(error) = removed {
+                tracing::warn!("webhook {name:?}'s secrets stay in auth.json: {error:#}");
+            }
+        }
+        defined
     }
 
     fn define(
@@ -505,6 +712,10 @@ impl<C: Clock> Sources<C> {
 
     /// Starts each source a subscription hears that is not running, and
     /// stops each running one none hears any more.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the stops, each kind's start and what the start changed read in the order they run"
+    )]
     async fn reconcile(&mut self) {
         let heard: BTreeSet<String> = self
             .defined
@@ -530,8 +741,9 @@ impl<C: Clock> Sources<C> {
                 }
             }
         }
+        let mut moved = false;
         for name in heard {
-            let Some(defined) = self.defined.get(&name) else {
+            let Some(defined) = self.defined.get(&name).cloned() else {
                 continue;
             };
             if self.handles.contains_key(&name) {
@@ -564,7 +776,18 @@ impl<C: Clock> Sources<C> {
                         last_fired_ms: None,
                     },
                 ),
-                SourceKind::Webhook => Err(anyhow::anyhow!("webhook {name:?}: {WEBHOOKS_REFUSED}")),
+                SourceKind::Webhook => match self.start_webhook(&name, options).await {
+                    Ok((handle, Some(moved_to))) => {
+                        if let Some(defined) = self.defined.get_mut(&name) {
+                            defined.definition.options = serde_json::to_value(moved_to)
+                                .expect("a webhook's definition is JSON");
+                            moved = true;
+                        }
+                        Ok(handle)
+                    }
+                    Ok((handle, None)) => Ok(handle),
+                    Err(error) => Err(error),
+                },
             };
             match started {
                 Ok(handle) => {
@@ -573,8 +796,85 @@ impl<C: Clock> Sources<C> {
                 Err(error) => tracing::warn!("source {name:?} did not start: {error:#}"),
             }
         }
+        if moved {
+            let stored = self.store();
+            tokio::spawn(async move {
+                if let Err(error) = stored.wait().await {
+                    tracing::warn!("a webhook's new port was not stored: {error:#}");
+                }
+            });
+        }
+        self.listening.send_replace(
+            self.defined
+                .iter()
+                .filter_map(|(name, defined)| {
+                    let webhook = serde_json::from_value::<WebhookDefinition>(
+                        defined.definition.options.clone(),
+                    );
+                    match defined.definition.kind {
+                        SourceKind::Webhook => Some((name.clone(), webhook.ok()?.bind)),
+                        SourceKind::Timer | SourceKind::Watch => None,
+                    }
+                })
+                .collect(),
+        );
         self.shown
             .send_replace(self.handles.keys().cloned().collect());
+    }
+}
+
+impl<C: Clock> Sources<C> {
+    /// Starts the webhook `name` on its definition `options` with the
+    /// secrets `auth.json` keeps for it: on its port, or, when that one
+    /// cannot be had, on a new one, answered with the definition that
+    /// records it.
+    async fn start_webhook(
+        &self,
+        name: &str,
+        options: Value,
+    ) -> anyhow::Result<(SourceHandle, Option<WebhookDefinition>)> {
+        let webhook: WebhookDefinition = serde_json::from_value(options)?;
+        let secrets = self.secrets.clone();
+        let key = webhook.secret.clone();
+        let credentials = tokio::task::spawn_blocking(move || secrets.read(&key))
+            .await??
+            .with_context(|| format!("auth.json keeps no {}", webhook.secret))?;
+        let publisher: Arc<dyn Publisher> = Arc::new(WebhookDeliveries {
+            intake: self.intake.clone(),
+            observer: Arc::clone(&self.deliveries),
+        });
+        let start = |bind: SocketAddr| {
+            SourceKind::Webhook.start(
+                name,
+                json!({
+                    "bind": bind,
+                    "path": webhook.path,
+                    "token": credentials.token,
+                    "hmac_secret": credentials.hmac_secret,
+                    "max_body_bytes": webhook.max_body_bytes,
+                }),
+                StartContext {
+                    publisher: Arc::clone(&publisher),
+                    last_fired_ms: None,
+                },
+            )
+        };
+        match start(webhook.bind) {
+            Ok(handle) => Ok((handle, None)),
+            Err(taken) if webhook.bind.port() != 0 => {
+                let handle = start(SocketAddr::new(webhook.bind.ip(), 0))
+                    .map_err(|error| error.context(format!("and on its own port: {taken:#}")))?;
+                let bind = handle
+                    .local_addr()
+                    .context("a webhook's handle has its address")?;
+                tracing::info!(
+                    "webhook {name:?} could not listen on {} ({taken:#}); it listens on {bind}",
+                    webhook.bind
+                );
+                Ok((handle, Some(WebhookDefinition { bind, ..webhook })))
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 

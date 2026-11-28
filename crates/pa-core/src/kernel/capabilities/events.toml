@@ -4,6 +4,7 @@ properties = [
   "event_source_define_count",
   "event_source_define_timer_count",
   "event_source_define_watch_count",
+  "event_source_define_webhook_count",
   "event_publish_count",
   "event_publish_matched_count",
   "event_subscribe_count",

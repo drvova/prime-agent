@@ -83,6 +83,7 @@ async fn each_event_function_sends_its_typed_request() {
                     schema: json!({ "type": "object" }),
                     timer: None,
                     watch: None,
+                    webhook: None,
                 },
                 EventBusRequest::Publish {
                     source: "deploy.finished".to_string(),

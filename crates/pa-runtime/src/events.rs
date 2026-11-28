@@ -27,6 +27,16 @@
 //!   as one. A watch's path is resolved against its session's working
 //!   directory and must be under it. A subscription naming a timer hears
 //!   `timer/<name>`.
+//! - A webhook source (`#:webhook`) is kept, so only the runtime daemon
+//!   defines one: a headless run refuses it before the bus sees it. Its
+//!   port is picked here when the definer gives none (a free loopback
+//!   one), and a token generated when it gives neither a token nor an HMAC
+//!   key; the bus's record holds the URL and which secrets authenticate,
+//!   and the runtime's sources keep the secrets in `auth.json`
+//!   ([`crate::sources::secrets`]). The definition's answer carries a
+//!   generated token, the one time it is shown; a listing shows each
+//!   webhook's URL where it listens now (a port it moved to when its own
+//!   was taken after a restart), never a secret.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -47,13 +57,17 @@ use pa_types::event_log::{
     TopicFilter, Trust,
 };
 use pa_types::events::{
-    EventBusRequest, EventDeliveryMode, EventSourceKind, EventSourceRecord, EventSubscriptionRecord,
+    EventBusRequest, EventDeliveryMode, EventSourceKind, EventSourceRecord,
+    EventSubscriptionRecord, WebhookRecord,
 };
 use serde_json::{json, Value};
 
 use crate::lock;
 use crate::session::Outbox;
-use crate::sources::{SourceDefinition, SourceLifetime, SourceManager};
+use crate::sources::{
+    SourceDefinition, SourceLifetime, SourceManager, WebhookCredentials, WebhookDefinition,
+    SECRET_PREFIX,
+};
 use crate::subscriptions::Registry;
 use crate::trust::{TaskTrust, WorkingDir};
 
@@ -241,13 +255,53 @@ impl EventBusController for SessionEvents {
         reason = "a request reads in the order it is handled: the runtime's sources it asks for, \
                   the bus's rules, then those sources defined or undefined"
     )]
-    async fn request(&self, request: EventBusRequest) -> anyhow::Result<Value> {
+    async fn request(&self, mut request: EventBusRequest) -> anyhow::Result<Value> {
         let events = &self.events;
         let attached = events
             .attached
             .get()
             .context("the run's event bus is still opening")?;
         let saves = !matches!(request, EventBusRequest::List);
+        let lifetime = events
+            .kept_sources
+            .get()
+            .copied()
+            .unwrap_or(SourceLifetime::Run);
+        // A webhook's port and secrets, filled in before the bus checks it:
+        // the credentials its runtime source keeps, and a token generated
+        // for it, which its answer shows once.
+        let mut webhook_credentials = None;
+        let mut generated_token = None;
+        if let EventBusRequest::DefineSource {
+            webhook: Some(spec),
+            ..
+        } = &mut request
+        {
+            anyhow::ensure!(
+                lifetime == SourceLifetime::Kept,
+                "a webhook source needs a long-lived listener: it runs in the runtime daemon, \
+                 not in a headless run (`prime-agent -p`, `--mode json`)"
+            );
+            if spec.port.is_none_or(|port| port == 0) {
+                let free = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                    .and_then(|listener| listener.local_addr())
+                    .context("pick a free port for the webhook")?;
+                spec.port = Some(free.port());
+            }
+            if spec.token.is_none() && spec.hmac_secret.is_none() {
+                let token = format!(
+                    "{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                );
+                spec.token = Some(token.clone());
+                generated_token = Some(token);
+            }
+            webhook_credentials = Some(WebhookCredentials {
+                token: spec.token.clone(),
+                hmac_secret: spec.hmac_secret.clone(),
+            });
+        }
         // What the runtime's sources run for a timer or a watch defined, and
         // the name of one removed.
         let (defines, removes) = match &request {
@@ -289,11 +343,7 @@ impl EventBusController for SessionEvents {
                     kind,
                     options,
                     owner: Some(self.requester.session_id.clone()),
-                    lifetime: events
-                        .kept_sources
-                        .get()
-                        .copied()
-                        .unwrap_or(SourceLifetime::Run),
+                    lifetime,
                 });
                 (defines, None)
             }
@@ -336,9 +386,51 @@ impl EventBusController for SessionEvents {
         if let Some(receipt) = stored {
             receipt.wait().await.context("store the event bus")?;
         }
-        if let Some(definition) = defines {
+        // A webhook's definition, as the bus recorded it.
+        let defines = match (defines, &change, webhook_credentials) {
+            (None, EventBusChange::Answer(answer), Some(credentials)) => {
+                let record = answer
+                    .get("webhook")
+                    .cloned()
+                    .map(serde_json::from_value::<WebhookRecord>)
+                    .transpose()?
+                    .context("the bus recorded no webhook")?;
+                let name = answer
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .context("the bus recorded no name")?
+                    .to_string();
+                let options = serde_json::to_value(WebhookDefinition {
+                    bind: std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, record.port)),
+                    path: record.path,
+                    max_body_bytes: usize::try_from(record.max_body_bytes)?,
+                    secret: format!("{SECRET_PREFIX}{name}"),
+                })?;
+                Some((
+                    SourceDefinition {
+                        name,
+                        kind: pa_sources::SourceKind::Webhook,
+                        options,
+                        owner: Some(self.requester.session_id.clone()),
+                        lifetime,
+                    },
+                    Some(credentials),
+                ))
+            }
+            (defines, _, _) => defines.map(|definition| (definition, None)),
+        };
+        if let Some((definition, credentials)) = defines {
             let name = definition.name.clone();
-            if let Err(error) = attached.sources.define(definition).await {
+            let outcome = match credentials {
+                Some(credentials) => {
+                    attached
+                        .sources
+                        .define_webhook(definition, credentials)
+                        .await
+                }
+                None => attached.sources.define(definition).await,
+            };
+            if let Err(error) = outcome {
                 // The bus does not keep what the runtime does not run.
                 let mut kept = lock(&events.kept);
                 let undone = kept.state.apply(
@@ -359,7 +451,43 @@ impl EventBusController for SessionEvents {
             attached.sources.undefine(&name).await?;
         }
         match change {
-            EventBusChange::Answer(answer) => Ok(answer),
+            EventBusChange::Answer(mut answer) => {
+                if let Some(token) = generated_token {
+                    if let Some(fields) = answer.as_object_mut() {
+                        fields.insert("token".to_string(), Value::from(token));
+                    }
+                }
+                // Where each webhook listens now.
+                let listening = attached.sources.webhook_addresses();
+                let patch = |record: &mut Value| {
+                    let Some(address) = record
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .and_then(|name| listening.get(name))
+                        .copied()
+                    else {
+                        return;
+                    };
+                    if let Some(Value::Object(webhook)) = record.get_mut("webhook") {
+                        let path = webhook
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .unwrap_or("/")
+                            .to_string();
+                        webhook.insert("port".to_string(), Value::from(address.port()));
+                        webhook.insert(
+                            "url".to_string(),
+                            Value::from(format!("http://{address}{path}")),
+                        );
+                    }
+                };
+                if let Some(Value::Array(records)) = answer.get_mut("sources") {
+                    records.iter_mut().for_each(patch);
+                } else {
+                    patch(&mut answer);
+                }
+                Ok(answer)
+            }
             EventBusChange::Publish { source, payload } => {
                 let topic = Topic::new(format!("source/{}/published", source.name))
                     .context("the source's name is no topic level")?;
@@ -413,9 +541,8 @@ fn heard(
     } else {
         match sources.get(name).map(EventSourceRecord::kind) {
             Some(EventSourceKind::Timer) => TopicFilter::new(format!("timer/{name}")),
-            Some(EventSourceKind::Bus | EventSourceKind::Watch) | None => {
-                TopicFilter::new(format!("source/{name}/#"))
-            }
+            Some(EventSourceKind::Bus | EventSourceKind::Watch | EventSourceKind::Webhook)
+            | None => TopicFilter::new(format!("source/{name}/#")),
         }
     }
     .with_context(|| format!("subscription {} hears no topic", record.id))?;

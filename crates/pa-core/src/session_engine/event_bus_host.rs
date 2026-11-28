@@ -141,6 +141,8 @@ pub(crate) fn observe_event_bus_requests(
                                 EventSourceKind::Timer
                             } else if answer.get("watch").is_some() {
                                 EventSourceKind::Watch
+                            } else if answer.get("webhook").is_some() {
+                                EventSourceKind::Webhook
                             } else {
                                 EventSourceKind::Bus
                             },

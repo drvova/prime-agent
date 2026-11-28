@@ -24,8 +24,10 @@
 ;; Define or redefine something that fires in this session, by `name`.
 ;; #:kind "source" (the default) is an event source on the bus: `schema` is
 ;; its payload schema, or #f with #:timer (a hash of one of 'every, 'cron,
-;; 'at) or #:watch (a hash of 'path and optionally 'glob, 'recursive,
-;; 'debounce-ms), which publish their own events; the record. #:kind
+;; 'at), #:watch (a hash of 'path and optionally 'glob, 'recursive,
+;; 'debounce-ms) or #:webhook (a hash of optionally 'path, 'port, 'token,
+;; 'hmac-secret, 'max-body-bytes), which publish their own events; the
+;; record (a new webhook's with its generated 'token). #:kind
 ;; "schedule" is a scheduled job that runs #:prompt as a new turn on its
 ;; #:timer ('at: an ISO time, "in 30m", or a delay in seconds; 'every:
 ;; "30m" or seconds; 'cron: five fields, UTC), labelled `name`; one of that
@@ -38,6 +40,7 @@
                       #:description [description #f]
                       #:timer [timer #f]
                       #:watch [watch #f]
+                      #:webhook [webhook #f]
                       #:prompt [prompt #f]
                       #:delivery-mode [delivery-mode #f]
                       #:status [status #f])
@@ -48,12 +51,14 @@
      (%host-call "event.define_source"
                  (%options (hash 'name name 'schema schema 'description (or description ""))
                            'timer timer
-                           'watch watch))]
+                           'watch watch
+                           'webhook webhook))]
     [(not (member kind (list "schedule" "heartbeat")))
      (error (string-append "event-define: unknown #:kind " (to-string kind)
                            "; expected \"source\", \"schedule\", or \"heartbeat\""))]
-    [(or schema description watch)
-     (error (string-append "event-define: a " kind " takes no schema, #:description or #:watch"))]
+    [(or schema description watch webhook)
+     (error (string-append "event-define: a " kind
+                           " takes no schema, #:description, #:watch or #:webhook"))]
     [(not (string? prompt))
      (error (string-append "event-define: a " kind " needs its #:prompt"))]
     [(equal? kind "schedule")

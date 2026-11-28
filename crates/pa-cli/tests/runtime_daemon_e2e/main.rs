@@ -82,6 +82,8 @@
 //! - A distribution build's boot import of the official build's chats, its
 //!   pushes, and what a client that connects mid-import sees, as on the old
 //!   daemon (phase 8d-5c): [`history_import`].
+//! - A kernel webhook source: an authenticated `POST` runs an untrusted
+//!   turn, a bad token none (phase 9): [`webhooks`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -114,6 +116,7 @@ mod switches;
 mod tree;
 mod turns;
 mod update;
+mod webhooks;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

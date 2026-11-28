@@ -103,6 +103,10 @@ const SOCKET_NAME: &str = "daemon2.sock";
 /// count, so the first session a client creates takes one already built.
 const SPARE_KERNELS: usize = 2;
 
+/// How long the webhooks' deliveries are counted before one `daemon event`
+/// reports them: a busy webhook sends one a minute, not one a request.
+const WEBHOOK_TELEMETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// How many events a connection may fall behind before it loses the oldest
 /// and catches up from the log.
 const LISTENER_CAPACITY: NonZeroUsize = NonZeroUsize::new(1 << 14).expect("non-zero");
@@ -299,8 +303,27 @@ pub async fn run<B: SessionBuilder>(
         options.selected,
     );
     runtime.attach_jobs(Arc::clone(&schedules) as Arc<dyn crate::session::SessionJobs>);
-    // Its sessions' timers and watches outlive it, as their subscriptions do.
+    // Its sessions' timers, watches and webhooks outlive it, as their
+    // subscriptions do.
     runtime.keep_kernel_sources();
+    // Adoption: the webhooks' deliveries, counted without blocking a
+    // delivery and sent at most once a window, by the telemetry worker.
+    if let Some(client) = telemetry.clone() {
+        let pending = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        runtime.observe_webhook_deliveries(Box::new(move || {
+            use std::sync::atomic::Ordering;
+            if pending.fetch_add(1, Ordering::Relaxed) == 0 {
+                let (client, pending) = (client.clone(), Arc::clone(&pending));
+                tokio::spawn(async move {
+                    tokio::time::sleep(WEBHOOK_TELEMETRY_WINDOW).await;
+                    pa_core::session_engine::telemetry::track_webhooks_delivered(
+                        &client,
+                        pending.swap(0, Ordering::Relaxed),
+                    );
+                });
+            }
+        }));
+    }
     // Its sessions' families are recorded in the old daemon's ledger, wait
     // on each other's messages and observe each other.
     runtime

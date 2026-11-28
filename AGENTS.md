@@ -508,8 +508,15 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   and that otherwise runs as its own task over the session's own rows, not waiting for its
   children; a `Record` notice only persists and a `WakeIdle` one is dropped by a busy session
   (`pa_core::session_engine::bash_notices`). `session.wait_idle` waits for those notice turns
-  too. Its kernel timer and watch sources are kept in the database and run again after a
-  restart for the subscriptions the bus keeps. A client opening a session it holds open
+  too. Its kernel timer, watch and webhook sources are kept in the database and run again after
+  a restart for the subscriptions the bus keeps. A webhook (phase 9, `pa-runtime`
+  `sources.rs`, `sources/secrets.rs`) exists only there: a headless run, which keeps nothing,
+  refuses one. It listens on loopback only; its row names its port, path, body limit and the
+  `auth.json` entry (`webhook:<name>`, a shape no provider list reads) that holds its token or
+  HMAC key, never the secret, which only the defining call's answer shows (a generated token,
+  once) and `event-remove` deletes. Started again it takes its own port when free and records
+  a new one otherwise, so `event-list` shows where it listens. Every event it publishes is
+  Untrusted, so the turn it starts runs behind the trust gate. A client opening a session it holds open
   already (one its boot revived) is answered with that session, as the supervisor's create-open
   reuse does, and a change or state read right after `session.create` waits for the engine's
   first build. The daemon-backed CLI commands (`list`, `sessions`, `stop`, `rename`, `send`,

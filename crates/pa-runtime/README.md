@@ -269,11 +269,22 @@ SQLite implementations over `pa-log`.
   defined it) is a row of agent.db's `sources` table in the partition `runtime-sources`, which
   meets neither pa-core's scheduled jobs (`cron:<path>`) nor the kernel's bus sources (the
   `event-bus.json` partition). It is checked as it is defined (one topic level, the kind's
-  options); defining a name again the same way changes nothing, another way is refused, and a
-  webhook is refused ("webhook sources arrive with the daemon"). A source runs while a bus
-  subscription's filter (`TopicFilter::matches`) matches a topic it publishes on: `timer/<name>`
-  (Owner), or `source/<name>/changed` and `source/<name>/error` (the watch's `trust`, Owner by
-  default). The registry tells the sources' task of every subscription added or removed, by any
+  options); defining a name again the same way changes nothing and another way is refused. A
+  webhook is defined only with its credentials (`SourceManager::define_webhook`) and only
+  `Kept`: a `Run` one (a headless run's) is refused, since a run that keeps nothing has no
+  long-lived listener to give a sender. Its options (`WebhookDefinition`) are a loopback
+  `bind` with its port, its `path`, `max_body_bytes` and `secret`, the name of its `auth.json`
+  entry (`webhook:<name>`, `sources/secrets.rs`: `{"type": "webhook_secret", "token"?,
+  "hmacSecret"?}`, written under auth.json's lock, a shape the provider lists skip): the row
+  never holds a secret. The credentials are stored before the definition and removed when the
+  definition fails or the webhook is undefined. Started again it binds its port when free and
+  else a new one, which its row then records; `webhook_addresses` says where each listens.
+  Each `POST` it publishes is told to the observer `observe_webhook_deliveries` gives (the
+  runtime daemon's adoption count, sent as one `daemon event` `webhooks_delivered` a minute at
+  most). A source runs while a bus subscription's filter (`TopicFilter::matches`) matches a
+  topic it publishes on: `timer/<name>` (Owner), `source/<name>/changed` and
+  `source/<name>/error` (the watch's `trust`, Owner by default), or `source/<name>/received` (a
+  webhook's, always Untrusted). The registry tells the sources' task of every subscription added or removed, by any
   path (`Runtime::add_subscription`, the kernel's, the subagents'), without blocking; that task
   starts a source at the first such subscription and stops it, waiting for its work to end, at
   the last. Events reach the bus through an `Intake`. Each timer fire's `firedAt` is kept in the
@@ -284,8 +295,8 @@ SQLite implementations over `pa-log`.
   so a run's settle does not. A definition's `SourceLifetime` says whether it is stored: `Kept`
   is the row above, `Run` (the kernel's) is held in memory for the run and never written.
   `undefine` (the kernel's `event-remove`) stops a running source before it answers.
-- **Kernel timer and watch sources** (`events.rs`): `event-define` with `#:timer` or
-  `#:watch` is a bus source record under pa-core's rules (`SourceKinds::Accepted`: one namespace
+- **Kernel timer, watch and webhook sources** (`events.rs`): `event-define` with `#:timer`,
+  `#:watch` or `#:webhook` is a bus source record under pa-core's rules (`SourceKinds::Accepted`: one namespace
   and the 32-source limit across kinds, owner-only removal, its kind's fixed payload schema, no
   `event-publish`), and also a `Run` definition of the sources above, owned by the defining
   session; one the sources refuse (a bad schedule, a name they hold another way) is taken off
@@ -294,7 +305,13 @@ SQLite implementations over `pa-log`.
   gate's read rule). A subscription naming a timer hears `timer/<name>`; one naming a watch,
   `source/<name>/#`; its turn reads `[agent-message from event <name>]`. pa-core leaves these
   sources, and the subscriptions naming them, out of the bus's stored rows, so nothing of them
-  outlives the run.
+  outlives the run; the runtime daemon keeps them (`keep_sources`). `#:webhook` (the runtime
+  daemon's only: a headless run refuses it before the bus sees it) gets a free loopback port
+  when it names none and a generated token when it names neither a token nor an HMAC key; the
+  bus's record (`WebhookRecord`) holds its URL, path, port, body limit and which secrets
+  authenticate it, never a secret. The answer carries a generated token once; every answer
+  carrying a webhook's record shows the port it listens on now. Its events are Untrusted, so
+  a subscription's task is (the lower trust wins) and runs behind the trust gate.
 - **RPC mode** (`rpc`, `prime-agent --mode rpc`, moved from pa-daemon in phase 7f): JSON
   commands on stdin, responses and the session's events on stdout, in the TS `modes/rpc`
   shapes. `rpc::run_rpc_mode(RpcOptions)` serves one in-process session engine the composition
@@ -430,7 +447,7 @@ SQLite implementations over `pa-log`.
   (`{session, owner, servers}`) replaces the MCP servers one client supplies an open session in
   its engine's MCP manager, fenced by the owner id (another owner's list is refused, its clear
   changes nothing), refused while a turn runs, a failed replacement rolled back, the old daemon's
-  `replace_acp_mcp_servers`; the `sources` query lists the kept timer and watch sources (with
+  `replace_acp_mcp_servers`; the `sources` query lists the kept timer, watch and webhook sources (with
   whether each runs) and the run-defined ones running, `subscriptions` the bus's subscriptions,
   and `settings` (`{session?}`) the effective settings for a session's or the daemon's cwd with
   what could not be read. A scheduled job made, changed or cancelled publishes
@@ -632,8 +649,8 @@ SQLite implementations over `pa-log`.
   `waiting_on_you` from it and ends when a child starts waiting on the caller.
   `agent_observe.list`, `get` and `recent` read the nuclear family the runtime runs
   (`session_messages` is not yet there). A subagent's RLM heartbeats are armed on its spawn's
-  transcript and skipped once the runtime no longer runs it. The kernel's timer and watch
-  sources are kept (`Runtime::keep_kernel_sources`), so they run again after a restart. `settings`, `models`, `sources` and `subscriptions` answer that
+  transcript and skipped once the runtime no longer runs it. The kernel's timer, watch and
+  webhook sources are kept (`Runtime::keep_kernel_sources`), so they run again after a restart. `settings`, `models`, `sources` and `subscriptions` answer that
   they are not yet in the runtime daemon. At start it
   closes standard input, raises the open-file limit, keeps the model catalog's caches warm as
   the supervisor does and, once the startup refresh settles, sends the `daemon event`
@@ -840,7 +857,7 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 - `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
   engine streams from, which the runtime daemon's model and tier switches write.
 
-Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-sources` (the timer and watch
-sources it starts and stops), `pa-core` (the session engine, the
+Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-sources` (the timer, watch and
+webhook sources it starts and stops), `pa-core` (the session engine, the
 kernel's spare pool, the turn driver's compaction, refinement, goal and autonomous seams) and
 `pa-agent` (the agent loop's steering, abort and events), among workspace crates.

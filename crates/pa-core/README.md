@@ -437,10 +437,12 @@ the `event-*` kernel functions, each parsed into a typed `pa_types::events::Even
 sent through an `EventBusController`; the bus itself lives in the daemon's supervisor or in a
 headless run's runtime (pa-runtime). A run with neither registers `NoEventBus`, which refuses
 every call with the reason; a daemon worker replaces it with its link-backed controller, a
-runtime session with the runtime's. `event-define`'s `#:timer` and `#:watch` make a
-timer or folder-watch source; `agent_state::EventBusState::apply` takes them only from a bus
-that runs them (`SourceKinds::Accepted`, a headless runtime's) and refuses them on the daemon's
-(`SourceKinds::BusOnly`), and never stores them. Public surface: `EventBusController`,
+runtime session with the runtime's. `event-define`'s `#:timer`, `#:watch` and `#:webhook` make a
+timer, folder-watch or webhook source; `agent_state::EventBusState::apply` takes them only from a
+bus that runs them (`SourceKinds::Accepted`, a runtime's) and refuses them on the old daemon's
+(`SourceKinds::BusOnly`), and stores them only where its runtime keeps them
+(`StoredSources::Every`). A webhook's record holds its URL and which secrets authenticate it,
+never a secret: its runtime fills in the port and the secrets before the request is applied. Public surface: `EventBusController`,
 `NoEventBus`, `register_event_bus_host_handlers`.
 
 Session-event wire builder (`session_engine::wire_events`): the `session_event` payloads a

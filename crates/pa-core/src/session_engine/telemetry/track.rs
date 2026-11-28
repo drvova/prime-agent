@@ -156,6 +156,17 @@ pub fn track_session_crashed(client: &TelemetryClient, source: &str) {
     client.track("daemon event", properties);
 }
 
+/// Track the runtime daemon's webhook deliveries (`daemon event`, kind `webhooks_delivered`):
+/// how many authenticated `POST`s its webhook sources published over one window. A count only,
+/// never a source name, a path, a header, or a body.
+pub fn track_webhooks_delivered(client: &TelemetryClient, count: u64) {
+    let mut properties = base_properties("daemon");
+    properties.set("kind", Value::from("webhooks_delivered"));
+    properties.set("count", Value::from(count));
+    properties.set("daemon_kind", Value::from(DaemonKind::Runtime.as_str()));
+    client.track("daemon event", properties);
+}
+
 /// The surface a descriptor `oauth` sign-in ran on (`agent provider oauth
 /// login` `surface`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
