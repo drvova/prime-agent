@@ -1,0 +1,56 @@
+{
+  "import": [
+    {
+      "booted": [
+        {
+          "type": "history_import",
+          "phase": "started",
+          "sessions": 2
+        },
+        {
+          "type": "history_import",
+          "phase": "finished",
+          "sessions": 2,
+          "kept": 0
+        }
+      ],
+      "joined": [
+        {
+          "type": "history_import",
+          "phase": "started",
+          "sessions": 2
+        },
+        {
+          "type": "history_import",
+          "phase": "finished",
+          "sessions": 2,
+          "kept": 0
+        }
+      ],
+      "catalog": [
+        {
+          "path": "<dir>/.prime/agent-fork/sessions/alpha.jsonl",
+          "id": "alpha",
+          "cwd": "/work/a",
+          "name": "alpha work",
+          "rlmDepth": 0,
+          "created": null,
+          "modified": null,
+          "messageCount": 1,
+          "firstMessage": "plan the alpha release"
+        },
+        {
+          "path": "<dir>/.prime/agent-fork/sessions/beta.jsonl",
+          "id": "beta",
+          "cwd": "/work/b",
+          "rlmDepth": 0,
+          "created": null,
+          "modified": null,
+          "messageCount": 1,
+          "firstMessage": "beta question"
+        }
+      ]
+    },
+    5
+  ]
+}

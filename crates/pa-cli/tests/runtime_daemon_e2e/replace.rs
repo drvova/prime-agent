@@ -9,6 +9,9 @@
 //! fork copies the path, leaving the transcript it forked from as it was),
 //! and on the runtime daemon the session's subscriber hears its next turn,
 //! which the imported copy keeps.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::path::{Path, PathBuf};
 
@@ -16,6 +19,7 @@ use pa_types::wire2::{ServerFrame, Since};
 use serde_json::{json, Value};
 
 use super::info::runtime_answers;
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::switches::read_as_the_tui_does;
 use super::tree::{seed, SEEDED};
@@ -173,7 +177,9 @@ async fn the_replacements_answer_and_fork_as_the_old_daemons_do() {
         "0199a000-0000-7000-8000-00000000000d",
     );
 
-    let old = old_answers(&bed, &sessions, &old_path);
+    let mut reference = OldReference::open("replacements", &bed);
+    let old: Value = reference.take("answers", || old_answers(&bed, &sessions, &old_path));
+    let old_ids: Vec<String> = reference.take("message_ids", || message_ids(&old_path));
 
     let _daemon = bed.runtime_daemon_with(&json!({ "responses": ["after the import"] }), OFFLINE);
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
@@ -191,7 +197,7 @@ async fn the_replacements_answer_and_fork_as_the_old_daemons_do() {
     assert_eq!(named_alike(&answers, "runtime"), old);
     // A fork copies: the transcripts forked from are as they were.
     assert_eq!(
-        (message_ids(&runtime_path), message_ids(&old_path)),
+        (message_ids(&runtime_path), old_ids),
         (
             SEEDED.map(str::to_string).to_vec(),
             SEEDED.map(str::to_string).to_vec()

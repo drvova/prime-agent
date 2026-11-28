@@ -1,0 +1,87 @@
+{
+  "answers": [
+    {
+      "type": "response",
+      "data": {
+        "paused": false,
+        "limits": {}
+      },
+      "command": "agent_messages_status",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "paused": false,
+        "maxMessageChars": 16384,
+        "maxPendingPerSession": 20,
+        "rateLimitCapacity": 3,
+        "rateLimitRefillMs": 1000
+      },
+      "command": "agent_messages_status",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "paused": true,
+        "maxMessageChars": 16384,
+        "maxPendingPerSession": 20,
+        "rateLimitCapacity": 3,
+        "rateLimitRefillMs": 1000
+      },
+      "command": "agent_messages_pause",
+      "success": true
+    },
+    {
+      "type": "response",
+      "error": "Agent messaging is paused",
+      "command": "send_message",
+      "success": false
+    },
+    {
+      "type": "response",
+      "data": {
+        "paused": false,
+        "maxMessageChars": 16384,
+        "maxPendingPerSession": 20,
+        "rateLimitCapacity": 3,
+        "rateLimitRefillMs": 1000
+      },
+      "command": "agent_messages_resume",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "paused": false,
+        "maxMessageChars": 16384,
+        "maxPendingPerSession": 20,
+        "rateLimitCapacity": 3,
+        "rateLimitRefillMs": 1000
+      },
+      "command": "agent_messages_status",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "steering": [
+          "[agent-message from <sender>]\n\nbehind the turn"
+        ],
+        "followUp": []
+      },
+      "command": "agent_messages_clear",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "steering": [],
+        "followUp": []
+      },
+      "command": "agent_messages_clear",
+      "success": true
+    }
+  ]
+}

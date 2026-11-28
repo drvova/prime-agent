@@ -11,6 +11,9 @@
 //!   events, the question waits, a client attaching meanwhile reads it as
 //!   `state.pendingQuestion`, and `answer_question` settles it with the old
 //!   reply; answering it again is the old refusal.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -22,6 +25,7 @@ use pa_types::wire2::ClientFrame;
 use serde_json::{json, Value};
 
 use super::info::runtime_answers;
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::switches::read_as_the_tui_does;
 use super::turns::{cell, Attached};
@@ -60,7 +64,7 @@ fn responses() -> Value {
 }
 
 /// What both daemons are compared on.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Seen {
     /// Whether the first turn's cell came back `no_user`.
     first_no_user: bool,
@@ -308,7 +312,8 @@ fn stream_events(session: &Attached) -> Vec<Value> {
 #[tokio::test(flavor = "multi_thread")]
 async fn questions_wait_for_an_answering_client_as_on_the_old_daemon() {
     let bed = Bed::new();
-    let old = old_flow(&bed);
+    let mut reference = OldReference::open("questions", &bed);
+    let old: Seen = reference.take("flow", || old_flow(&bed));
 
     let workspace = bed.dir.path().join("runtime-project");
     std::fs::create_dir_all(&workspace).unwrap();

@@ -1,0 +1,25 @@
+{
+  "rewind": [
+    {
+      "a.txt": "two\n",
+      "b.txt": "new\n"
+    },
+    {
+      "type": "response",
+      "data": {
+        "cancelled": false,
+        "files": {
+          "restored": 2,
+          "conflicts": []
+        },
+        "editorText": "second"
+      },
+      "command": "navigate_tree",
+      "success": true
+    },
+    {
+      "a.txt": "one\n",
+      "b.txt": null
+    }
+  ]
+}

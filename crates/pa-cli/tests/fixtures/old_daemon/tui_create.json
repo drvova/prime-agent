@@ -1,0 +1,147 @@
+{
+  "builds": [
+    {
+      "pin": {
+        "provider": "openai",
+        "id": "c_00000000e2e0work",
+        "label": "work"
+      },
+      "profile": null,
+      "parent": null,
+      "rlmDepth": 0,
+      "dir": "{bed}/agent/sessions",
+      "model": [
+        "openai",
+        "e2e-model"
+      ],
+      "thinkingLevel": "off",
+      "scopedModels": [],
+      "bearers": [
+        "Bearer key-work"
+      ],
+      "marker": "unset unset"
+    },
+    {
+      "pin": {
+        "provider": "openai",
+        "id": "c_00000000e2e0work",
+        "label": "work"
+      },
+      "profile": "work",
+      "parent": null,
+      "rlmDepth": 0,
+      "dir": "{bed}/agent/sessions",
+      "model": [
+        "openai",
+        "e2e-model"
+      ],
+      "thinkingLevel": "off",
+      "scopedModels": [],
+      "bearers": [
+        "Bearer key-work"
+      ],
+      "marker": "unset unset"
+    },
+    {
+      "pin": null,
+      "profile": null,
+      "parent": null,
+      "rlmDepth": 0,
+      "dir": "{bed}/agent/sessions",
+      "model": [
+        "openai",
+        "e2e-model"
+      ],
+      "thinkingLevel": "off",
+      "scopedModels": [],
+      "bearers": [
+        "Bearer key-given"
+      ],
+      "marker": "unset unset"
+    },
+    {
+      "pin": null,
+      "profile": null,
+      "parent": null,
+      "rlmDepth": 0,
+      "dir": "{bed}/agent/sessions",
+      "model": [
+        "openai",
+        "e2e-think"
+      ],
+      "thinkingLevel": "high",
+      "scopedModels": [],
+      "bearers": [
+        "Bearer key-default"
+      ],
+      "marker": "unset unset"
+    },
+    {
+      "pin": {
+        "provider": "openai",
+        "id": "c_00000000e2e0work",
+        "label": "work"
+      },
+      "profile": null,
+      "parent": "{parent}",
+      "rlmDepth": 1,
+      "dir": "{bed}/agent/sessions",
+      "model": [
+        "openai",
+        "e2e-model"
+      ],
+      "thinkingLevel": "off",
+      "scopedModels": [],
+      "bearers": [
+        "Bearer key-work"
+      ],
+      "marker": "unset unset"
+    },
+    {
+      "pin": null,
+      "profile": null,
+      "parent": null,
+      "rlmDepth": 0,
+      "dir": "{bed}/elsewhere",
+      "model": [
+        "openai",
+        "e2e-model"
+      ],
+      "thinkingLevel": "off",
+      "scopedModels": [],
+      "bearers": [
+        "Bearer key-default"
+      ],
+      "marker": "unset unset"
+    },
+    {
+      "pin": null,
+      "profile": null,
+      "parent": null,
+      "rlmDepth": 0,
+      "dir": "{bed}/agent/sessions",
+      "model": [
+        "openai",
+        "e2e-model"
+      ],
+      "thinkingLevel": "off",
+      "scopedModels": [],
+      "bearers": [
+        "Bearer key-default"
+      ],
+      "marker": "from-the-client unset"
+    },
+    {
+      "type": "response",
+      "error": "no stored credential is named 'nope'; /login and choose Add another to store one",
+      "command": "create",
+      "success": false
+    },
+    {
+      "type": "response",
+      "error": "profile 'nope' does not exist; /profile new nope saves one",
+      "command": "create",
+      "success": false
+    }
+  ]
+}

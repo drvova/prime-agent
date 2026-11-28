@@ -18,6 +18,9 @@
 //!
 //! Each daemon runs on a bed of its own; the ids, pids and times the beds
 //! differ in compare by their form.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::os::unix::process::CommandExt;
 use std::process::Command;
@@ -25,6 +28,7 @@ use std::process::Command;
 use pa_types::daemon::DaemonCommand;
 use serde_json::{json, Value};
 
+use super::old_reference::OldReference;
 use super::saved_list::{old_list, runtime_list};
 use super::side_questions::OldClient;
 use super::switches::read_as_the_tui_does;
@@ -215,7 +219,9 @@ async fn runtime_kernel_activity(bed: &Bed) -> Vec<Value> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn kernel_bash_and_the_factory_lane_answer_as_the_old_daemons_do() {
-    let old = old_kernel_activity(&Bed::new());
+    let old_bed = Bed::new();
+    let mut reference = OldReference::open("kernel_activity", &old_bed);
+    let old: Vec<Value> = reference.take("answers", || old_kernel_activity(&old_bed));
     let runtime = runtime_kernel_activity(&Bed::new()).await;
 
     let refused = |command: &str, error: &str| json!({ "type": "response", "command": command, "success": false, "error": error });
@@ -405,12 +411,14 @@ fn catalog_command(bed: &Bed) -> Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn persistent_shells_answer_as_the_old_daemons_do() {
-    let old = {
-        let bed = Bed::new();
-        let _sleeper = shell_fixture(&bed);
+    let old_bed = Bed::new();
+    let mut reference = OldReference::open("persistent_shells", &old_bed);
+    let old: Vec<Value> = reference.take("answers", || {
+        let bed = &old_bed;
+        let _sleeper = shell_fixture(bed);
         let _daemon = bed.old_daemon();
         let socket = bed.old_socket();
-        let catalog = old_list(&socket, "l1", &catalog_command(&bed));
+        let catalog = old_list(&socket, "l1", &catalog_command(bed));
         let responses: Vec<Value> = shell_commands()
             .iter()
             .enumerate()
@@ -421,7 +429,7 @@ async fn persistent_shells_answer_as_the_old_daemons_do() {
             })
             .collect();
         shell_answers(&catalog, &responses)
-    };
+    });
     let runtime = {
         let bed = Bed::new();
         let _sleeper = shell_fixture(&bed);
