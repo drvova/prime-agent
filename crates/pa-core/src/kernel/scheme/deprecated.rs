@@ -22,11 +22,11 @@ use steel::steel_vm::register_fn::RegisterFn;
 const ALIASES: &str = include_str!("deprecated/aliases.txt");
 
 /// `(%deprecated name)`: print the notice for `name` the first time.
-const SCHEME: &str = r#"
+const SCHEME: &str = r"
 (define (%deprecated name)
   (let ([notice (%deprecation-notice name)])
     (when (> (string-length notice) 0) (displayln notice))))
-"#;
+";
 
 /// The replacement [`ALIASES`] names for `name`.
 fn replacement(name: &str) -> Option<&'static str> {
