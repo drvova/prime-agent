@@ -13,7 +13,9 @@
 //! - **Settle**: a child whose task ended done reads `completed`.
 //! - **Rename**: a `rename` record for the renamed child.
 //! - **Delete**: the edge tombstoned (`user`) and the display entry
-//!   `deleted`.
+//!   `deleted`, before the child's teardown: a tombstone that is not
+//!   written fails the delete. A delete aimed at a child no session runs
+//!   (stopped, or deleted before: a retry) is the ledger's alone.
 //! - **Passive children**: the saved catalog walks the ledger from its rows
 //!   and the sessions the runtime runs for the children no root it runs or
 //!   lists keeps (pa-core's `rlm_roster`, the old supervisor's walk), and
@@ -183,20 +185,53 @@ impl DaemonFamily {
         }
     }
 
-    /// Records a child's delete: its edge tombstoned and its display entry
-    /// `deleted`.
-    pub(crate) async fn deleted(&self, child_id: String, child_file: String, child_dir: String) {
-        let tombstoned = {
+    /// Records a child's delete, its deletion boundary: its edge tombstoned
+    /// for `reason`, then its display entry `deleted` (best effort: the
+    /// ledger's tombstone is the authority).
+    ///
+    /// # Errors
+    ///
+    /// The tombstone was not written.
+    pub(crate) async fn deleted(
+        &self,
+        child_id: String,
+        child_file: String,
+        child_dir: String,
+        reason: RlmLedgerDeleteReason,
+    ) -> anyhow::Result<()> {
+        {
             let child_id = child_id.clone();
             self.on_ledger(move |ledger| {
-                ledger.append_delete(&child_id, &child_file, RlmLedgerDeleteReason::User)
+                ledger
+                    .append_delete(&child_id, &child_file, reason)
+                    .with_context(|| format!("tombstone RLM subagent {child_id}"))
             })
-            .await
-        };
-        if let Err(error) = tombstoned {
-            tracing::warn!("the RLM ledger delete was not written: {error:#}");
+            .await?;
         }
         self.display_status(child_dir, child_id, "deleted").await;
+        Ok(())
+    }
+
+    /// The deletion boundary of a delete aimed at the stopped child
+    /// `selector` (a session no family member runs): pa-core's
+    /// `tombstone_stopped_child`, whose retry writes no second boundary.
+    ///
+    /// # Errors
+    ///
+    /// The ledger could not be read or written, or does not record the
+    /// child.
+    pub(crate) async fn deleted_stopped(
+        &self,
+        selector: String,
+        child_id: Option<String>,
+        reason: RlmLedgerDeleteReason,
+    ) -> anyhow::Result<()> {
+        self.on_ledger(move |ledger| {
+            ledger
+                .tombstone_stopped_child(&selector, child_id.as_deref(), reason)
+                .map(|_| ())
+        })
+        .await
     }
 
     /// The children reachable in the ledger from `roots` that are not among

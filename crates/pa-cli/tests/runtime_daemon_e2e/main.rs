@@ -85,6 +85,8 @@
 //!   daemon (phase 8d-5c): [`history_import`].
 //! - A kernel webhook source: an authenticated `POST` runs an untrusted
 //!   turn, a bad token none (phase 9): [`webhooks`].
+//! - A session's lease after its daemon was killed or gave it up, and the
+//!   crash count of a revived session's lifetime (phase 10): [`leases`].
 //! - A session pinned to its own provider when the retry budget is spent
 //!   ([`provider_pinning`]), an unsuccessful auto-compaction's outcome row
 //!   ([`compaction_outcome`]), an imported session's compaction
@@ -109,6 +111,7 @@ mod info;
 mod keeper;
 mod kernel_activity;
 mod kernel_harness;
+mod leases;
 mod legacy_update;
 mod lifecycle;
 mod old_daemon;

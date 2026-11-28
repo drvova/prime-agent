@@ -4,9 +4,13 @@
 //! (`{clientId}`, the `client` argument) or from another open session
 //! (`from`), steered or (`"delivery": "follow_up"`) queued behind the running
 //! turn, an idle session woken for it. A saved session is opened for its
-//! message first: the old daemon's saved-session wake. The answer is the old
+//! message first: the old daemon's saved-session wake, which restores a
+//! session older releases archived (`sessions-archive/`, pa-core's
+//! `resolve_saved_session`) before it opens it. The answer is the old
 //! daemon's receipt, with `woken` saying whether the session was opened.
 
+use anyhow::Context as _;
+use pa_core::session::catalog::resolve_saved_session;
 use pa_core::session::store::store;
 use serde_json::{json, Value};
 
@@ -43,7 +47,23 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             ),
         };
         if !open {
-            anyhow::ensure!(store().exists(&path), "Unknown active session: {target}");
+            if !store().exists(&path) {
+                // Archived by an older release: restored before the wake.
+                let (sessions_dir, archive_dir) = (
+                    self.session_dir.clone(),
+                    self.agent_dir.join("sessions-archive"),
+                );
+                let (selector, cwd) = (target.clone(), self.cwd.display().to_string());
+                let restored = tokio::task::spawn_blocking(move || {
+                    resolve_saved_session(&sessions_dir, &archive_dir, &selector, &cwd)
+                })
+                .await
+                .context("the saved-session lookup panicked")??;
+                anyhow::ensure!(
+                    restored.is_some_and(|info| info.path == path),
+                    "Unknown active session: {target}"
+                );
+            }
             self.create(json!({ "session": target }), connection)
                 .await?;
         }

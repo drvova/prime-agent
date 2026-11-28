@@ -1,0 +1,1 @@
+- Fixed the runtime daemon's session list leaving out subagents, and its stop refusing a subagent: `sessions.list` now lists running and ledger-kept subagents with their parent, a subagent can be stopped or deleted (its ledger tombstone written first, once), and a message wakes a session an older release archived, as on the supervisor.
