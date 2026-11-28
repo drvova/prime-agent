@@ -78,7 +78,7 @@ dir's for `--no-session`, removed after the run). pa-cli supplies the
 flags selected, which keeps its `SessionLease`, plus the `--goal` seed, and
 each spawned subagent's engine: its model lane - a scripted child's queue
 under `children.<spawn name>`, or the catalog model the spawn names or the
-parent runs, resolved through pa-daemon's `rlm_child_model` - over its own
+parent runs, resolved through pa-core's `session_engine::rlm_child_model` - over its own
 transcript under the parent's artifacts), publishes each prompt as the session's
 `agent/<id>/input` (the `@file` images with the first), prints the
 session's `agent/<id>/stream` payloads in json mode until each task's

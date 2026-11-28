@@ -6,7 +6,6 @@ mod config;
 mod env;
 mod session_core;
 
-pub use config::read_script_file;
 pub(crate) use config::WorkerConfig;
 use env::KillCloseReason;
 mod input;

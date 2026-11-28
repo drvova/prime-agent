@@ -208,14 +208,14 @@ pub(super) async fn build_subagent(
             thinking,
         )
     } else {
-        let selector = pa_daemon::rlm_child_model::resolve_child_model_unchecked(
+        let selector = pa_core::session_engine::rlm_child_model::resolve_child_model_unchecked(
             &config.agent_dir,
             subagent.model.as_deref(),
             subagent.parent_model.as_deref(),
             "subagent",
         )
         .map_err(|error| anyhow::anyhow!("{error:#}"))?;
-        pa_daemon::rlm_child_model::assert_thinking_supported(
+        pa_core::session_engine::rlm_child_model::assert_thinking_supported(
             &config.agent_dir,
             subagent.thinking.as_deref(),
             &selector,
