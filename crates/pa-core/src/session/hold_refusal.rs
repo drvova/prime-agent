@@ -150,6 +150,34 @@ fn classify_from(exe: Option<&Path>, own_exe: Option<&Path>) -> HolderFlavor {
     HolderFlavor::AnotherProcess
 }
 
+/// A create or open the session's lease refused, as both daemons answer it:
+/// the refusal text for the user and its wire `errorInfo`, which a client
+/// renders as the notice panel with both ways out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HoldRefusal {
+    pub message: String,
+    pub info: pa_types::daemon::DaemonErrorInfo,
+}
+
+impl HoldRefusal {
+    /// The refusal `error` answers with when a live holder's lease refused
+    /// it (a [`SessionAlreadyActiveError`] anywhere in its chain); `None`
+    /// for any other failure, which keeps its own text.
+    #[must_use]
+    pub fn of(error: &anyhow::Error) -> Option<Self> {
+        let active = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<SessionAlreadyActiveError>())?;
+        Some(Self {
+            message: refusal_message(
+                &HoldIdentity::from_error(active),
+                Some(Path::new(&active.session_path)),
+            ),
+            info: active.error_info(),
+        })
+    }
+}
+
 /// The user-facing refusal for a session file a live foreign process
 /// holds: the holder's pid is resolved and classified live, then rendered
 /// with the session's identity.

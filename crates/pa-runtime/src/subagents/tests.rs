@@ -890,9 +890,11 @@ async fn a_reopened_family_builds_a_child_only_once_one_is_used() {
     let family = |bed: &Bed| {
         // The bed's agent dir sits beside its work dir.
         let agent_dir = bed.cwd.parent().expect("a work dir").join("agent");
-        bed.runtime
-            .subagents()
-            .attach_daemon(DaemonFamily::new(&agent_dir, &bed.cwd.join("sessions")));
+        bed.runtime.subagents().attach_daemon(DaemonFamily::new(
+            &agent_dir,
+            &bed.cwd.join("sessions"),
+            Arc::new(|_: &str| {}),
+        ));
     };
     // The spawns are recorded in the ledger.
     family(&first);

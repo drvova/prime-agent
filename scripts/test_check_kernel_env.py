@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Prove stale tool text cannot satisfy a current kernel probe."""
 import unittest
-import json
 from pathlib import Path
 import socket
 import tempfile
 from unittest.mock import patch, MagicMock
-from check_kernel_env import current_probe, MARKER, finish_daemon, KernelClient, wait_gone
+from check_kernel_env import current_probe, MARKER, finish_daemon, wait_gone
 
 
 def requests(content=None):
@@ -61,17 +60,6 @@ class ProbeTests(unittest.TestCase):
                         wait_gone({(str(served), 'hosted:1:b')})
             finally:
                 listener.close()
-
-    def test_cold_kernel_response_after_35_seconds_uses_request_budget(self):
-        client = KernelClient.__new__(KernelClient)
-        client.counter, client.wire = 0, []
-        client.sock = MagicMock()
-        client.sock.gettimeout.return_value = 35
-        client.reader = MagicMock()
-        client.reader.readline.return_value = json.dumps({'type': 'response', 'id': '1', 'success': True, 'data': {'done': True}}).encode()
-        with patch('check_kernel_env.time.monotonic', side_effect=[0, 36, 36]):
-            self.assertEqual(client.call('prompt_and_wait', timeout_seconds=90), {'done': True})
-        self.assertEqual([call.args[0] for call in client.sock.settimeout.call_args_list], [90, 54, 35])
 
 
 if __name__ == '__main__':

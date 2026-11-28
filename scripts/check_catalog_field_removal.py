@@ -12,8 +12,7 @@ import subprocess
 import sys
 import tempfile
 
-from check_agent_bounce import Client
-from lifecycle_lib import digest, env_for
+from lifecycle_lib import Wire2Client as Client, digest, env_for, saved_list_capture, saved_list_stream
 from lifecycle_lib import OwnedProcesses, TAG, finish
 
 COUNT = 3
@@ -76,61 +75,11 @@ def check_rows(rows, root, expected):
         assert REMOVED not in row, 'allMessagesText must be OMITTED, not null or empty'
 
 
-class RawReader:
-    def __init__(self, reader, received):
-        self.reader, self.received = reader, received
-
-    def readline(self):
-        line = self.reader.readline()
-        self.received.append(line.hex())
-        return line
-
-    def close(self):
-        self.reader.close()
-
-
-class RawSocket:
-    def __init__(self, sock, sent):
-        self.sock, self.sent = sock, sent
-
-    def sendall(self, data):
-        self.sent.append(data.hex())
-        self.sock.sendall(data)
-
-    def close(self):
-        self.sock.close()
-
-
-class CatalogClient(Client):
-    def __init__(self, path, process):
-        super().__init__(path, process)
-        self.received, self.sent = [], []
-        # Hello is retained decoded separately; all subsequent traffic is raw.
-        self.reader = RawReader(self.reader, self.received)
-        self.sock = RawSocket(self.sock, self.sent)
-
-
 def validate(observed, root, expected):
-    frames, data = observed['frames'], observed['final_data']
+    data = observed['final_data']
     assert isinstance(data, dict), 'terminal data is not an object'
     check_rows(data.get('sessions'), root, expected)
-    assert observed['raw_received_hex'] and observed['raw_sent_hex'], 'missing raw traffic'
-    assert [json.loads(bytes.fromhex(line)) for line in observed['raw_received_hex']] == frames, 'raw/decoded traffic mismatch'
-    final, = [frame for frame in frames if frame.get('type') == 'response']
-    assert frames[-1] == final and final.get('success') is True, 'missing successful terminal response'
-    assert final.get('command') == 'list_saved_sessions' and final.get('data') == data, final
-    request, = [json.loads(bytes.fromhex(line)) for line in observed['raw_sent_hex']]
-    assert request['id'] == final['id'] and request['command'] == {
-        'type': 'list_saved_sessions', 'cwd': CWD, 'scope': 'all'}, request
-    streamed, progress = [], []
-    for frame in frames[:-1]:
-        assert frame.get('id') == final['id'] and frame.get('command') == 'list_saved_sessions', frame
-        if frame.get('type') == 'session_list_item':
-            streamed.append(frame['session'])
-        else:
-            assert frame.get('type') == 'session_list_progress', frame
-            assert 0 <= frame['loaded'] <= frame['total'], frame
-            progress.append(frame)
+    streamed, progress = saved_list_stream(observed, {'cwd': CWD, 'scope': 'all'})
     # Three small rows must all stream; no large-store/backpressure claim.
     assert progress, 'missing catalog progress'
     check_rows(streamed, root, expected)
@@ -157,17 +106,12 @@ def observe(binary, root, observed):
             daemon = subprocess.Popen(command, cwd=root, env=env, stdout=log,
                 stderr=subprocess.STDOUT, start_new_session=True)
             scope.register(daemon, command)
-            client = CatalogClient(path, daemon)
+            client = Client(path, daemon)
             observed['hello'] = client.hello
-            try:
-                observed['final_data'] = client.call('list_saved_sessions', cwd=CWD, scope='all')
-            finally:
-                observed['frames'] = list(client.wire)
-                observed['raw_received_hex'] = list(client.received)
-                observed['raw_sent_hex'] = list(client.sent)
+            saved_list_capture(client, observed, cwd=CWD, scope='all')
             observed['stable_rows'] = validate(observed, root, expected)
             scope.discover()
-            assert set(scope.targets) == set(scope.direct), 'catalog unexpectedly spawned worker/kernel'
+            assert set(scope.targets) == set(scope.direct), 'catalog unexpectedly spawned a process or kernel'
             observed['behavior_verified'] = True
         finally:
             finish(scope, client, daemon, observed)

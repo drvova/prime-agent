@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::agent_engine::CreateSessionResources;
 use crate::protocol::DaemonResponse;
-use pa_core::session::hold_refusal::{refusal_message, HoldIdentity};
+use pa_core::session::hold_refusal::HoldRefusal;
 
 impl Worker {
     pub(super) async fn handle_create(&self, payload: &Value) -> DaemonResponse {
@@ -964,16 +964,8 @@ fn append_creation_prefix(
 /// The create response for a refused create: the typed rejection answers
 /// with the refusal and its wire info; other failures keep their raw text.
 fn create_failure_response(error: &anyhow::Error) -> DaemonResponse {
-    match error.downcast_ref::<pa_core::session::lease::SessionAlreadyActiveError>() {
-        Some(active) => response_failure(
-            None,
-            "create",
-            &refusal_message(
-                &HoldIdentity::from_error(active),
-                Some(std::path::Path::new(&active.session_path)),
-            ),
-            Some(active.error_info()),
-        ),
+    match HoldRefusal::of(error) {
+        Some(refusal) => response_failure(None, "create", &refusal.message, Some(refusal.info)),
         None => response_failure(None, "create", &error.to_string(), None),
     }
 }

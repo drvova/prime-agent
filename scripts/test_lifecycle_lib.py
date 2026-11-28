@@ -1,6 +1,11 @@
 """Mocked ownership/cleanup guards; no product binaries or kernels are started."""
+import json
 from pathlib import Path
 import signal
+import socket
+import struct
+import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -124,6 +129,139 @@ class TranscriptTests(unittest.TestCase):
                 (sorted([agent / 'sessions/a.jsonl', agent / 'sessions/journal.jsonl',
                          Path(temp).resolve() / 'custom/b.jsonl']),
                  [agent / 'sessions/a.jsonl'], header))
+
+
+class FakeRuntime:
+    """A wire2 server on a Unix socket: welcomes one client, records its
+    frames and answers each with `answer(frame)`, a list of frames to send."""
+    def __init__(self, folder, answer):
+        self.path = Path(folder) / 'daemon2.sock'
+        self.listener = socket.socket(socket.AF_UNIX)
+        self.listener.bind(str(self.path))
+        self.listener.listen(1)
+        self.answer, self.received = answer, []
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self):
+        sock, _ = self.listener.accept()
+        with sock:
+            buffer = b''
+            while True:
+                data = sock.recv(65536)
+                if not data:
+                    return
+                buffer += data
+                while len(buffer) >= 8:
+                    header, payload = struct.unpack('>II', buffer[:8])
+                    if len(buffer) < 8 + header + payload:
+                        break
+                    frame = json.loads(buffer[8:8 + header])
+                    buffer = buffer[8 + header + payload:]
+                    self.received.append(frame)
+                    replies = ([{'type': 'welcome', 'version': 1, 'runtimeVersion': 'fixture', 'lastSeq': 0}]
+                               if frame['type'] == 'hello' else self.answer(frame))
+                    for reply in replies:
+                        # Split inside the prefix: the client reads whole frames only.
+                        data = lifecycle.wire2_frame(reply)
+                        sock.sendall(data[:5])
+                        sock.sendall(data[5:])
+
+    def close(self):
+        self.listener.close()
+        self.thread.join(timeout=5)
+
+
+def ok(frame, result):
+    return {'type': 'reply', 'id': frame['id'], 'status': 'ok', 'result': result}
+
+
+class Wire2ClientTests(unittest.TestCase):
+    def run_client(self, answer, exercise):
+        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
+            runtime = FakeRuntime(folder, answer)
+            client = lifecycle.Wire2Client(Path(folder) / 'd.sock', None, timeout=5)
+            try:
+                return exercise(client), [frame for frame in runtime.received if frame['type'] != 'hello']
+            finally:
+                client.close()
+                runtime.close()
+
+    def test_a_named_create_is_the_create_then_its_rename(self):
+        def answer(frame):
+            if frame.get('method') == 'session.create':
+                return [ok(frame, {'session': 's1', 'path': '/s/s1.jsonl', 'cwd': '/w'})]
+            return [ok(frame, None)]
+        created, sent = self.run_client(answer, lambda client: client.call(
+            'create', name='target', config={'cwd': '/w', 'provider': 'p', 'model': 'm',
+                                             'noTools': True, 'telemetryDisabled': True}))
+        self.assertEqual(
+            (created, [(frame['type'], frame.get('method'), frame['args']) for frame in sent]),
+            ({'session': 's1', 'path': '/s/s1.jsonl', 'cwd': '/w', 'activeSessionId': 's1',
+              'sessionId': 's1', 'sessionFile': '/s/s1.jsonl'},
+             [('call', 'session.create', {'options': {'provider': 'p', 'model': 'm', 'telemetryDisabled': True},
+                                          'cwd': '/w'}),
+              ('call', 'session.rename', {'session': 's1', 'name': 'target'})]))
+
+    def test_prompt_and_wait_answers_its_own_tasks_done(self):
+        def answer(frame):
+            if frame['type'] == 'subscribe':
+                return [{'type': 'backfilled', 'subId': frame['subId'], 'throughSeq': 0}]
+            done = lambda task, outcome: {'type': 'event', 'subId': 'agent:s1', 'event': {
+                'id': 'e', 'seq': 1, 'ts': 1, 'topic': 'agent/s1/done', 'source': 'runtime',
+                'payload': {'task': task, 'outcome': outcome}, 'trust': 'owner'}}
+            # Another task's `done` comes first; the reply names the task after its `done`.
+            return [done('t0', 'failed'), done('t1', 'completed'), ok(frame, {'task': 't1'})]
+        done, sent = self.run_client(answer, lambda client: client.call(
+            'prompt_and_wait', timeout_seconds=90, activeSessionId='s1', message='hi'))
+        self.assertEqual(
+            (done, [(frame['type'], frame.get('filter') or frame.get('topic'), frame.get('payload'))
+                    for frame in sent]),
+            ({'task': 't1', 'outcome': 'completed'},
+             [('subscribe', 'agent/s1/#', None),
+              ('publish', 'agent/s1/input', {'text': 'hi', 'priority': 'follow_up'})]))
+
+    def test_a_stream_no_longer_followed_is_dropped(self):
+        def answer(frame):
+            if frame['type'] == 'subscribe':
+                return [{'type': 'backfilled', 'subId': frame['subId'], 'throughSeq': 0}]
+            row = lambda: {'type': 'event', 'subId': 'list:list-1', 'event': {
+                'id': 'live', 'seq': 0, 'ts': 1, 'topic': 'runtime/session_list/list-1',
+                'source': 'runtime', 'payload': {'id': 'list-1', 'loaded': 1, 'total': 1},
+                'trust': 'owner'}}
+            if frame['type'] == 'query':
+                return [row(), ok(frame, {'sessions': []})]
+            # A row the daemon sent before it read the unsubscribe.
+            return [row()]
+        def exercise(client):
+            listed = client.call('list_saved_sessions', cwd='/w')
+            client.wait('the late row', lambda: client.dropped)
+            return listed, [event['payload'] for event in client.events], client.dropped
+        (listed, events, dropped), sent = self.run_client(answer, exercise)
+        self.assertEqual(
+            (listed, len(events), [frame['subId'] for frame in dropped], [frame['type'] for frame in sent]),
+            ({'sessions': []}, 1, ['list:list-1'], ['subscribe', 'query', 'unsubscribe']))
+
+    def test_a_refusal_raises_with_its_reply_and_an_unmapped_command_names_itself(self):
+        refusal = lambda frame: [{'type': 'reply', 'id': frame['id'], 'status': 'error',
+                                  'message': 'no such session', 'info': {'kind': 'x'}}]
+        def exercise(client):
+            with self.assertRaises(lifecycle.Wire2Error) as refused:
+                client.call('kill', activeSessionId='gone')
+            with self.assertRaisesRegex(AssertionError, 'no wire2 form of `refine`'):
+                client.call('refine', activeSessionId='s1')
+            return refused.exception.reply
+        reply, sent = self.run_client(refusal, exercise)
+        self.assertEqual((reply['message'], reply['info'], [frame.get('method') for frame in sent]),
+                         ('no such session', {'kind': 'x'}, ['session.stop']))
+
+    def test_a_call_waits_for_its_own_request_budget(self):
+        client = lifecycle.Wire2Client.__new__(lifecycle.Wire2Client)
+        client.lock, client.counter, client.replies, client.sent, client.raw_sent = threading.Condition(), 0, {}, [], []
+        client.sock = Mock()
+        with patch.object(client, 'wait', return_value={'status': 'ok', 'result': {'done': True}}) as wait:
+            self.assertEqual(client.call('get_commands', timeout_seconds=90, activeSessionId='s1'), {'done': True})
+        self.assertEqual(wait.call_args.args[2], 90)
 
 
 if __name__ == '__main__':

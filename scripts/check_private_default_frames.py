@@ -27,7 +27,7 @@ import time
 
 from lifecycle_lib import Screen, digest, stop
 from lifecycle_lib import OwnedProcesses, TAG, finish
-from check_kernel_env import KernelClient
+from check_agent_bounce import Client as KernelClient
 
 PUBLIC = 'z-ai/glm-5.3'
 PRIVATE = 'internal/glm-5.3-fast'
@@ -82,7 +82,10 @@ def prepare(binary, root, scenario):
                     'reasoning': True, 'input': ['text'],
                     'contextWindow': 128000, 'maxTokens': 8192}]}}}))
     env = {name: os.environ[name] for name in ('PATH', 'LANG', 'LC_ALL', 'TZ') if name in os.environ}
-    env['PRIME_AGENT_RUNTIME_DAEMON'] = '0'  # the supervisor's wire (lifecycle_lib.env_for)
+    # Stays on the supervisor's wire (`check_agent_bounce.Client`): it finds
+    # the TUI's session by its worker descriptor, and runs only on hosted CI
+    # (it needs `ip` and GITHUB_ACTIONS), where its port is still to be proven.
+    env['PRIME_AGENT_RUNTIME_DAEMON'] = '0'
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'),
                XDG_CONFIG_HOME=str(root / 'xdg'), XDG_CACHE_HOME=str(root / 'xdg'),
                XDG_DATA_HOME=str(root / 'xdg'), TERM='xterm-256color', COLORTERM='truecolor',
