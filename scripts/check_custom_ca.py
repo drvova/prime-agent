@@ -18,9 +18,8 @@ import tempfile
 import threading
 import time
 
-from lifecycle_lib import digest, stop
+from lifecycle_lib import TaskFailed, Wire2Client as Client, digest, stop
 from check_restore_notice import texts
-from check_agent_bounce import Client
 
 PROMPT = 'Complete the custom CA transport fixture.'
 ANSWER = 'Custom CA transport completed.'
@@ -170,7 +169,6 @@ def run_case(binary, root, trusted, key, cert, ca_cert, unrelated, observation):
         (root / name).mkdir(parents=True)
     agent, sessions, cwd = root / 'agent', root / 'sessions', root / 'work'
     env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ') if key in os.environ}
-    env['PRIME_AGENT_RUNTIME_DAEMON'] = '0'  # the supervisor's wire (lifecycle_lib.env_for)
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), DO_NOT_TRACK='1',
                PI_OFFLINE='1', PI_CODING_AGENT_DIR=str(agent), PRIME_AGENT_CODING_AGENT_DIR=str(agent),
                PI_SESSION_DIR=str(sessions), PRIME_AGENT_SESSION_DIR=str(sessions),
@@ -217,13 +215,12 @@ def run_case(binary, root, trusted, key, cert, ca_cert, unrelated, observation):
         assert not server.requests, 'startup catalog unexpectedly invoked the provider'
         try:
             client.call('prompt_and_wait', activeSessionId=active, message=PROMPT)
-        except AssertionError:
-            # Certificate failure can surface as an unsuccessful wait response.
+        except TaskFailed as failed:
+            # Certificate failure can surface as the prompt's failed task.
             # It is only valid after the actual terminal assistant error below;
             # any other command/transport failure remains red.
-            response = client.wire[-1]
-            assert not trusted and response.get('type') == 'response' and response.get('success') is False, response
-            observation['prompt_wait_failure'] = response
+            assert not trusted, failed.done
+            observation['prompt_wait_failure'] = failed.done
         result = client.call('get_messages', activeSessionId=active)
         observation.update(messages=result, requests=server.requests,
                            handshake_attempts=server.handshake_attempts,
@@ -252,7 +249,7 @@ def run_case(binary, root, trusted, key, cert, ca_cert, unrelated, observation):
                 observation['wire'] = client.wire
                 client.close()
                 process.wait(timeout=15)
-                observation['shutdown'] = 'owned supervisor and workers stopped'
+                observation['shutdown'] = 'owned daemon and its sessions stopped'
             except Exception as error:
                 observation['shutdown_error'] = str(error)
         if process:

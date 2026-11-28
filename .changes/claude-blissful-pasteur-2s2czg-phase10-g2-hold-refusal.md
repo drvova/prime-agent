@@ -1,0 +1,1 @@
+- Fixed opening a session another process holds on the runtime daemon: the refusal again shows the notice panel with both ways out (continue where you left off, take over on this daemon) instead of the raw lease message.

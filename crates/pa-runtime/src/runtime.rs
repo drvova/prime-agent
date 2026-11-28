@@ -135,6 +135,10 @@ impl<B: SessionBuilder> SessionControl for Control<B> {
         let session = session.to_string();
         Box::pin(async move { self.sessions.close(&session).await })
     }
+
+    fn arm_passive(&self, id: &str, spec: &SessionSpec) {
+        self.sessions.arm_passive(id, spec);
+    }
 }
 
 impl<B: SessionBuilder> Runtime<B> {

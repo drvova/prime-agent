@@ -18,7 +18,7 @@ import tempfile
 import threading
 import uuid
 
-from lifecycle_lib import Supervisor, Terminal, actual_hello, digest, env_for, fixture_state
+from lifecycle_lib import Supervisor, Terminal, actual_hello, digest, supervisor_env_for, fixture_state
 
 
 def runtime_version(binary, root, env):
@@ -80,7 +80,9 @@ class RestartSupervisor(Supervisor):
 
 def run_case(binary, root, hello, client, name, observed=None):
     root.mkdir()
-    env = env_for(root)
+    # On the supervisor's wire: the TUI is driven against a fixture of the
+    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
+    env = supervisor_env_for(root)
     base = client.split('+')[0].split('-')[0]
     parts = [int(x) for x in base.split('.')]
     newer = f'{parts[0] + 1}.0.0'
@@ -157,7 +159,9 @@ def main():
             binary = Path(os.environ['PA_RUST_BINARY']).resolve()
             root = Path(temp) / 'rust'
             root.mkdir()
-            env = env_for(root)
+            # On the supervisor's wire: the TUI is driven against a fixture of the
+            # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
+            env = supervisor_env_for(root)
             client = runtime_version(binary, root, env)
             # Fixture expects a current stable binary; prerelease algorithm edges
             # are separately covered by red-first exact production-module tests.

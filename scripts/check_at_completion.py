@@ -18,7 +18,7 @@ import time
 
 from check_agent_bounce import Client
 from lifecycle_lib import DockScreen
-from lifecycle_lib import Supervisor, Terminal, digest, env_for
+from lifecycle_lib import Supervisor, Terminal, digest, supervisor_env_for
 from lifecycle_lib import OwnedProcesses, TAG, finish, process_identity
 
 DIRECTORY = 'dir with spaces'
@@ -91,7 +91,9 @@ def discover_direct(scope, command):
 def discover_hello(binary, root, observed):
     """Learn the real schema; graceful ACK + close + exit, with fallback RED."""
     root.mkdir(parents=True)
-    env = env_for(root)
+    # On the supervisor's wire: the TUI is driven against a fixture of the
+    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
+    env = supervisor_env_for(root)
     env[TAG] = str(root)
     socket_path = root / 'hello.sock'
     scope = OwnedProcesses(binary, root, socket_path)
@@ -168,7 +170,9 @@ def close_terminal(terminal, scope, server, observed):
 
 def run_case(binary, root, hello, case, observed):
     root.mkdir(parents=True)
-    env = env_for(root)
+    # On the supervisor's wire: the TUI is driven against a fixture of the
+    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
+    env = supervisor_env_for(root)
     env[TAG] = str(root)
     (root / DIRECTORY).mkdir()
     (root / DIRECTORY / CHILD).write_text('fixture child\n')
