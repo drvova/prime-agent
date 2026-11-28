@@ -191,8 +191,10 @@ pub(crate) async fn build_faux_engine_with(
         pa_core::session_engine::engine::SessionEngineConfig {
             on_late_sent_agent_message,
             cron_store,
-            // Faux verification harness: no product telemetry.
-            semantic_edges: None,
+            // The semantic-edge ledger as on the real path (no product telemetry, though).
+            semantic_edges: session_manager
+                .as_ref()
+                .map(|manager| super::semantic_edge_identity(embedding, manager)),
             steering_mode: None,
             follow_up_mode: None,
             telemetry: None,

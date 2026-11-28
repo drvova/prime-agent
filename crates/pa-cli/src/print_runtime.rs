@@ -364,6 +364,34 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_runtime::rpc::RpcEngineFactory
     })
 }
 
+/// Who a session's semantic-edge ledger records as (TS `semanticEdgeLedgerPath`): a spawned
+/// child's ledger lives in its rlm session dir and names its parent and spawning request, any
+/// other session's in its artifact dir (none for one kept in memory: ledger-less, the request
+/// ids still on the wire). The faux harness records the same way.
+fn semantic_edge_identity(
+    embedding: &HeadlessEmbedding,
+    session_manager: &pa_core::session::manager::SessionManager,
+) -> pa_core::session_engine::semantic_edges::SemanticEdgeIdentity {
+    let artifact_dir = session_manager.get_session_artifact_dir();
+    let (rlm_session_dir, parent_session_id, spawned_by_request_id) = match embedding {
+        HeadlessEmbedding::Child { overrides, .. } => (
+            Some(overrides.session_dir.as_path()),
+            overrides.semantic_parent_session_id.clone(),
+            overrides.spawned_by_request_id.clone(),
+        ),
+        HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => (None, None, None),
+    };
+    pa_core::session_engine::semantic_edges::SemanticEdgeIdentity {
+        session_id: session_manager.get_session_id().to_string(),
+        ledger_path: pa_core::session_engine::semantic_edges::semantic_edge_ledger_path(
+            rlm_session_dir,
+            artifact_dir.as_deref(),
+        ),
+        parent_session_id,
+        spawned_by_request_id,
+    }
+}
+
 fn replacement_session_dir(options: &RunOptions) -> std::path::PathBuf {
     options
         .session
@@ -839,36 +867,14 @@ pub(crate) async fn build_headless_engine_with(
         cron_store,
         interaction,
     } = headless_embedding_fields(embedding);
-    let (semantic_edges, thinking_level) = match embedding {
-        HeadlessEmbedding::Child { overrides, .. } => (
-            Some(
-                pa_core::session_engine::semantic_edges::SemanticEdgeIdentity {
-                    session_id: session_manager.get_session_id().to_string(),
-                    // A spawned child's ledger lives in its rlm session dir.
-                    ledger_path: pa_core::session_engine::semantic_edges::semantic_edge_ledger_path(
-                        Some(&overrides.session_dir),
-                        session_manager.get_session_artifact_dir().as_deref(),
-                    ),
-                    parent_session_id: overrides.semantic_parent_session_id.clone(),
-                    spawned_by_request_id: overrides.spawned_by_request_id.clone(),
-                },
-            ),
-            Some(pa_core::session_engine::provider_adapter::map_thinking_level(overrides.thinking)),
-        ),
-        HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => (
-            Some(
-                pa_core::session_engine::semantic_edges::SemanticEdgeIdentity {
-                    session_id: session_manager.get_session_id().to_string(),
-                    ledger_path: pa_core::session_engine::semantic_edges::semantic_edge_ledger_path(
-                        None,
-                        session_manager.get_session_artifact_dir().as_deref(),
-                    ),
-                    parent_session_id: None,
-                    spawned_by_request_id: None,
-                },
-            ),
-            Some(resolve_thinking_level(config, &model)),
-        ),
+    let semantic_edges = Some(semantic_edge_identity(embedding, &session_manager));
+    let thinking_level = match embedding {
+        HeadlessEmbedding::Child { overrides, .. } => {
+            Some(pa_core::session_engine::provider_adapter::map_thinking_level(overrides.thinking))
+        }
+        HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => {
+            Some(resolve_thinking_level(config, &model))
+        }
     };
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {

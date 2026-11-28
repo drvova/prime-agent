@@ -420,6 +420,11 @@ pub async fn run<B: SessionBuilder>(
         options.session_dir,
         options.cwd,
     ));
+    // The roots its sessions' kernels ask for are created as a client's.
+    if let Some(family) = runtime.subagents().daemon() {
+        let roots: Arc<dyn crate::subagents::RootSessions> = handlers.clone();
+        family.attach_roots(Arc::downgrade(&roots));
+    }
     let feed_tasks = handlers.spawn_feeds();
     let restore_pass = {
         let host = handlers::RuntimeRestore {

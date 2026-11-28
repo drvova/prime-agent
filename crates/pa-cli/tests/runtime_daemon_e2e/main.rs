@@ -85,6 +85,8 @@
 //!   daemon (phase 8d-5c): [`history_import`].
 //! - A kernel webhook source: an authenticated `POST` runs an untrusted
 //!   turn, a bad token none (phase 9): [`webhooks`].
+//! - A subagent's parent crashing (its child closed and relisted failed)
+//!   and its semantic-edge return: [`parent_death`].
 //! - The `/mcp` page's catalog from the fetch lane's disk cache, and its
 //!   pinned cards' hint: [`mcp_catalog`].
 //! - A session's lease after its daemon was killed or gave it up, and the
@@ -98,6 +100,8 @@
 //!   ([`compaction_outcome`]), an imported session's compaction
 //!   ([`import_compaction`]) and the session-local harness store
 //!   ([`kernel_harness`]) (phase 10).
+//! - A depth-0 session's `rlm.create_session`: a sibling root, shown under
+//!   its creator and kept through its creator's crash: [`root_sessions`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -125,11 +129,13 @@ mod mcp_catalog;
 mod old_daemon;
 mod old_reference;
 mod openai_mock;
+mod parent_death;
 mod provider_pinning;
 mod questions;
 mod queue_edit;
 mod reliability;
 mod replace;
+mod root_sessions;
 mod saved_list;
 mod schedules;
 mod shutdown_flush;
