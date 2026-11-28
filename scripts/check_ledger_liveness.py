@@ -20,7 +20,7 @@ import threading
 import time
 
 from check_agent_bounce import Client, LIMIT
-from lifecycle_lib import digest, env_for, stop
+from lifecycle_lib import digest, supervisor_env_for, stop
 from check_restore_notice import texts
 
 PARENT = 'Create the ledger liveness fixture child.'
@@ -279,7 +279,10 @@ def cache_boundaries(client, config, root, created, child, ledger_path, provider
 
 
 def run_case(binary, root, observed):
-    env = env_for(root)
+    # On the supervisor's wire (`check_agent_bounce.Client`):
+    # the runtime daemon's `sessions.list` lists no subagent (no row with
+    # `rlmChildId` and `parentActiveSessionId`).
+    env = supervisor_env_for(root)
     provider = Provider()
     thread = threading.Thread(target=provider.serve_forever, daemon=True)
     thread.start()

@@ -21,62 +21,12 @@
 
 mod support;
 
+use support::runtime_daemon::RuntimeDaemon;
+
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewUiMode};
 use pa_tui::interactive::{SessionSelection, UiMode};
-
-struct Daemon {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
-    // The in-process client forwards this process's env to the worker.
-    support::scrub_ambient_provider_credentials();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(socket, &mut child);
-    Daemon {
-        child,
-        socket: socket.to_path_buf(),
-    }
-}
 
 /// A saved-session fixture: a version-3 header, a display name, and one exchange, so the agents
 /// view's catalog carries its row.
@@ -141,7 +91,7 @@ async fn the_refused_open_renders_both_ways_out_as_the_notice_panel() {
     std::env::remove_var(pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV);
     std::env::remove_var(pa_core::session::lease::SESSION_LEASES_ENABLED_ENV);
 
-    let daemon = spawn_daemon(&dir.path().join("daemon.sock"), &agent_dir);
+    let daemon = RuntimeDaemon::spawn(dir.path());
 
     // The refused open hands back to the agents view.
     let options = pa_tui::interactive::InteractiveOptions {

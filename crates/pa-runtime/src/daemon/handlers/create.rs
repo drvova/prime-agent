@@ -25,6 +25,7 @@
 use std::path::PathBuf;
 
 use anyhow::Context as _;
+use pa_core::session::hold_refusal::HoldRefusal;
 use pa_core::session::lease::acquire_runtime_session_lease;
 use pa_core::session::manager::get_session_file_path;
 use pa_core::session::store::store;
@@ -34,7 +35,7 @@ use serde_json::{json, Value};
 use super::super::held::OpenSession;
 use super::RuntimeHandlers;
 use crate::session::{SessionBuilder, SessionSpec};
-use crate::wire::ConnectionId;
+use crate::wire::{ConnectionId, ErrorWithInfo};
 
 impl<B: SessionBuilder> RuntimeHandlers<B> {
     #[expect(
@@ -132,11 +133,20 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             (None, Some(self.attached.client_of(connection)))
         } else {
             let (path, agent_dir) = (path.clone(), self.agent_dir.clone());
+            // A live holder's refusal answers with the hold refusal and its
+            // `errorInfo`, as the old worker's create does.
             let lease = tokio::task::spawn_blocking(move || {
                 acquire_runtime_session_lease(&path, &agent_dir)
             })
             .await
-            .context("the lease's thread panicked")??;
+            .context("the lease's thread panicked")?
+            .map_err(|error| match HoldRefusal::of(&error) {
+                Some(refusal) => anyhow::Error::new(ErrorWithInfo {
+                    message: refusal.message,
+                    info: serde_json::to_value(refusal.info).unwrap_or(Value::Null),
+                }),
+                None => error,
+            })?;
             (Some(lease), None)
         };
         // Given options are kept for the session's later builds (its

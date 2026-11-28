@@ -15,14 +15,12 @@ import http.server
 import json
 import os
 from pathlib import Path
-import socket
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 
-from lifecycle_lib import digest, env_for, stop, transcripts_under
+from lifecycle_lib import Wire2Client, digest, env_for, stop, transcripts_under
 from check_restore_notice import texts
 
 MARKER = 'MODEL_FACTS_PARITY='
@@ -129,43 +127,6 @@ def verify_probe(probe, model, count, provider='fixture'):
     assert probe['compact_status']['scheduled'] is False, probe
 
 
-class Client:
-    def __init__(self, sock, observation):
-        self.sock = sock
-        self.stream = sock.makefile('rb')
-        self.observation = observation
-        self.hello = self.read()
-        assert self.hello['type'] == 'daemon_hello', self.hello
-        self.next_id = 0
-
-    def read(self):
-        line = self.stream.readline()
-        if not line:
-            raise RuntimeError('Daemon closed its socket')
-        frame = json.loads(line)
-        self.observation.setdefault('frames', []).append(frame)
-        return frame
-
-    def request(self, command):
-        self.next_id += 1
-        request_id = 'facts-%s' % self.next_id
-        envelope = {'type': 'command', 'id': request_id,
-                    'protocol': self.hello['protocol'], 'command': command}
-        if self.hello.get('clientId'):
-            envelope['clientId'] = self.hello['clientId']
-        self.observation.setdefault('commands', []).append(envelope)
-        self.sock.sendall((json.dumps(envelope) + '\n').encode())
-        while True:
-            frame = self.read()
-            if frame.get('type') == 'response' and frame.get('id') == request_id:
-                assert frame.get('success') is True, frame
-                return frame.get('data', {})
-
-    def close(self):
-        self.stream.close()
-        self.sock.close()
-
-
 def run_case(binary, root, observation):
     env = env_for(root)
     env['PRIME_AGENT_MODEL_PROVIDER'] = 'fixture'
@@ -192,33 +153,22 @@ def run_case(binary, root, observation):
         with open(root / 'daemon.log', 'wb') as log:
             process = subprocess.Popen([str(binary), '--mode', 'daemon', '--daemon-socket', str(path)],
                 cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-            deadline = time.monotonic() + 75
-            while time.monotonic() < deadline:
-                assert process.poll() is None, 'Daemon exited before socket readiness'
-                sock = socket.socket(socket.AF_UNIX)
-                sock.settimeout(120)
-                try:
-                    sock.connect(str(path))
-                    client = Client(sock, observation)
-                    break
-                except (FileNotFoundError, ConnectionRefusedError):
-                    sock.close()
-                    threading.Event().wait(0.025)
-            assert client is not None, 'Daemon socket readiness deadline'
-            created = client.request({'type': 'create', 'config': {
+            # A cold debug daemon can take long to serve its socket.
+            client = Wire2Client(path, process, timeout=75)
+            created = client.call('create', config={
                 'cwd': str(root), 'sessionDir': str(root / 'agent/sessions'),
-                'provider': 'fixture', 'model': 'facts-text'}})
+                'provider': 'fixture', 'model': 'facts-text'})
             session_id = created.get('activeSessionId') or created.get('id')
             assert session_id, created
             observation['probes'] = []
             for phase, model in enumerate(SEQUENCE):
                 if phase in (1, 2):
-                    client.request({'type': 'set_model', 'activeSessionId': session_id,
-                                    'provider': 'fixture', 'modelId': model['id']})
+                    client.call('set_model', activeSessionId=session_id,
+                                provider='fixture', modelId=model['id'])
                 server.phase, server.phase_requests = phase, 0
                 server.fail_next_primary = phase == RETRY_PHASE
-                client.request({'type': 'prompt_and_wait', 'activeSessionId': session_id,
-                                'message': 'Observe the model facts.'})
+                client.call('prompt_and_wait', timeout_seconds=120, activeSessionId=session_id,
+                            message='Observe the model facts.')
                 rows = [row for row in server.requests if row['phase'] == phase]
                 # No request ever reaches the other provider serving the same id.
                 assert all(row['path'].startswith('/primary/') for row in rows), rows
@@ -243,6 +193,7 @@ def run_case(binary, root, observation):
     finally:
         observation['provider_requests'] = server.requests
         if client is not None:
+            observation['commands'], observation['frames'] = client.sent, client.wire
             client.close()
         if process is not None:
             stop(process)
