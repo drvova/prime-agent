@@ -1,0 +1,14 @@
+# Deprecated kernel names, one per line: the old name, a space, and the call that replaces it.
+# Each is still defined (as an alias loaded through `contracts::load`) for one release, prints
+# a one-line notice the first time a kernel calls it, and is left out of the reference, the
+# system prompt and `api-help`. The release after the one that adds a line deletes the alias
+# and the line; `tests/prompt_guards.rs` reads this file.
+mcp-tools (mcp-list [server] #:kind "tools")
+mcp-resources (mcp-list server #:kind "resources") or #:kind "templates"
+mcp-prompts (mcp-list server #:kind "prompts")
+mcp-status (mcp-list [servers] #:kind "connections")
+mcp-plugins (mcp-list #:kind "catalog")
+rz-cmdj (rz-cmd session command #:json #t)
+web-screenshot (web-capture source path #:format "png")
+web-pdf (web-capture source path #:format "pdf")
+web-extract (web-read source #:select selectors)

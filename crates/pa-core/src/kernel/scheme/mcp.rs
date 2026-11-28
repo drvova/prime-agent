@@ -8,24 +8,25 @@
 //! `mcp.refresh` and `mcp.begin_login` requests, the same handlers the Python
 //! kernel's `mcp` module asked.
 //!
-//! - `(mcp-tools server)`: the server's tools, each a hash of `'name`,
-//!   `'description`, `'inputSchema`; complete or an error, never partial.
-//!   `#:tool name` is one such hash; `#:search query` (in `server`, or the
-//!   connected ones without it) returns `'tools` (each `'connectionId`,
-//!   `'name`, `'description`), `'searched`, `'unavailable`, `'truncated`.
+//! - `(mcp-list [server] #:kind ...)`: what a server or the host offers.
+//!   `#:kind "tools"` (the default) is the server's tools, each a hash of
+//!   `'name`, `'description`, `'inputSchema`; complete or an error, never
+//!   partial. `#:tool name` is one such hash; `#:search query` (in `server`,
+//!   or the connected ones without it) returns `'tools` (each
+//!   `'connectionId`, `'name`, `'description`), `'searched`, `'unavailable`,
+//!   `'truncated`. `"resources"` (`#:uri`), `"templates"` and `"prompts"`
+//!   (`#:name`, `#:arguments`) are the server's replies; `"connections"` and
+//!   `"catalog"` (`#:search`, `#:connection-status`, `#:limit`, `#:cursor`)
+//!   the host's inventory, with secret-looking keys dropped, and
+//!   `"connections"` with servers named (`#:timeout-ms`) per server
+//!   `'server`, `'tools` (each `'name`, `'description`) or `'error`.
 //! - `(mcp-call server tool [arguments])`: the tool's structured content
 //!   when it has any, else its text, else its content blocks. A result the
 //!   server flags as an error raises.
-//! - `(mcp-status)` and `(mcp-plugins #:search #:connection-status #:limit
-//!   #:cursor)`: the host's inventory, with secret-looking keys dropped.
-//! - `(mcp-status servers #:timeout-ms n)`: per server `'server`, `'tools`
-//!   (each `'name`, `'description`) or `'error`.
 //! - `(mcp-login server)`: `'server`, `'status` (`"logged_in"`,
 //!   `"unavailable"`, `"failed"`), `'message`.
 //! - `(mcp-reload [server])`: close one server's connection, or all of them;
 //!   the next call opens it again.
-//! - `(mcp-resources server #:uri #:templates)` and `(mcp-prompts server
-//!   #:name #:arguments)`: the server's replies.
 //!
 //! Keys of a reply are the server's own (`'inputSchema`, not
 //! `'input-schema`), a JSON null is void, and whole numbers are exact

@@ -6,7 +6,7 @@ your browser. The connection becomes available to the current session through
 the kernel's generic `mcp-*` functions:
 
 ```scheme
-(define tools (mcp-tools "slack"))
+(define tools (mcp-list "slack"))
 ; Read the returned inputSchema before calling a tool.
 ```
 

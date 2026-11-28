@@ -837,7 +837,7 @@ async fn a_rendered_crawl_blocks_injects_and_emulates() {
     );
 }
 
-/// `web-screenshot` writes a PNG of the page and `web-pdf` a PDF, each
+/// `web-capture` writes a PNG of the page and, with `#:format "pdf"`, a PDF, each
 /// under the session's working directory, and neither leaves a browser.
 #[tokio::test(flavor = "multi_thread")]
 async fn captures_write_a_png_and_a_pdf_and_leave_no_browser() {

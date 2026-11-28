@@ -1,7 +1,7 @@
 # spider_scraper 0.1.2 with Prime Agent's patches
 
 Pinned source of crates.io `spider_scraper` 0.1.2 (MIT), the HTML tree and
-CSS selection that `spider_utils` (`web-extract`, `web-crawl #:extract`) and
+CSS selection that `spider_utils` (`web-read #:select`, `web-crawl #:extract`) and
 `spider_transformations` (`web-read` / `web-crawl` `#:format` and
 `#:transform`) are built on. Only `src/`, the manifest, `LICENSE` and
 `README.md` are kept.

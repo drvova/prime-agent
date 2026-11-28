@@ -7,10 +7,10 @@
 //!   #:analyze #:stdin #:flags #:timeout-ms)` starts a rizin on a file, a
 //!   URI or a pid and returns the session: `'session`, `'target`, `'pid`,
 //!   `'version`, `'debug`, `'write`, `'alive`, `'reason`, `'output`.
-//! - `(rz-cmd session command #:timeout-ms)` runs one command line and
-//!   returns what it printed, errors included.
-//! - `(rz-cmdj session command #:timeout-ms)` runs a command's JSON form and
-//!   returns the parsed value, with rizin's own keys.
+//! - `(rz-cmd session command #:json #:timeout-ms)` runs one command line
+//!   and returns what it printed, errors included; with `#:json #t` it runs
+//!   a command's JSON form and returns the parsed value, with rizin's own
+//!   keys.
 //! - `(rz-sessions)` lists the kernel's sessions, dead ones included.
 //! - `(rz-close session)` kills a session's rizin and forgets it.
 //!

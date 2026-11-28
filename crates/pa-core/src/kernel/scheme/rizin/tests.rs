@@ -339,11 +339,11 @@ async fn the_functions_drive_rizin_over_its_pipe() {
             r#"(begin (define d (rz-open "/bin/app" #:debug #t #:args (list "-v" "x") #:stdin "/tmp/in")) d)"#,
             r#"(rz-cmd s "nul")"#,
             r#"(rz-cmd (hash-ref s 'session) "pdx 3 @ main")"#,
-            r#"(rz-cmdj s "ij")"#,
-            r#"(number->string (hash-ref (rz-cmdj s "drj") 'rax))"#,
-            r#"(rz-cmdj s "warnj")"#,
-            r#"(rz-cmdj s "nul")"#,
-            r#"(rz-cmdj s "")"#,
+            r#"(rz-cmd s "ij" #:json #t)"#,
+            r#"(number->string (hash-ref (rz-cmd s "drj" #:json #t) 'rax))"#,
+            r#"(rz-cmd s "warnj" #:json #t)"#,
+            r#"(rz-cmd s "nul" #:json #t)"#,
+            r#"(rz-cmd s "" #:json #t)"#,
             "(rz-sessions)",
             "(rz-close d)",
             "(rz-close d)",
@@ -374,7 +374,7 @@ async fn the_functions_drive_rizin_over_its_pipe() {
                 })),
                 Ok(json!("18446744073709551100")),
                 Ok(json!([{"a": 1}])),
-                Err("Error: Generic: rz-cmdj: the reply is not JSON (does the command have a `j` form?): a\u{0}b".to_string()),
+                Err("Error: Generic: rz-cmd: the reply is not JSON (does the command have a `j` form?): a\u{0}b".to_string()),
                 Ok(json!(false)),
                 Ok(json!([
                     opened(1, "/bin/app", false, true),
@@ -410,6 +410,40 @@ async fn the_functions_drive_rizin_over_its_pipe() {
             .map(str::to_string)
             .to_vec(),
         )
+    );
+}
+
+/// `rz-cmdj` runs `rz-cmd #:json #t` and tells its notice once.
+#[tokio::test(flavor = "multi_thread")]
+async fn rz_cmdj_answers_as_rz_cmd_json_and_tells_its_notice_once() {
+    let fake = Arc::new(Fake::default());
+    let kernel = provisioner(SchemeKernelOptions::default(), &fake)
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let mut printed = Vec::new();
+    for cell in [
+        r#"(begin (define s (rz-open "/bin/app")) #t)"#,
+        r#"(equal? (rz-cmdj s "ij") (rz-cmd s "ij" #:json #t))"#,
+        r#"(equal? (rz-cmdj s "warnj") (rz-cmd s "warnj" #:json #t))"#,
+    ] {
+        let result = kernel.execute(cell, NO_OPTIONS).await.unwrap();
+        printed.push((
+            result.stdout,
+            result.result,
+            result.error.map(|error| error.evalue),
+        ));
+    }
+    let answered = |stdout: &str| (stdout.to_string(), Some("#true".to_string()), None);
+    assert_eq!(
+        printed,
+        vec![
+            answered(""),
+            answered(
+                "rz-cmdj is deprecated and goes away in the next release: use (rz-cmd session command #:json #t)\n"
+            ),
+            answered(""),
+        ]
     );
 }
 
@@ -449,7 +483,7 @@ async fn a_long_reply_is_cut_around_a_spill_handle_and_never_held_whole() {
             r#"(begin (define s (rz-open "/bin/app")) #t)"#,
             &shape("big 1000000"),
             &shape(&format!("big {written}")),
-            &format!(r#"(rz-cmdj s "big {written}")"#),
+            &format!(r#"(rz-cmd s "big {written}" #:json #t)"#),
         ],
     )
     .await;
@@ -462,7 +496,7 @@ async fn a_long_reply_is_cut_around_a_spill_handle_and_never_held_whole() {
             Ok(json!([true, true, true, ["[out:"]])),
             Ok(json!([true, true, true, ["[out:", "[rizi"]])),
             Err(format!(
-                "Error: Generic: rz-cmdj: the reply is over {HEAD_CAP} bytes: narrow the command"
+                "Error: Generic: rz-cmd: the reply is over {HEAD_CAP} bytes: narrow the command"
             )),
         ]
     );

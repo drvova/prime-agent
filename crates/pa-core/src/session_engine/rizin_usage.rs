@@ -19,7 +19,7 @@ pub(crate) enum RizinFact {
     DebugOpen,
     /// `rz-cmd` that got its reply.
     Command,
-    /// `rz-cmdj` that got its reply.
+    /// `rz-cmd #:json #t` that got its reply.
     JsonCommand,
     /// A command interrupted by its time limit or its cell's stop.
     Interrupted,

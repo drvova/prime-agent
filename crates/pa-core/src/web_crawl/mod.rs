@@ -189,13 +189,13 @@ pub(crate) struct PageWork {
     pub(crate) automation_calls: Option<u32>,
 }
 
-/// What adoption telemetry learns of one `web-extract`.
+/// What adoption telemetry learns of one `web-read #:select` (`web.extract`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ExtractOutcome {
     pub(crate) ok: bool,
 }
 
-/// What adoption telemetry learns of one `web-screenshot` or `web-pdf`.
+/// What adoption telemetry learns of one `web-capture`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CaptureOutcome {
     /// A PDF rather than a screenshot.

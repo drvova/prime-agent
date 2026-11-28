@@ -26,6 +26,7 @@ mod attach;
 mod cell;
 mod confinement;
 mod contracts;
+mod deprecated;
 mod factory;
 mod host_api;
 #[cfg(test)]
@@ -766,6 +767,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 let refusals = contracts::register(&mut engine, &native_handlers)?;
                 contracts::load(&mut engine, HOST_BRIDGE)
                     .map_err(|error| anyhow!("the Scheme host bridge failed to load: {error}"))?;
+                deprecated::register(&mut engine)?;
                 cell::register(&mut engine, &cells)?;
                 native::register_session_tools(&mut engine, &native_handlers, &environment);
                 host_api::load(&mut engine)?;

@@ -154,7 +154,7 @@ fn mcp_cell(receipt_path: &Path) -> String {
                 (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_path:?} (to-string e)) (error (to-string e)))
-    (let* ([tools (mcp-tools "fixture-echo")]
+    (let* ([tools (mcp-list "fixture-echo")]
            [result (mcp-call "fixture-echo" "echo" (hash 'message "hello from the daemon e2e"))]
            [payload (value->jsexpr-string (hash 'tools tools 'result result))])
       (record {receipt_path:?} payload)

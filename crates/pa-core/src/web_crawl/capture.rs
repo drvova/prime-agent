@@ -1,6 +1,6 @@
 //! `web.capture`: one page loaded in a local headless Chrome and saved as a
-//! PNG screenshot or a PDF. The kernel's `(web-screenshot url path ...)` and
-//! `(web-pdf url path ...)` reach it.
+//! PNG screenshot or a PDF. The kernel's `(web-capture url path #:format
+//! "png"|"pdf" ...)` reaches it.
 //!
 //! The browser is started as a rendered crawl's is ([`super::browser`]):
 //! its own process group, in the orphan journal, killed when the capture
