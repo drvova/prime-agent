@@ -1,0 +1,1 @@
+- Runtime daemon: opening a session right after the daemon gave it up (or while it is being stopped) opens it afresh instead of answering with the session being let go of.
