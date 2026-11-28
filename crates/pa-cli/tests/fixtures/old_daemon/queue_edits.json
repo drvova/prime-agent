@@ -1,0 +1,181 @@
+{
+  "edits": [
+    [
+      {
+        "answer": {
+          "type": "response",
+          "data": {
+            "status": "applied"
+          },
+          "command": "mutate_queued_message",
+          "success": true
+        },
+        "rows": {
+          "steering": [],
+          "followUps": [
+            "f2",
+            "f1",
+            "f3"
+          ]
+        }
+      },
+      {
+        "answer": {
+          "type": "response",
+          "data": {
+            "status": "rejected"
+          },
+          "command": "mutate_queued_message",
+          "success": true
+        },
+        "rows": {
+          "steering": [],
+          "followUps": [
+            "f2",
+            "f1",
+            "f3"
+          ]
+        }
+      },
+      {
+        "answer": {
+          "type": "response",
+          "data": {
+            "status": "applied"
+          },
+          "command": "mutate_queued_message",
+          "success": true
+        },
+        "rows": {
+          "steering": [],
+          "followUps": [
+            "f2",
+            "f1",
+            "f3 edited"
+          ]
+        }
+      },
+      {
+        "answer": {
+          "type": "response",
+          "data": {
+            "status": "rejected"
+          },
+          "command": "mutate_queued_message",
+          "success": true
+        },
+        "rows": {
+          "steering": [],
+          "followUps": [
+            "f2",
+            "f1",
+            "f3 edited"
+          ]
+        }
+      },
+      {
+        "answer": {
+          "type": "response",
+          "data": {
+            "status": "applied"
+          },
+          "command": "mutate_queued_message",
+          "success": true
+        },
+        "rows": {
+          "steering": [],
+          "followUps": [
+            "f1",
+            "f3 edited"
+          ]
+        }
+      },
+      {
+        "answer": {
+          "type": "response",
+          "data": {
+            "status": "applied"
+          },
+          "command": "mutate_queued_message",
+          "success": true
+        },
+        "rows": {
+          "steering": [],
+          "followUps": [
+            "f3 edited",
+            "f1"
+          ]
+        }
+      },
+      {
+        "answer": {
+          "type": "response",
+          "data": {
+            "status": "rejected"
+          },
+          "command": "mutate_queued_message",
+          "success": true
+        },
+        "rows": {
+          "steering": [],
+          "followUps": [
+            "f3 edited",
+            "f1"
+          ]
+        }
+      },
+      {
+        "answer": {
+          "type": "response",
+          "data": {
+            "status": "rejected"
+          },
+          "command": "mutate_queued_message",
+          "success": true
+        },
+        "rows": {
+          "steering": [],
+          "followUps": [
+            "f3 edited",
+            "f1"
+          ]
+        }
+      },
+      {
+        "answer": {
+          "type": "response",
+          "error": "mutate_queued_message requires lane \"steering\" or \"followUp\"",
+          "command": "mutate_queued_message",
+          "success": false
+        },
+        "rows": {
+          "steering": [],
+          "followUps": [
+            "f3 edited",
+            "f1"
+          ]
+        }
+      },
+      {
+        "answer": {
+          "type": "response",
+          "error": "mutate_queued_message requires mutation.type \"delete\", \"move\", or \"replace\"",
+          "command": "mutate_queued_message",
+          "success": false
+        },
+        "rows": {
+          "steering": [],
+          "followUps": [
+            "f3 edited",
+            "f1"
+          ]
+        }
+      }
+    ],
+    [
+      "first",
+      "f3 edited",
+      "f1"
+    ]
+  ]
+}

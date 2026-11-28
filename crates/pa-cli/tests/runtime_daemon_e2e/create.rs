@@ -15,6 +15,9 @@
 //!
 //! Every daemon runs offline (`PI_OFFLINE=1`) on real engines: the faux
 //! script would hide the model and key a create chooses.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -24,6 +27,7 @@ use pa_types::daemon::DaemonCommand;
 use pa_types::wire2::{ClientFrame, Since};
 use serde_json::{json, Value};
 
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::switches::read_as_the_tui_does;
 use super::{Bed, Client, Daemon};
@@ -426,7 +430,8 @@ async fn a_tui_create_builds_on_the_runtime_daemon_what_it_builds_on_the_old_dae
     let (runtime_origin, runtime_bearers) = completions();
     seed(&old_bed, &old_origin);
     seed(&runtime_bed, &runtime_origin);
-    let old = old_builds(&old_bed, &old_bearers);
+    let mut reference = OldReference::open("tui_create", &old_bed);
+    let old: Vec<Value> = reference.take("builds", || old_builds(&old_bed, &old_bearers));
     let runtime = runtime_builds(&runtime_bed, &runtime_bearers).await;
     let pin = json!({ "provider": "openai", "id": "c_00000000e2e0work", "label": "work" });
     // The variants do what they say on the old daemon.

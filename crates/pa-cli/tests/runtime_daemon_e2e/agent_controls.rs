@@ -15,6 +15,9 @@
 //!   child once settled, of it again, and of an unknown one.
 //!
 //! Each daemon runs on a bed of its own.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::path::Path;
 
@@ -23,6 +26,7 @@ use pa_types::wire2::{ClientFrame, Outcome};
 use serde_json::{json, Value};
 
 use super::kernel_activity::runtime_answer;
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::side_questions::OldClient;
 use super::switches::read_as_the_tui_does;
@@ -264,7 +268,9 @@ async fn runtime_unscoped_status(bed: &Bed) -> Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_agent_message_ingest_answers_as_the_old_daemons_does() {
-    let old = old_ingest(&Bed::new());
+    let old_bed = Bed::new();
+    let mut reference = OldReference::open("agent_message_ingest", &old_bed);
+    let old: Vec<Value> = reference.take("answers", || old_ingest(&old_bed));
     let mut runtime = vec![runtime_unscoped_status(&Bed::new()).await];
     runtime.extend(runtime_ingest(&Bed::new()).await);
 
@@ -340,6 +346,7 @@ fn kid(rows: &Value) -> String {
 
 /// The answers to [`depth_steps`] then the deletes after the kid settled,
 /// and the settings file's `rlmMaxDepth`.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Depth {
     answers: Vec<Value>,
     global: Value,
@@ -445,7 +452,9 @@ async fn runtime_depth(bed: &Bed) -> Depth {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_depth_bound_and_the_subagent_delete_answer_as_the_old_daemons_do() {
-    let old = old_depth(&Bed::new());
+    let old_bed = Bed::new();
+    let mut reference = OldReference::open("depth_bound", &old_bed);
+    let old: Depth = reference.take("depth", || old_depth(&old_bed));
     let runtime = runtime_depth(&Bed::new()).await;
 
     let answered = |command: &str, data: Value| json!({ "type": "response", "command": command, "success": true, "data": data });

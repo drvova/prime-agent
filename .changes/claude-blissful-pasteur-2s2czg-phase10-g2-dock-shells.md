@@ -1,0 +1,1 @@
+- Fixed stopping a session on the runtime daemon while a window is attached: the window again says the daemon stopped the session and clears its shells from the dock.

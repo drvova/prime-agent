@@ -13,12 +13,16 @@
 //!
 //! Each daemon runs on a bed of its own; the ids and times the beds differ
 //! in compare by their form.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::path::Path;
 
 use serde_json::{json, Value};
 
 use super::kernel_activity::runtime_answer;
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::side_questions::OldClient;
 use super::switches::read_as_the_tui_does;
@@ -108,6 +112,7 @@ fn queued(actions: &Value) -> Option<bool> {
 
 /// What one daemon answered, and the transcript's heartbeat rows after the
 /// withdrawal.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Seen {
     answers: Vec<Value>,
     heartbeat_rows: usize,
@@ -259,7 +264,9 @@ async fn runtime_flow(bed: &Bed) -> Seen {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sessions_heartbeat_answers_and_withdraws_as_the_old_daemons_does() {
-    let old = old_flow(&Bed::new());
+    let old_bed = Bed::new();
+    let mut reference = OldReference::open("heartbeats", &old_bed);
+    let old: Seen = reference.take("flow", || old_flow(&old_bed));
     let runtime = runtime_flow(&Bed::new()).await;
 
     let answered = |command: &str, heartbeat: Value| {

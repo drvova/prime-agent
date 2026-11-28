@@ -5,7 +5,8 @@
 //! as the old daemon (the `pa-daemon` supervisor) answers the same commands
 //! on a session over the same models, leave the same settings document and
 //! record the same model, level and tier rows; a change of the active tier
-//! is the old `service_tier_changed` event on the session's stream.
+//! is the old `service_tier_changed` event on the session's stream. The old
+//! daemon's answers, settings and rows are frozen ([`super::old_reference`]).
 
 use std::path::Path;
 
@@ -13,6 +14,7 @@ use pa_types::daemon::{DaemonCommand, DaemonOutbound};
 use pa_types::wire2::{ClientFrame, ServerFrame, Since};
 use serde_json::{json, Value};
 
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::{ok, Bed, Client};
 
@@ -141,8 +143,9 @@ fn old_answers(bed: &Bed) -> (Vec<Value>, String) {
 async fn the_setting_switches_answer_and_write_as_the_old_daemons_do() {
     let bed = Bed::new();
     models(&bed.agent_dir());
-    let (old, old_id) = old_answers(&bed);
-    let old_settings = take_settings(&bed.agent_dir());
+    let mut reference = OldReference::open("setting_switches", &bed);
+    let (old, old_id): (Vec<Value>, String) = reference.take("answers", || old_answers(&bed));
+    let old_settings = reference.take("settings", || take_settings(&bed.agent_dir()));
 
     let _daemon = bed.runtime_daemon(&json!({ "responses": ["hi"] }));
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
@@ -202,7 +205,9 @@ async fn the_setting_switches_answer_and_write_as_the_old_daemons_do() {
     // the one the old daemon's started on. From there the rows are the old
     // daemon's.
     let rows = switch_rows(&mut client, &id).await;
-    let old_rows = switch_rows(&mut client, &old_id).await;
+    let old_rows: Vec<Value> = reference
+        .take_async("rows", Box::pin(switch_rows(&mut client, &old_id)))
+        .await;
     let faux = json!({ "type": "model_change", "provider": "faux", "modelId": "faux-1" });
     assert_eq!(
         (&rows[..4], &rows[4..]),

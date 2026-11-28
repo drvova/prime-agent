@@ -16,6 +16,9 @@
 //!   daemon's own run of it is `supervisor_restart_e2e`).
 //!
 //! Each daemon runs on a bed of its own.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -29,6 +32,7 @@ use pa_types::event_log::TopicFilter;
 use pa_types::wire2::{ClientFrame, ServerFrame, Since};
 use serde_json::{json, Value};
 
+use super::old_reference::OldReference;
 use super::side_questions::OldClient;
 use super::switches::read_as_the_tui_does;
 use super::turns::{cell, Attached};
@@ -47,7 +51,7 @@ enum Stop {
 }
 
 /// What the clients of a daemon saw as it stopped, and what it left.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Stopped {
     /// The stopper's frames: its response, then the closing.
     stopper: Vec<Value>,
@@ -235,8 +239,10 @@ async fn runtime_stop(bed: &Bed, stop: Stop) -> Stopped {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_answers_tells_every_client_and_exits_as_on_the_old_daemon() {
     let mut seen = Vec::new();
+    let old_bed = Bed::new();
+    let mut reference = OldReference::open("daemon_stop", &old_bed);
     for stop in [Stop::Shutdown, Stop::Signal] {
-        let old = old_stop(&Bed::new(), stop);
+        let old: Stopped = reference.take(&format!("{stop:?}"), || old_stop(&Bed::new(), stop));
         let runtime = runtime_stop(&Bed::new(), stop).await;
         seen.push((stop, old, runtime));
     }

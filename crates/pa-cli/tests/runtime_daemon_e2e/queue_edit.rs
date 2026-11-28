@@ -6,6 +6,9 @@
 //! as the old daemon (the `pa-daemon` supervisor) answers them, leave the
 //! same queue view after each edit, and the edited queue runs into the same
 //! turns.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -14,6 +17,7 @@ use pa_types::daemon::DaemonCommand;
 use pa_types::wire2::ClientFrame;
 use serde_json::{json, Value};
 
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::switches::read_as_the_tui_does;
 use super::turns::{cell, Attached};
@@ -205,7 +209,8 @@ async fn runtime_rows(client: &mut Client, id: &str) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_queue_edits_answer_and_run_as_the_old_daemons_do() {
     let bed = Bed::new();
-    let (old, old_texts) = old_edits(&bed);
+    let mut reference = OldReference::open("queue_edits", &bed);
+    let (old, old_texts): (Vec<Value>, Vec<String>) = reference.take("edits", || old_edits(&bed));
 
     let _daemon = bed.runtime_daemon_with(&json!({ "responses": responses() }), OFFLINE);
     let mut session = Attached::open(&bed, bed.dir.path()).await;
@@ -337,9 +342,10 @@ async fn a_compaction_and_a_retry_stop_when_aborted() {
         });
 
     // The old daemon's answers, captured from it (pa-daemon's
-    // `supervisor_e2e` compaction test holds it to the same golden).
+    // `supervisor_e2e` compaction test holds it to the same golden; this
+    // copy outlives it).
     let golden: Value = serde_json::from_str(include_str!(
-        "../../../pa-daemon/tests/goldens/compaction-live-ts.json"
+        "../fixtures/old_daemon/compaction-live-ts.json"
     ))
     .unwrap();
     assert_eq!(

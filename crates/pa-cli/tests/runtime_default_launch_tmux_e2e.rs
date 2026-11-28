@@ -7,9 +7,10 @@
 //! spoke wire2 its launch waited on `daemon.sock` and timed out after 30 s (phase 8a then kept its
 //! daemon the supervisor; phase 8e lifted that, and 8f made the runtime daemon the default).
 //!
-//! An idle supervisor that an earlier release left running on `daemon.sock` (the upgrade's case)
-//! is stopped by the launch, off its path: the launch paints on the runtime daemon, and the
-//! supervisor exits.
+//! An idle supervisor that an earlier release left running on `daemon.sock` (the upgrade's case;
+//! the test's legacy supervisor, `support::legacy_supervisor`) is stopped by the launch, off its
+//! path: the launch paints on the runtime daemon, and the supervisor is asked for its sessions
+//! and then to shut down.
 
 mod support;
 
@@ -94,8 +95,7 @@ fn prepare(dir: &Path) -> Pane {
     )
     .expect("faux script");
     // The pane's whole environment, so nothing ambient (provider keys, the user's HOME, a
-    // daemon socket) reaches the product; the daemon switch passes through when the caller sets
-    // it (the supervisor a test starts beforehand).
+    // daemon socket) reaches the product.
     let launcher = dir.join("launch.sh");
     let quote = |path: &Path| format!("'{}'", path.display());
     std::fs::write(
@@ -103,7 +103,6 @@ fn prepare(dir: &Path) -> Pane {
         format!(
             "cd {project}\nexec env -i PATH=/usr/bin:/bin HOME={home} TERM=xterm-256color \
              LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 \
-             ${{PRIME_AGENT_RUNTIME_DAEMON:+PRIME_AGENT_RUNTIME_DAEMON=$PRIME_AGENT_RUNTIME_DAEMON}} \
              PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
             project = quote(&project),
             home = quote(&home),
@@ -164,35 +163,26 @@ fn await_first_paint(pane: &Pane) {
 fn an_idle_supervisor_left_running_is_stopped_by_a_launch_on_the_runtime_daemon() {
     let dir = temp_dir();
     let pane = prepare(dir.path());
-    // The supervisor an earlier release started, idle, on the socket the launch derives its own
-    // from.
-    let mut supervisor = Command::new("sh")
-        .arg(&pane.launcher)
-        .args(["--mode", "daemon"])
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .spawn()
-        .expect("spawn the supervisor");
-    support::await_listening(&dir.path().join("daemon.sock"), &mut supervisor);
+    // The supervisor an earlier release started, idle (a saved session, no turn running and no
+    // window attached), on the socket the launch derives its own from.
+    let supervisor = support::legacy_supervisor::LegacySupervisor::start(
+        &dir.path().join("daemon.sock"),
+        vec![json!({ "id": "a1b2c3d4e5f6", "isSessionActive": false, "attachedClients": 0 })],
+    );
     start(&pane);
     await_first_paint(&pane);
-    let deadline = Instant::now() + WAIT;
-    let status = loop {
-        if let Some(status) = supervisor.try_wait().expect("poll the supervisor") {
-            break status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the idle supervisor was never stopped"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    assert!(
+        supervisor.wait_stopped(WAIT),
+        "the idle supervisor was never stopped: it was sent {:?}",
+        supervisor.commands()
+    );
     assert_eq!(
         (
-            status.code(),
+            supervisor.commands(),
             UnixStream::connect(dir.path().join("daemon.sock")).is_err(),
             UnixStream::connect(dir.path().join("daemon2.sock")).is_ok()
         ),
-        (Some(0), true, true)
+        (vec!["list".to_string(), "shutdown".to_string()], true, true)
     );
 }
 

@@ -1,0 +1,136 @@
+{
+  "record": {
+    "responses": [
+      {
+        "type": "response",
+        "success": true,
+        "command": "start_side_question"
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "start_side_question"
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "record_better_outcome"
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "start_side_question"
+      },
+      {
+        "type": "response",
+        "error": "Side question already exists: q2",
+        "command": "start_side_question",
+        "success": false
+      },
+      {
+        "type": "response",
+        "error": "A side question is already running for this client and session",
+        "command": "start_side_question",
+        "success": false
+      },
+      {
+        "type": "response",
+        "data": {
+          "aborted": false
+        },
+        "command": "abort_side_question",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "aborted": true
+        },
+        "command": "abort_side_question",
+        "success": true
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "start_side_question"
+      },
+      {
+        "type": "response",
+        "data": {
+          "aborted": true
+        },
+        "command": "abort_side_question",
+        "success": true
+      }
+    ],
+    "runs": [
+      {
+        "first": {
+          "id": "q1",
+          "question": "what is the answer?",
+          "answer": "",
+          "status": "running"
+        },
+        "last": {
+          "id": "q1",
+          "question": "what is the answer?",
+          "answer": "The side answer is 42.",
+          "status": "complete"
+        },
+        "partialsArePrefixes": true
+      },
+      {
+        "first": {
+          "id": "b1",
+          "question": "say hi",
+          "answer": "",
+          "status": "running"
+        },
+        "last": {
+          "id": "b1",
+          "question": "say hi",
+          "answer": "Say hello to the user warmly.",
+          "status": "complete"
+        },
+        "partialsArePrefixes": true
+      },
+      {
+        "first": {
+          "id": "q2",
+          "question": "still there?",
+          "answer": "",
+          "status": "running"
+        },
+        "last": {
+          "id": "q2",
+          "question": "still there?",
+          "answer": "",
+          "status": "cancelled"
+        },
+        "partialsArePrefixes": true
+      },
+      {
+        "first": {
+          "id": "q2",
+          "question": "again?",
+          "answer": "",
+          "status": "running"
+        },
+        "last": {
+          "id": "q2",
+          "question": "again?",
+          "answer": "",
+          "status": "cancelled"
+        },
+        "partialsArePrefixes": true
+      }
+    ],
+    "learning": {
+      "schema": 1,
+      "estimate": {
+        "samples": 1,
+        "acceptance": 500
+      }
+    }
+  }
+}

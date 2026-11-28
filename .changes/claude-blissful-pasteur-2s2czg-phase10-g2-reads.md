@@ -1,0 +1,1 @@
+- Fixed paging up through a long session on the runtime daemon: older history loads without the view jumping past what it skipped, the agents view lists a child opened from its own transcript under its parent, and leaving a chat after a turn and coming back draws it again at once.

@@ -34,7 +34,9 @@
 //!   it). An entry is composed again once its session's stream says its
 //!   activity may have changed (a run's or a turn's start and end, a
 //!   message's or a tool's end, its queue, a child's status, a compaction,
-//!   a fault), and published only when it differs from the one published
+//!   a fault) or its wait edge changed (the summary's `waitingOn`, which a
+//!   parked `agent_message.wait` names and a cycle walk follows), and
+//!   published only when it differs from the one published
 //!   last, as the old worker pushed its summary deltas.
 //! - **Traffic.** `runtime.traffic` answers `{entries}`, the old
 //!   `agent_traffic_subscribe` reply: the newest
