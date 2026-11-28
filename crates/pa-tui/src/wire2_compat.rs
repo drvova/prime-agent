@@ -201,7 +201,7 @@
 //! | --- | --- | --- |
 //! | `create` | call `session.create` (`pa_types::wire2::SessionCreate`) | `path` (the resumed `sessionPath`), `cwd`, `sessionDir`, `launchEnv`, `ephemeral` (`noSession`) and `options`: the create config's `provider`, `model`, `thinking`, `systemPrompt`, `appendSystemPrompt`, `skills`, `promptTemplates`, `autonomous`, `executionMode`, `apiKey`, `credential`, `profile` and `models`, its `telemetryDisabled` (or the command's), and `parent` (`parentSessionPath`, `rlmDepth`); `{session, path, cwd}` becomes the old `{activeSessionId, sessionId, sessionFile}` beside them |
 //! | `list` | query `sessions.list` | `open` (all but `all`) |
-//! | `kill` | call `session.stop` | `session` |
+//! | `kill` | call `session.stop` | `session`, `rlmCloseReason` |
 //! | `rename`, `set_session_name` | call `session.rename` | `session`, `name` |
 //! | `rename_saved_session`, `delete_saved_session` | call `session.rename`, `session.delete` | `session`: the saved transcript's file stem (the runtime keeps a session as `<id>.jsonl`) |
 //! | `set_model` | call `session.set_model` | `session`, `provider`, `modelId` |
@@ -1131,12 +1131,17 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
             serde_json::json!({ "open": *all != Some(true) }),
         )),
         DaemonCommand::Kill {
-            active_session_id, ..
-        } => Ok(call(
-            request_id,
-            "session.stop",
-            serde_json::json!({ "session": active_session_id }),
-        )),
+            active_session_id,
+            rest,
+            ..
+        } => {
+            let mut args = serde_json::json!({ "session": active_session_id });
+            // The close reason a child-close cascade names (`shutdown`, `replaced`).
+            if let Some(reason) = rest.get("rlmCloseReason") {
+                args["rlmCloseReason"] = reason.clone();
+            }
+            Ok(call(request_id, "session.stop", args))
+        }
         DaemonCommand::Rename {
             active_session_id,
             name,

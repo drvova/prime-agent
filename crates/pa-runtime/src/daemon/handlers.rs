@@ -21,6 +21,7 @@ use pa_core::session::lease::acquire_runtime_session_lease;
 use pa_core::session::manager::{get_session_file_path, load_entries_from_file, SessionManager};
 use pa_core::session::store::store;
 use pa_core::session_engine::kernel_activity::KernelBashAction;
+use pa_types::daemon::DaemonSessionClosedReason;
 use pa_types::event_log::{NewEvent, Topic, Trust};
 use pa_types::session::FileEntry;
 use serde_json::{json, Value};
@@ -226,9 +227,21 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     async fn stop(&self, args: &Value) -> anyhow::Result<Value> {
         let id = string_arg(args, "session")?;
         let stop = Self::child_stop(args)?;
+        // The reason its clients are told (`agent/<id>/closed`), as the old
+        // `kill`'s marker set the worker's `session_closed`: `killed`
+        // without one, else the `shutdown` or `replaced` a child-close
+        // cascade names.
+        let reason = match optional_string_arg(args, "rlmCloseReason")?.as_deref() {
+            None => DaemonSessionClosedReason::Killed,
+            Some("shutdown") => DaemonSessionClosedReason::Shutdown,
+            Some("replaced") => DaemonSessionClosedReason::Replaced,
+            Some(other) => {
+                anyhow::bail!("{other:?} is no close reason of a stop (shutdown, replaced)")
+            }
+        };
         if !self.open.contains(&id) {
             // A subagent's, or a stopped one's delete.
-            return self.stop_subagent(&id, stop).await;
+            return self.stop_subagent(&id, stop, reason).await;
         }
         anyhow::ensure!(
             matches!(stop, ChildStop::Stop),
@@ -247,14 +260,14 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         // Closed: its lease goes, and it leaves the roster.
         self.open.remove(&id).await;
         self.feeds.due(&id);
-        // Its attached clients learn it was stopped, as the old worker's
-        // `session_closed {reason: "killed"}` told them.
+        // Its attached clients learn why it was stopped, as the old worker's
+        // `session_closed {reason}` told them.
         self.runtime
             .publish(NewEvent {
                 topic: Topic::new(format!("agent/{id}/closed"))?,
                 source: "runtime".to_string(),
                 session: Some(id.clone()),
-                payload: json!({ "reason": "killed" }),
+                payload: json!({ "reason": reason }),
                 trust: Trust::Owner,
                 cause: None,
                 reply: None,

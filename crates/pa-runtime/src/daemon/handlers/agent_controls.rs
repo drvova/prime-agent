@@ -25,6 +25,10 @@
 //! - The call `session.delete_child {session, child}` (`delete_rlm_subagent`,
 //!   `child` the subagent's handle): `{deleted}`, or `{deleted: false,
 //!   reason: "running"}` for a subagent with live work.
+//! - `session.stop {session, rlmCloseReason?}` of any session tells its
+//!   clients why it closed (`agent/<id>/closed`): `killed`, or the
+//!   `shutdown` or `replaced` the old `kill`'s child-close marker named; any
+//!   other reason is refused.
 //! - `session.stop {session, rlmLedgerDelete?, rlmChildId?}` of a subagent
 //!   (the old `kill` of a child's session, `subagents/controls.rs`): a plain
 //!   stop ends it and keeps its ledger edge; with `rlmLedgerDelete` (the
@@ -38,6 +42,7 @@ use pa_core::session_engine::agent_controls::{
     unscoped_agent_message_status, SetRlmMaxDepth, RLM_MAX_DEPTH_STATE_CUSTOM_TYPE,
 };
 use pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason;
+use pa_types::daemon::DaemonSessionClosedReason;
 use pa_types::event_log::{NewEvent, Topic, Trust};
 use serde_json::{json, Value};
 
@@ -147,8 +152,13 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     }
 
     /// `session.stop` of session `id`, which is no open root (see the
-    /// module documentation).
-    pub(super) async fn stop_subagent(&self, id: &str, stop: ChildStop) -> anyhow::Result<Value> {
+    /// module documentation), its clients told `reason`.
+    pub(super) async fn stop_subagent(
+        &self,
+        id: &str,
+        stop: ChildStop,
+        reason: DaemonSessionClosedReason,
+    ) -> anyhow::Result<Value> {
         let deleting = matches!(stop, ChildStop::Delete { .. });
         let stopped = match self.runtime.subagents().stop_child(id, stop).await {
             Ok(stopped) => stopped,
@@ -171,7 +181,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                         topic: Topic::new(format!("agent/{id}/closed"))?,
                         source: "runtime".to_string(),
                         session: Some(id.to_string()),
-                        payload: json!({ "reason": "killed" }),
+                        payload: json!({ "reason": reason }),
                         trust: Trust::Owner,
                         cause: None,
                         reply: None,

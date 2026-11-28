@@ -38,6 +38,19 @@ pub(crate) fn script_env(name: &str) -> Result<Option<serde_json::Value>, String
     }
 }
 
+/// A runtime daemon session's own faux lane (`faux-<session id>`): its
+/// registration and the transcript it last built on.
+struct SessionLane {
+    transcript: Option<std::path::PathBuf>,
+    registration: pa_ai::faux::FauxProviderRegistration,
+}
+
+/// Every runtime daemon session's lane, by session id (the provider registry
+/// they live in is process-global too).
+static SESSION_LANES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, SessionLane>>,
+> = std::sync::LazyLock::new(std::sync::Mutex::default);
+
 /// The per-child faux queue: its own registered provider (keyed by the
 /// child id, so siblings never share a response lane) and its steps.
 pub(crate) struct FauxChildQueue {
@@ -135,25 +148,52 @@ pub(crate) async fn build_faux_engine_with(
     // A runtime daemon session answers from a queue of its own, as each
     // session of the supervisor does from its own worker's: the shared
     // `faux` lane above stays for a model a `models.json` names on it.
-    let registration = match session_lane {
+    let model = match session_lane {
         Some(session) => {
-            // It presents the model the script names (`provider`, `modelId`), as each
-            // supervisor worker's scripted model does.
-            let text = |key: &str, default: &'static str| {
-                script
-                    .get(key)
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or(default)
-                    .to_string()
-            };
-            let identity = (text("provider", "faux"), text("modelId", "faux-1"));
-            let own = register(format!("faux-{session}"), (&identity.0, &identity.1));
-            script_queue(&own);
-            own
+            let transcript = session_manager
+                .as_ref()
+                .and_then(pa_core::session::manager::SessionManager::get_session_file)
+                .map(std::path::Path::to_path_buf);
+            let mut lanes = SESSION_LANES
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match lanes.get_mut(session) {
+                // The session goes on in another transcript (a fork, an import): its
+                // queue goes on with it, as the old worker's spans the replacements it
+                // runs. A build on the same transcript (a crash's rebuild, a revival, a
+                // stopped session opened again) starts the queue afresh, as a new
+                // worker's does.
+                Some(lane) if lane.transcript != transcript => {
+                    lane.transcript = transcript;
+                    lane.registration.get_model()
+                }
+                _ => {
+                    // It presents the model the script names (`provider`, `modelId`), as
+                    // each supervisor worker's scripted model does.
+                    let text = |key: &str, default: &'static str| {
+                        script
+                            .get(key)
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(default)
+                            .to_string()
+                    };
+                    let identity = (text("provider", "faux"), text("modelId", "faux-1"));
+                    let own = register(format!("faux-{session}"), (&identity.0, &identity.1));
+                    script_queue(&own);
+                    let model = own.get_model();
+                    lanes.insert(
+                        session.clone(),
+                        SessionLane {
+                            transcript,
+                            registration: own,
+                        },
+                    );
+                    model
+                }
+            }
         }
-        None => registration,
+        None => registration.get_model(),
     };
-    let model = registration.get_model();
     let thinking_level = match embedding {
         HeadlessEmbedding::Child { overrides, .. } => {
             Some(pa_core::session_engine::provider_adapter::map_thinking_level(overrides.thinking))

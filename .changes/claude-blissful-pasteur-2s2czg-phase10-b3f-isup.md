@@ -1,0 +1,1 @@
+- Runtime daemon: `/tree` in the TUI lists the session's entries again; picking a model whose provider is not signed in offers that provider's sign-in instead of an error; a session opened on such a model starts, and its first turn fails with the login guidance before any request; and a session closed by a shutdown or a replacement says why, as on the old daemon.
