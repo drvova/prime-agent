@@ -305,9 +305,19 @@ SQLite implementations over `pa-log`.
   admission; `steer`/`follow_up` queue on the agent and a pump delivers the queue turn by turn,
   parked by `abort` until the next prompt-family command; stdin's end settles the turn and exits
   0, SIGTERM/SIGHUP exit 143/129. The daemon-only families answer the TS in-process errors. Its
-  commands drive the engine directly, not the runtime's task lanes: the RPC semantics (a prompt
-  refused while a turn streams, a follow-up folded into the running run, parked rows folded
-  into the next prompt's run) are the agent's own queue's, not a lane's.
+  commands drive the engine directly, not the runtime's task lanes, and that is settled (phase
+  7f-3), not deferred. RPC's queue is the agent's own: a prompt is refused while a turn streams
+  unless it names a `streamingBehavior`, a steer or follow-up sits on the agent's queues (even
+  while the session is idle and the pump is parked), and the next prompt's run reads them after
+  its own row, all in one run with one `agent_end`. The lanes pin the opposite contract
+  (`runtime_daemon_e2e` `turns.rs`): a follow-up is a task of its own that runs as its own turn,
+  and after an abort the parked steers run first, as their own turn, before a later prompt. So
+  an RPC lane would never hold a task: everything it gets would go to the agent at once, to
+  keep those semantics. It would only add a store write and a hop to the host thread for each
+  prompt. It would also need RPC-only behavior in the queue and the host: offering follow-ups,
+  folding parked rows into a prompt, a frame sink beside the bus (a listener that falls behind
+  loses live-only events, and stdout must lose none), and an engine swap under a new session id
+  with the lease handed over.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
 - **Runtime daemon** (`daemon`, the default daemon since phase 8f: `prime-agent --mode daemon`
