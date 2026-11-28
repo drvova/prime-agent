@@ -350,11 +350,30 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 
     async fn rename(&self, args: &Value) -> anyhow::Result<Value> {
         let name = string_arg(args, "name")?;
+        let id = string_arg(args, "session")?;
+        // The old worker's `session_info_changed`: every client following an
+        // open session re-reads its name.
+        let changed = |id: &str| {
+            if let Ok(stream) = self.runtime.stream_sender(id) {
+                stream(json!({ "type": "session_info_changed", "name": name }));
+            }
+        };
+        if let Some(renamed) = self.runtime.subagents().rename_subagent(&id, &name).await {
+            renamed?;
+            changed(&id);
+            return Ok(json!({ "session": id, "name": name }));
+        }
+        let renamed = name.clone();
         self.change(args, move |manager| {
-            manager.append_session_info(&name)?;
-            Ok(json!({ "session": manager.get_session_id(), "name": name }))
+            manager.append_session_info(&renamed)?;
+            Ok(Value::Null)
         })
-        .await
+        .await?;
+        self.runtime.subagents().set_session_name(&id, &name);
+        changed(&id);
+        // The old daemon's rename answers the renamed session's summary.
+        let (id, path, open) = self.session(args)?;
+        self.summary(&id, path, open).await
     }
 
     async fn label(&self, args: &Value) -> anyhow::Result<Value> {
@@ -455,6 +474,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionAbortAndSendQueued => self.abort(&args, AfterAbort::SendQueued).await,
             Call::SessionResumeQueue => self.resume_queue(&args),
             Call::SessionWithdraw => self.withdraw(&args).await,
+            Call::SessionClearQueue => self.clear_queue(&args).await,
             Call::SessionRestore => self.restore(&args).await,
             Call::SessionCompact => self.compact(&args).await,
             Call::SessionWaitIdle => self.wait_idle(&args).await,
@@ -465,7 +485,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::ScheduleAdd => self.schedule_add(&args).await,
             Call::ScheduleCancel => self.schedule_cancel(&args),
             Call::SessionPauseInput => self.pause_input(&args, connection),
-            Call::SessionReleaseInput => self.release_input(&args),
+            Call::SessionReleaseInput => self.release_input(&args, connection),
             Call::SessionCancelTask => self.cancel_task(&args).await,
             Call::SessionCancelChild => self.cancel_child(&args).await,
             Call::SessionCycleModel => self.cycle_model(&args).await,

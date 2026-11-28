@@ -20,6 +20,11 @@
 //!   runs on. `session.restore` puts messages back as steers at the front of
 //!   the lane: delivered together as the session's next turn (or read by
 //!   the running turn at its next step).
+//! - **Clear.** `session.clear_queue` is the old daemon's `clear_queue`: the
+//!   queued tasks withdrawn and the agent messages waiting on the agent
+//!   taken, each bounced to its sender; it answers `{steering, followUp}`,
+//!   each lane's tasks' prompts then its agent messages'. The running turn
+//!   runs on.
 //! - **Abort a compaction or a retry.** `session.abort_compaction` aborts the
 //!   compaction the session runs, `/compact` or automatic (the summary
 //!   request in flight is dropped, nothing commits, and its `compaction_end`
@@ -124,6 +129,30 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         Ok(json!({
             "session": id,
             "withdrawn": withdrawn.iter().map(task_json).collect::<Vec<_>>(),
+        }))
+    }
+
+    pub(super) async fn clear_queue(&self, args: &Value) -> anyhow::Result<Value> {
+        let id = self.open_session(args)?;
+        let withdrawn = self.runtime.withdraw(&id).await?;
+        let (agent_steering, agent_follow_up) = self
+            .runtime
+            .subagents()
+            .clear_and_bounce_agent_messages(&id)
+            .await?;
+        let (steering, follow_up): (Vec<Task>, Vec<Task>) = withdrawn
+            .into_iter()
+            .partition(|task| task.priority == Priority::Steer);
+        let prompts = |tasks: Vec<Task>, agent: Vec<String>| {
+            tasks
+                .into_iter()
+                .map(|task| task.prompt)
+                .chain(agent)
+                .collect::<Vec<_>>()
+        };
+        Ok(json!({
+            "steering": prompts(steering, agent_steering),
+            "followUp": prompts(follow_up, agent_follow_up),
         }))
     }
 

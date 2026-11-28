@@ -2,6 +2,59 @@
 //! observe summary and preview types, the controller trait, the limit
 //! clamps, and the host-handler registration.
 use super::{host_handler, json, AgentFamilyRelationship, Future, HostRequestHandlers, Value};
+use crate::update::restart::restore::selector_matches;
+
+/// The member of a nuclear family `target` names, both daemons'
+/// `agent_observe.get`/`.recent` selection: an exact active id first, else
+/// the one member whose active or durable id `target` is a normalized suffix
+/// of (`update::restart::restore::selector_matches`), whose name is `target`, or whose RLM
+/// child id is `target`.
+///
+/// # Errors
+///
+/// More than one member matches: the refusal names each.
+pub fn find_observe_target(
+    mut summaries: Vec<AgentObserveSummary>,
+    target: &str,
+) -> anyhow::Result<Option<AgentObserveSummary>> {
+    if let Some(at) = summaries
+        .iter()
+        .position(|summary| summary.active_session_id.as_deref() == Some(target))
+    {
+        return Ok(Some(summaries.remove(at)));
+    }
+    let mut matches: Vec<_> = summaries
+        .into_iter()
+        .filter(|summary| {
+            summary
+                .active_session_id
+                .as_deref()
+                .is_some_and(|id| selector_matches(id, target))
+                || selector_matches(&summary.session_id, target)
+                || summary.session_name.as_deref() == Some(target)
+                || summary.rlm_child_id.as_deref() == Some(target)
+        })
+        .collect();
+    if matches.len() > 1 {
+        let rendered = matches
+            .iter()
+            .map(|summary| {
+                let id = summary
+                    .active_session_id
+                    .as_deref()
+                    .unwrap_or(&summary.session_id);
+                summary
+                    .session_name
+                    .as_deref()
+                    .filter(|name| !name.is_empty())
+                    .map_or_else(|| id.to_string(), |name| format!("{id} ({name})"))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!("Ambiguous active session \"{target}\": matches {rendered}");
+    }
+    Ok(matches.pop())
+}
 
 /// The family lifecycle status every observation row carries: `running`
 /// while the agent has work in flight, `idle` for a resident-but-quiet

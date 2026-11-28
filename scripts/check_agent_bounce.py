@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 
-from lifecycle_lib import digest, supervisor_env_for, stop
+from lifecycle_lib import Wire2Client, digest, env_for, stop
 
 LIMIT = 35
 MESSAGE = 'AGENT_BOUNCE_PARITY_MESSAGE'
@@ -139,11 +139,7 @@ class RecordingClient(Client):
         self.sock = RawSocket(self.sock, self.sent)
 
 def run_case(binary, root, long_name, observed):
-    # On the supervisor's wire (`check_agent_bounce.Client`):
-    # the runtime daemon has no `clear_queue`: nothing there clears a
-    # session's lane and its agent messages together and bounces the agent
-    # messages to their senders.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     provider = Provider()
     thread = threading.Thread(target=provider.serve_forever, daemon=True)
     thread.start()
@@ -166,7 +162,7 @@ def run_case(binary, root, long_name, observed):
             receiver_name = '界' * 16385 if long_name else 'bounce-target'
             sessions = []
             for name in ('bounce-source', receiver_name):
-                client = Client(path, process)
+                client = Wire2Client(path, process)
                 clients.append(client)
                 config = {'cwd': str(root), 'agentDir': str(root / 'agent'),
                           'provider': 'parity-local', 'model': 'parity-1',

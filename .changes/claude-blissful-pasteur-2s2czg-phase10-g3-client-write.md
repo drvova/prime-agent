@@ -1,0 +1,1 @@
+- Fixed the runtime daemon letting any client release another client's input hold, and its rename answering no session summary and not telling attached clients the new name.

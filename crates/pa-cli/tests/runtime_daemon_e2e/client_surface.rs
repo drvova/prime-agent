@@ -9,7 +9,11 @@
 //! - `session.set_mcp_servers` admits one owner's servers and fences them
 //!   from another's;
 //! - a scheduled job made or cancelled publishes `agent/<id>/schedules`, and
-//!   the `sources`, `subscriptions` and `settings` queries answer.
+//!   the `sources`, `subscriptions` and `settings` queries answer;
+//! - `session.rename` answers the renamed session's summary row, as the old
+//!   daemon's rename answers its summary (`prime-agent rename --json` prints
+//!   it), and tells the session's followers with the old
+//!   `session_info_changed`.
 
 use pa_types::wire2::{ServerFrame, Since};
 use serde_json::{json, Value};
@@ -298,5 +302,60 @@ async fn a_schedule_change_is_published_and_the_bus_queries_show_its_timer() {
     assert_eq!(
         (settings["settings"].is_object(), settings["errors"].clone()),
         (true, json!([]))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_answers_the_renamed_sessions_summary() {
+    let bed = Bed::new();
+    let _daemon = bed.runtime_daemon(&json!({ "responses": ["ok"] }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let id = ok(client.call("session.create", json!({})).await)["session"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    client
+        .subscribe(&format!("agent/{id}/stream"), Since::Now)
+        .await;
+    let mut frames = Vec::new();
+    let renamed = ok(client
+        .call_keeping(
+            "session.rename",
+            json!({ "session": id, "name": "renamed" }),
+            &mut frames,
+        )
+        .await);
+    let changed = |frames: &[ServerFrame]| {
+        frames.iter().find_map(|frame| match frame {
+            ServerFrame::Event { event, .. }
+                if event.event.payload["type"] == "session_info_changed" =>
+            {
+                Some(event.event.payload.clone())
+            }
+            _ => None,
+        })
+    };
+    let info = loop {
+        if let Some(info) = changed(&frames) {
+            break info;
+        }
+        frames.push(client.frame().await);
+    };
+    let listed = ok(client.query("sessions.list", json!({ "open": true })).await);
+    let row = listed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["session"] == id.as_str())
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (
+            renamed["activeSessionId"].clone(),
+            renamed["sessionName"].clone(),
+            renamed.clone(),
+            info["name"].clone()
+        ),
+        (json!(id), json!("renamed"), row, json!("renamed"))
     );
 }

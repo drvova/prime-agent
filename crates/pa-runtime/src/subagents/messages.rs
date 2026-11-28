@@ -9,12 +9,12 @@ use std::sync::Arc;
 use pa_core::session::manager::format_iso_now;
 use pa_core::session_engine::agent_messaging::{
     create_agent_observe_message_preview, create_agent_session_message_id,
-    create_agent_session_message_prompt, create_agent_session_message_row, wait_for_arrival,
-    AgentFamilyMember, AgentFamilyRelationship, AgentFamilyStatus, AgentMessageController,
-    AgentMessageDeliveryStatus, AgentMessagePromptPayload, AgentMessageReceipt,
-    AgentMessageSendInput, AgentMessageWaitOutcome, AgentMessageWaitRequest, AgentObserveActivity,
-    AgentObserveController, AgentObserveListResult, AgentObserveRecentMessagesResult,
-    AgentObserveSummary, AgentSessionMessageRowPayload,
+    create_agent_session_message_prompt, create_agent_session_message_row, find_observe_target,
+    wait_for_arrival, AgentFamilyMember, AgentFamilyRelationship, AgentFamilyStatus,
+    AgentMessageController, AgentMessageDeliveryStatus, AgentMessagePromptPayload,
+    AgentMessageReceipt, AgentMessageSendInput, AgentMessageWaitOutcome, AgentMessageWaitRequest,
+    AgentObserveActivity, AgentObserveController, AgentObserveListResult,
+    AgentObserveRecentMessagesResult, AgentObserveSummary, AgentSessionMessageRowPayload,
 };
 use serde_json::{json, Value};
 
@@ -277,6 +277,24 @@ impl Subagents {
     ) -> anyhow::Result<Value> {
         let message =
             pa_core::session_engine::agent_messaging::normalize_agent_session_message(message)?;
+        self.deliver_message(target, message, sender, delivery)
+            .await
+    }
+
+    /// [`Self::send_message`] of a `message` taken as it is, not normalized:
+    /// a notice the daemon itself built within the delivery limit (a cleared
+    /// message's bounce, as the old worker sends it).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send_message`], but for the message's own checks.
+    pub(crate) async fn deliver_message(
+        &self,
+        target: &str,
+        message: String,
+        sender: MessageSender,
+        delivery: Delivery,
+    ) -> anyhow::Result<Value> {
         let target_node = self.built_node(target).await?;
         let (from, endpoint, name, relationship) = match &sender {
             MessageSender::Client(client) => {
@@ -370,7 +388,9 @@ impl Subagents {
 
 /// The runtime daemon's `agent_observe.*` over one node's nuclear family:
 /// itself, its parent, its siblings and its children, each a session the
-/// runtime runs.
+/// runtime runs. A root's siblings are the runtime's other root sessions,
+/// as the old daemon's roster has it (`row_is_sibling`: no parent edge, not
+/// a subagent).
 pub(crate) struct FamilyObserve(pub(crate) Arc<Node>);
 
 impl FamilyObserve {
@@ -393,6 +413,23 @@ impl FamilyObserve {
                     ));
                 }
             }
+        }
+        if node.parent.is_none() {
+            let mut roots: Vec<Arc<Node>> = node.tree.upgrade().map_or_else(Vec::new, |tree| {
+                lock(&tree.nodes)
+                    .values()
+                    .filter(|other| {
+                        other.parent.is_none() && !other.is_disposed() && !Arc::ptr_eq(other, node)
+                    })
+                    .cloned()
+                    .collect()
+            });
+            roots.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+            members.extend(
+                roots
+                    .into_iter()
+                    .map(|root| (root, Some(AgentFamilyRelationship::Sibling), None)),
+            );
         }
         for child in node.children.lock().await.iter() {
             members.push((
@@ -424,22 +461,9 @@ impl FamilyObserve {
         summaries
     }
 
-    /// The family member `target` names: its session id, name or child id.
+    /// The family member `target` names ([`find_observe_target`]).
     async fn find(&self, target: &str) -> anyhow::Result<Option<AgentObserveSummary>> {
-        let mut matches: Vec<AgentObserveSummary> = self
-            .family()
-            .await
-            .into_iter()
-            .filter(|summary| {
-                summary.session_id == target
-                    || summary.session_name.as_deref() == Some(target)
-                    || summary.rlm_child_id.as_deref() == Some(target)
-            })
-            .collect();
-        if matches.len() > 1 {
-            anyhow::bail!("Ambiguous active session \"{target}\"");
-        }
-        Ok(matches.pop())
+        find_observe_target(self.family().await, target)
     }
 }
 
