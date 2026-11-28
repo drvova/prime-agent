@@ -898,6 +898,7 @@ mod tests {
             &surface,
             &autonomous_run,
             /*unsettled_work*/ None,
+            /*queued_input*/ None,
         );
         let harness_dir = dir.path().join("harness");
         GoalBed {
@@ -1511,6 +1512,7 @@ mod tests {
             &surface,
             &autonomous_run,
             /*unsettled_work*/ None,
+            /*queued_input*/ None,
         );
         GoalBed {
             engine,

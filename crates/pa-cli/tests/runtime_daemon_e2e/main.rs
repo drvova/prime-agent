@@ -89,6 +89,8 @@
 //!   crash count of a revived session's lifetime (phase 10): [`leases`].
 //! - A subagent spawn's gates: its `#:cwd`, the recursion bound and a name
 //!   admitted once (phase 10): [`spawn_gates`].
+//! - A goal rehydrated after its session's rebuild, and a prompt queued
+//!   behind the goal's continuations (phase 10): [`goal_recovery`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -99,6 +101,7 @@ mod checkpoints;
 mod client_surface;
 mod create;
 mod family;
+mod goal_recovery;
 mod goldens;
 mod heartbeats;
 mod history_import;
