@@ -1,0 +1,1 @@
+- The runtime daemon no longer counts its own death against a session it revives: a crash in the revived session is its first in a row, as on the old daemon, so a session is given up only after its own crashes reach the limit.

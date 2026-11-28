@@ -85,6 +85,8 @@
 //!   daemon (phase 8d-5c): [`history_import`].
 //! - A kernel webhook source: an authenticated `POST` runs an untrusted
 //!   turn, a bad token none (phase 9): [`webhooks`].
+//! - A session's lease after its daemon was killed or gave it up, and the
+//!   crash count of a revived session's lifetime (phase 10): [`leases`].
 //! - A goal rehydrated after its session's rebuild, and a prompt queued
 //!   behind the goal's continuations (phase 10): [`goal_recovery`].
 #![cfg(unix)]
@@ -104,6 +106,7 @@ mod history_import;
 mod info;
 mod keeper;
 mod kernel_activity;
+mod leases;
 mod legacy_update;
 mod lifecycle;
 mod old_daemon;

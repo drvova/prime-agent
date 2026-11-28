@@ -60,6 +60,7 @@ mod notices;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use controls::{ChildStop, ChildStopped};
 pub(crate) use family::DaemonFamily;
 pub(crate) use host::SessionSubagents;
 pub(crate) use messages::{
@@ -1512,6 +1513,22 @@ async fn dispose_child(child: &Arc<Child>) {
         }
         if let Some(control) = &control {
             control.close(&node.session_id).await;
+        }
+        // Closed: its transcript's catalog state is written beside it, as
+        // the old child worker's lease release wrote it, so the next read
+        // folds only what is appended later.
+        let session_file = lock(&node.adopted).session_file.clone();
+        if let Some(file) = session_file {
+            let written = tokio::task::spawn_blocking(move || {
+                pa_core::session::catalog::write_info_sidecar(Path::new(&file));
+            })
+            .await;
+            if let Err(error) = written {
+                tracing::warn!(
+                    "subagent {}'s catalog sidecar panicked: {error}",
+                    current.rlm_child_id
+                );
+            }
         }
         if let Some(tree) = &tree {
             if let Some(attached) = tree.attached.get() {

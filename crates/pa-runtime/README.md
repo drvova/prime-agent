@@ -352,7 +352,11 @@ SQLite implementations over `pa-log`.
   A holder that does not answer a wire2 hello on the same socket within 3 s is a wedged
   predecessor: `take_lock` stops it (`RuntimeDaemonLock::reap_holder`) and then takes the lock. Its
   `Handlers`: `sessions.list` (the sessions dir's saved sessions and the open ones, or
-  `{"open": true}` the open ones only, with the old `list`'s `spareKernels`; each row in the old daemon's session-summary shape,
+  `{"open": true}` the open ones only, with the old `list`'s `spareKernels`; the subagents running
+  below the open sessions follow them with their place in their family (`rlmChildId`, `rlmDepth`,
+  `parentActiveSessionId`, `parentSessionPath`, `runtimeKind: "subagent"`), and, unless
+  `{"open": true}`, the ones only the spawn ledger keeps follow the saved rows as pa-core's
+  `rlm_roster` passive rows, as the old supervisor's list did; each row in the old daemon's session-summary shape,
   `daemon/handlers/summary.rs`: the session's id as `id`, `activeSessionId` and `sessionId`, its
   name, model, times and message count from its transcript, and for an open one its lane's
   activity, waiting prompts and `attachedClients`, the connections whose subscriptions match its
@@ -605,7 +609,14 @@ SQLite implementations over `pa-log`.
   `{maxDepth, source, globalSaved, globalError?}`); `session.delete_child {session, child}`
   (`delete_rlm_subagent`: a settled subagent deleted as `rlm.delete_subagent` deletes it,
   `{deleted: false, reason: "running"}` for one with live work, deleted again for a handle
-  deleted before, `{deleted: false}` for an unknown one). Each answers the old response's
+  deleted before, `{deleted: false}` for an unknown one); `session.stop {session,
+  rlmLedgerDelete?, rlmChildId?}` of a subagent (the old `kill` of a child's session,
+  `subagents/controls.rs`): a plain stop ends it, running or not, keeps its ledger edge and writes
+  its transcript's catalog sidecar; with `rlmLedgerDelete` its deletion boundary (the ledger's
+  tombstone, then the display entry) is written before its teardown, a delete aimed at a child
+  no session runs (a retry included, which writes no second boundary) is the ledger's alone
+  (pa-core's `tombstone_stopped_child`), and a boundary not written is `Failed to delete RLM
+  subagent: ...`; `session.wait_idle` waits on a subagent's session too. Each answers the old response's
   `data` or refusal text. A session's heartbeat (8d-4c, `daemon/handlers/jobs.rs` and
   `daemon/schedules.rs`, over pa-core's `cron::heartbeat_commands`): `session.heartbeat`
   (`heartbeat_get`), `session.set_heartbeat` (`heartbeat_set`), `session.update_heartbeat`

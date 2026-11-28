@@ -598,7 +598,10 @@ fn serve<B: SessionBuilder>(
             Some(rebuild)
         }
     };
-    let mut failures = rebuild.as_ref().map_or(0, |rebuild| rebuild.failures);
+    // The daemon's death a revival reports is no crash of the session's
+    // lifetimes: the lifetime the revival starts counts its own crashes from
+    // none, as the old daemon's adopted session did.
+    let mut failures = 0;
     // The replacement whose new engine the next lifetime answers.
     let mut replaced = None;
     loop {

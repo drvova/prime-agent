@@ -472,7 +472,9 @@ class Wire2Client:
         if kind in ('rename', 'set_session_name'):
             return self.invoke('session.rename', timeout, session=session, name=payload['name'])
         if kind == 'kill':
-            return self.invoke('session.stop', timeout, session=session)
+            # A subagent's delete (`rlmLedgerDelete`, `rlmChildId`) rides the stop.
+            marks = {key: payload[key] for key in ('rlmLedgerDelete', 'rlmChildId') if key in payload}
+            return self.invoke('session.stop', timeout, session=session, **marks)
         if kind == 'abort':
             return self.invoke('session.abort', timeout, session=session)
         if kind == 'abort_and_send_queued':

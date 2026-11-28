@@ -456,3 +456,60 @@ async fn passive_subagents_join_the_saved_catalog_as_on_the_old_daemon() {
     );
     assert_eq!(read(&runtime), read(&old));
 }
+
+/// `sessions.list` lists the subagents only the spawn ledger keeps below a
+/// listed session as the old supervisor's `list --all` walk did: each a
+/// passive row with its handle, depth and parent transcript.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_session_list_lists_the_passive_subagents() {
+    let bed = Bed::new();
+    passive_family(&bed.agent_dir());
+    let _daemon = bed.runtime_daemon(&json!([]));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let listed = super::ok(client.query("sessions.list", json!({})).await);
+    let passive: Vec<Value> = listed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["rlmChildId"].is_string())
+        .map(|row| {
+            json!([
+                row["session"],
+                row["rlmChildId"],
+                row["rlmDepth"],
+                row["runtimeKind"]
+            ])
+        })
+        .collect();
+    assert_eq!(
+        passive,
+        vec![
+            json!(["kid", "sub-kid", 1, "subagent"]),
+            json!(["grandkid", "sub-grandkid", 2, "subagent"])
+        ]
+    );
+}
+
+/// `session.send` to a session an older release archived
+/// (`sessions-archive/`) restores it and wakes it for the message, as the
+/// old supervisor's saved-session wake does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_wakes_an_archived_session() {
+    let bed = Bed::new();
+    let archive = bed.agent_dir().join("sessions-archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    let cwd = bed.dir.path().display().to_string();
+    transcript(&archive, "archived", &cwd, &json!({}), &[], 100);
+    let _daemon =
+        bed.runtime_daemon(&json!({ "responses": ["read it"], "repeatLastResponse": true }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let receipt = super::ok(
+        client
+            .call(
+                "session.send",
+                json!({ "session": "archived", "message": "wake up" }),
+            )
+            .await,
+    );
+    assert_eq!(receipt["woken"], json!(true));
+}
