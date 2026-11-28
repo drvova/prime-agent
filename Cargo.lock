@@ -3398,6 +3398,7 @@ dependencies = [
  "image",
  "libc",
  "loom",
+ "memchr",
  "nix 0.29.0",
  "pa-agent",
  "pa-ai",

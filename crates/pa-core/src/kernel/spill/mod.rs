@@ -195,7 +195,7 @@ impl SpillCopy {
             return;
         }
         self.total_chars += chars;
-        self.newlines += text.bytes().filter(|byte| *byte == b'\n').count();
+        self.newlines += memchr::memchr_iter(b'\n', text.as_bytes()).count();
         self.ends_with_newline = text.ends_with('\n');
         if self.partial {
             return;

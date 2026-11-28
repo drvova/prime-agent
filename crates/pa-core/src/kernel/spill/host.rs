@@ -108,7 +108,21 @@ async fn answer(store: Option<&SpillStore>, read: CtxRead, data: &Value) -> anyh
         SpillLookup::Pending => return Ok(json!({"handle": handle, "state": "pending"})),
         SpillLookup::Unknown => return Ok(json!({"handle": handle, "state": "unknown"})),
     };
-    let lines: Vec<&str> = spill.text.lines().collect();
+    // `str::lines` on memchr's vector newline search: every read splits the
+    // whole stored copy (up to the spill cap) again.
+    let mut rest = spill.text.as_str();
+    let lines: Vec<&str> = std::iter::from_fn(|| {
+        if rest.is_empty() {
+            return None;
+        }
+        let Some(at) = memchr::memchr(b'\n', rest.as_bytes()) else {
+            return Some(std::mem::take(&mut rest));
+        };
+        let line = &rest[..at];
+        rest = &rest[at + 1..];
+        Some(line.strip_suffix('\r').unwrap_or(line))
+    })
+    .collect();
     let mut reply = json!({
         "handle": handle,
         "state": "stored",
