@@ -51,6 +51,7 @@ def seed(root):
 
 def observe(binary, root, receipt):
     env = env_for(root)
+    del env['PRIME_AGENT_RUNTIME_DAEMON']  # the runtime daemon, the default
     env[TAG] = str(root)
     seed(root)
     path = root / 'd.sock'
@@ -73,8 +74,8 @@ def observe(binary, root, receipt):
                               'compaction': DOUBLE}, actual
             receipt['billing_verified'] = True
         finally:
-            receipt['raw_received_hex'] = list(client.received) if client else []
-            receipt['raw_sent_hex'] = list(client.sent) if client else []
+            receipt['raw_received_hex'] = list(client.raw_received) if client else []
+            receipt['raw_sent_hex'] = list(client.raw_sent) if client else []
             finish(scope, client, daemon, receipt)
             log.flush()
             receipt['daemon_log'] = (root / 'daemon.log').read_text(errors='replace')[-3000:]

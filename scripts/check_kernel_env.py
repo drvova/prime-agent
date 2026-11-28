@@ -20,8 +20,7 @@ import tempfile
 import threading
 
 from check_restore_notice import texts, Server
-from lifecycle_lib import digest, stop, session_serving, verify_session
-from check_agent_bounce import Client as BounceClient
+from lifecycle_lib import Wire2Client, digest, stop, session_serving, verify_runtime_session, wire2_socket
 
 MARKER = 'KERNEL_ENV_PARITY='
 LIMIT = 35
@@ -88,26 +87,9 @@ def expected(case):
             'bash_exit': 0}
 
 
-def worker_descriptor(agent, active, socket_path, deadline=None, previous=None):
-    deadline = deadline or time.monotonic() + LIMIT
-    while time.monotonic() < deadline:
-        candidates = list((agent / 'daemon-workers').rglob('*.json'))
-        for path in candidates:
-            try:
-                row = json.loads(path.read_text())
-                pid = row.get('pid')
-                if (row.get('rootActiveSessionId') == active
-                        and row.get('supervisorSocketPath') == str(socket_path)
-                        and isinstance(pid, int) and pid > 0 and pid != previous):
-                    return path, row
-            except (OSError, ValueError):
-                pass  # Atomic/transitional descriptor writes are not readiness.
-        threading.Event().wait(0.025)
-    raise AssertionError('fixture worker descriptor never reached readiness')
-
-
 def wait_gone(sessions):
-    """Sessions die with the daemon that hosts them: nothing may still serve their sockets."""
+    """Sessions die with the daemon that hosts them: nothing may still serve the
+    sockets they were reached on (a runtime session's is its daemon's)."""
     deadline = time.monotonic() + LIMIT
     while time.monotonic() < deadline:
         serving = [path for path, _generation in sessions if session_serving(path)]
@@ -124,31 +106,9 @@ def finish_daemon(client, process):
     assert process.returncode == 0, 'fixture supervisor failed graceful shutdown'
 
 
-class KernelClient(BounceClient):
-    """Same daemon frames, with an explicit cold-kernel request budget."""
-    def call(self, kind, timeout_seconds=LIMIT, **payload):
-        self.counter += 1
-        ident = str(self.counter)
-        envelope = {'type': 'command', 'id': ident,
-            'protocol': {'name': 'prime-agent.daemon', 'version': 7},
-            'command': {'type': kind, **payload}}
-        deadline = time.monotonic() + timeout_seconds
-        previous_timeout = self.sock.gettimeout()
-        try:
-            self.sock.settimeout(timeout_seconds)
-            self.sock.sendall((json.dumps(envelope) + '\n').encode())
-            while time.monotonic() < deadline:
-                self.sock.settimeout(max(0.001, deadline - time.monotonic()))
-                line = self.reader.readline()
-                assert line, 'daemon closed connection'
-                response = json.loads(line)
-                self.wire.append(response)
-                if response.get('type') == 'response' and response.get('id') == ident:
-                    assert response.get('success'), response
-                    return response.get('data')
-            raise TimeoutError('command never answered: ' + kind)
-        finally:
-            self.sock.settimeout(previous_timeout)
+# The runtime daemon's wire2 client; a call takes its own request budget
+# (`timeout_seconds`) for a cold kernel.
+KernelClient = Wire2Client
 
 
 def run_case(binary, name, case, root, observation):
@@ -156,7 +116,6 @@ def run_case(binary, name, case, root, observation):
         (root / directory).mkdir(parents=True)
     agent, cwd = root / 'agent', root / 'work'
     env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ') if key in os.environ}
-    env['PRIME_AGENT_RUNTIME_DAEMON'] = '0'  # the supervisor's wire (lifecycle_lib.env_for)
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), DO_NOT_TRACK='1', PI_OFFLINE='1',
         PI_CODING_AGENT_DIR=str(agent), PRIME_AGENT_CODING_AGENT_DIR=str(agent),
         PI_SESSION_DIR=str(root / 'sessions'), PRIME_AGENT_SESSION_DIR=str(root / 'sessions'),
@@ -202,9 +161,9 @@ def run_case(binary, name, case, root, observation):
             'noContextFiles': True, 'telemetryDisabled': True})
         active = created.get('activeSessionId') or created.get('id')
         assert active, 'create omitted active identity'
-        _, descriptor = worker_descriptor(agent, active, socket_path)
         # The session runs inside the fixture daemon, which `stop` reaps below.
-        tracked.add(verify_session(descriptor, active, binary, socket_path, process.pid))
+        verify_runtime_session(client, active, binary, process.pid)
+        tracked.add((str(wire2_socket(socket_path)), active))
         client.call('prompt_and_wait', timeout_seconds=90, activeSessionId=active, message='Run the kernel environment fixture cell.')
         observation['probe'] = current_probe(server.requests[name], name)
         assert observation['probe'] == expected(case), (observation['probe'], expected(case))
