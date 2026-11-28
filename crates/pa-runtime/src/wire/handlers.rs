@@ -58,7 +58,8 @@ pub enum Query {
     /// `session.model`: an open session's model, thinking level and the
     /// levels its model supports.
     SessionModel,
-    /// `session.system_prompt`: an open session's system prompt.
+    /// `session.system_prompt`: a running session's system prompt (a
+    /// subagent's too).
     SessionSystemPrompt,
     /// `runtime.roster`: every running session's roster entry; its changes
     /// follow on `runtime/roster`.
