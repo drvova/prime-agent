@@ -15,7 +15,7 @@ use crate::routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
 use crate::store::MemoryStateStore;
 use crate::subscriptions::MemorySessionTree;
 use crate::tasks::{
-    LaneState, Steered, TaskOutcome, TaskQueue, TaskRunner, INTERRUPTED_BY_RESTART,
+    LaneState, SteerOffer, Steered, TaskOutcome, TaskQueue, TaskRunner, INTERRUPTED_BY_RESTART,
 };
 
 fn open(dir: &Path) -> Arc<Log> {
@@ -143,7 +143,7 @@ impl TaskRunner for Gate {
         outcome.await.expect("the test answers")
     }
 
-    fn steer(&self, _running: &Task, _steer: &Task) -> Steered {
+    fn steer(&self, _running: &Task, _steer: &Task, _offer: SteerOffer) -> Steered {
         Steered::Declined
     }
 

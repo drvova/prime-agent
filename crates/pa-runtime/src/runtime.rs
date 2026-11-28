@@ -685,6 +685,22 @@ impl<B: SessionBuilder> Runtime<B> {
         }))
     }
 
+    /// Whether `session` is open here (a root or a subagent).
+    pub(crate) fn is_open(&self, session: &str) -> bool {
+        self.sessions.subagents().stream(session).is_some()
+    }
+
+    /// Resolves once every event the sessions queued so far is on the bus:
+    /// what a reply waits for to follow the events published before it.
+    pub(crate) async fn flushed(&self) {
+        let (flushed, heard) = tokio::sync::oneshot::channel();
+        self.sessions.outbox().then(move || {
+            let _ = flushed.send(());
+        });
+        // A stopped runtime drops it: nothing more is ahead of the reply.
+        let _ = heard.await;
+    }
+
     /// The last `meta.sequence` open session `session`'s stream consumed:
     /// `session.snapshot`'s `lastEventSequence`.
     pub(crate) fn last_event_sequence(&self, session: &str) -> Option<u64> {

@@ -55,6 +55,17 @@ pub(super) enum Control {
     Unsubscribe {
         sub_id: String,
     },
+    /// Sends `frame` once every event the connection has heard so far is
+    /// delivered: a reply never overtakes the events published before it.
+    Reply {
+        frame: ServerFrame,
+    },
+}
+
+/// Whether a reply's drain met the runtime's end.
+enum Drained {
+    Open,
+    Closing,
 }
 
 /// The client stopped taking frames.
@@ -120,6 +131,11 @@ impl<'a, E: EventStore> Feed<'a, E> {
                         self.subscriptions.retain(|subscribed| subscribed.id != sub_id);
                         Ok(())
                     }
+                    Some(Control::Reply { frame }) => match self.reply(&mut listener, frame).await {
+                        Ok(Drained::Open) => Ok(()),
+                        Ok(Drained::Closing) => return Ok(()),
+                        Err(error) => Err(error),
+                    },
                     None => return Ok(()),
                 },
                 heard = listener.recv() => match heard {
@@ -151,6 +167,34 @@ impl<'a, E: EventStore> Feed<'a, E> {
                 return Err(error);
             }
         }
+    }
+
+    /// Delivers the events `listener` has heard already, then sends `frame`;
+    /// the runtime's end among them is delivered and closes the connection
+    /// after the reply, as the feed's own loop closes it.
+    async fn reply(
+        &mut self,
+        listener: &mut Listener,
+        frame: ServerFrame,
+    ) -> anyhow::Result<Drained> {
+        while let Some(heard) = listener.try_recv() {
+            match heard {
+                Heard::Event(event) if event.event.topic.as_str() == SYSTEM_CLOSING => {
+                    self.deliver(&event).await?;
+                    self.send(frame).await?;
+                    let reason = match event.event.payload["reason"].as_str() {
+                        Some(reason) => format!("the runtime is closing ({reason})"),
+                        None => "the runtime is closing".to_string(),
+                    };
+                    let _ = self.out.send(ServerFrame::Closing { reason }).await;
+                    return Ok(Drained::Closing);
+                }
+                Heard::Event(event) => self.deliver(&event).await?,
+                Heard::Lagged { .. } => self.catch_up().await?,
+            }
+        }
+        self.send(frame).await?;
+        Ok(Drained::Open)
     }
 
     async fn send(&self, frame: ServerFrame) -> Result<(), ClientGone> {

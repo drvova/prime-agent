@@ -23,7 +23,7 @@ impl TaskRunner for Gate {
         outcome.await.expect("the test answers")
     }
 
-    fn steer(&self, running: &Task, steer: &Task) -> Steered {
+    fn steer(&self, running: &Task, steer: &Task, _offer: SteerOffer) -> Steered {
         self.steered
             .send((running.id.clone(), steer.id.clone()))
             .expect("the test listens");
@@ -195,6 +195,25 @@ async fn a_steer_is_offered_to_the_running_task_instead_of_waiting() {
                 ..task("steer", "a", Priority::Steer)
             },
         ]
+    );
+}
+
+/// A steer queued behind a steer that joined an idle lane runs as its own
+/// task: the idle lane's prompt is delivered alone, as the old daemon ran an
+/// idle session's prompt by itself, so two quick prompts get two replies.
+#[tokio::test]
+async fn a_steer_behind_an_idle_lanes_prompt_is_not_delivered_with_it() {
+    let mut harness = harness(1);
+    // Session b holds the one permit, so lane a's first task waits to start.
+    harness.push("other", "b", Priority::Prompt).await;
+    let (_, finish_other) = harness.next_start().await;
+    harness.push("first", "a", Priority::Steer).await;
+    harness.push("second", "a", Priority::Steer).await;
+    finish_other.send(TaskOutcome::Done).expect("the run waits");
+    let started = harness.run_out().await;
+    assert_eq!(
+        (started, harness.steered.try_recv().ok()),
+        (vec!["first".to_string(), "second".to_string()], None)
     );
 }
 

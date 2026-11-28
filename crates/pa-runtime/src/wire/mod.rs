@@ -307,6 +307,7 @@ where
                 }
                 ClientFrame::Publish { id, topic, payload } => {
                     let session = topic.levels().nth(1).map(str::to_string);
+                    let on = topic.clone();
                     let outcome = if !self.client_topics.iter().any(|f| f.matches(&topic)) {
                         Outcome::Error {
                             message: format!(
@@ -351,9 +352,16 @@ where
                             },
                         }
                     };
-                    out.send(ServerFrame::Reply { id, outcome })
+                    // The reply follows the events published before it.
+                    if matches!(outcome, Outcome::Ok { .. }) {
+                        self.handlers.published(&on).await;
+                    }
+                    control
+                        .send(Control::Reply {
+                            frame: ServerFrame::Reply { id, outcome },
+                        })
                         .await
-                        .map_err(gone)?;
+                        .map_err(|_| anyhow::anyhow!("the connection's feed ended"))?;
                 }
                 ClientFrame::Query { id, name, args } => {
                     let permit = Arc::clone(&in_flight).acquire_owned().await?;

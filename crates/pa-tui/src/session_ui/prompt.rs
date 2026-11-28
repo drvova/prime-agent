@@ -41,6 +41,8 @@ pub(crate) struct PromptSubmitNote {
     pub(crate) turn_was_active: bool,
     /// The expected end of this admitted prompt in submit order.
     pub(crate) expected_turn_end: u64,
+    /// The live user row this prompt lands as, in submit order.
+    pub(crate) expected_user_row: u64,
     /// A newer submit supersedes an older one's draft-restore right.
     pub(crate) generation: u64,
     /// The submission's `input_id` (`agent input stage`).
@@ -69,6 +71,7 @@ pub(crate) struct PromptOrder {
     pub(crate) stash_to_restore: Option<PromptStash>,
     pub(crate) turn_was_active: bool,
     pub(crate) expected_turn_end: u64,
+    pub(crate) expected_user_row: u64,
     pub(crate) generation: u64,
     pub(crate) rebind_available: bool,
     /// A fresh uuid per submitted prompt (`agent input stage`), pairing the stage observations.
@@ -789,6 +792,8 @@ impl SessionUi {
         let turn_was_active = self.turn_active || self.prompt_in_flight > 0;
         let expected_turn_end = self.last_prompt_turn_end.max(self.turn_ends_seen) + 1;
         self.last_prompt_turn_end = expected_turn_end;
+        let expected_user_row = self.last_prompt_user_row.max(self.user_rows_seen) + 1;
+        self.last_prompt_user_row = expected_user_row;
         self.prompt_in_flight += 1;
         let _ = self.prompt_orders.send(PromptOrder {
             client: self.client.clone(),
@@ -801,6 +806,7 @@ impl SessionUi {
             stash_to_restore,
             turn_was_active,
             expected_turn_end,
+            expected_user_row,
             generation,
             rebind_available,
             input_id: uuid::Uuid::new_v4().to_string(),
@@ -859,6 +865,7 @@ impl SessionUi {
                 stash_to_restore: order.stash_to_restore,
                 turn_was_active: order.turn_was_active,
                 expected_turn_end: order.expected_turn_end,
+                expected_user_row: order.expected_user_row,
                 generation: order.generation,
                 input_id: order.input_id,
                 submitted_at: order.submitted_at,
@@ -940,8 +947,14 @@ impl SessionUi {
                 // turn_end already owns the idle state, and re-arming it would strand WaitIdle
                 // until timeout. The per-submit end watermark also keeps a prior turn's end from
                 // settling a queued later prompt. A run already open (its `agent_start` came
-                // first, or this submit steers it) keeps its clock and tallies.
-                if self.turn_ends_seen < note.expected_turn_end && !self.turn_active {
+                // first, or this submit steers it) keeps its clock and tallies. A steer the
+                // running turn read with its own prompt ends with that turn, so no end of its
+                // own follows: its landed row (the user-row watermark) proves the run that
+                // carried it already streamed.
+                if self.turn_ends_seen < note.expected_turn_end
+                    && self.user_rows_seen < note.expected_user_row
+                    && !self.turn_active
+                {
                     self.turn_active = true;
                     self.start_loader(view);
                     self.dirty = true;

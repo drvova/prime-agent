@@ -124,6 +124,9 @@ impl SessionStream {
         stream.billing = Some(engine.session.billing());
         stream.context = context;
         stream.agent = Arc::downgrade(engine.session.agent());
+        // What the lane queued while the engine was built goes out now: a
+        // prompt sent right after the create still shows as queued.
+        self.send_view(&mut stream);
     }
 
     /// The last `meta.sequence` the session's stream consumed (0 before the

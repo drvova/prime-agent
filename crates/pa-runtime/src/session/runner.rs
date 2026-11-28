@@ -19,7 +19,7 @@ use crate::subagents::{
     Subagents, INBOX_SUBSCRIPTION, NOTICE_SUBSCRIPTION, SUBSCRIPTION_PREFIX as SUBAGENT_PREFIX,
 };
 use crate::subscriptions::MemorySessionTree;
-use crate::tasks::{LaneState, Steered, TaskOutcome, TaskQueue, TaskRunner};
+use crate::tasks::{LaneState, SteerOffer, Steered, TaskOutcome, TaskQueue, TaskRunner};
 
 /// The prefix of the subscriptions that hear a scheduled job's timer
 /// (`schedule:<job>`, routed to the job's session).
@@ -146,10 +146,20 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
         }
     }
 
-    fn steer(&self, running: &Task, steer: &Task) -> Steered {
-        self.sessions
+    fn steer(&self, running: &Task, steer: &Task, offer: SteerOffer) -> Steered {
+        let steered = self
+            .sessions
             .host(&running.session)
-            .map_or(Steered::Declined, |host| host.steer(running, steer))
+            .map_or(Steered::Declined, |host| host.steer(running, steer, offer));
+        // A steer the turn took waits on its agent: the queue view lists it
+        // until its row settles, so no client reads the session as idle
+        // while it is still to run.
+        if steered == Steered::Taken {
+            if let Some(stream) = self.sessions.subagents().stream(&running.session) {
+                stream.queue_changed();
+            }
+        }
+        steered
     }
 
     fn lane_changed(&self, session: &str, lane: &LaneState) {

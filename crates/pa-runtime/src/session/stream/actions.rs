@@ -52,6 +52,9 @@ pub(super) struct QueueView {
     active: Option<Active>,
     /// The view last sent; `None` until the first.
     sent: Option<Value>,
+    /// The steers the running turn took before its first reply began, which
+    /// wait for it outside its agent.
+    deferred: Vec<String>,
 }
 
 struct Active {
@@ -123,6 +126,14 @@ impl SessionStream {
         self.send_view(state);
     }
 
+    /// The steers the running turn holds until its first reply begins are now
+    /// `deferred`: listed ahead of the rows waiting on its agent.
+    pub(crate) fn steers_deferred(&self, deferred: Vec<String>) {
+        let mut state = lock(&self.state);
+        state.view.deferred = deferred;
+        self.send_view(&mut state);
+    }
+
     /// The rows waiting on the agent changed (one was delivered to it).
     pub(crate) fn queue_changed(&self) {
         self.send_view(&mut lock(&self.state));
@@ -169,7 +180,7 @@ impl SessionStream {
     }
 
     /// Sends the view when it changed, in the session-event shapes.
-    fn send_view(&self, state: &mut StreamState) {
+    pub(super) fn send_view(&self, state: &mut StreamState) {
         if !state.sequenced {
             return;
         }
@@ -245,6 +256,13 @@ fn rows(view: &QueueView, agent: Option<&Agent>) -> QueueRows {
                 rows.follow_ups.push(row);
             }
         }
+    }
+    for text in &view.deferred {
+        rows.steering.push(QueueRow {
+            text: text.clone(),
+            at: RowAt::Waiting,
+            notice: false,
+        });
     }
     for (preview, lane, notice) in waiting_rows(agent) {
         let lane_rows = match lane {

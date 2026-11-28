@@ -554,6 +554,13 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
         self.end_owned_sessions(connection).await;
     }
 
+    fn published(
+        &self,
+        _topic: &pa_types::event_log::Topic,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        self.runtime.flushed()
+    }
+
     fn admit_publish(&self, topic: &pa_types::event_log::Topic) -> anyhow::Result<()> {
         self.admit_input(topic)
     }

@@ -137,6 +137,8 @@ impl SessionUi {
             turn_active: false,
             turn_ends_seen: 0,
             last_prompt_turn_end: 0,
+            user_rows_seen: 0,
+            last_prompt_user_row: 0,
             steering_mode: "all".to_string(),
             streaming_index: None,
             working_tokens: LoaderTokenTracker::default(),
@@ -673,6 +675,8 @@ impl SessionUi {
         if mounted_session_changes {
             self.turn_ends_seen = 0;
             self.last_prompt_turn_end = 0;
+            self.user_rows_seen = 0;
+            self.last_prompt_user_row = 0;
         }
         // The stash state follows the stable id of the session now rendered: the initial attach and
         // every in-place switch rebind through here.
