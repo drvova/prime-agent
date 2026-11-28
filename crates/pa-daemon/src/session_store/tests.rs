@@ -14,7 +14,8 @@ fn temp_dir() -> (tempfile::TempDir, PathBuf) {
 /// The captured-attribution fixture: real devbox session rows (content sanitized,
 /// cwd/repoUrl neutralized; ids, timestamps, and usage verbatim).
 fn captured_attribution_fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/attribution-fold-captured.jsonl")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../pa-core/tests/fixtures/attribution-fold-captured.jsonl")
 }
 
 #[test]
