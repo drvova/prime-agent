@@ -734,6 +734,25 @@ mod rate_limit;
 pub(crate) use rate_limit::{observe_agent_message_refusals, AgentMessageRefusals};
 use rate_limit::{AgentMessageClock, AgentMessageRateLimiter, RETRY_AFTER_MS_FIELD};
 
+/// The bounce body: the receiver label, the fact, and the dropped body —
+/// truncated so the whole notice stays inside the delivery size limit the
+/// receiving delivery enforces. Both daemons' queue clears bounce a dropped
+/// agent message to its sender with it.
+#[must_use]
+pub fn cleared_agent_message_bounce_text(receiver: &str, message: &str) -> String {
+    let limit = DEFAULT_AGENT_MESSAGE_MAX_CHARS;
+    let opening = "Your agent message was cleared from ";
+    let ending = "'s queue before delivery: ";
+    // Session names are unbounded. Reserve the notice itself before fitting
+    // the receiver label, then spend the remaining characters on the body.
+    let receiver_budget = limit.saturating_sub(opening.chars().count() + ending.chars().count());
+    let receiver: String = receiver.chars().take(receiver_budget).collect();
+    let prefix = format!("{opening}{receiver}{ending}");
+    let budget = limit.saturating_sub(prefix.chars().count());
+    let body: String = message.chars().take(budget).collect();
+    format!("{prefix}{body}")
+}
+
 // The observe half lives in the child module; the pub use re-exports keep
 // every external agent_messaging:: path stable.
 mod observe;

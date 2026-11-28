@@ -57,6 +57,7 @@ pub(super) fn gated_as(call: Call) -> Option<&'static str> {
         Call::SessionAbortAndSendQueued => "abort_and_send_queued",
         Call::SessionResumeQueue => "resume_queue",
         Call::SessionWithdraw => "withdraw_queued_message",
+        Call::SessionClearQueue => "clear_queue",
         Call::SessionRestore => "restore_next_turn",
         Call::SessionCompact => "compact",
         Call::SessionWaitIdle => "wait_for_idle",

@@ -623,6 +623,9 @@ SQLite implementations over `pa-log`.
   (input published meanwhile is admitted `parked`) until `session.resume_queue`;
   `session.abort_and_send_queued` keeps the lane going, so those steers run next, together;
   `session.withdraw` cancels the queued tasks and answers them in run order;
+  `session.clear_queue` (the old `clear_queue`) withdraws them too, takes the agent messages
+  waiting on the agent and bounces each to its sender (pa-core
+  `cleared_agent_message_bounce_text`);
   `session.restore` (`{messages}`) publishes them back as steers; `session.wait_idle` answers
   once the session is at rest (`Runtime::at_rest`: nothing queued or running in its lane, no
   delivered row waiting on its agent for the wake it queued, and every subagent below it
@@ -786,7 +789,7 @@ SQLite implementations over `pa-log`.
   `agent/<id>/input` as a follow-up and answers at that task's `agent/<id>/done` (the task kept
   under the prompt's admission id for `cancel_prompt_admission`, `session.cancel_task`, also
   when the cancel came before the publish's reply), `abort_and_clear_queue` is `session.abort` +
-  `session.withdraw` + `session.resume_queue`, the waits are `session.wait_idle`, and the rest
+  `session.clear_queue` + `session.resume_queue`, the waits are `session.wait_idle`, and the rest
   map one to one (`sessions.list`, `session.context`, `session.model`, `models`,
   `session.set_model`, `session.set_effort`, `session.children`, `session.cancel_child`,
   `session.pause_input`/`release_input`, `session.set_mcp_servers`, `session.stop`). Stream

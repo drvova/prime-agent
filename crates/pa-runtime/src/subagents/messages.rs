@@ -277,6 +277,24 @@ impl Subagents {
     ) -> anyhow::Result<Value> {
         let message =
             pa_core::session_engine::agent_messaging::normalize_agent_session_message(message)?;
+        self.deliver_message(target, message, sender, delivery)
+            .await
+    }
+
+    /// [`Self::send_message`] of a `message` taken as it is, not normalized:
+    /// a notice the daemon itself built within the delivery limit (a cleared
+    /// message's bounce, as the old worker sends it).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send_message`], but for the message's own checks.
+    pub(crate) async fn deliver_message(
+        &self,
+        target: &str,
+        message: String,
+        sender: MessageSender,
+        delivery: Delivery,
+    ) -> anyhow::Result<Value> {
         let target_node = self.built_node(target).await?;
         let (from, endpoint, name, relationship) = match &sender {
             MessageSender::Client(client) => {

@@ -115,7 +115,7 @@ WIRE2_SESSION_CALLS = {
     'import_jsonl': 'session.import_jsonl', 'mutate_queued_message': 'session.mutate_queued_message',
     'abort_compaction': 'session.abort_compaction', 'abort_retry': 'session.abort_retry',
     'answer_question': 'session.answer_question', 'kill_kernel_bash': 'session.kill_kernel_bash',
-    'factory_activity': 'session.factory_activity', 'agent_messages_clear': 'agent_messages.clear',
+    'factory_activity': 'session.factory_activity', 'agent_messages_clear': 'agent_messages.clear', 'clear_queue': 'session.clear_queue',
     'set_rlm_max_depth': 'session.set_rlm_max_depth', 'heartbeat_set': 'session.set_heartbeat',
     'heartbeat_update': 'session.update_heartbeat', 'heartbeat_manage': 'session.manage_heartbeat',
 }

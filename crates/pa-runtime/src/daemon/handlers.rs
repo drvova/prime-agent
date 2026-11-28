@@ -499,6 +499,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionAbortAndSendQueued => self.abort(&args, AfterAbort::SendQueued).await,
             Call::SessionResumeQueue => self.resume_queue(&args),
             Call::SessionWithdraw => self.withdraw(&args).await,
+            Call::SessionClearQueue => self.clear_queue(&args).await,
             Call::SessionRestore => self.restore(&args).await,
             Call::SessionCompact => self.compact(&args).await,
             Call::SessionWaitIdle => self.wait_idle(&args).await,

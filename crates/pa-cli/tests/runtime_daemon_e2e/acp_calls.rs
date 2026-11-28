@@ -6,6 +6,9 @@
 //!   pause; `session.release_input` lets it run, and so does the holding
 //!   connection's end; another connection's release of it is refused, as
 //!   the old daemon's is;
+//! - `session.clear_queue` (ACP's `abort_and_clear_queue`) takes the queued
+//!   prompts and the agent messages waiting on the agent, and bounces each
+//!   agent message to its sender, as the old worker's `clear_queue` does;
 //! - `session.cancel_task` takes one queued prompt out of the lane, which
 //!   ends with its cancelled `done`;
 //! - `session.wait_idle` with `"subagents": false` answers the autonomous
@@ -21,6 +24,7 @@ use pa_types::event_log::Topic;
 use pa_types::wire2::{ClientFrame, ServerFrame, Since};
 use serde_json::{json, Value};
 
+use super::turns::cell;
 use super::{ok, refused, run_turn, Bed, Client};
 
 /// Publishes `text` as session `id`'s input; the publish's reply.
@@ -139,6 +143,82 @@ async fn another_connection_cannot_release_an_input_hold() {
             ),
             json!("parked"),
             json!(true)
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queue_clear_bounces_the_agent_messages_to_their_senders() {
+    let bed = Bed::new();
+    // Every session's first turn runs a cell that waits until it is stopped.
+    let _daemon = bed.runtime_daemon(&json!({
+        "responses": [cell("Waiting.", "(bash \"sleep 300\" (hash 'wait-ms #f))")],
+        "repeatLastResponse": true,
+    }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let create = async |client: &mut Client| {
+        ok(client.call("session.create", json!({})).await)["session"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (sender, receiver) = (create(&mut client).await, create(&mut client).await);
+    client
+        .subscribe(&format!("agent/{receiver}/stream"), Since::Now)
+        .await;
+    publish(&mut client, &receiver, "wait").await;
+    loop {
+        if let ServerFrame::Event { event, .. } = client.frame().await {
+            if event.event.payload["type"] == "tool_execution_start" {
+                break;
+            }
+        }
+    }
+    let sent = ok(client
+        .call(
+            "session.send",
+            json!({ "session": receiver, "from": sender, "message": "dropped" }),
+        )
+        .await);
+    publish(&mut client, &receiver, "queued prompt").await;
+    let cleared = ok(client
+        .call("session.clear_queue", json!({ "session": receiver }))
+        .await);
+    // The bounce wakes the idle sender: its turn starts over the row.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let bounce = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the bounce never reached the sender"
+        );
+        let page = ok(client
+            .query("transcript.page", json!({ "session": sender }))
+            .await);
+        let row = page["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["customType"] == "agent_message")
+            .map(|row| row["details"]["message"].clone());
+        if let Some(row) = row {
+            break row;
+        }
+        tokio::task::yield_now().await;
+    };
+    assert_eq!(
+        (
+            sent["deliveryStatus"].clone(),
+            cleared["followUp"].clone(),
+            cleared["steering"].as_array().map(Vec::len),
+            bounce
+        ),
+        (
+            json!("queued"),
+            json!(["queued prompt"]),
+            Some(1),
+            json!(format!(
+                "Your agent message was cleared from {receiver}'s queue before delivery: dropped"
+            ))
         )
     );
 }

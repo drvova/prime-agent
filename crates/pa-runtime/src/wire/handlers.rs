@@ -208,6 +208,9 @@ pub enum Call {
     /// `session.withdraw`: takes the session's queued input back out of its
     /// queue and answers it.
     SessionWithdraw,
+    /// `session.clear_queue`: withdraws the session's queued input and takes
+    /// the agent messages waiting on it, bouncing each to its sender.
+    SessionClearQueue,
     /// `session.restore`: puts input back at the front of the session's
     /// queue as steers, delivered together as its next turn.
     SessionRestore,
@@ -388,6 +391,7 @@ impl FromStr for Call {
             "session.abort_and_send_queued" => Call::SessionAbortAndSendQueued,
             "session.resume_queue" => Call::SessionResumeQueue,
             "session.withdraw" => Call::SessionWithdraw,
+            "session.clear_queue" => Call::SessionClearQueue,
             "session.restore" => Call::SessionRestore,
             "session.compact" => Call::SessionCompact,
             "session.wait_idle" => Call::SessionWaitIdle,
