@@ -12,64 +12,18 @@
 //! moves its session's `$` line within a poll cycle instead of keeping the catalog's open-time
 //! snapshot until a reopen.
 
+mod support;
+
+use support::runtime_daemon::RuntimeDaemon;
+
 use std::fmt::Write as _;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Child, Command};
 
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewUiMode};
 use serde_json::json;
-
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    let socket = dir.join("daemon.sock");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", dir.join("agent"))
-        .env_remove("PRIME_AGENT_SESSION_DIR")
-        .env_remove("PRIME_AGENT_CODING_AGENT_SESSION_DIR")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    let child = command.spawn().expect("spawn prime-agent --mode daemon");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while UnixStream::connect(&socket).is_err() {
-        assert!(Instant::now() < deadline, "supervisor socket never came up");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    Supervisor { child, socket }
-}
 
 /// One saved session: a header plus a named user/assistant exchange.
 fn write_session(sessions_dir: &Path, id: &str, name: &str) {
@@ -177,11 +131,11 @@ async fn an_inactive_sessions_shells_line_follows_its_live_persistent_shells() {
     write_session(&sessions_dir, "session-a", "server session a");
     write_session(&sessions_dir, "session-b", "server session b");
     let shell_a = Shell::start(&agent_dir, "session-a");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
 
     let line_rendered = std::sync::Arc::new(tokio::sync::Notify::new());
     let view = pa_tui::agents_view::run_agents_view(
-        view_options(&supervisor.socket, &sessions_dir),
+        view_options(&daemon.socket, &sessions_dir),
         AgentsViewUiMode::Headless(AgentsHeadlessPlan {
             steps: vec![
                 AgentsStep::WaitRender {

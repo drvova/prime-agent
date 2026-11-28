@@ -22,8 +22,9 @@
 
 mod support;
 
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use support::runtime_daemon::RuntimeDaemon;
+
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use pa_types::daemon::DaemonCommand;
@@ -40,92 +41,6 @@ const SEEDED_MESSAGES_PER_CHILD: usize = 50;
 /// session file (the snapshot ships the whole history).
 const SEEDED_TRANSCRIPT_MESSAGES: usize = 400;
 
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        graceful_shutdown(&self.socket);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-/// Stop the daemon on `socket` by protocol; kill the child when it fails.
-fn graceful_shutdown(socket: &Path) {
-    use std::io::{BufRead, BufReader, Write};
-    let Ok(stream) = std::os::unix::net::UnixStream::connect(socket) else {
-        return;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    let _ = reader.read_line(&mut hello); // daemon_hello
-    let command = serde_json::json!({
-        "type": "command",
-        "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let Ok(mut line) = serde_json::to_string(&command) else {
-        return;
-    };
-    line.push('\n');
-    if writer.write_all(line.as_bytes()).is_err() {
-        return;
-    }
-    let _ = writer.flush();
-    let _ = reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)));
-    let mut response = String::new();
-    let _ = reader.read_line(&mut response);
-}
-
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    // The in-process client forwards this process's env to the worker.
-    support::scrub_ambient_provider_credentials();
-    let socket = dir.join("daemon.sock");
-    let agent_dir = dir.join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(&socket, &mut child);
-    Supervisor { child, socket }
-}
-
 /// Create a live session FROM a pre-written session file (the
 /// operator-scale attach snapshot): the worker opens the file's history.
 async fn create_session_from_file_via_daemon(
@@ -139,7 +54,7 @@ async fn create_session_from_file_via_daemon(
     std::fs::write(script_path, script.to_string()).expect("write script");
     let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let data = client
         .request_ok(DaemonCommand::Create {
             id: None,
@@ -261,7 +176,6 @@ async fn agents_view_round_trip_reattaches_under_the_ceiling() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // The multi-hundred-message transcript, written directly (the
     // operator-scale attach snapshot ships the whole history).
@@ -311,8 +225,10 @@ async fn agents_view_round_trip_reattaches_under_the_ceiling() {
         { "text": "hello from scripted", "delayMs": 20 },
     ] });
     let script_path = dir.path().join("script.json");
+    std::fs::write(&script_path, script.to_string()).expect("write script");
+    let daemon = RuntimeDaemon::spawn_scripted(dir.path(), &script_path);
     let active = create_session_from_file_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -338,7 +254,7 @@ async fn agents_view_round_trip_reattaches_under_the_ceiling() {
         height: 30,
     };
     let first = chat_options(
-        &supervisor.socket,
+        &daemon.socket,
         dir.path(),
         &session_dir,
         &script_path,
@@ -356,7 +272,7 @@ async fn agents_view_round_trip_reattaches_under_the_ceiling() {
         height: 30,
     };
     let second = chat_options(
-        &supervisor.socket,
+        &daemon.socket,
         dir.path(),
         &session_dir,
         &script_path,

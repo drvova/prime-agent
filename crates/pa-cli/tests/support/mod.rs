@@ -2,6 +2,9 @@
 //! daemon: the wait for it to listen, and the credential scrub of the ones
 //! that run the chat surface in-process.
 
+#[cfg(unix)]
+pub mod runtime_daemon;
+
 /// Strip ambient provider credentials from THIS process, once.
 ///
 /// The in-process client forwards its whole environment to the session
