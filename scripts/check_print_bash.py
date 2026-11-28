@@ -72,7 +72,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not notice:
                 self.server.errors.append('wake request lacks actual bash completion notice')
             code = ('(displayln (string-append "PRINT_BASH_FINISHED=" (value->jsexpr-string '
-                    "(hash 'completed (string-contains? (bash-output job) \"BG_DONE\")))))")
+                    "(hash 'completed (string-contains? (hash-ref (bash-output job) 'output) \"BG_DONE\")))))")
         else:
             code = None
         if count not in (1, 2, 3, 4) or (code and name is None):
