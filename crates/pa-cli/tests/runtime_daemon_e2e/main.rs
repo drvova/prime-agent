@@ -87,6 +87,8 @@
 //!   turn, a bad token none (phase 9): [`webhooks`].
 //! - A subagent's parent crashing (its child closed and relisted failed)
 //!   and its semantic-edge return: [`parent_death`].
+//! - The `/mcp` page's catalog from the fetch lane's disk cache, and its
+//!   pinned cards' hint: [`mcp_catalog`].
 //! - A session's lease after its daemon was killed or gave it up, and the
 //!   crash count of a revived session's lifetime (phase 10): [`leases`].
 //! - A subagent spawn's gates: its `#:cwd`, the recursion bound and a name
@@ -123,6 +125,7 @@ mod kernel_harness;
 mod leases;
 mod legacy_update;
 mod lifecycle;
+mod mcp_catalog;
 mod old_daemon;
 mod old_reference;
 mod openai_mock;
