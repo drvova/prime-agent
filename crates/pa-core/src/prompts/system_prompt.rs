@@ -491,7 +491,7 @@ fn format_generic_mcp_guidance(servers: &[String]) -> String {
     ];
     for server in &enabled {
         lines.push(format!(
-            "For `{server}`, first discover its tools with `(mcp-tools \"{server}\")`, then call one with `(mcp-call \"{server}\" \"<tool>\" arguments)`."
+            "For `{server}`, first discover its tools with `(mcp-list \"{server}\")`, then call one with `(mcp-call \"{server}\" \"<tool>\" arguments)`."
         ));
     }
     lines.join("\n")

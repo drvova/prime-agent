@@ -45,6 +45,21 @@ pub(super) fn load(engine: &mut Engine) -> anyhow::Result<()> {
             .unwrap_or_default();
         crate::session::manager::format_iso(now.as_millis() as i64 + (seconds * 1000.0) as i64)
     });
+    // Scheme's own `error` writes a message it builds as data, escaping its
+    // quotes; this raises a built message as it is.
+    engine.register_value(
+        "%raise",
+        steel::rvals::SteelVal::FuncV(|arguments| match arguments {
+            [steel::rvals::SteelVal::StringV(reason)] => Err(steel::rerrs::SteelErr::new(
+                steel::rerrs::ErrorKind::Generic,
+                reason.to_string(),
+            )),
+            _ => Err(steel::rerrs::SteelErr::new(
+                steel::rerrs::ErrorKind::ArityMismatch,
+                "%raise takes one string".to_string(),
+            )),
+        }),
+    );
     for (name, source) in SOURCES {
         super::contracts::load(engine, source)
             .map_err(|error| anyhow!("the Scheme host API ({name}) failed to load: {error}"))?;

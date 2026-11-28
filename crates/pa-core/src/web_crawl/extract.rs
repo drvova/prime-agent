@@ -1,7 +1,7 @@
 //! Extraction with spider's selectors (`spider_utils`): a map of names to
 //! CSS selectors or `XPath` expressions, and for each name the values its
-//! selectors found on a page. The kernel's `(web-extract source selectors
-//! ...)` reaches it through the `web.extract` host request, and
+//! selectors found on a page. The kernel's `(web-read source #:select
+//! selectors ...)` reaches it through the `web.extract` host request, and
 //! `(web-crawl ... #:extract selectors)` runs it on every HTML page.
 //!
 //! A CSS match gives the element's text, or for `meta` its `content`, for

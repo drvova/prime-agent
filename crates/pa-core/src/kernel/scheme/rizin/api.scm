@@ -48,16 +48,11 @@
              'timeout-ms timeout-ms)))
 
 ;; Run one rizin command line and return what it printed, errors included.
-(define (rz-cmd session command #:timeout-ms [timeout-ms 120000])
+;; With #:json #t, run a command's JSON form and return the parsed value:
+;; hashes keyed by rizin's own names, lists, #f for null and for no output.
+(define (rz-cmd session command #:json [json #f] #:timeout-ms [timeout-ms 120000])
   (%rz "rz-cmd"
-       "cmd"
-       (hash 'session (%rz-id session) 'command command 'timeout-ms timeout-ms)))
-
-;; Run a command's JSON form and return the parsed value: hashes keyed by
-;; rizin's own names, lists, #f for null and for no output.
-(define (rz-cmdj session command #:timeout-ms [timeout-ms 120000])
-  (%rz "rz-cmdj"
-       "cmdj"
+       (if json "cmdj" "cmd")
        (hash 'session (%rz-id session) 'command command 'timeout-ms timeout-ms)))
 
 ;; This kernel's sessions: each {session, target, pid, version, debug,
@@ -69,3 +64,9 @@
 ;; no such session.
 (define (rz-close session)
   (%rz "rz-close" "close" (hash 'session (%rz-id session))))
+
+;; Deprecated alias (`deprecated/aliases.txt`): prints its notice once and
+;; calls `rz-cmd`.
+(define (rz-cmdj session command #:timeout-ms [timeout-ms 120000])
+  (%deprecated "rz-cmdj")
+  (rz-cmd session command #:json #t #:timeout-ms timeout-ms))

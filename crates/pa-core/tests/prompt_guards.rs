@@ -241,6 +241,88 @@ fn kernel_functions() -> BTreeMap<String, Option<String>> {
     functions
 }
 
+/// The deprecated kernel names (`src/kernel/scheme/deprecated/aliases.txt`), each with the call
+/// that replaces it: aliases kept for one release, which the reference never documents.
+static DEPRECATED_ALIASES: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/kernel/scheme/deprecated/aliases.txt");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| {
+            let (old, new) = line
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("an alias line names its replacement: {line:?}"));
+            (old.to_string(), new.to_string())
+        })
+        .collect()
+});
+
+/// Every deprecated alias is a kernel function whose body announces itself by its own name, its
+/// replacement opens with a function the reference documents, and neither the reference nor a
+/// static prompt layer names it; every announcement in the sources names a listed alias.
+#[test]
+fn deprecated_aliases_are_defined_announced_and_left_out_of_the_prompt() {
+    let functions = kernel_functions();
+    let documented: BTreeSet<&str> = API_DOCS
+        .iter()
+        .flat_map(|(_, doc)| documented_calls(doc))
+        .map(|call| call.split(' ').next().unwrap_or(call))
+        .collect();
+    let announced: BTreeSet<String> = KERNEL_SOURCES
+        .iter()
+        .flat_map(|source| {
+            source
+                .match_indices("(%deprecated \"")
+                .map(move |(at, opening)| {
+                    source[at + opening.len()..]
+                        .split('"')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+        })
+        .collect();
+    let mut faults = Vec::new();
+    for (old, new) in DEPRECATED_ALIASES.iter() {
+        let replacement = new
+            .trim_start_matches('(')
+            .split(|letter: char| letter.is_whitespace() || letter == ')')
+            .next()
+            .unwrap_or_default();
+        if !functions.contains_key(old) {
+            faults.push(format!("{old}: not defined"));
+        }
+        if !announced.contains(old) {
+            faults.push(format!("{old}: never calls (%deprecated {old:?})"));
+        }
+        if !documented.contains(replacement) {
+            faults.push(format!(
+                "{old}: its replacement {replacement} is not documented"
+            ));
+        }
+        for (name, text) in API_DOCS.iter().copied().chain([
+            ("core", CORE_LAYER.as_str()),
+            ("usage", USAGE_LAYER),
+            ("opinionated", OPINIONATED_LAYER),
+        ]) {
+            if text.contains(&format!("`{old}"))
+                || text.contains(&format!("({old} "))
+                || text.contains(&format!("({old})"))
+            {
+                faults.push(format!("{old}: named by {name}"));
+            }
+        }
+    }
+    for name in &announced {
+        if !DEPRECATED_ALIASES.contains_key(name) {
+            faults.push(format!("{name}: announced but not listed"));
+        }
+    }
+    assert_eq!(faults, Vec::<String>::new());
+}
+
 /// The API reference (`prompts/capabilities/`, spliced into the core layer and served by
 /// `(api-help)`) documents exactly the functions the kernel defines, each once and with the call
 /// form its definition has: a function added, removed, or given another argument without a
@@ -263,6 +345,7 @@ fn the_reference_documents_exactly_the_kernels_functions() {
         .collect();
     let defined: BTreeMap<String, String> = kernel_functions()
         .into_iter()
+        .filter(|(name, _)| !DEPRECATED_ALIASES.contains_key(name))
         .map(|(name, form)| {
             let form = form
                 .or_else(|| documented.get(&name).cloned())
@@ -512,7 +595,7 @@ fn generic_mcp_skill_renders_in_the_prompt_inventory() {
     assert!(inventory.contains("<type>markdown</type>"));
     options.generic_mcp_servers = vec!["notion".into()];
     let second = system_prompt_breakdown(&options);
-    assert!(second.assembled.contains("(mcp-tools \"notion\")"));
+    assert!(second.assembled.contains("(mcp-list \"notion\")"));
 }
 
 // Turn discipline

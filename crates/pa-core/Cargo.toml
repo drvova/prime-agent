@@ -56,7 +56,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 # spider runs the user's `web.crawl.ai` model on each rendered page, on the
 # client pa-core hands it (vendor/spider_agent/PRIME_AGENT_PATCH.md).
 spider = { version = "=2.54.2", default-features = false, features = ["sync", "regex", "headers", "sitemap", "chrome", "chrome_intercept", "adblock", "smart", "warc", "auto_throttle", "ua_generator", "socks", "agent", "agent_chrome"] }
-# `web-extract` and `web-crawl #:extract`: spider's CSS and XPath extraction.
+# `web-read #:select` and `web-crawl #:extract`: spider's CSS and XPath extraction.
 spider_utils = "=2.54.2"
 # `web-read` / `web-crawl` `#:format` and `#:transform`: spider's HTML to
 # CommonMark, text, HTML and XML, readability and content filters. Without

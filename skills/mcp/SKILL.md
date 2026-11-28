@@ -5,8 +5,9 @@ description: Use external MCP services generically from the Scheme kernel - sear
 
 # MCP Services
 
-Every external service reachable over MCP uses the same `mcp-*` functions of
-the Scheme kernel. Adding a service is data (a catalog entry plus a user
+Every external service reachable over MCP uses the same four `mcp-*`
+functions of the Scheme kernel: `mcp-list` (by `#:kind`), `mcp-call`,
+`mcp-login` and `mcp-reload`. Adding a service is data (a catalog entry plus a user
 login), never a new package, and there are no per-service skills to read.
 `(api-help "mcp")` prints the reference of every function.
 
@@ -14,12 +15,12 @@ login), never a new package, and there are no per-service skills to read.
 
 ```scheme
 ;; Supported catalog, one bounded page. More pages exist while nextCursor is a string.
-(define page (mcp-plugins #:connection-status "not_connected" #:limit 50))
-(define results (mcp-plugins #:search "notion"))     ; bounded search
-(define first-page (mcp-plugins))             ; default: first 50 entries
+(define page (mcp-list #:kind "catalog" #:connection-status "not_connected" #:limit 50))
+(define results (mcp-list #:kind "catalog" #:search "notion"))     ; bounded search
+(define first-page (mcp-list #:kind "catalog"))             ; default: first 50 entries
 
 ;; The user's actual connections. connectionId is the server name everywhere below.
-(define connections (mcp-status))
+(define connections (mcp-list #:kind "connections"))
 ```
 
 Catalog entries carry `connectionStatus` (`connected`, `pending`,
@@ -46,18 +47,18 @@ connects mid-task, the connection works on the next call without a reload.
 
 ```scheme
 ;; Schemas come from the server.
-(define found (mcp-tools "notion" #:search "search workspace documents"))
-(define tool (mcp-tools "notion" #:tool "notion-search"))   ; {name, description, inputSchema}
-(define tools (mcp-tools "notion"))                     ; full tool list with schemas
+(define found (mcp-list "notion" #:search "search workspace documents"))
+(define tool (mcp-list "notion" #:tool "notion-search"))   ; {name, description, inputSchema}
+(define tools (mcp-list "notion"))                     ; full tool list with schemas (#:kind "tools")
 
 (define result (mcp-call "notion" "notion-search" (hash 'query "roadmap")))
 ```
 
 - Discover before calling: don't assume tool names or arguments; read the
-  `inputSchema` with `(mcp-tools server #:tool name)` and construct matching arguments.
-- `mcp-tools` returns the complete inventory or raises — never a silent
+  `inputSchema` with `(mcp-list server #:tool name)` and construct matching arguments.
+- `mcp-list` returns the complete inventory or raises — never a silent
   partial list.
-- `(mcp-tools #:search query)` without a server searches at most 8 connections
+- `(mcp-list #:search query)` without a server searches at most 8 connections
   the host reports as connected and reports its scope: `searched`,
   `unavailable` (per-connection failures as fixed, redaction-safe summaries),
   and `truncated` (narrow the query or pick a connection when it is set — the
@@ -96,8 +97,8 @@ with `(with-handler (lambda (e) (to-string e)) ...)` to read it.
 
 - The tool is excluded by the user's `enabledTools` / `disabledTools` policy:
   don't retry; tell the user.
-- The tool or connection doesn't exist: re-check with `mcp-tools` /
-  `mcp-status`; tools can change across sessions.
+- The tool or connection doesn't exist: re-check with `mcp-list` (its
+  `"tools"` and `"connections"` kinds); tools can change across sessions.
 - The server's tool listing couldn't complete honestly (broken pagination): no
   partial inventory is published; re-run, and ask the user to reconnect if it
   persists.

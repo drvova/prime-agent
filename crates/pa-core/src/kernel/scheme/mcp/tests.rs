@@ -129,17 +129,17 @@ async fn a_stdio_server_is_opened_once_and_its_tools_resources_and_prompts_answe
     let returned = values(
         kernel.as_ref(),
         &[
-            r#"(mcp-tools "files")"#,
-            r#"(mcp-tools "files" #:tool "pid")"#,
+            r#"(mcp-list "files")"#,
+            r#"(mcp-list "files" #:tool "pid")"#,
             r#"(mcp-call "files" "echo" (hash 'message "hello"))"#,
             r#"(mcp-call "files" "shape")"#,
             r#"(mcp-call "files" "ask")"#,
             r#"(equal? (mcp-call "files" "pid") (mcp-call "files" "pid"))"#,
-            r#"(mcp-resources "files")"#,
-            r#"(mcp-resources "files" #:templates #t)"#,
-            r#"(mcp-resources "files" #:uri "memo://one")"#,
-            r#"(mcp-prompts "files")"#,
-            r#"(mcp-prompts "files" #:name "greet" #:arguments (hash 'who "Ada"))"#,
+            r#"(mcp-list "files" #:kind "resources")"#,
+            r#"(mcp-list "files" #:kind "templates")"#,
+            r#"(mcp-list "files" #:kind "resources" #:uri "memo://one")"#,
+            r#"(mcp-list "files" #:kind "prompts")"#,
+            r#"(mcp-list "files" #:kind "prompts" #:name "greet" #:arguments (hash 'who "Ada"))"#,
         ],
     )
     .await;
@@ -201,6 +201,86 @@ async fn a_stdio_server_is_opened_once_and_its_tools_resources_and_prompts_answe
     );
 }
 
+/// Each deprecated `mcp-*` name answers what its `mcp-list` kind answers and
+/// tells its notice once; `mcp-list` refuses an option its kind does not take
+/// before any server or host hears of it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_old_names_answer_as_mcp_list_and_a_kind_refuses_an_option_it_does_not_take() {
+    let fixture = StdioFixture::new();
+    let mut handlers = configured(json!({ "files": fixture.config("files", &json!({}), &[]) }));
+    for (request_type, reply) in [
+        (
+            "mcp.list_connections",
+            json!({"connections": [{"connectionId": "files", "status": "connected"}]}),
+        ),
+        (
+            "mcp.list_plugins",
+            json!({"plugins": [{"id": "notion"}], "nextCursor": null}),
+        ),
+    ] {
+        handlers.register(
+            request_type,
+            host_handler(move |_payload: HostRequestPayload| {
+                let reply = reply.clone();
+                async move { Ok(reply) }
+            }),
+        );
+    }
+    let kernel = SchemeKernelProvisioner::new(handlers, "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let mut returned = Vec::new();
+    for cell in [
+        r#"(equal? (mcp-tools "files" #:tool "pid") (mcp-list "files" #:tool "pid"))"#,
+        r#"(equal? (mcp-tools "files") (mcp-list "files"))"#,
+        r#"(equal? (mcp-resources "files" #:templates #t) (mcp-list "files" #:kind "templates"))"#,
+        r#"(equal? (mcp-prompts "files") (mcp-list "files" #:kind "prompts"))"#,
+        r#"(equal? (mcp-status) (mcp-list #:kind "connections"))"#,
+        r#"(equal? (mcp-plugins #:limit 3) (mcp-list #:kind "catalog" #:limit 3))"#,
+        r#"(mcp-list "files" #:kind "resources" #:tool "pid")"#,
+        r#"(mcp-list "files" #:kind "templates" #:uri "memo://one")"#,
+        r#"(mcp-list "files" #:kind "catalog")"#,
+        r#"(mcp-list #:kind "prompts")"#,
+        r#"(mcp-list "files" #:kind "servers")"#,
+    ] {
+        let result = kernel.execute(cell, NO_OPTIONS).await.unwrap();
+        returned.push(match result.error {
+            None => Ok((result.stdout, result.result)),
+            Some(error) => Err(error.evalue),
+        });
+    }
+    let told = |old: &str, new: &str| {
+        Ok((
+            format!("{old} is deprecated and goes away in the next release: use {new}\n"),
+            Some("#true".to_string()),
+        ))
+    };
+    let refused = |reason: &str| Err(format!("Error: Generic: mcp-list: {reason}"));
+    assert_eq!(
+        returned,
+        vec![
+            told("mcp-tools", r#"(mcp-list [server] #:kind "tools")"#),
+            Ok((String::new(), Some("#true".to_string()))),
+            told(
+                "mcp-resources",
+                r#"(mcp-list server #:kind "resources") or #:kind "templates""#
+            ),
+            told("mcp-prompts", r#"(mcp-list server #:kind "prompts")"#),
+            told("mcp-status", r#"(mcp-list [servers] #:kind "connections")"#),
+            told("mcp-plugins", r#"(mcp-list #:kind "catalog")"#),
+            refused(r#"#:tool does not apply to #:kind "resources", which takes #:uri"#),
+            refused(r#"#:uri does not apply to #:kind "templates", which takes no options"#),
+            refused(r#"#:kind "catalog" takes no server"#),
+            refused(r#"#:kind "prompts" needs a server"#),
+            refused(
+                r#"#:kind is "tools", "resources", "templates", "prompts", "connections" or "catalog""#
+            ),
+        ]
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tool_error_a_server_error_and_a_refused_call_raise() {
@@ -217,12 +297,12 @@ async fn a_tool_error_a_server_error_and_a_refused_call_raise() {
         kernel.as_ref(),
         &[
             r#"(mcp-call "files" "fail")"#,
-            r#"(mcp-resources "files" #:uri "memo://missing")"#,
+            r#"(mcp-list "files" #:kind "resources" #:uri "memo://missing")"#,
             r#"(mcp-call "files" "secret")"#,
             r#"(mcp-call "files" "absent")"#,
             r#"(mcp-call "files" "echo" 5)"#,
-            r#"(mcp-tools "ghost")"#,
-            r#"(mcp-tools "off")"#,
+            r#"(mcp-list "ghost")"#,
+            r#"(mcp-list "off")"#,
         ],
     )
     .await;
@@ -230,12 +310,12 @@ async fn a_tool_error_a_server_error_and_a_refused_call_raise() {
         returned,
         [
             "mcp-call: the tool refused",
-            "mcp-resources: the MCP server answered with error -32002: Resource not found",
+            "mcp-list: the MCP server answered with error -32002: Resource not found",
             "mcp-call: MCP tool 'secret' is disabled for server 'files'",
             "mcp-call: MCP server 'files' has no tool 'absent'",
             "mcp-call: arguments must be a hash",
-            "mcp-tools: MCP server 'ghost' is not declared in the user's settings",
-            "mcp-tools: MCP server 'off' is disabled",
+            "mcp-list: MCP server 'ghost' is not declared in the user's settings",
+            "mcp-list: MCP server 'off' is disabled",
         ]
         .map(|reason| Err(format!("Error: Generic: {reason}")))
         .to_vec()
@@ -380,9 +460,9 @@ async fn a_server_that_dies_while_starting_reports_its_redacted_stderr() {
         .await
         .unwrap();
     assert_eq!(
-        values(kernel.as_ref(), &[r#"(mcp-tools "broken")"#]).await,
+        values(kernel.as_ref(), &[r#"(mcp-list "broken")"#]).await,
         vec![Err(
-            "Error: Generic: mcp-tools: MCP stdio server 'broken' failed during startup \
+            "Error: Generic: mcp-list: MCP stdio server 'broken' failed during startup \
              (MCP server 'broken' closed its connection). Stderr tail:\n\
              warming up\n\
              fixture: cannot open [REDACTED]"
@@ -402,14 +482,14 @@ async fn a_server_that_never_finishes_starting_is_killed_at_its_startup_timeout(
         .ensure(None, None)
         .await
         .unwrap();
-    let returned = values(kernel.as_ref(), &[r#"(mcp-tools "quiet")"#]).await;
+    let returned = values(kernel.as_ref(), &[r#"(mcp-list "quiet")"#]).await;
     // The mute fixture logs its process id as it starts.
     let killed = exited(&json!(fixture.log("quiet").concat())).await;
     assert_eq!(
         (returned, killed),
         (
             vec![Err(
-                "Error: Generic: mcp-tools: MCP stdio server 'quiet' failed during startup \
+                "Error: Generic: mcp-list: MCP stdio server 'quiet' failed during startup \
                  (MCP server 'quiet' did not finish starting within 3000 ms)."
                     .to_string()
             )],
@@ -522,12 +602,12 @@ async fn the_inventory_is_the_hosts_without_secrets_and_a_search_reports_its_sco
     let returned = values(
         kernel.as_ref(),
         &[
-            "(mcp-status)",
-            r#"(mcp-plugins #:connection-status "not_connected" #:limit 5.0 #:cursor "page-1")"#,
-            r#"(mcp-plugins #:search " notion ")"#,
-            r#"(mcp-tools #:search "ECHO")"#,
-            r#"(mcp-tools "files" #:search "a" #:limit 2)"#,
-            "(mcp-plugins #:limit 500)",
+            r#"(mcp-list #:kind "connections")"#,
+            r#"(mcp-list #:kind "catalog" #:connection-status "not_connected" #:limit 5.0 #:cursor "page-1")"#,
+            r#"(mcp-list #:kind "catalog" #:search " notion ")"#,
+            r#"(mcp-list #:search "ECHO")"#,
+            r#"(mcp-list "files" #:search "a" #:limit 2)"#,
+            r#"(mcp-list #:kind "catalog" #:limit 500)"#,
         ],
     )
     .await;
@@ -563,7 +643,7 @@ async fn the_inventory_is_the_hosts_without_secrets_and_a_search_reports_its_sco
                     "unavailable": [],
                 })),
                 Err(
-                    "Error: Generic: mcp-plugins: limit must be an integer between 1 and 200"
+                    "Error: Generic: mcp-list: limit must be an integer between 1 and 200"
                         .to_string()
                 ),
             ],
@@ -596,7 +676,7 @@ async fn the_background_listing_opens_each_server_once_and_reports_a_failing_one
     let kernel = provisioner.ensure(None, None).await.unwrap();
     let from_a_cell = values(
         kernel.as_ref(),
-        &[r#"(mcp-status (list "files" "ghost") #:timeout-ms 20000)"#],
+        &[r#"(mcp-list (list "files" "ghost") #:kind "connections" #:timeout-ms 20000)"#],
     )
     .await;
     let listing = json!([
@@ -771,7 +851,7 @@ async fn an_http_server_is_sent_the_refreshed_bearer_its_session_and_a_cancellat
     let returned = values(
         kernel.as_ref(),
         &[
-            r#"(mcp-tools "web")"#,
+            r#"(mcp-list "web")"#,
             r#"(mcp-call "web" "echo" (hash 'message "over http"))"#,
             r#"(mcp-call "web" "hang")"#,
         ],
@@ -835,12 +915,12 @@ async fn a_server_without_a_credential_bound_to_its_endpoint_is_not_contacted() 
         .unwrap();
     let returned = values(
         kernel.as_ref(),
-        &[r#"(mcp-tools "moved")"#, r#"(mcp-tools "pasted")"#],
+        &[r#"(mcp-list "moved")"#, r#"(mcp-list "pasted")"#],
     )
     .await;
     let unavailable = |server: &str| {
         Err(format!(
-            "Error: Generic: mcp-tools: MCP credentials for '{server}' are not available. \
+            "Error: Generic: mcp-list: MCP credentials for '{server}' are not available. \
              Ask the user to connect it (/plugins or /mcp login {server}); do not ask them to \
              set environment variables."
         ))

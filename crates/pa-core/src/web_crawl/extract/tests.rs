@@ -66,10 +66,10 @@ fn a_selector_that_is_neither_css_nor_xpath_is_refused() {
     );
 }
 
-/// `(web-extract html selectors)` from a cell: the HTML is read as given and
+/// `(web-read html #:select selectors)` from a cell: the HTML is read as given and
 /// the result is a hash of each name to its values.
 #[tokio::test(flavor = "multi_thread")]
-async fn web_extract_reads_given_html_from_a_cell() {
+async fn web_read_select_reads_given_html_from_a_cell() {
     use crate::kernel::shared::HostRequestHandlers;
     use crate::tools::kernel_cell::{ExecuteStatus, KernelExecuteOptions, KernelProvisioner};
 
@@ -91,7 +91,7 @@ async fn web_extract_reads_given_html_from_a_cell() {
         .await
         .unwrap();
     let cell = format!(
-        "(let ([found (web-extract {PAGE:?} (hash 'heading \"h1\" 'hrefs (list \"//a/@href\" \"//li[2]/a/@href\")))]) (list (hash-ref found 'heading) (hash-ref found 'hrefs)))"
+        "(let ([found (web-read {PAGE:?} #:select (hash 'heading \"h1\" 'hrefs (list \"//a/@href\" \"//li[2]/a/@href\")))]) (list (hash-ref found 'heading) (hash-ref found 'hrefs)))"
     );
     let result = kernel
         .execute(

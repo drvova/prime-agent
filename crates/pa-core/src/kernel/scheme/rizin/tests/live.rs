@@ -43,7 +43,7 @@ async fn the_installed_rizin_answers_over_its_pipe_and_its_death_is_reported() {
             r#"(begin (define s (rz-open "/bin/sh"))
                       (list (hash-ref s 'alive) (hash-ref s 'debug) (string? (hash-ref s 'version))))"#,
             r#"(rz-cmd s "pr 8 @ 0")"#,
-            r#"(hash-ref (hash-ref (rz-cmdj s "ij") 'core) 'file)"#,
+            r#"(hash-ref (hash-ref (rz-cmd s "ij" #:json #t) 'core) 'file)"#,
             r#"(starts-with? (rz-cmd s "aoi 1 @ entry0") "0x")"#,
             r#"(let* ([text (rz-cmd s "px 4000000 @ 0")]
                       [marks (filter (lambda (line) (starts-with? line "[")) (split-many text "\n"))])
@@ -104,7 +104,7 @@ async fn a_running_command_and_a_debuggee_are_interrupted_and_die_with_the_kerne
         &[&format!(
             r#"(begin (define s (rz-open "/bin/sh"))
                       (define d (rz-open "{sleep}" #:debug #t #:args (list "100")))
-                      (list (hash-ref s 'pid) (hash-ref d 'pid) (hash-ref (car (rz-cmdj d "dpj")) 'pid)))"#
+                      (list (hash-ref s 'pid) (hash-ref d 'pid) (hash-ref (car (rz-cmd d "dpj" #:json #t)) 'pid)))"#
         )],
     )
     .await
@@ -152,7 +152,7 @@ async fn a_running_command_and_a_debuggee_are_interrupted_and_die_with_the_kerne
         kernel.as_ref(),
         &[
             r#"(rz-cmd s "echo alive")"#,
-            r#"(hash? (rz-cmdj d "drj"))"#,
+            r#"(hash? (rz-cmd d "drj" #:json #t))"#,
             r"(map (lambda (session) (hash-ref session 'alive)) (rz-sessions))",
         ],
     )

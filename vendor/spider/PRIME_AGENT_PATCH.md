@@ -50,7 +50,7 @@ it.
 ## `src/utils/mod.rs`: a browser cookie as a `Set-Cookie` line, public
 
 `utils::browser_cookie_to_set_cookie` is `pub(crate)` upstream; it is made
-`pub` so `web-screenshot` / `web-pdf` keep the cookies their page ends with
+`pub` so `web-capture` keeps the cookies its page ends with
 in the session's jar exactly as a rendered crawl's pages do (domain, path,
 expiry and flags kept). Nothing else about it changes.
 

@@ -30,7 +30,7 @@ pub(in crate::catalog) const AGENT_WEB_READS: EventRule = EventRule {
 /// archive, crawls with a `#:format`/`#:transform` and with `#:extract`, rendered crawls and
 /// captures that started with cookies the session's jar held for the site, crawls with
 /// `#:automate` and the model calls it made, the slowest crawl,
-/// `web-screenshot` / `web-pdf` captures and their failures, `web-extract` calls and their
+/// `web-capture` png / pdf captures and their failures, `web-read #:select` calls and their
 /// failures, and `web-automate` runs (failed, refused because `web.crawl.ai` is off, the steps
 /// they ran and the model calls they made).
 /// Counts only: never a URL, a pattern, a selector, a title, a setting's value, or content.
