@@ -6,6 +6,7 @@ use super::{
     Worker, PROMPT_ABORTED_BEFORE_DELIVERY,
 };
 
+use pa_core::session::close::ClosedJobs;
 use pa_core::session_engine::kernel_activity::KernelBashAction;
 use serde_json::Value;
 
@@ -732,7 +733,7 @@ impl Worker {
     }
 
     async fn handle_kill(&self, payload: &Value) -> DaemonResponse {
-        let reason = KillCloseReason::from_payload(payload);
+        let reason = super::env::kill_close_reason(payload);
         // The session is closing: the continuation mint sites and
         // their settle-hook retries bail from here on.
         if let Some(agent_engine) = &self.agent_engine {
@@ -747,10 +748,10 @@ impl Worker {
         // cron jobs but cancels the subagent's RLM heartbeats; `shutdown` keeps them
         // all. The store cancel is durable, so the stopped session's own heartbeats
         // can never revive it.
-        let cancel_result = match reason {
-            KillCloseReason::Killed => self.cancel_session_scheduled_jobs().await,
-            KillCloseReason::Replaced => self.cancel_session_rlm_heartbeats().await,
-            KillCloseReason::Shutdown => Ok(()),
+        let cancel_result = match reason.jobs() {
+            ClosedJobs::CancelAll => self.cancel_session_scheduled_jobs().await,
+            ClosedJobs::CancelSubagentHeartbeats => self.cancel_session_rlm_heartbeats().await,
+            ClosedJobs::Keep => Ok(()),
         };
         if let Err(error) = cancel_result {
             return response_failure(None, "kill", &error.to_string(), None);
@@ -773,7 +774,7 @@ impl Worker {
             let mut core = self.core.lock().unwrap();
             // `shutdown` keeps the resume entry, so its file stays
             // live on disk; the killed and replaced closes archive.
-            if reason != KillCloseReason::Shutdown {
+            if reason.archives() {
                 if let Some(store) = core.store.as_mut() {
                     if let Err(error) = store.persist_entry(
                         "session_state",
@@ -813,8 +814,8 @@ impl Worker {
             agent_engine.dispose_kernel().await;
         }
         let active_session_id = self.core.lock().unwrap().active_session_id.clone();
-        let _ = self.emit_session_closed(&active_session_id, reason.session_closed_reason());
-        let _ = self.record_recovery(false, reason.recovery_operation());
+        let _ = self.emit_session_closed(&active_session_id, reason.wire());
+        let _ = self.record_recovery(false, super::env::recovery_operation(reason));
         self.release_session_lease();
         response_success(None, "kill", None)
     }

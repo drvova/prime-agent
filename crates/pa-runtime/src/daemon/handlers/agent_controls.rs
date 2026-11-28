@@ -25,6 +25,12 @@
 //! - The call `session.delete_child {session, child}` (`delete_rlm_subagent`,
 //!   `child` the subagent's handle): `{deleted}`, or `{deleted: false,
 //!   reason: "running"}` for a subagent with live work.
+//! - `session.stop {session, rlmCloseReason?}` closes a session as the old
+//!   `kill` did (pa-core's `session::close`): `killed` without the marker
+//!   cancels every job of the session and records its `archived` state,
+//!   `replaced` cancels a subagent's RLM heartbeats and archives, `shutdown`
+//!   keeps both; its clients are told the reason (`agent/<id>/closed`), and
+//!   any other marker is refused.
 //! - `session.stop {session, rlmLedgerDelete?, rlmChildId?}` of a subagent
 //!   (the old `kill` of a child's session, `subagents/controls.rs`): a plain
 //!   stop ends it and keeps its ledger edge; with `rlmLedgerDelete` (the
@@ -34,6 +40,7 @@
 //!   a boundary that is not written is `Failed to delete RLM subagent: ...`.
 
 use anyhow::Context as _;
+use pa_core::session::close::SessionCloseReason;
 use pa_core::session_engine::agent_controls::{
     unscoped_agent_message_status, SetRlmMaxDepth, RLM_MAX_DEPTH_STATE_CUSTOM_TYPE,
 };
@@ -148,8 +155,16 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 
     /// `session.stop` of session `id`, which is no open root (see the
     /// module documentation).
-    pub(super) async fn stop_subagent(&self, id: &str, stop: ChildStop) -> anyhow::Result<Value> {
+    pub(super) async fn stop_subagent(
+        &self,
+        id: &str,
+        stop: ChildStop,
+        reason: SessionCloseReason,
+    ) -> anyhow::Result<Value> {
         let deleting = matches!(stop, ChildStop::Delete { .. });
+        // A running subagent's close records its `archived` state first, as
+        // a root's does.
+        self.archive_closed(id, reason).await?;
         let stopped = match self.runtime.subagents().stop_child(id, stop).await {
             Ok(stopped) => stopped,
             Err(error) if deleting => anyhow::bail!("Failed to delete RLM subagent: {error:#}"),
@@ -161,8 +176,9 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             }
             ChildStopped::Ledger => {}
             ChildStopped::Session => {
-                // Stopped on purpose: its jobs wake nothing.
-                self.schedules.disarm(id);
+                // Closed on purpose: its jobs are cancelled as the close
+                // says, and those it keeps wake nothing.
+                self.schedules.close(id, reason.jobs())?;
                 // It leaves the roster, and its attached clients learn it
                 // was stopped, as a root's do.
                 self.feeds.due(id);
@@ -171,7 +187,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                         topic: Topic::new(format!("agent/{id}/closed"))?,
                         source: "runtime".to_string(),
                         session: Some(id.to_string()),
-                        payload: json!({ "reason": "killed" }),
+                        payload: json!({ "reason": reason.wire() }),
                         trust: Trust::Owner,
                         cause: None,
                         reply: None,

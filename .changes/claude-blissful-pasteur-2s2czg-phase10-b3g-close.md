@@ -1,0 +1,1 @@
+- Runtime daemon: a stopped session's scheduled jobs are cancelled and its transcript is marked archived, as on the old daemon, and a turn whose model call fails before it starts shows its error in the TUI instead of ending silently.

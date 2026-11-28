@@ -214,6 +214,10 @@ pub struct AssistantMessageDiagnostic {
     pub details: Option<serde_json::Value>,
 }
 
+/// A diagnostic of kind `kind` for `error`: its `error` is the error-info
+/// object the session's message shape reads (`{"message": ...}`, TS's
+/// serialized `Error`), so a row carrying it converts to the wire and the
+/// transcript like any other assistant row.
 pub fn assistant_message_diagnostic(
     kind: impl Into<String>,
     error: &anyhow::Error,
@@ -222,7 +226,7 @@ pub fn assistant_message_diagnostic(
     AssistantMessageDiagnostic {
         kind: kind.into(),
         timestamp: crate::now_ms(),
-        error: Some(serde_json::Value::String(format!("{error:#}"))),
+        error: Some(serde_json::json!({ "message": format!("{error:#}") })),
         details,
     }
 }

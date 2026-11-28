@@ -17,12 +17,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use pa_core::session::close::SessionCloseReason;
 use pa_core::session::lease::acquire_runtime_session_lease;
 use pa_core::session::manager::{get_session_file_path, load_entries_from_file, SessionManager};
 use pa_core::session::store::store;
 use pa_core::session_engine::kernel_activity::KernelBashAction;
 use pa_types::event_log::{NewEvent, Topic, Trust};
-use pa_types::session::FileEntry;
+use pa_types::session::{FileEntry, SessionStateStatus};
 use serde_json::{json, Value};
 
 use super::held::OpenSessions;
@@ -226,16 +227,27 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     async fn stop(&self, args: &Value) -> anyhow::Result<Value> {
         let id = string_arg(args, "session")?;
         let stop = Self::child_stop(args)?;
+        // Why it is closed (a child-close cascade's `rlmCloseReason`, else a
+        // stop), and what that does to its jobs and state: pa-core's rule,
+        // the old worker's `kill`.
+        let reason = SessionCloseReason::from_marker(
+            optional_string_arg(args, "rlmCloseReason")?.as_deref(),
+        )
+        .map_err(anyhow::Error::msg)?;
         if !self.open.contains(&id) {
             // A subagent's, or a stopped one's delete.
-            return self.stop_subagent(&id, stop).await;
+            return self.stop_subagent(&id, stop, reason).await;
         }
         anyhow::ensure!(
             matches!(stop, ChildStop::Stop),
             "Failed to delete RLM subagent: session {id} is not a subagent"
         );
-        // Stopped on purpose: its jobs wake nothing until it is opened again.
-        self.schedules.disarm(&id);
+        // Closed on purpose: its jobs are cancelled as the close says, and
+        // those it keeps wake nothing until it is opened again.
+        self.schedules.close(&id, reason.jobs())?;
+        // Its `archived` state lands before its running turn's aborted row,
+        // as the old worker wrote it.
+        self.archive_closed(&id, reason).await?;
         // Its `!` command is killed first, and none starts while it stops.
         let _closing = self.open.bashes.close(&id).await;
         // Its side runs end first, their cancelled events sent.
@@ -247,20 +259,47 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         // Closed: its lease goes, and it leaves the roster.
         self.open.remove(&id).await;
         self.feeds.due(&id);
-        // Its attached clients learn it was stopped, as the old worker's
-        // `session_closed {reason: "killed"}` told them.
+        // Its attached clients learn why it was stopped, as the old worker's
+        // `session_closed {reason}` told them.
         self.runtime
             .publish(NewEvent {
                 topic: Topic::new(format!("agent/{id}/closed"))?,
                 source: "runtime".to_string(),
                 session: Some(id.clone()),
-                payload: json!({ "reason": "killed" }),
+                payload: json!({ "reason": reason.wire() }),
                 trust: Trust::Owner,
                 cause: None,
                 reply: None,
             })
             .await?;
         Ok(json!({ "session": id, "stopped": true }))
+    }
+
+    /// Records running session `id`'s `archived` state when a close of
+    /// `reason` archives (pa-core's `session::close`), on its own runtime
+    /// through its engine's session manager; a session no engine runs (or
+    /// one in memory) records nothing.
+    async fn archive_closed(&self, id: &str, reason: SessionCloseReason) -> anyhow::Result<()> {
+        if !reason.archives() {
+            return Ok(());
+        }
+        let Some(live) = self.runtime.session_engine(id) else {
+            return Ok(());
+        };
+        let persistence = live.engine.session.shared_persistence();
+        live.runtime
+            .spawn(async move {
+                let mut manager = persistence.lock().await;
+                if manager.get_session_file().is_none() {
+                    return Ok(());
+                }
+                manager
+                    .append_session_state(SessionStateStatus::Archived)
+                    .map(drop)
+            })
+            .await
+            .context("the session's runtime ended during the close")?
+            .context("the session's archived state was not recorded")
     }
 
     fn snapshot(&self, args: &Value) -> anyhow::Result<Value> {
