@@ -163,6 +163,9 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
     }
 
     fn lane_changed(&self, session: &str, lane: &LaneState) {
+        if let Some(host) = self.sessions.host(session) {
+            host.set_input_queued(!lane.queued.is_empty() && !lane.suspended);
+        }
         if let Some(stream) = self.sessions.subagents().stream(session) {
             stream.lane_changed(lane);
         }

@@ -552,6 +552,7 @@ async fn autonomous_continuation_turns_cross_the_boundary_arms() {
         &goal,
         &run,
         /*unsettled_work*/ None,
+        /*queued_input*/ None,
     );
     admit(
         &mut boundary,

@@ -85,10 +85,19 @@
 //!   daemon (phase 8d-5c): [`history_import`].
 //! - A kernel webhook source: an authenticated `POST` runs an untrusted
 //!   turn, a bad token none (phase 9): [`webhooks`].
+//! - The `/mcp` page's catalog from the fetch lane's disk cache, and its
+//!   pinned cards' hint: [`mcp_catalog`].
 //! - A session's lease after its daemon was killed or gave it up, and the
 //!   crash count of a revived session's lifetime (phase 10): [`leases`].
 //! - A subagent spawn's gates: its `#:cwd`, the recursion bound and a name
 //!   admitted once (phase 10): [`spawn_gates`].
+//! - A goal rehydrated after its session's rebuild, and a prompt queued
+//!   behind the goal's continuations (phase 10): [`goal_recovery`].
+//! - A session pinned to its own provider when the retry budget is spent
+//!   ([`provider_pinning`]), an unsuccessful auto-compaction's outcome row
+//!   ([`compaction_outcome`]), an imported session's compaction
+//!   ([`import_compaction`]) and the session-local harness store
+//!   ([`kernel_harness`]) (phase 10).
 #![cfg(unix)]
 
 mod acp_calls;
@@ -97,19 +106,26 @@ mod agents_view;
 mod bash;
 mod checkpoints;
 mod client_surface;
+mod compaction_outcome;
 mod create;
 mod family;
+mod goal_recovery;
 mod goldens;
 mod heartbeats;
 mod history_import;
+mod import_compaction;
 mod info;
 mod keeper;
 mod kernel_activity;
+mod kernel_harness;
 mod leases;
 mod legacy_update;
 mod lifecycle;
+mod mcp_catalog;
 mod old_daemon;
 mod old_reference;
+mod openai_mock;
+mod provider_pinning;
 mod questions;
 mod queue_edit;
 mod reliability;

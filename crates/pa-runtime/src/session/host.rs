@@ -64,7 +64,7 @@ use crate::tasks::{SteerOffer, Steered, TaskOutcome};
 use crate::trust::{RunningTask, TaskTrust, TrustGate, WorkingDir};
 use crate::turn::autonomous::{latest_assistant_error, HeadlessAutonomous};
 use crate::turn::boundary::TurnBoundary;
-use crate::turn::continuation::{wire_continuation_hook, UnsettledWork};
+use crate::turn::continuation::{wire_continuation_hook, QueuedInput, UnsettledWork};
 use crate::turn::goal::PrintGoalSurface;
 
 /// How long a lifetime's runtime may take to drop its tasks once the
@@ -200,6 +200,10 @@ struct TurnControl {
     trust: TaskTrust,
     /// The session's stream: its queue view lists the deferred steers.
     stream: Arc<super::stream::SessionStream>,
+    /// Whether the session's lane holds work waiting to run (a task queued
+    /// behind the running one, its lane not parked): it owns the running
+    /// turn's end, so no continuation runs ahead of it.
+    input_queued: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -269,6 +273,7 @@ impl SessionHost {
             turn: Mutex::new(Turn::default()),
             trust: node.trust.clone(),
             stream: Arc::clone(&node.stream),
+            input_queued: std::sync::atomic::AtomicBool::new(false),
         });
         let thread = std::thread::Builder::new()
             .name(format!(
@@ -301,6 +306,14 @@ impl SessionHost {
             control,
             thread: Mutex::new(Some(thread)),
         })
+    }
+
+    /// Records whether the session's lane holds work waiting to run, as the
+    /// lane reports each change.
+    pub(crate) fn set_input_queued(&self, queued: bool) {
+        self.control
+            .input_queued
+            .store(queued, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Runs `task`, with the images its prompt carries, on the session's
@@ -1212,6 +1225,19 @@ impl<B: SessionBuilder> Lifetime<B> {
                     None => Box::pin(std::future::ready(false)),
                 }) as UnsettledWork
             };
+            // Work queued in the lane ends the run at its natural end, as the
+            // old daemon's queued session input did: a continuation never
+            // runs ahead of it.
+            let input_queued = {
+                let control = Arc::downgrade(&self.control);
+                Arc::new(move || {
+                    control.upgrade().is_some_and(|control| {
+                        control
+                            .input_queued
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                    })
+                }) as QueuedInput
+            };
             wire_continuation_hook(
                 engine,
                 &agent,
@@ -1219,6 +1245,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                 &goal,
                 &autonomous,
                 Some(unsettled),
+                Some(input_queued),
             );
             let global_harness_dir =
                 pa_core::refinement::get_global_harness_state_dir(&built.agent_dir);
