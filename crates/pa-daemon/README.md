@@ -79,7 +79,9 @@ roster walk (pa-core's `session_engine::rlm_roster`, moved from here and shared
 with the runtime daemon's saved catalog): `list --all` and the saved-session catalog
 merge non-resident ledger children (walk roots = saved + resident session
 files), so passivated children stay roster-visible (TS
-`walkPassiveRlmSubagents` / `withPassiveRlmDescendantInfos`). The saved
+`walkPassiveRlmSubagents` / `withPassiveRlmDescendantInfos`); the live
+roster's seeded, passivated and billed rows follow the same module's row
+rules, shared with the runtime daemon's roster. The saved
 session catalog (`pa_core::session::catalog`, shared with the runtime daemon)
 folds each file once into the durable catalog row; `list_saved_sessions`
 (`supervisor/sessions.rs`) streams its rows and merges the passive children,

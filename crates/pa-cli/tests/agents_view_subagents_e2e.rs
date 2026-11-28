@@ -21,101 +21,14 @@
 
 mod support;
 
+use support::runtime_daemon::RuntimeDaemon;
+
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
 
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewUiMode};
 use pa_tui::interactive::SessionSelection;
 use pa_tui::interactive::UiMode;
-
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        graceful_shutdown(&self.socket);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-/// Stop the daemon on `socket` by protocol; kill the child when it fails.
-fn graceful_shutdown(socket: &Path) {
-    let Ok(stream) = UnixStream::connect(socket) else {
-        return;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    let _ = reader.read_line(&mut hello); // daemon_hello
-    let command = serde_json::json!({
-        "type": "command",
-        "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let Ok(mut line) = serde_json::to_string(&command) else {
-        return;
-    };
-    line.push('\n');
-    if writer.write_all(line.as_bytes()).is_err() {
-        return;
-    }
-    let _ = writer.flush();
-    let _ = reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)));
-    let mut response = String::new();
-    let _ = reader.read_line(&mut response);
-}
-
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    // The in-process client forwards this process's env to the worker.
-    support::scrub_ambient_provider_credentials();
-    let socket = dir.join("daemon.sock");
-    let agent_dir = dir.join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(&socket, &mut child);
-    Supervisor { child, socket }
-}
 
 /// One saved-session fixture: a session header whose `parentSession`/`rlmDepth`
 /// give the catalog the subagent linkage, a display name, and an exchange.
@@ -149,7 +62,7 @@ fn write_fixture(
             index * 1000 + 1
         );
     }
-    std::fs::write(&path, content).expect("write fixture");
+    std::fs::write(&path, support::valid_transcript(&content)).expect("write fixture");
     path
 }
 
@@ -215,7 +128,7 @@ async fn panel_expand_drill_in_and_back_re_expands_the_tree() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
 
     // The fixture roster: a parent orchestrator, one child under it, and a
     // grandchild under the child (the linkage rides parentSession/rlmDepth).
@@ -257,7 +170,7 @@ async fn panel_expand_drill_in_and_back_re_expands_the_tree() {
         width: 120,
         height: 36,
     };
-    let options = view_options(&supervisor.socket, &session_dir, Vec::new(), None, None);
+    let options = view_options(&daemon.socket, &session_dir, Vec::new(), None, None);
     let view =
         pa_tui::agents_view::run_agents_view(options, AgentsViewUiMode::Headless(plan), None)
             .await
@@ -310,7 +223,7 @@ async fn panel_expand_drill_in_and_back_re_expands_the_tree() {
     // (TS `getTrayLocationLabel`).
     let child_options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: PathBuf::from("/tmp"),
         model_catalog: Vec::new(),
         model_configured_providers: std::collections::HashSet::default(),
@@ -388,7 +301,7 @@ async fn panel_expand_drill_in_and_back_re_expands_the_tree() {
         height: 36,
     };
     let options = view_options(
-        &supervisor.socket,
+        &daemon.socket,
         &session_dir,
         view.expanded_ancestors.clone(),
         view.selected_row_identity.clone(),
@@ -443,7 +356,7 @@ async fn panel_expand_drill_in_and_back_re_expands_the_tree() {
     );
 
     drop((grandchild_path, parent_path));
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// A `keybindings.json` fixture rebinding the open action (`app.agents.open` right
@@ -461,7 +374,7 @@ async fn agents_view_fires_user_keybindings_from_settings() {
         r#"{ "app.agents.open": "ctrl+g" }"#,
     )
     .expect("write keybindings.json");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
     let solo_path = write_fixture(
         &session_dir,
         "solo",
@@ -481,7 +394,7 @@ async fn agents_view_fires_user_keybindings_from_settings() {
         width: 120,
         height: 36,
     };
-    let mut options = view_options(&supervisor.socket, &session_dir, Vec::new(), None, None);
+    let mut options = view_options(&daemon.socket, &session_dir, Vec::new(), None, None);
     options.keybindings = pa_tui::keybindings::KeybindingsManager::create(&agent_dir);
     let view =
         pa_tui::agents_view::run_agents_view(options, AgentsViewUiMode::Headless(plan), None)
@@ -512,7 +425,7 @@ async fn agents_view_fires_user_keybindings_from_settings() {
         width: 120,
         height: 36,
     };
-    let mut options = view_options(&supervisor.socket, &session_dir, Vec::new(), None, None);
+    let mut options = view_options(&daemon.socket, &session_dir, Vec::new(), None, None);
     options.keybindings = pa_tui::keybindings::KeybindingsManager::create(&agent_dir);
     let view =
         pa_tui::agents_view::run_agents_view(options, AgentsViewUiMode::Headless(plan), None)
@@ -524,5 +437,5 @@ async fn agents_view_fires_user_keybindings_from_settings() {
         "the default open key no longer opens after the override"
     );
 
-    drop(supervisor);
+    drop(daemon);
 }
