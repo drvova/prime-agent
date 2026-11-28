@@ -319,7 +319,7 @@ impl Client {
 /// Whether the daemon still holds a record of the session (its descriptor file): a
 /// stopped session is retired once this is gone.
 fn session_recorded(agent_dir: &Path, socket_path: &Path, worker_id: &str) -> bool {
-    pa_daemon::descriptor::descriptor_dir(agent_dir, socket_path)
+    pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket_path)
         .join(format!("{worker_id}.json"))
         .exists()
 }
@@ -603,7 +603,7 @@ fn probe_worker(socket: &Path) {
 
 /// The socket the hosted session serves on, from its descriptor.
 fn worker_socket_path(agent_dir: &Path, socket: &Path, worker_id: &str) -> PathBuf {
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket);
     let content = std::fs::read_to_string(descriptor_dir.join(format!("{worker_id}.json")))
         .expect("descriptor file");
     let value: serde_json::Value = serde_json::from_str(&content).expect("descriptor json");

@@ -61,7 +61,9 @@ impl WorkerConfig {
             );
         let script = pa_types::session_scope::var_os(WORKER_SCRIPT_ENV)
             .map(PathBuf::from)
-            .and_then(|path| read_script_file(&path));
+            // The file holds the verification script's JSON; unreadable or not JSON is none.
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|content| serde_json::from_str::<Value>(&content).ok());
         let telemetry_disabled = pa_types::session_scope::var_os(WORKER_TELEMETRY_DISABLED_ENV)
             .map(|value| value == "1");
         Ok(WorkerConfig {
@@ -77,13 +79,4 @@ impl WorkerConfig {
             telemetry_disabled,
         })
     }
-}
-
-/// The verification script in the file at `path` (the create config's
-/// `script`, a path the supervisor hands its worker): its JSON, or `None`
-/// when the file cannot be read or is not JSON.
-#[must_use]
-pub fn read_script_file(path: &std::path::Path) -> Option<Value> {
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str::<Value>(&content).ok()
 }

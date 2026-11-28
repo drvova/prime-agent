@@ -201,8 +201,8 @@ fn crashable_script(panic: &str) -> Value {
 /// The crash log's records for one session (the daemon appends one JSON
 /// object per crash).
 fn crash_log(agent_dir: &Path, socket: &Path) -> Vec<Value> {
-    let path =
-        pa_daemon::descriptor::descriptor_dir(agent_dir, socket).join("session-crashes.jsonl");
+    let path = pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket)
+        .join("session-crashes.jsonl");
     match common::agent_state(&path) {
         Some(state) => state.crash_records(&path),
         None => pa_core::agent_state::crash_records(&path),
@@ -579,8 +579,8 @@ fn a_wedged_session_is_stopped_on_request_and_its_lease_frees() {
     );
     // The stop has retired the session when its record is gone; the daemon
     // still serves, and no session of this process holds a lease.
-    let descriptor =
-        pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket).join(format!("{session}.json"));
+    let descriptor = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket)
+        .join(format!("{session}.json"));
     let deadline = Instant::now() + Duration::from_secs(30);
     while descriptor.exists() {
         assert!(
@@ -1290,7 +1290,7 @@ fn a_restarted_daemon_still_marks_the_session_that_crashed_under_its_predecessor
     // The session is idle when the daemon goes (its journal's last word says
     // so): the next daemon does not revive it, and its fault mark has only
     // the durable record to come from.
-    let journal = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+    let journal = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket)
         .join(format!("{session}.recovery.jsonl"));
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {

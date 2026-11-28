@@ -1,14 +1,14 @@
 //! The corpus verification battery: every generated file loads through the
-//! PRODUCT's own readers (pa-daemon `SessionFile`, pa-core parse, the RLM
+//! PRODUCT's own readers (pa-core's session manager load and parse, the RLM
 //! ledger replay), the tree is seed-deterministic, and the marker discipline
 //! holds. Kept small and fast: tiny corpora in temp dirs only.
 
 use std::collections::HashSet;
 use std::path::Path;
 
+use pa_core::session::manager::load_entries_from_file;
 use pa_core::session::parse_session_entries;
 use pa_core::session_engine::rlm_ledger::RlmSpawnLedger;
-use pa_daemon::session_store::SessionFile;
 use pa_perf::corpus::{generate, CacheMode, CorpusOptions, Profile};
 
 fn tiny(profile: Profile, out: &Path) -> CorpusOptions {
@@ -18,7 +18,7 @@ fn tiny(profile: Profile, out: &Path) -> CorpusOptions {
     }
 }
 
-/// Every generated session file must parse through the daemon's own store.
+/// Every generated session file must load through the session manager's own reader.
 #[test]
 fn sessions_load_through_the_product_store() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -30,9 +30,12 @@ fn sessions_load_through_the_product_store() {
         if path.parent() != Some(&manifest.paths.sessions_dir) {
             continue;
         }
-        let store = SessionFile::open(&path).expect("the product store opens the file");
-        assert_eq!(store.header.id, path.file_stem().unwrap().to_string_lossy());
-        assert!(!store.entries().is_empty(), "the session carried its rows");
+        let entries = load_entries_from_file(&path, false);
+        let Some(pa_types::session::FileEntry::Header { header }) = entries.first() else {
+            panic!("the session manager loads the file under its header: {file}");
+        };
+        assert_eq!(header.id, path.file_stem().unwrap().to_string_lossy());
+        assert!(entries.len() > 1, "the session carried its rows");
         checked += 1;
     }
     assert_eq!(checked, options.sessions, "every sessions-dir file checked");

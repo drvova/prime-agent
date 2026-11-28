@@ -6,6 +6,7 @@ pub mod checkpoints;
 pub mod crash;
 pub mod discovery;
 pub mod display_transcript;
+pub mod hold_refusal;
 pub mod hosted;
 pub mod lease;
 pub mod manager;

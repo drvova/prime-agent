@@ -254,7 +254,7 @@ struct WorkerIdentity {
 }
 
 fn load_worker_identity(agent_dir: &Path, socket: &Path, worker_id: &str) -> WorkerIdentity {
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket);
     let content = std::fs::read_to_string(descriptor_dir.join(format!("{worker_id}.json")))
         .expect("descriptor file");
     let value: Value = serde_json::from_str(&content).expect("descriptor json");
@@ -498,8 +498,10 @@ fn direct_attach_ends_with_a_killed_daemon_and_reattaches_to_the_revived_session
         assert!(
             Instant::now() < deadline,
             "the session never came back: {list}\nlog: {}",
-            std::fs::read_to_string(pa_daemon::paths::daemon_log_path(&socket, &agent_dir))
-                .unwrap_or_default()
+            std::fs::read_to_string(pa_core::platform::daemon_endpoint::daemon_log_path(
+                &socket, &agent_dir
+            ))
+            .unwrap_or_default()
         );
         let sessions = list["data"]["sessions"]
             .as_array()

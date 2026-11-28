@@ -21,7 +21,7 @@ pub(crate) fn faux_script_env() -> Result<Option<serde_json::Value>, String> {
 
 /// The script in the environment variable `name`: the JSON itself, or (as
 /// the interactive and ACP harnesses give it to the supervisor) the path of
-/// a file holding it, read as the supervisor's worker reads it. `None` when
+/// a file holding it, as the supervisor hands its worker one. `None` when
 /// it is unset, an error when it does not parse.
 pub(crate) fn script_env(name: &str) -> Result<Option<serde_json::Value>, String> {
     let Some(script) = std::env::var_os(name) else {
@@ -29,7 +29,10 @@ pub(crate) fn script_env(name: &str) -> Result<Option<serde_json::Value>, String
     };
     match serde_json::from_str(&script.to_string_lossy()) {
         Ok(script) => Ok(Some(script)),
-        Err(error) => pa_daemon::worker::read_script_file(std::path::Path::new(&script))
+        // Not JSON itself: the path of a file that holds it.
+        Err(error) => std::fs::read_to_string(&script)
+            .ok()
+            .and_then(|content| serde_json::from_str(&content).ok())
             .map(Some)
             .ok_or_else(|| format!("invalid {name}: {error}")),
     }

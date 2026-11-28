@@ -226,7 +226,9 @@ impl Worker {
     ///
     /// Panics when the recovery mutex is poisoned.
     pub async fn serve(self: Arc<Self>) -> Result<()> {
-        if let Err(error) = crate::socket::prepare_socket_path(&self.config.socket_path).await {
+        if let Err(error) =
+            pa_core::platform::daemon_socket::prepare_socket_path(&self.config.socket_path).await
+        {
             // The no-listener confirmation of the close handshake: an
             // exit path already parked on the confirmation proceeds (its
             // `None` identity makes the cleanup a no-op) instead of
@@ -256,21 +258,24 @@ impl Worker {
         // confirmation always orders an exit path's identity read
         // behind the capture below: a bound listener's own cleanup
         // never reads the gap's `None` identity.
-        crate::socket::bind_capture_gap().await;
+        pa_core::platform::daemon_socket::bind_capture_gap().await;
         // Capture the bound file's identity before anything can replace
         // it (TS daemon-mode.ts:718, the listen callback, between the
         // identity capture and `restrictDaemonSocketPath`): the exit
         // cleanups compare against THIS value, never a fresh read, so a
         // successor's file at the same path survives this worker's exit.
         *self.bound_socket_identity.lock().unwrap() =
-            crate::socket::socket_identity(&self.config.socket_path);
-        crate::socket::restrict_socket_path(&self.config.socket_path);
+            pa_types::platform::socket_identity(&self.config.socket_path);
+        pa_core::platform::daemon_socket::restrict_socket_path(&self.config.socket_path);
         match WorkerRecoveryJournal::open(&self.config.recovery_journal_path) {
             Ok(journal) => *self.recovery.lock().unwrap() = Some(journal),
             Err(error) => {
                 drop(listener);
                 let identity = self.bound_socket_identity.lock().unwrap().clone();
-                crate::socket::cleanup_socket_path_after_close(&self.config.socket_path, identity);
+                pa_core::platform::daemon_socket::cleanup_socket_path_after_close(
+                    &self.config.socket_path,
+                    identity,
+                );
                 self.listener_closed.notify_one();
                 return Err(error);
             }

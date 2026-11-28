@@ -20,7 +20,7 @@ setting `"daemon": "supervisor"` or `PRIME_AGENT_RUNTIME_DAEMON=0` selects it (k
 release; `PRIME_AGENT_RUNTIME_DAEMON=1` selects the runtime daemon over the settings;
 `daemon_mode::DaemonKind::selected`). The runtime daemon (`print_runtime/daemon_session.rs`): the agent
 dir's lock (`pa_core::platform::RuntimeDaemonLock`), then `daemon2.sock` beside the resolved daemon
-socket through the supervisor's socket lifecycle (`pa_daemon::socket`: stale-socket cleanup,
+socket through the daemons' shared socket lifecycle (`pa_core::platform::daemon_socket`: stale-socket cleanup,
 owner-only permissions, the exit cleanup that spares a successor) and `pa_runtime::daemon::run`
 until SIGINT or SIGTERM. Its `SessionBuilder` opens the transcript a session's spec names
 (creating it under its id), applies the client's `SessionOptions` over the daemon's own run
@@ -78,7 +78,7 @@ dir's for `--no-session`, removed after the run). pa-cli supplies the
 flags selected, which keeps its `SessionLease`, plus the `--goal` seed, and
 each spawned subagent's engine: its model lane - a scripted child's queue
 under `children.<spawn name>`, or the catalog model the spawn names or the
-parent runs, resolved through pa-daemon's `rlm_child_model` - over its own
+parent runs, resolved through pa-core's `session_engine::rlm_child_model` - over its own
 transcript under the parent's artifacts), publishes each prompt as the session's
 `agent/<id>/input` (the `@file` images with the first), prints the
 session's `agent/<id>/stream` payloads in json mode until each task's

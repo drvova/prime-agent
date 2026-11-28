@@ -144,7 +144,7 @@ fn a_lost_shutdown_verdict_never_archives_the_session() {
     let (mut daemon, mut client, session, session_file) =
         boot_with_prompted_session(dir.path(), &busy_script());
     wait_for_busy_journal_evidence(&agent_dir, &socket, &session);
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket);
     let descriptor_path = descriptor_dir.join(format!("{session}.json"));
     let tombstone = || {
         std::fs::read_to_string(&descriptor_path)
@@ -234,7 +234,7 @@ fn a_revived_user_parked_queue_stays_parked() {
     let restart_before = pa_daemon::util::now_iso();
     let mut daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
     wait_for("the parked session was not revived", || {
         distinct(workers_registered_since(&log_path, &restart_before)) == vec![session.clone()]
     });

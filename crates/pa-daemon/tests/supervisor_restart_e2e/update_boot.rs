@@ -97,7 +97,7 @@ fn update_boot_revives_only_roster_kept_workers() {
         )],
     );
     wait_socket_ready(&socket);
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
 
     let deadline = Instant::now() + Duration::from_secs(15);
     let registered = loop {

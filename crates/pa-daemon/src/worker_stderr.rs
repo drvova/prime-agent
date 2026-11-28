@@ -174,7 +174,7 @@ fn socket_log_name(name: &str) -> bool {
 }
 
 pub(crate) fn prune_socket_logs(agent_dir: &Path, socket_path: &Path) -> usize {
-    let keep = crate::paths::daemon_log_path(socket_path, agent_dir);
+    let keep = pa_core::platform::daemon_endpoint::daemon_log_path(socket_path, agent_dir);
     prune_retained(&crate::paths::logs_dir(agent_dir), &keep, socket_log_name)
 }
 
@@ -348,7 +348,7 @@ mod tests {
         backdate(&rotated, 0);
         let fresh = write_log(&logs_dir, "fresh.sock.abcdef01.log", "line\n");
         let socket = dir.path().join("daemon.sock");
-        let keep = crate::paths::daemon_log_path(&socket, &agent_dir);
+        let keep = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
         std::fs::write(&keep, "supervisor started\n").expect("keep log");
         let foreign = write_log(&logs_dir, "worker-009.stderr.log", "worker\n");
         let jsonl = write_log(&logs_dir, "agent.jsonl", "{}\n");

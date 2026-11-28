@@ -21,7 +21,7 @@ pub enum AcquireOutcome {
 /// The per-socket update directory for one daemon socket path.
 #[must_use]
 pub fn socket_update_directory(agent_dir: &Path, socket_path: &str) -> PathBuf {
-    let hash = pa_daemon::paths::hash_key(socket_path, 64);
+    let hash = pa_core::platform::daemon_endpoint::hash_key(socket_path, 64);
     socket_update_dir(agent_dir, &hash)
 }
 
