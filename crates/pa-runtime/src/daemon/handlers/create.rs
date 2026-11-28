@@ -255,10 +255,15 @@ fn write_new_transcript(
     manager.new_session(&pa_core::session::manager::NewSessionOptions {
         id: Some(id.to_string()),
         parent_session: options.parent.as_ref().map(|parent| parent.path.clone()),
-        rlm_depth: options
-            .parent
-            .as_ref()
-            .map(|parent| u64::from(parent.rlm_depth)),
+        // A root session starts at depth 0, never at the `RLM_DEPTH` the daemon was started
+        // with (a daemon launched from an agent's command carries it), as the old supervisor's
+        // create wrote it.
+        rlm_depth: Some(
+            options
+                .parent
+                .as_ref()
+                .map_or(0, |parent| u64::from(parent.rlm_depth)),
+        ),
         credential_pin,
         profile: options.profile.clone(),
     });
@@ -275,4 +280,40 @@ fn write_new_transcript(
     manager
         .flush_now()
         .with_context(|| format!("write the transcript of session {id}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use pa_types::session_scope::SessionScope;
+
+    use super::write_new_transcript;
+
+    /// A new root session's transcript is at depth 0 even where `RLM_DEPTH`
+    /// is set (here in the scope the write runs in, as a daemon started from
+    /// an agent's command has it in its own environment).
+    #[test]
+    fn a_new_root_transcript_takes_no_depth_from_the_environment() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let _scope = pa_types::session_scope::enter(Some(SessionScope::new(
+            "root".to_string(),
+            dir.path().to_path_buf(),
+            BTreeMap::from([("RLM_DEPTH".to_string(), "3".to_string())]),
+            BTreeSet::new(),
+        )));
+        let path = dir.path().join("sessions").join("root.jsonl");
+        write_new_transcript(
+            "root",
+            &path,
+            dir.path(),
+            dir.path(),
+            &crate::SessionOptions::default(),
+            None,
+        )
+        .expect("the transcript is written");
+        let header =
+            pa_core::session::manager::read_session_header(&path).expect("the header reads");
+        assert_eq!(header.rlm_depth, Some(0));
+    }
 }

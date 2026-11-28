@@ -40,7 +40,8 @@ pub enum Query {
     /// context use.
     SessionUsage,
     /// `session.tree`: the session's entries as a tree (id, parent, kind,
-    /// label) and its leaf.
+    /// label), the same entries as the old `get_session_tree`'s `flatNodes`,
+    /// and its leaf.
     SessionTree,
     /// `session.context_tree`: the session's place in its family with its
     /// spend and context use.

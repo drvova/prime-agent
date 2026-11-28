@@ -25,7 +25,7 @@ fn export_jsonl_writes_a_saved_session_back_byte_for_byte() {
     std::fs::create_dir_all(&sessions).expect("sessions dir");
     let captured = std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/attribution-fold-captured.jsonl"),
+            .join("../pa-core/tests/fixtures/attribution-fold-captured.jsonl"),
     )
     .expect("the captured session");
     let header: serde_json::Value = serde_json::from_slice(

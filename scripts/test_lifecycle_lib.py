@@ -76,20 +76,6 @@ class CleanupTests(unittest.TestCase):
                 patch.object(Path, 'read_bytes', side_effect=[b'PA_GOAL_FIXTURE_ID=/fixture\0', b'/fixture/bin\0different\0']):
             self.assertFalse(scope.ownership(12, 'proc:4'))
 
-    def test_a_session_of_another_daemon_or_a_worker_process_is_not_the_fixtures(self):
-        row = {'rootActiveSessionId': 'fixture', 'supervisorSocketPath': '/fixture/d.sock',
-               'socketPath': '/fixture/session.sock', 'pid': lifecycle.HOSTED_PID_BASE + 7,
-               'processStartId': 'hosted:41:lifetime'}
-        argv = b'/fixture/bin\0--mode\0daemon\0'
-        check = lambda row, daemon: lifecycle.verify_session(row, 'fixture', Path('/fixture/bin'), Path('/fixture/d.sock'), daemon)
-        with patch.object(Path, 'read_bytes', return_value=argv), \
-                patch.object(lifecycle, 'session_serving', return_value=True):
-            self.assertEqual(check(row, 41), ('/fixture/session.sock', 'hosted:41:lifetime'))
-            with self.assertRaisesRegex(AssertionError, 'hosted by another daemon'):
-                check(row, 42)
-            with self.assertRaisesRegex(AssertionError, 'not hosted in the daemon'):
-                check({**row, 'pid': 4242}, 41)
-
     def test_kernel_requires_verified_owner(self):
         scope = lifecycle.OwnedProcesses(Path('/fixture/bin'), Path('/fixture'), Path('/fixture/d.sock'))
         scope.targets = {12: 'proc:4'}

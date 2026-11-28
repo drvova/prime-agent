@@ -41,30 +41,9 @@ impl AgentSessionEngine {
                 auth,
                 self.config.agent_dir.join("models.json"),
             );
-            if !registry.has_configured_auth(&preflight_model) {
-                let uses_oauth = registry
-                    .auth
-                    .get_all()
-                    .credential(&preflight_model.provider)
-                    .is_some_and(|credential| {
-                        matches!(credential, pa_core::auth::AuthCredential::Oauth { .. })
-                    });
-                let message = if uses_oauth {
-                    format!(
-                        "Authentication failed for \"{}\". Credentials may have expired or network is unavailable.\n\nRun /login to update credentials.",
-                        preflight_model.provider
-                    )
-                } else {
-                    let docs = pa_core::packages::docs_path();
-                    format!(
-                        "No API key found for {}.\n\nUse /login to log into a provider via OAuth or API key. See:\n  {}\n  {}",
-                        preflight_model.provider,
-                        docs.join("providers.md").display(),
-                        docs.join("models.md").display()
-                    )
-                };
+            if let Some(error) = registry.run_start_auth_refusal(&preflight_model) {
                 return TurnResult::Error {
-                    error: message,
+                    error,
                     assistant: None,
                 };
             }

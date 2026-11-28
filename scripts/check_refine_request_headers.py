@@ -3,7 +3,8 @@
 
 The refine request must send X-Prime-Team-ID: team-1 and Authorization:
 Bearer fixture-only. This checks those headers, not unrelated SDK headers or
-wire bytes.
+wire bytes. The refinement is the runtime daemon's `/refine` input on wire2
+(`check_refine_errors.refine`).
 """
 import argparse
 import json
@@ -14,8 +15,8 @@ import tempfile
 import threading
 
 from check_minimum_reasoning import Handler, Server
-from check_agent_bounce import RecordingClient as CatalogClient
-from lifecycle_lib import OwnedProcesses, TAG, digest, supervisor_env_for, finish
+from check_refine_errors import refine
+from lifecycle_lib import OwnedProcesses, TAG, Wire2Client, digest, env_for, finish
 
 
 class IdentityHandler(Handler):
@@ -25,10 +26,7 @@ class IdentityHandler(Handler):
 
 
 def observe(binary, root, receipt):
-    # On the supervisor's wire (`check_agent_bounce.Client`):
-    # `refine` is the supervisor's own command: no client of this build
-    # sends it, and wire2 has no form of it.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     env[TAG] = str(root)
     server = Server('refine')
     server.received_headers = []
@@ -57,8 +55,8 @@ def observe(binary, root, receipt):
             process = subprocess.Popen(command, cwd=root, env=env, stdout=log,
                 stderr=subprocess.STDOUT, start_new_session=True)
             scope.register(process, command)
-            client = CatalogClient(path, process)
-            receipt['hello'] = client.hello
+            client = Wire2Client(path, process)
+            receipt['hello'] = client.query('daemon.identity')
             created = client.call('create', config={
                 'cwd': str(root), 'agentDir': str(root / 'agent'),
                 'sessionDir': str(root / 'agent/sessions'),
@@ -66,8 +64,10 @@ def observe(binary, root, receipt):
                 'telemetryDisabled': True, 'noExtensions': True, 'noContextFiles': True})
             active = created.get('activeSessionId') or created.get('id')
             assert active, created
-            receipt['result'] = client.call('refine', activeSessionId=active,
-                                            instructions='Fixture no-op refinement')
+            done, outcome = refine(client, active)
+            receipt['done'], receipt['result'] = done, outcome
+            assert outcome.get('type') == 'refine_complete' and done.get('outcome') != 'failed', \
+                (done, outcome)
             assert server.error is None, server.error
             assert len(server.received_headers) == len(server.requests) == 1, server.requests
             headers = {key.lower(): value for key, value in server.received_headers[0].items()}
@@ -80,8 +80,8 @@ def observe(binary, root, receipt):
         finally:
             receipt['http_requests'] = server.requests
             receipt['http_headers'] = server.received_headers
-            receipt['raw_daemon_sent_hex'] = list(client.sent) if client else []
-            receipt['raw_daemon_received_hex'] = list(client.received) if client else []
+            receipt['raw_daemon_sent_hex'] = list(client.raw_sent) if client else []
+            receipt['raw_daemon_received_hex'] = list(client.raw_received) if client else []
             finish(scope, client, process, receipt)
             server.shutdown()
             server.server_close()

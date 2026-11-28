@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Observe actual refinement errors for each provider failure fixture."""
+"""Observe actual refinement errors for each provider failure fixture.
+
+The refinement runs as the TUI asks for it on the runtime daemon: a `/refine`
+input on the session (wire2), whose session command plans and applies it with
+pa-core's refiner and reports `refine_complete` or `refine_failed` on the
+session's stream. The check is that report's error.
+"""
 import argparse
 import http.server
 import json
@@ -9,8 +15,9 @@ import subprocess
 import tempfile
 import threading
 
-from check_agent_bounce import RecordingClient as CatalogClient
-from lifecycle_lib import OwnedProcesses, TAG, digest, supervisor_env_for, finish
+from lifecycle_lib import LIMIT, OwnedProcesses, TAG, TaskFailed, Wire2Client, digest, env_for, finish
+
+INSTRUCTIONS = 'Fixture no-op refinement'
 
 
 class Server(http.server.ThreadingHTTPServer):
@@ -57,11 +64,22 @@ class ErrorHandler(http.server.BaseHTTPRequestHandler):
 CASES = ('length', 'provider_error', 'normal_invalid')
 
 
+def refine(client, active):
+    """`/refine` on session `active` as the TUI sends it: the `done` of the
+    input's task (kept as evidence, whatever its outcome) and the refinement's
+    outcome on the session's stream (`refine_complete` or `refine_failed`)."""
+    client.follow(active)
+    try:
+        done = client.prompt_and_wait(active, {'text': '/refine ' + INSTRUCTIONS}, LIMIT)
+    except TaskFailed as failed:
+        done = failed.done
+    outcome = client.event(f'agent/{active}/stream', lambda payload: payload.get('type')
+                           in ('refine_complete', 'refine_failed'))
+    return done, outcome['payload']
+
+
 def observe(binary, root, case, receipt):
-    # On the supervisor's wire (`check_agent_bounce.Client`):
-    # `refine` is the supervisor's own command: no client of this build
-    # sends it, and wire2 has no form of it.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     env[TAG] = str(root)
     server = Server(case)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -88,8 +106,8 @@ def observe(binary, root, case, receipt):
             process = subprocess.Popen(command, cwd=root, env=env, stdout=log,
                 stderr=subprocess.STDOUT, start_new_session=True)
             scope.register(process, command)
-            client = CatalogClient(path, process)
-            receipt['hello'] = client.hello
+            client = Wire2Client(path, process)
+            receipt['hello'] = client.query('daemon.identity')
             created = client.call('create', config={
                 'cwd': str(root), 'agentDir': str(root / 'agent'),
                 'sessionDir': str(root / 'agent/sessions'),
@@ -97,16 +115,11 @@ def observe(binary, root, case, receipt):
                 'telemetryDisabled': True, 'noExtensions': True, 'noContextFiles': True})
             active = created.get('activeSessionId') or created.get('id')
             assert active, created
-            try:
-                client.call('refine', activeSessionId=active,
-                            instructions='Fixture no-op refinement')
-            except AssertionError as error:
-                response = error.args[0]
-                assert isinstance(response, dict) and response.get('command') == 'refine', response
-                assert response.get('success') is False and isinstance(response.get('error'), str), response
-                actual = response['error']
-            else:
-                raise AssertionError('refine must report the fixture failure')
+            done, outcome = refine(client, active)
+            receipt['done'], receipt['outcome'] = done, outcome
+            assert outcome.get('type') == 'refine_failed', 'refine must report the fixture failure'
+            actual = outcome.get('error')
+            assert isinstance(actual, str), outcome
             assert len(server.requests) == 1, server.requests
             receipt['actual_error'] = actual
             if case == 'length':
@@ -125,8 +138,8 @@ def observe(binary, root, case, receipt):
         finally:
             receipt['http_requests'] = server.requests
             receipt['http_headers'] = server.received_headers
-            receipt['raw_daemon_sent_hex'] = list(client.sent) if client else []
-            receipt['raw_daemon_received_hex'] = list(client.received) if client else []
+            receipt['raw_daemon_sent_hex'] = list(client.raw_sent) if client else []
+            receipt['raw_daemon_received_hex'] = list(client.raw_received) if client else []
             finish(scope, client, process, receipt)
             server.shutdown()
             server.server_close()

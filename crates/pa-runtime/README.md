@@ -416,7 +416,8 @@ SQLite implementations over `pa-log`.
   `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
   (`session_already_active`) and the old daemon is refused one this daemon holds; a
   `session.stop` publishes `agent/<id>/closed {reason: "killed"}` (stored) once the session is
-  closed, the old worker's `session_closed`; a session it
+  closed, the old worker's `session_closed` (`shutdown` or `replaced` when the stop's
+  `rlmCloseReason` names one, as the old `kill`'s child-close marker did); a session it
   holds open already (revived at boot, opened by another client) is answered as it runs
   (`"reused": true`), the old daemon's create-open reuse;
   `session.rename`, `session.label` and `session.set_effort` change an open session through its
@@ -655,7 +656,8 @@ SQLite implementations over `pa-log`.
   manager (an open session's on its runtime, a saved one's opened for the read):
   `session.context` (`active_context`), `session.usage` (`usage_host::session_usage_json`, the
   branch's message counts, the context use against the open model's window), `session.tree`
-  (`SessionTree` nodes and the leaf), `session.context_tree` (the root's label, model, spend and
+  (`SessionTree` nodes, the old `get_session_tree`'s `flatNodes` the TUI's `/tree` reads, and
+  the leaf), `session.context_tree` (the root's label, model, spend and
   context use) and `session.breakdown` (`ContextBreakdown`: the open engine's
   `context_categories`, the prompt-cache totals, the compactions, the spend); an open
   session's tree has a child node and its breakdown an agent row for each subagent below it,

@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Actual daemon/kernel launch-env check; owned Linux CI processes only.
+"""Actual runtime daemon/kernel launch-env check; owned Linux CI processes only.
 
-Exercises raw create wire (not TUI sender rendering), isolation, resident crash
-recovery, owned recovery, promotion lifetime, and durable secret exclusion.
+Exercises the raw `session.create` (wire2, not TUI sender rendering): a client's
+`launchEnv` reaches the session's kernel commands and their children over the
+daemon's own environment, re-filtered (no daemon-internal variable, no
+`RLM_DEPTH`); another session does not see it; a crashed session rebuilt in the
+same daemon keeps it (it is kept in memory for the session's lifetimes in this
+process, `pa-runtime` `daemon/handlers/create.rs`); an ephemeral session
+(`--no-session`, owned by its connection) runs in it, keeps it across its own
+rebuild and keeps no transcript; a new root session's transcript is at depth 0
+whatever `RLM_DEPTH` the daemon or the client carries;
+and the secret reaches no durable state: no file of the agent dir (its database
+included) and not the roster a prepared update writes (`pa_core::update::restart`).
 Requests/responses and actual provider tool results are retained. No ambient
 credential is copied. Sessions run inside the fixture's own daemon: recovery
-crashes only a descriptor-verified session of this fixture, through that
-session's own cell, and signals no process.
+crashes only a session this fixture created and its daemon holds open, through
+that session's own cell, and signals no process.
 """
 import argparse
 import http.server
@@ -19,22 +28,31 @@ import tempfile
 import threading
 import time
 
-from check_agent_bounce import Client
-from lifecycle_lib import digest, supervisor_env_for, session_serving, stop, transcript_text, verify_session
+from lifecycle_lib import (Wire2Client, digest, env_for, saved_transcripts, session_serving, stop,
+                           transcript_text, verify_runtime_session, wire2_socket)
 from check_restore_notice import texts
 
 MARKER = 'LAUNCH_ENV_PARITY='
 LIMIT = 35
-CODE = """(define (command-env name)
+# The probe reports the marker reversed (`reversed_marker`): the cell's output
+# is kept in the transcript, which must not hold the secret itself.
+CODE = """(define (reversed value)
+  (if (string? value) (list->string (reverse (string->list value))) value))
+(define (command-env name)
   (let ([seen (hash-ref (bash (string-append "printf '%s' \\"${" name "-__UNSET__}\\"")) 'output)])
     (if (equal? seen "__UNSET__") void seen)))
 (define result
-  (hash 'env (hash 'PA_ENV_MARKER (command-env "PA_ENV_MARKER")
+  (hash 'env (hash 'PA_ENV_MARKER (reversed (command-env "PA_ENV_MARKER"))
                    'PA_ENV_BASE (command-env "PA_ENV_BASE")
                    'PA_ENV_PRECEDENCE (command-env "PA_ENV_PRECEDENCE")
                    'PRIME_AGENT_INTERNAL_PARITY_CANARY (command-env "PRIME_AGENT_INTERNAL_PARITY_CANARY"))
-        'child_marker (hash-ref (bash "sh -c 'printf %s \\"${PA_ENV_MARKER:-ABSENT}\\"'") 'output)))
+        'child_marker (reversed (hash-ref (bash "sh -c 'printf %s \\"${PA_ENV_MARKER:-ABSENT}\\"'") 'output))))
 (displayln (string-append "LAUNCH_ENV_PARITY=" (value->jsexpr-string result)))"""
+
+
+def reversed_marker(value):
+    """`value` as the probe reports it."""
+    return None if value is None else value[::-1]
 
 
 class Provider(http.server.ThreadingHTTPServer):
@@ -93,58 +111,31 @@ def current_probe(requests, phase):
     return probes[0]
 
 
-class LaunchClient(Client):
-    def event(self, active, kind, since):
-        """The first `kind` event of session `active` among the frames from index `since` on."""
-        index = since
-        deadline = time.monotonic() + LIMIT
-        while time.monotonic() < deadline:
-            if index == len(self.wire):
-                line = self.reader.readline()
-                assert line, 'daemon closed connection'
-                self.wire.append(json.loads(line))
-            frame = self.wire[index]
-            index += 1
-            if (frame.get('type') == 'session_event' and frame.get('activeSessionId') == active
-                    and frame.get('event', {}).get('type') == kind):
-                return frame['event']
-        raise TimeoutError('session event never arrived: ' + kind)
-
-
-def worker_descriptor(agent, active, socket_path, deadline=None, previous=None):
-    deadline = deadline or time.monotonic() + LIMIT
-    while time.monotonic() < deadline:
-        candidates = list((agent / 'daemon-workers').rglob('*.json'))
-        for path in candidates:
-            try:
-                row = json.loads(path.read_text())
-                pid = row.get('pid')
-                if (row.get('rootActiveSessionId') == active
-                        and row.get('supervisorSocketPath') == str(socket_path)
-                        and isinstance(pid, int) and pid > 0 and pid != previous):
-                    return path, row
-            except (OSError, ValueError):
-                pass  # Atomic/transitional descriptor writes are not readiness.
-        threading.Event().wait(0.025)
-    raise AssertionError('fixture worker descriptor never reached readiness')
+def stream_event(client, active, kind, since):
+    """The first `kind` event on session `active`'s stream among the client's
+    events from index `since` on."""
+    topic = f'agent/{active}/stream'
+    return client.wait('session event ' + kind, lambda: next(
+        (event['payload'] for event in client.events[since:]
+         if event['topic'] == topic and event['payload'].get('type') == kind), None), LIMIT)
 
 
 def wait_gone(sessions):
-    """Sessions die with the daemon that hosts them: nothing may still serve their sockets."""
+    """Sessions die with the daemon that hosts them: nothing may still serve the
+    socket they were reached on (a runtime session's is its daemon's)."""
     deadline = time.monotonic() + LIMIT
     while time.monotonic() < deadline:
-        serving = [path for path, _generation in sessions if session_serving(path)]
+        serving = [path for path, _session in sessions if session_serving(path)]
         if not serving:
             return
         threading.Event().wait(0.025)
     raise AssertionError('owned fixture sessions were still served after shutdown: ' + str(serving))
 
 
-def restart(client, provider, phase, active, agent, binary, config, owned, observation, tracked, session_info):
-    socket_path = agent.parent / 'd.sock'
-    path, row = worker_descriptor(agent, active, socket_path)
-    tracked.add(verify_session(row, active, binary, socket_path, client.process.pid))
-    pid = row['pid']
+def restart(client, provider, phase, active, agent, binary, process, observation):
+    """Crash session `active` (one this fixture's daemon holds open) through its
+    own cell and wait for the daemon to rebuild it; answers its state after."""
+    observation['session_row'] = verify_runtime_session(client, active, binary, process.pid)
     # End the session with no teardown of its own: its cell outlives the abort
     # (the daemon's stuck-cell grace is the fixture's), so the daemon ends the
     # session as crashed.
@@ -153,52 +144,42 @@ def restart(client, provider, phase, active, agent, binary, config, owned, obser
     # its marker once it is inside and returns when the marker is gone.
     marker = agent.parent / ('wedged-' + phase)
     provider.phase, provider.code = phase, '(%%test-block %s)' % json.dumps(str(marker))
-    since = len(client.wire)
+    client.follow(active)
+    since = len(client.events)
     client.call('prompt', activeSessionId=active, message='Wedge ' + phase)
     deadline = time.monotonic() + LIMIT
     while not marker.exists():
         assert time.monotonic() < deadline, 'the cell never entered its blocking call'
-        time.sleep(0.02)
-    client.call('abort', activeSessionId=active)
-    crashed = observation['crash'] = client.event(active, 'session_crashed', since)
+        threading.Event().wait(0.02)
+    # The abort the TUI sends: the turn ends and the lane keeps going
+    # (a plain `abort` parks the lane until `session.resume_queue`).
+    client.call('abort_and_send_queued', activeSessionId=active)
+    crashed = observation['crash'] = stream_event(client, active, 'session_crashed', since)
     provider.code = CODE
     marker.unlink()
     assert crashed.get('kind') == 'stuck', crashed
     # The daemon rebuilds the crashed session and tells its attached client.
-    observation['recovered'] = client.event(active, 'session_recovered', since)
-    if owned:
-        # Same owner context; refreshed attach launchEnv is deliberately out of scope.
-        client.call('attach', activeSessionId=active, recoveryConfig=config)
-        observation['recovery_policy'] = 'Owned recovery retained the original client launchEnv'
-    else:
-        observation['recovery_policy'] = 'Automatically relaunched from durable descriptor without retained client launchEnv'
-    new_path, new_row = worker_descriptor(agent, active, socket_path, previous=pid)
-    assert new_path == path
-    replacement = verify_session(new_row, active, binary, socket_path, client.process.pid)
-    tracked.add(replacement)
-    observation['replacement_session_lifetime'] = replacement[1]
-    if not owned:
-        client.call('attach', activeSessionId=active)
-    state = client.call('get_state', activeSessionId=active)
-    observation['replacement_state'] = state
-    assert state['sessionId'] == session_info['sessionId'], 'recovery changed durable session identity'
-    assert state['sessionFile'] == session_info['sessionFile'], 'recovery changed durable session file'
-    return active
+    observation['recovered'] = stream_event(client, active, 'session_recovered', since)
+    observation['recovered_row'] = verify_runtime_session(client, active, binary, process.pid)
+    state = observation['replacement_state'] = client.call('get_state', activeSessionId=active)
+    return state
 
 
 def finish_daemon(client, process, kind, **payload):
     client.call(kind, **payload)  # Successful acknowledgement is mandatory.
     client.close()  # The daemon's close waits for every fixture client to end.
     process.wait(timeout=15)
-    assert process.returncode == 0, 'supervisor did not shut down successfully'
+    assert process.returncode == 0, 'fixture daemon did not shut down successfully'
+
+
+def durable_files_with(agent, secret):
+    """The agent dir's files (its database and its WAL included) holding `secret`."""
+    return [str(path) for path in sorted(agent.rglob('*'))
+            if path.is_file() and secret.encode() in path.read_bytes()]
 
 
 def run_case(binary, root, observed):
-    # On the supervisor's wire (`check_agent_bounce.Client`):
-    # the runtime daemon has no client-owned session with a transcript
-    # (`lifecycle: client_owned`), no `promote_owned_session`, and its prepared
-    # update keeps no worker roster.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     env.update(PA_ENV_BASE='daemon-base', PA_ENV_PRECEDENCE='daemon', RLM_DEPTH='3',
         PRIME_AGENT_STUCK_CELL_GRACE_MS='300', PRIME_AGENT_TEST_BLOCKING_CELL_SEAM='1')
     provider = Provider()
@@ -211,8 +192,9 @@ def run_case(binary, root, observed):
     settings = root / 'agent/settings.json'
     settings.write_text(json.dumps({'prewarmPythonKernel': False, 'onboardingCompleted': True,
         'telemetry': {'noticeShown': True}, 'defaultProvider': 'parity-local', 'defaultModel': 'parity-1'}))
+    socket_path = root / 'd.sock'
     log = open(root / 'daemon.log', 'wb')
-    process = subprocess.Popen([str(binary), '--mode', 'daemon', '--daemon-socket', str(root / 'd.sock')],
+    process = subprocess.Popen([str(binary), '--mode', 'daemon', '--daemon-socket', str(socket_path)],
         cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     client = None
     probes = observed['probes'] = {}
@@ -225,64 +207,72 @@ def run_case(binary, root, observed):
         'model': 'parity-1', 'noExtensions': True, 'noContextFiles': True, 'telemetryDisabled': True}
     launch = {'PA_ENV_MARKER': secret, 'PA_ENV_PRECEDENCE': 'client', 'RLM_DEPTH': '9',
               'PRIME_AGENT_INTERNAL_PARITY_CANARY': 'must-not-inherit'}
-    def create(name, lifecycle, forwarded):
-        row = client.call('create', name=name, lifecycle=lifecycle, config=config, **forwarded)
-        active = row.get('activeSessionId') or row.get('id')
-        assert active
+    def create(name, forwarded):
+        row = client.call('create', name=name, config=config, **forwarded)
+        active = row.get('activeSessionId')
+        assert active, row
+        client.call('attach', activeSessionId=active)
+        verify_runtime_session(client, active, binary, process.pid)
+        tracked.add((str(wire2_socket(socket_path)), active))
+        if forwarded.get('noSession'):
+            return active, row
         header = json.loads(transcript_text(root / 'agent', row['sessionFile']).splitlines()[0])
         assert header.get('rlmDepth', 0) == 0, header
         session_info[name] = {'sessionId': header['id'], 'sessionFile': row['sessionFile']}
         assert row['sessionId'] == header['id'], 'create response/file identity mismatch'
-        client.call('attach', activeSessionId=active)
-        _, descriptor = worker_descriptor(root / 'agent', active, root / 'd.sock')
-        tracked.add(verify_session(descriptor, active, binary, root / 'd.sock', process.pid))
-        return active
+        return active, row
     def probe(active, phase, expected_marker, expected_precedence):
         provider.phase = phase
-        # A submit as the TUI sends it: after a crash it resumes the queue the
-        # crash's abort parked, which a rebuilt session keeps parked.
+        # A submit as the TUI sends it while a turn may still stream.
         client.call('prompt_and_wait', activeSessionId=active, message='Probe ' + phase,
             streamingBehavior='followUp')
         result = current_probe(provider.requests[phase], phase)
-        expected = {'env': {'PA_ENV_MARKER': expected_marker, 'PA_ENV_BASE': 'daemon-base',
+        expected = {'env': {'PA_ENV_MARKER': reversed_marker(expected_marker), 'PA_ENV_BASE': 'daemon-base',
             'PA_ENV_PRECEDENCE': expected_precedence, 'PRIME_AGENT_INTERNAL_PARITY_CANARY': None},
-            'child_marker': expected_marker or 'ABSENT'}
+            'child_marker': reversed_marker(expected_marker or 'ABSENT')}
         assert result == expected, (phase, result, expected)
         probes[phase] = result
     try:
-        client = LaunchClient(root / 'd.sock', process)
-        client.process = process
-        a = create('launch-a', 'resident', {'launchEnv': launch})
-        b = create('launch-b', 'resident', {})
+        client = Wire2Client(socket_path, process)
+        a, _ = create('launch-a', {'launchEnv': launch})
+        b, _ = create('launch-b', {})
         probe(a, 'resident_initial', secret, 'client')
         probe(b, 'isolated_other', None, 'daemon')
-        observed['resident_recovery'] = {}
-        a = restart(client, provider, 'resident_crash', a, root / 'agent', binary, config, False, observed['resident_recovery'], tracked, session_info['launch-a'])
-        probe(a, 'resident_recovered', None, 'daemon')
-        owner = create('launch-owned', 'client_owned', {'launchEnv': launch})
+        observed['resident_recovery'] = recovery = {}
+        state = restart(client, provider, 'resident_crash', a, root / 'agent', binary, process, recovery)
+        assert state['sessionId'] == session_info['launch-a']['sessionId'], 'recovery changed durable session identity'
+        assert state['sessionFile'] == session_info['launch-a']['sessionFile'], 'recovery changed durable session file'
+        recovery['recovery_policy'] = 'Rebuilt in the same daemon with the client launchEnv it keeps in memory'
+        probe(a, 'resident_recovered', secret, 'client')
+        # The client-owned session: ephemeral, owned by this connection, kept nowhere.
+        owner, owned = create('launch-owned', {'noSession': True, 'launchEnv': launch})
+        observed['owned_create'] = owned
         probe(owner, 'owned_initial', secret, 'client')
-        observed['owned_recovery'] = {}
-        owner = restart(client, provider, 'owned_crash', owner, root / 'agent', binary, config, True, observed['owned_recovery'], tracked, session_info['launch-owned'])
+        observed['owned_recovery'] = recovery = {}
+        restart(client, provider, 'owned_crash', owner, root / 'agent', binary, process, recovery)
+        recovery['recovery_policy'] = 'Rebuilt in the same daemon, in memory, with the client launchEnv'
         probe(owner, 'owned_recovered', secret, 'client')
-        client.call('promote_owned_session', activeSessionId=owner)
-        observed['promoted_recovery'] = {}
-        owner = restart(client, provider, 'promoted_crash', owner, root / 'agent', binary, config, False, observed['promoted_recovery'], tracked, session_info['launch-owned'])
-        probe(owner, 'promoted_recovered', None, 'daemon')
-        descriptors = list((root / 'agent/daemon-workers').rglob('*.json'))
-        assert len(descriptors) >= 3, 'durable descriptor audit would be empty'
-        for path in descriptors:
-            assert secret not in path.read_text(), 'launch secret leaked into durable worker metadata'
-        observed['durable_launch_secret_absent'] = True
+        owned_rows = [row for row in client.query('sessions.list', open=True)['sessions']
+                      if row.get('session') == owner]
+        observed['owned_row'] = owned_rows
+        assert len(owned_rows) == 1 and owned_rows[0].get('open') is True, 'the ephemeral session is not open'
+        stored = [str(locator) for locator in saved_transcripts(root / 'agent', binary)
+                  if owner in str(locator)]
+        assert not stored, 'the ephemeral session left a transcript: ' + str(stored)
         prepared = client.call('prepare_update_restart', updateId='launch-env-parity')
         prepared_transaction = True
         observed['prepare_update'] = prepared
         assert prepared.get('state') == 'prepared', 'update did not prepare'
-        rosters = list((root / 'agent/update-restarts').glob('*/prepared/launch-env-parity/roster.json'))
+        rosters = list((root / 'agent').rglob('prepared/launch-env-parity/roster.json'))
         assert len(rosters) == 1, 'actual prepared roster missing/ambiguous'
-        roster = json.loads(rosters[0].read_text())
-        assert len(roster['workers']) == 3, 'prepared roster omitted fixture workers'
+        roster = observed['update_roster'] = json.loads(rosters[0].read_text())
+        rostered = sorted(row['active_session_id'] for row in roster.get('sessions', []))
+        # The kept sessions; the ephemeral one has nothing to restore.
+        assert rostered == sorted([a, b]), ('prepared roster is not the fixture\'s kept sessions', rostered)
         assert secret not in json.dumps(roster), 'launch secret leaked into actual update roster'
-        observed['update_roster'] = roster
+        leaked = durable_files_with(root / 'agent', secret)
+        assert not leaked, 'launch secret leaked into durable state: ' + str(leaked)
+        observed['durable_launch_secret_absent'] = True
     except BaseException as error:
         primary_error = error
         observed['primary_error'] = str(error)
@@ -298,11 +288,11 @@ def run_case(binary, root, observed):
                         finish_daemon(client, process, 'commit_update_restart', updateId='launch-env-parity')
                     else:
                         finish_daemon(client, process, 'shutdown', force=True)
-                assert process.returncode == 0, 'supervisor did not shut down successfully'
+                assert process.returncode == 0, 'fixture daemon did not shut down successfully'
                 wait_gone(tracked)
                 observed['cleanup_verified'] = True
             else:
-                raise AssertionError('fixture supervisor did not establish cleanup control')
+                raise AssertionError('fixture daemon did not establish cleanup control')
         except Exception as error:
             cleanup_error = error
             observed['cleanup_error'] = str(error)
@@ -323,8 +313,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--receipt', type=Path, required=True)
     args = parser.parse_args()
-    receipt = {'verified': False, 'scope': 'Raw daemon create, the env of the kernel commands and their children, '
-        'env clearing/retention, internal-prefixed launchEnv re-filtering and durable launch-env secret exclusion.',
+    receipt = {'verified': False, 'scope': 'Raw runtime daemon session.create, the env of the kernel commands and '
+        'their children, env isolation/retention across a crash rebuild, an ephemeral owned session, '
+        'internal-prefixed launchEnv re-filtering and durable launch-env secret exclusion.',
         'not_verified': ['TUI/ACP sender env collection', 'refreshed attach launchEnv recovery',
                          'rlm-spawn and minimal depth-0 root forwarding']}
     try:
