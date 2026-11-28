@@ -1,0 +1,1 @@
+- On the default daemon a session opened again no longer builds an engine for each of its finished subagents: each is built the first time it is used (a message to it, a read of its messages, a rename, a task or a due scheduled job), as the old daemon did.

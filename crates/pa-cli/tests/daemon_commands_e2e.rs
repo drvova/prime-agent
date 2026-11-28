@@ -342,9 +342,10 @@ fn create_session(
         .to_string()
 }
 
-/// Run a CLI in an isolated env (agent dir + TMPDIR point into the temp dir).
+/// Run a CLI in an isolated env (agent dir + TMPDIR point into the temp dir),
+/// on the default daemon (the runtime daemon).
 fn run_cli(binary: &Path, dir: &Path, agent_dir: &Path, args: &[&str]) -> Output {
-    run_cli_for(Kind::Old, &[], binary, dir, agent_dir, args)
+    run_cli_for(Kind::Runtime, &[], binary, dir, agent_dir, args)
 }
 
 /// [`run_cli`] with the daemon `kind` selected and `env` set.
@@ -805,17 +806,15 @@ fn cli_commands_end_to_end(kind: Kind) {
 fn cli_connect_error_matches_ts_golden() {
     let dir = fixture_dir();
     let agent_dir = dir.path().join("agent");
-    let missing = dir.path().join("missing.sock");
+    let given = dir.path().join("missing.sock");
+    // The runtime daemon's socket beside the one given: the one the CLI connects to.
+    let missing = pa_runtime::daemon::socket_path(&given);
     let cli = PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
     let output = run_cli(
         &cli,
         dir.path(),
         &agent_dir,
-        &[
-            "--daemon-socket",
-            missing.to_string_lossy().as_ref(),
-            "list",
-        ],
+        &["--daemon-socket", given.to_string_lossy().as_ref(), "list"],
     );
     assert_eq!(output.status.code(), Some(1));
 

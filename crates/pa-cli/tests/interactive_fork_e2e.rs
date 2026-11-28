@@ -5,29 +5,21 @@
         reason = "`interactive_fork_launch_copies_and_the_daemon_opens_the_fork` is one scenario, top to bottom"
     )
 )]
-#![cfg_attr(
-    unix,
-    expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "the pids read back from the wire and passed to `kill` are kernel-bounded"
-    )
-)]
 
 //! End-to-end verifier for the interactive `--fork` launch: the fork copies
 //! its source into a fresh session file client-side, the daemon opens the
 //! copy — never the source — through the create `sessionPath`, and the TUI
 //! renders the copied transcript and takes new turns on the fork. The source
-//! stays hosted by a live worker for the whole run (TS parity: no
+//! stays hosted by the live runtime daemon for the whole run (TS parity: no
 //! daemon-active guard on the fork arm).
 #![cfg(unix)]
 
 mod support;
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
@@ -35,6 +27,7 @@ use nix::pty::{openpty, Winsize};
 use serde_json::{json, Map, Value};
 
 use pa_types::daemon::DaemonCommand;
+use support::runtime_daemon::RuntimeDaemon;
 
 /// The parent hands the child its launch through this env var; unset, the
 /// test passes trivially (a plain `cargo test` runs only the parent).
@@ -64,226 +57,9 @@ fn interactive_fork_child_mode() {
     .expect("write the launch outcome");
 }
 
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-/// Stop the supervisor by protocol and reap every worker it spawned, so a
-/// failing test leaks nothing. Drop runs even on panic.
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        graceful_shutdown(&self.socket);
-        // Freeze the whole tree before any kill: a worker's grandchildren (the
-        // commands its session started) outlive a worker-only kill and
-        // keep writing into the test's temp dir after its removal. A stopped
-        // process cannot fork, so the walk settles once every member is stopped.
-        let root = self.child.id();
-        unsafe {
-            libc::kill(root as i32, libc::SIGSTOP);
-        }
-        let mut tree = Vec::new();
-        loop {
-            let mut walked = descendants_of(root);
-            walked.sort_unstable();
-            if walked == tree {
-                break;
-            }
-            for &pid in &walked {
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGSTOP);
-                }
-            }
-            tree = walked;
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        for pid in tree {
-            kill_worker(pid);
-        }
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-/// Every process below `root`, following parent links.
-fn descendants_of(root: u32) -> Vec<u32> {
-    let mut tree = Vec::new();
-    let mut frontier = vec![root];
-    while let Some(pid) = frontier.pop() {
-        for child in child_pids_of(pid) {
-            tree.push(child);
-            frontier.push(child);
-        }
-    }
-    tree
-}
-
-#[cfg(target_os = "linux")]
-fn child_pids_of(ppid: u32) -> Vec<u32> {
-    let mut pids = Vec::new();
-    let entries = std::fs::read_dir("/proc").expect("read /proc");
-    for entry in entries.flatten() {
-        let Ok(entry_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{entry_pid}/stat")) else {
-            continue;
-        };
-        // `comm` can contain spaces and parens, so parse after the last ')'.
-        let Some((_, rest)) = stat.rsplit_once(')') else {
-            continue;
-        };
-        let mut fields = rest.split_whitespace();
-        fields.next();
-        let Ok(parent) = fields.next().unwrap_or_default().parse::<u32>() else {
-            continue;
-        };
-        if parent == ppid {
-            pids.push(entry_pid);
-        }
-    }
-    pids
-}
-
-/// Liveness that ignores zombies: an unreaped child keeps its `/proc`
-/// entry, so path existence alone would call an exited process alive.
-#[cfg(target_os = "linux")]
-fn process_alive(pid: u32) -> bool {
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let Some((_, rest)) = stat.rsplit_once(')') else {
-        return false;
-    };
-    let state = rest.split_whitespace().next().unwrap_or_default();
-    !state.starts_with('Z') && !state.starts_with('X')
-}
-
-/// The children of `ppid` without `/proc`: one `ps` listing of every pid's parent.
-#[cfg(not(target_os = "linux"))]
-fn child_pids_of(parent_pid: u32) -> Vec<u32> {
-    let output = Command::new("ps")
-        .args(["-A", "-o", "pid=,ppid="])
-        .output()
-        .expect("run ps");
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse().ok()?;
-            let parent: u32 = fields.next()?.parse().ok()?;
-            (parent == parent_pid).then_some(pid)
-        })
-        .collect()
-}
-
-/// Liveness without `/proc`: the platform probe, which also reads zombies as dead.
-#[cfg(not(target_os = "linux"))]
-fn process_alive(pid: u32) -> bool {
-    pa_types::platform::process::is_process_alive(pid).unwrap_or(false)
-}
-
-fn kill_worker(pid: u32) {
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
-    }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while process_alive(pid) {
-        assert!(
-            Instant::now() < deadline,
-            "worker {pid} survived the teardown kill"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-/// Send the daemon protocol shutdown and return the supervisor pid it
-/// names, so the caller can reap the detached workers it spawned.
-fn graceful_shutdown(socket: &Path) -> Option<u32> {
-    let Ok(stream) = std::os::unix::net::UnixStream::connect(socket) else {
-        return None;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return None;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    if reader.read_line(&mut hello).is_err() {
-        return None;
-    }
-    let Ok(hello) = serde_json::from_str::<Value>(hello.trim()) else {
-        return None;
-    };
-    let supervisor_pid = hello["supervisorPid"].as_u64()? as u32;
-    let shutdown = json!({
-        "type": "command",
-        "id": "fork-e2e-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let mut line = serde_json::to_string(&shutdown).expect("serialize shutdown");
-    line.push('\n');
-    let _ = writer.write_all(line.as_bytes());
-    let _ = writer.flush();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while process_alive(supervisor_pid) {
-        if Instant::now() > deadline {
-            return Some(supervisor_pid);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    None
-}
-
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, session_dir: &Path) -> Supervisor {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
-        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in the
-        // test's temp dir, which a SIGKILLed worker never cleans up after.
-        .env("TMPDIR", socket.parent().expect("socket dir"))
-        .env("PRIME_AGENT_SESSION_DIR", session_dir)
-        .env("PI_OFFLINE", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-        pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    // The supervisor-lost exit window (a short one for the teardown) and
-    // the worker connect budget (the gate boxes are slower than a laptop).
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    command.env("PA_DAEMON_WORKER_CONNECT_TIMEOUT_MS", "90000");
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(socket, &mut child);
-    Supervisor {
-        child,
-        socket: socket.to_path_buf(),
-    }
-}
-
-/// Open the source session as a live daemon worker (a create with
-/// `sessionPath` over the socket), so the fork runs against a session the
-/// daemon already hosts. Returns the worker's active session id.
+/// Open the source session on the live daemon (a create with `sessionPath`
+/// over the socket), so the fork runs against a session the daemon already
+/// hosts. Returns the daemon's session id.
 async fn make_session_active(socket: &Path, session_path: &Path, cwd: &Path) -> String {
     let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(socket)
         .await
@@ -442,8 +218,23 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     pa_core::settings::SettingsManager::create(&cwd, &agent_dir)
         .set_onboarding_shown(true)
         .expect("onboarding flag");
-    let socket = root.join("daemon.sock");
-    let supervisor = spawn_supervisor(&socket, &agent_dir, &session_dir);
+    // The interactive launch child on a pty forks the hosted source; the
+    // runtime daemon answers each session's turns from a queue of its own,
+    // read from the script it was started with, so the fork's first live
+    // turn takes the first response.
+    let fork_script = root.join("script-fork.json");
+    std::fs::write(
+        &fork_script,
+        json!({ "responses": ["forkfollowanswer"] }).to_string(),
+    )
+    .expect("write fork script");
+    let daemon = RuntimeDaemon::spawn_with(&root, |command| {
+        command
+            .env("PRIME_AGENT_SESSION_DIR", &session_dir)
+            .env("PI_OFFLINE", "1")
+            .env("PRIME_AGENT_FAUX_SCRIPT", &fork_script);
+    });
+    let socket = daemon.daemon_socket.clone();
 
     // The source session: a real print-mode run of the real binary (the
     // same isolated-home contract the print runtime e2e uses). The print
@@ -472,25 +263,13 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     let source_entries = read_entries(&source);
     let source_id = source_entries[0]["id"].as_str().expect("id").to_string();
 
-    // Host the source on a live worker: the fork must work on a session the
-    // daemon already owns (the copy never touches the hosted file). The
-    // daemon hosts a saved file under its own worker id, so the response
-    // names that id.
-    let active_source = make_session_active(&socket, &source, &cwd).await;
-    assert!(!active_source.is_empty(), "the source hosts on a worker");
+    // Host the source on the live daemon: the fork must work on a session the
+    // daemon already owns (the copy never touches the hosted file).
+    let active_source = make_session_active(&daemon.socket, &source, &cwd).await;
+    assert!(!active_source.is_empty(), "the daemon hosts the source");
     let source_before = support::saved_transcript(&agent_dir, &source);
 
-    // The interactive launch child on a pty, forking the hosted source by
-    // its id; the seam reads PRIME_AGENT_FAUX_SCRIPT as a script FILE path.
-    // The scripted engine indexes responses by the prompt ordinal
-    // (message_count / 2): the copied exchange occupies index 0, so the
-    // first LIVE turn runs at index 1.
-    let fork_script = root.join("script-fork.json");
-    std::fs::write(
-        &fork_script,
-        json!({ "responses": ["copied exchange slot", "forkfollowanswer"] }).to_string(),
-    )
-    .expect("write fork script");
+    // The interactive launch child on a pty, forking the hosted source by its id.
     let outcome = root.join("outcome");
     let pty = openpty(
         Some(&Winsize {
@@ -520,8 +299,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
         .env("PRIME_AGENT_SESSION_DIR", &session_dir)
         .env("PI_OFFLINE", "1")
         .env("PRIME_AGENT_FAUX_SCRIPT", fork_script.display().to_string())
-        // The launch reaches the supervisor this test started (the runtime daemon is the default).
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
+        .env_remove("PRIME_AGENT_RUNTIME_DAEMON")
         .env_remove("TMUX")
         .env_remove("RLM_DEPTH")
         .stdin(slave.try_clone().expect("clone pty slave"))
@@ -540,7 +318,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     let deadline = Instant::now() + Duration::from_secs(45);
     let (fork_file, fork_id) = 'hosted: {
         loop {
-            for (file, id) in daemon_roster(&socket).await {
+            for (file, id) in daemon_roster(&daemon.socket).await {
                 if pa_core::session::lease::canonical_session_path(&file) != source_canonical {
                     break 'hosted (file, id);
                 }
@@ -554,10 +332,9 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     };
 
     let fork_entries = read_entries(&fork_file);
-    // The roster row hosts the fork under the daemon's own worker id
-    // (every create does, saved files included); the fork file's own
-    // header id stays on disk and is a fresh one.
-    assert!(!fork_id.is_empty(), "the fork hosts under a worker id");
+    // The roster row hosts the fork under a session id; the fork file's own
+    // header id is a fresh one.
+    assert!(!fork_id.is_empty(), "the fork hosts under a session id");
     assert_ne!(
         fork_entries[0]["id"].as_str(),
         Some(source_id.as_str()),
@@ -620,7 +397,7 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     // sessions outlive the client).
     let source_after = support::saved_transcript(&agent_dir, &source);
     assert_eq!(source_before, source_after, "the source file is unchanged");
-    let roster = daemon_roster(&socket).await;
+    let roster = daemon_roster(&daemon.socket).await;
     let canonical: Vec<_> = roster
         .iter()
         .map(|(file, _)| pa_core::session::lease::canonical_session_path(file))
@@ -635,5 +412,5 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
         "the fork stays hosted after the client exits"
     );
     drop(child);
-    drop(supervisor);
+    drop(daemon);
 }
