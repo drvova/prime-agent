@@ -12,13 +12,6 @@
         reason = "`tui_export_and_share_surface` is one scenario, top to bottom"
     )
 )]
-#![cfg_attr(
-    unix,
-    expect(
-        clippy::cast_possible_wrap,
-        reason = "the pids passed to `kill` and `Pid::from_raw` are kernel-bounded below i32::MAX"
-    )
-)]
 
 //! End-to-end verifier for the TUI export/share commands: a scripted daemon
 //! session driven headlessly — `/export` (HTML and JSONL) writes the file and
@@ -28,216 +21,11 @@
 
 mod support;
 
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use support::runtime_daemon::RuntimeDaemon;
+
+use std::path::Path;
 
 use pa_types::daemon::DaemonCommand;
-
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        graceful_shutdown(&self.socket);
-        // Freeze the whole tree before any kill: a worker's grandchildren (the
-        // commands its session started) outlive a worker-only kill and
-        // keep writing into the test's temp dir after its removal. A stopped
-        // process cannot fork, so the walk settles once every member is stopped.
-        let root = self.child.id();
-        unsafe {
-            libc::kill(root as i32, libc::SIGSTOP);
-        }
-        let mut tree = Vec::new();
-        loop {
-            let mut walked = descendants_of(root);
-            walked.sort_unstable();
-            if walked == tree {
-                break;
-            }
-            for &pid in &walked {
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGSTOP);
-                }
-            }
-            tree = walked;
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        for pid in tree {
-            kill_worker(pid);
-        }
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-/// Every process below `root`, following parent links.
-fn descendants_of(root: u32) -> Vec<u32> {
-    let mut tree = Vec::new();
-    let mut frontier = vec![root];
-    while let Some(pid) = frontier.pop() {
-        for child in child_pids_of(pid) {
-            tree.push(child);
-            frontier.push(child);
-        }
-    }
-    tree
-}
-
-fn kill_worker(pid: u32) {
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
-    }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while process_alive(pid) {
-        assert!(
-            Instant::now() < deadline,
-            "worker {pid} survived the teardown kill"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn process_alive(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-        let rest = stat.rsplit_once(')').map_or_default(|(_, rest)| rest);
-        !rest.starts_with('Z')
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn child_pids_of(ppid: u32) -> Vec<u32> {
-    let mut pids = Vec::new();
-    let entries = std::fs::read_dir("/proc").expect("read /proc");
-    for entry in entries.flatten() {
-        let Ok(entry_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{entry_pid}/stat")) else {
-            continue;
-        };
-        let Some((_, rest)) = stat.rsplit_once(')') else {
-            continue;
-        };
-        let mut fields = rest.split_whitespace();
-        fields.next(); // process state
-        let Ok(parent) = fields.next().unwrap_or_default().parse::<u32>() else {
-            continue;
-        };
-        if parent == ppid {
-            pids.push(entry_pid);
-        }
-    }
-    pids
-}
-
-/// The children of `ppid` without `/proc`: one `ps` listing of every pid's parent.
-#[cfg(not(target_os = "linux"))]
-fn child_pids_of(parent_pid: u32) -> Vec<u32> {
-    let output = Command::new("ps")
-        .args(["-A", "-o", "pid=,ppid="])
-        .output()
-        .expect("run ps");
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse().ok()?;
-            let parent: u32 = fields.next()?.parse().ok()?;
-            (parent == parent_pid).then_some(pid)
-        })
-        .collect()
-}
-
-/// Liveness without `/proc`: the platform probe, which also reads zombies as dead.
-#[cfg(not(target_os = "linux"))]
-fn process_alive(pid: u32) -> bool {
-    pa_types::platform::process::is_process_alive(pid).unwrap_or(false)
-}
-
-fn graceful_shutdown(socket: &Path) {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-    let Ok(stream) = UnixStream::connect(socket) else {
-        return;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    let _ = reader.read_line(&mut hello); // daemon_hello
-    let command = serde_json::json!({
-        "type": "command",
-        "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let mut line = serde_json::to_string(&command).expect("serialize");
-    line.push('\n');
-    if writer.write_all(line.as_bytes()).is_err() {
-        return;
-    }
-    let _ = writer.flush();
-    let _ = reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)));
-    let mut response = String::new();
-    let _ = reader.read_line(&mut response);
-}
-
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    // The in-process client forwards this process's env to the worker.
-    support::scrub_ambient_provider_credentials();
-    let socket = dir.join("daemon.sock");
-    let agent_dir = dir.join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in the
-        // test's temp dir, which a SIGKILLed worker never cleans up after.
-        .env("TMPDIR", dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    for provider in pa_ai::models_generated::get_providers() {
-        if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
-            for var in vars {
-                command.env_remove(var);
-            }
-        }
-    }
-    command.env_remove("PRIME_TEAM_ID");
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(&socket, &mut child);
-    Supervisor { child, socket }
-}
 
 /// A stub `gh` binary: `auth status` succeeds, `gist create` requires the
 /// upload file and prints a gist URL. No upload ever leaves the box.
@@ -274,7 +62,6 @@ async fn tui_export_and_share_surface() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // The stub gh on PATH (isolated bin dir, PATH restored after the run).
     let stub_dir = dir.path().join("bin");
@@ -291,9 +78,10 @@ async fn tui_export_and_share_surface() {
     ] });
     let script_path = dir.path().join("script.json");
     std::fs::write(&script_path, script.to_string()).expect("write script");
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let daemon = RuntimeDaemon::spawn_scripted(dir.path(), &script_path);
+    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let data = client
         .request_ok(DaemonCommand::Create {
             id: None,
@@ -325,7 +113,7 @@ async fn tui_export_and_share_surface() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path.clone()),

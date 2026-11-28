@@ -62,6 +62,7 @@
 //! | command | query | arguments |
 //! | --- | --- | --- |
 //! | `get_state` | `session.snapshot` | `shape: "state"` |
+//! | `get_connection_state` | `session.snapshot` | `shape: "connection"` |
 //! | `get_messages` | `transcript.page` | `shape: "messages"`, `page`, `historyLeafId`, `capabilities` |
 //!
 //! each with `session`, the command's `activeSessionId`; an argument the command does not carry is
@@ -206,11 +207,11 @@
 //! | `set_model` | call `session.set_model` | `session`, `provider`, `modelId` |
 //! | `set_thinking_level` | call `session.set_effort` | `session`, `level` |
 //! | `set_session_entry_label` | call `session.label` | `session`, `entry`, `label` |
-//! | `export_jsonl` | call `session.export` | `session`, `out` |
+//! | `export_jsonl` | call `session.export` | `session`, `outputPath` |
 //! | `abort`, `abort_and_send_queued` | call `session.abort`, `session.abort_and_send_queued` | `session` |
 //! | `execute_bash`, `abort_bash` | call `session.bash`, `session.abort_bash` | `session`, `command`, `excludeFromContext`, `transient`, `runId` |
 //! | `cancel_rlm_child` | call `session.cancel_child` | `session`, `child` |
-//! | `get_connection_state`, `get_rlm_children`, `get_session_stats`, `get_context_tree`, `get_context_breakdown`, `get_session_tree`, `get_system_prompt` | query `session.model`, `session.children`, `session.usage`, `session.context_tree`, `session.breakdown`, `session.tree`, `session.system_prompt` | `session` |
+//! | `get_rlm_children`, `get_session_stats`, `get_context_tree`, `get_context_breakdown`, `get_session_tree`, `get_system_prompt` | query `session.children`, `session.usage`, `session.context_tree`, `session.breakdown`, `session.tree`, `session.system_prompt` | `session` |
 //! | `heartbeats_list` | query `schedules` | `session` when it names one; `{jobs}` becomes the old `{heartbeats: [{job}]}` of its heartbeat jobs |
 //! | `detach` of no session | none | answered by the layer, as the old daemon answered it |
 //!
@@ -1198,7 +1199,7 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
         } => Ok(call(
             request_id,
             "session.export",
-            serde_json::json!({ "session": active_session_id, "out": output_path }),
+            serde_json::json!({ "session": active_session_id, "outputPath": output_path }),
         )),
         DaemonCommand::Abort {
             active_session_id, ..
@@ -1252,11 +1253,12 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
         )),
         DaemonCommand::GetConnectionState {
             active_session_id, ..
-        } => Ok(session_query(
-            request_id,
-            "session.model",
+        } => query(
+            "session.snapshot",
             active_session_id,
-        )),
+            "connection",
+            Vec::new(),
+        ),
         DaemonCommand::GetRlmChildren {
             active_session_id, ..
         } => Ok(session_query(
