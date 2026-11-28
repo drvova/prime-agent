@@ -498,8 +498,10 @@ fn direct_attach_ends_with_a_killed_daemon_and_reattaches_to_the_revived_session
         assert!(
             Instant::now() < deadline,
             "the session never came back: {list}\nlog: {}",
-            std::fs::read_to_string(pa_daemon::paths::daemon_log_path(&socket, &agent_dir))
-                .unwrap_or_default()
+            std::fs::read_to_string(pa_core::platform::daemon_endpoint::daemon_log_path(
+                &socket, &agent_dir
+            ))
+            .unwrap_or_default()
         );
         let sessions = list["data"]["sessions"]
             .as_array()

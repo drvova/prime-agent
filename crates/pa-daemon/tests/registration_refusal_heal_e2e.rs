@@ -314,7 +314,7 @@ fn a_refused_registration_retires_the_worker() {
 
     // The refusal lands in the daemon's rotating log (the operator-facing trace the incident
     // lacked) — and the worker exits instead of retrying forever.
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let log = std::fs::read_to_string(&log_path).unwrap_or_default();

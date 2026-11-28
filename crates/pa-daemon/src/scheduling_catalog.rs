@@ -15,9 +15,7 @@ use pa_core::cron::{is_heartbeat_cron_job, AgentCronJob, JobStatus};
 use pa_types::daemon::DaemonCommand;
 
 use crate::backpressure::RouteAdmission;
-use crate::protocol::{
-    command_type_name, response_failure, response_line, response_success, DaemonResponse,
-};
+use crate::protocol::{response_failure, response_line, response_success, DaemonResponse};
 use crate::registry::{canonical_session_file_string, ResidentWorker};
 use crate::scheduled_jobs::session_artifact_dir;
 use crate::supervisor::{client_command_payload, Supervisor};
@@ -323,9 +321,7 @@ impl Supervisor {
                     Err(error) => response_failure(None, command_type, &error.to_string(), None),
                 }
             }
-            Err(error) => {
-                response_failure(None, command_type_name(command), &error.to_string(), None)
-            }
+            Err(error) => response_failure(None, command.type_name(), &error.to_string(), None),
         }
     }
 

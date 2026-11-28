@@ -128,7 +128,7 @@ fn boot_cleanup_preserves_unverifiable_journals_and_waiting_callers_status() {
 
     let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let log = std::fs::read_to_string(&log_path).unwrap_or_default();

@@ -1,13 +1,13 @@
 //! Client connections: the per-connection task - read loop, dispatch,
 //! and the parsed-command execution surface.
 use super::{
-    app_version, broadcast, command_type_name, current_protocol_info,
-    daemon_closing_shutdown_event, input_admission_id, json, parse_supervisor_command_line,
-    response_failure, response_line, response_success, salvage_command_type, salvage_id,
-    subscribers, util, Arc, AsyncBufReadExt, AsyncWriteExt, BufReader, ClientRouting,
-    DaemonCommand, DaemonOutbound, DaemonRuntimeIdentity, Duration, EnvelopeParseError, Map,
-    Ordering, Outbound, ResidentWorker, Result, RouteAdmission, Supervisor, TransportStream,
-    TypedCreateRejection, Value, DAEMON_SCHEMA_ID, DAEMON_SCHEMA_REVISION, ROUTE_TIMEOUT_MS,
+    app_version, broadcast, current_protocol_info, daemon_closing_shutdown_event,
+    input_admission_id, json, parse_supervisor_command_line, response_failure, response_line,
+    response_success, salvage_command_type, salvage_id, subscribers, util, Arc, AsyncBufReadExt,
+    AsyncWriteExt, BufReader, ClientRouting, DaemonCommand, DaemonOutbound, DaemonRuntimeIdentity,
+    Duration, EnvelopeParseError, Map, Ordering, Outbound, ResidentWorker, Result, RouteAdmission,
+    Supervisor, TransportStream, TypedCreateRejection, Value, DAEMON_SCHEMA_ID,
+    DAEMON_SCHEMA_REVISION, ROUTE_TIMEOUT_MS,
 };
 
 /// TS `OWNED_WORKER_DISCONNECT_GRACE_MS`: how long a client-owned worker
@@ -36,7 +36,7 @@ pub(crate) fn client_command_payload(
     command: &DaemonCommand,
     client_id: &str,
 ) -> Result<(&'static str, Value)> {
-    let type_name = command_type_name(command);
+    let type_name = command.type_name();
     let mut payload = serde_json::to_value(command)?;
     if let Some(object) = payload.as_object_mut() {
         object.insert("clientId".to_string(), json!(client_id));
@@ -562,7 +562,7 @@ impl Supervisor {
                 );
             }
         }
-        let type_name = command_type_name(&envelope.command).to_string();
+        let type_name = envelope.command.type_name().to_string();
         // Terminal shutdown admission gate: once `shutting_down` has flipped, no later
         // client command may reach a worker (the stop pass may already be retiring it).
         if self.shutting_down.load(Ordering::SeqCst) {
@@ -1311,7 +1311,10 @@ mod tests {
             socket_path: dir.path().join("daemon.sock"),
             agent_dir: dir.path().join("agent"),
         };
-        let log_path = crate::paths::daemon_log_path(&options.socket_path, &options.agent_dir);
+        let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(
+            &options.socket_path,
+            &options.agent_dir,
+        );
         let supervisor = Arc::new(Supervisor::new(options).expect("supervisor"));
         let (server_side, client_side) = tokio::net::UnixStream::pair().expect("socket pair");
         let connection = {
@@ -1428,7 +1431,10 @@ mod tests {
             socket_path: dir.path().join("daemon.sock"),
             agent_dir: dir.path().join("agent"),
         };
-        let log_path = crate::paths::daemon_log_path(&options.socket_path, &options.agent_dir);
+        let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(
+            &options.socket_path,
+            &options.agent_dir,
+        );
         let supervisor = Arc::new(Supervisor::new(options).expect("supervisor"));
         let (server_side, client_side) = tokio::net::UnixStream::pair().expect("socket pair");
         // The write half stays held so the connection's writes fail only when the test ends.

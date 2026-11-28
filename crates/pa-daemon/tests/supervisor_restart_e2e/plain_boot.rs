@@ -115,7 +115,7 @@ fn plain_boot_revives_only_journal_busy_workers() {
     let restart_before = pa_daemon::util::now_iso();
     let mut daemon2 = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
 
     let deadline = Instant::now() + Duration::from_secs(15);
     let registered = loop {

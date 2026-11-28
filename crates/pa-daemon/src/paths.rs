@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, Result};
-use sha2::{Digest, Sha256};
 
 pub const AGENT_DIR_ENV: &str = "PRIME_AGENT_CODING_AGENT_DIR";
 pub const SESSION_DIR_ENV: &str = "PRIME_AGENT_SESSION_DIR";
@@ -84,30 +83,6 @@ pub fn ensure_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// sha256 hex, first `chars` characters.
-#[must_use]
-pub fn hash_key(input: &str, chars: usize) -> String {
-    let digest = Sha256::digest(input.as_bytes());
-    digest.iter().fold(String::new(), |mut key, b| {
-        use std::fmt::Write;
-        write!(key, "{b:02x}").expect("write to String");
-        key
-    })[..chars]
-        .to_string()
-}
-
-/// Log path for a daemon socket: readable basename plus an 8-char hash of
-/// the normalized socket path (TS `getDaemonLogPath`).
-#[must_use]
-pub fn daemon_log_path(socket_path: &Path, agent_dir: &Path) -> PathBuf {
-    let normalized = socket_path.to_string_lossy().to_string();
-    let base = socket_path.file_name().map_or_else(
-        || "daemon.sock".to_string(),
-        |n| n.to_string_lossy().to_string(),
-    );
-    logs_dir(agent_dir).join(format!("{base}.{}.log", hash_key(&normalized, 8)))
-}
-
 /// Rotating log appender: keep the file bounded with one generation
 /// rotation (TS `appendRotatingLog`).
 pub struct RotatingLog {
@@ -159,28 +134,4 @@ use std::io::Write as _;
 pub fn mtime_age(path: &Path) -> Option<Duration> {
     let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
     SystemTime::now().duration_since(modified).ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn log_path_hashes_socket() {
-        let path = daemon_log_path(
-            Path::new("/tmp/prime-agent-1/daemon.sock"),
-            Path::new("/ad"),
-        );
-        assert!(path.starts_with("/ad/logs"));
-        assert!(path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .contains("daemon.sock."));
-        let other = daemon_log_path(
-            Path::new("/tmp/prime-agent-2/daemon.sock"),
-            Path::new("/ad"),
-        );
-        assert_ne!(path, other);
-    }
 }

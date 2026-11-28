@@ -337,7 +337,7 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
     use tokio::signal::unix::{signal, SignalKind};
 
     let dir = crate::descriptor::descriptor_dir(&options.agent_dir, &options.socket_path);
-    let log = crate::paths::RotatingLog::new(crate::paths::daemon_log_path(
+    let log = crate::paths::RotatingLog::new(pa_core::platform::daemon_endpoint::daemon_log_path(
         &options.socket_path,
         &options.agent_dir,
     ));

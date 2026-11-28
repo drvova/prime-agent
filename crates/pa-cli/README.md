@@ -20,7 +20,7 @@ setting `"daemon": "supervisor"` or `PRIME_AGENT_RUNTIME_DAEMON=0` selects it (k
 release; `PRIME_AGENT_RUNTIME_DAEMON=1` selects the runtime daemon over the settings;
 `daemon_mode::DaemonKind::selected`). The runtime daemon (`print_runtime/daemon_session.rs`): the agent
 dir's lock (`pa_core::platform::RuntimeDaemonLock`), then `daemon2.sock` beside the resolved daemon
-socket through the supervisor's socket lifecycle (`pa_daemon::socket`: stale-socket cleanup,
+socket through the daemons' shared socket lifecycle (`pa_core::platform::daemon_socket`: stale-socket cleanup,
 owner-only permissions, the exit cleanup that spares a successor) and `pa_runtime::daemon::run`
 until SIGINT or SIGTERM. Its `SessionBuilder` opens the transcript a session's spec names
 (creating it under its id), applies the client's `SessionOptions` over the daemon's own run

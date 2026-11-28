@@ -214,9 +214,10 @@ async fn a_window_reattaches_by_itself_after_the_daemon_is_killed_and_reports_wh
         .expect("connect to the restarted daemon");
     let hello = client.hello().clone();
     let rendered = outcome.frames.join("\n");
-    let daemon_log =
-        std::fs::read_to_string(pa_daemon::paths::daemon_log_path(&socket, &agent_dir))
-            .unwrap_or_default();
+    let daemon_log = std::fs::read_to_string(pa_core::platform::daemon_endpoint::daemon_log_path(
+        &socket, &agent_dir,
+    ))
+    .unwrap_or_default();
     assert_eq!(
         (
             hello["supervisorPid"].as_u64() == Some(killed_pid),

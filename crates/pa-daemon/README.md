@@ -171,8 +171,9 @@ session-build adoption rebuilds the branch from the worker session file
 (the `pending_branch` seam's recovery twin), so a post-recovery compaction
 walk (and the live loop context) reads the full durable history instead
 of a fresh engine's empty branch skipping "Session is too short to
-compact". Platform wall
-(`platform`): per-OS endpoint naming and socket identity; the transport itself
+compact". The daemon endpoints and the socket lifecycle are pa-core's
+(`pa_core::platform::daemon_endpoint`, `pa_core::platform::daemon_socket`),
+shared with the runtime daemon; the transport itself
 is the shared trait in `pa_types::platform::transport`, and the private-frame
 codec plus command planes are the shared wire contract in
 `pa_types::daemon` (clients in pa-tui/pa-cli speak them).

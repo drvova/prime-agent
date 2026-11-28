@@ -253,12 +253,12 @@ pub(crate) fn run_runtime_daemon(
         let lock =
             pa_runtime::daemon::take_lock(&agent_dir, &socket, pa_daemon::keeper::keeper_pid())
                 .await?;
-        pa_daemon::socket::prepare_socket_path(&socket).await?;
+        pa_core::platform::daemon_socket::prepare_socket_path(&socket).await?;
         let listener = pa_types::platform::transport::bind_transport(&socket)
             .await
             .map_err(|error| error.context(format!("bind {}", socket.display())))?;
-        let identity = pa_daemon::socket::socket_identity(&socket);
-        pa_daemon::socket::restrict_socket_path(&socket);
+        let identity = pa_types::platform::socket_identity(&socket);
+        pa_core::platform::daemon_socket::restrict_socket_path(&socket);
         let served = pa_runtime::daemon::run(
             listener,
             pa_runtime::daemon::DaemonOptions {
@@ -327,7 +327,7 @@ pub(crate) fn run_runtime_daemon(
             },
         )
         .await;
-        pa_daemon::socket::cleanup_socket_path_after_close(&socket, identity);
+        pa_core::platform::daemon_socket::cleanup_socket_path_after_close(&socket, identity);
         drop(lock);
         served
     })?;

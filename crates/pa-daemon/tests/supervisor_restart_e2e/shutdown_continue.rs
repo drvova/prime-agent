@@ -234,7 +234,7 @@ fn a_revived_user_parked_queue_stays_parked() {
     let restart_before = pa_daemon::util::now_iso();
     let mut daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
     wait_for("the parked session was not revived", || {
         distinct(workers_registered_since(&log_path, &restart_before)) == vec![session.clone()]
     });

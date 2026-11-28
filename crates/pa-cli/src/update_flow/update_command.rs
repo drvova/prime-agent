@@ -46,7 +46,7 @@ pub async fn run_update_command(options: &UpdateCommandOptions) -> Result<i32> {
     // The daemon the update restarts: the selected one (its socket keys the update's lock and
     // status).
     let endpoint = super::endpoint::Endpoint::selected(
-        &pa_daemon::socket::default_daemon_socket_path(),
+        &pa_core::platform::daemon_endpoint::default_daemon_socket_path(),
         &agent_dir,
     );
     let socket_path = endpoint.socket().to_path_buf();

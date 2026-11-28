@@ -293,7 +293,7 @@ fn a_foreign_lease_holder_rejects_the_create_with_the_hold_refusal() {
 
     // The daemon logs the detected conflict itself in the rotating log beside its
     // socket.
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
     let log = std::fs::read_to_string(&log_path).unwrap_or_default();
     assert!(
         log.contains("create refused: session file"),

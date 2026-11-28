@@ -204,7 +204,10 @@ pub struct PersistedSupervisorConfig {
 pub fn descriptor_dir(agent_dir: &Path, socket_path: &Path) -> PathBuf {
     agent_dir
         .join("daemon-workers")
-        .join(crate::paths::hash_key(&socket_path.to_string_lossy(), 12))
+        .join(pa_core::platform::daemon_endpoint::hash_key(
+            &socket_path.to_string_lossy(),
+            12,
+        ))
 }
 
 /// The temp file's durability posture before the rename: the port of TS

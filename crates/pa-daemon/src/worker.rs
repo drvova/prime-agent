@@ -109,7 +109,7 @@ pub struct Worker {
     /// deterministic path - is never unlinked by this process (the
     /// D-state-survivor late-exit edge). `None` until `serve` binds
     /// (named pipes keep `None`: there is no file to stat).
-    pub(crate) bound_socket_identity: std::sync::Mutex<Option<crate::socket::SocketIdentity>>,
+    pub(crate) bound_socket_identity: std::sync::Mutex<Option<pa_types::daemon::SocketIdentity>>,
     /// The bound-listener close handshake (the TS graceful-shutdown
     /// sequence, daemon-mode.ts:8011-8018: `server.close()` is awaited
     /// FIRST, the socket cleanup runs after): an exiting path requests
@@ -892,7 +892,10 @@ impl Worker {
         self.listener_close_requested.notify_one();
         self.listener_closed.notified().await;
         let expected_identity = self.bound_socket_identity.lock().unwrap().clone();
-        crate::socket::cleanup_socket_path_after_close(&self.config.socket_path, expected_identity);
+        pa_core::platform::daemon_socket::cleanup_socket_path_after_close(
+            &self.config.socket_path,
+            expected_identity,
+        );
     }
 
     /// listener close and the worker's own socket cleanup, and the

@@ -128,14 +128,14 @@ pub async fn ensure_runtime_daemon_running(
     // Off the launch path: nothing here waits for it.
     tokio::spawn(retire_idle_supervisor(daemon_socket.to_path_buf()));
     let probe = Duration::from_millis(250);
-    if pa_daemon::socket::can_connect(&socket, probe).await {
+    if pa_core::platform::daemon_socket::can_connect(&socket, probe).await {
         return Ok(socket);
     }
     let exe = std::env::current_exe().context("resolve the prime-agent executable")?;
     spawn_daemon_detached(daemon_socket, spawn_cwd, &exe, DaemonKind::Runtime)?;
     let deadline = Instant::now() + Duration::from_millis(DAEMON_STARTUP_TIMEOUT_MS);
     loop {
-        if pa_daemon::socket::can_connect(&socket, probe).await {
+        if pa_core::platform::daemon_socket::can_connect(&socket, probe).await {
             return Ok(socket);
         }
         if Instant::now() > deadline {
@@ -244,7 +244,9 @@ async fn shutdown_stale_daemon(
 async fn wait_for_socket_gone(socket_path: &Path) -> bool {
     let deadline = Instant::now() + Duration::from_millis(DAEMON_SHUTDOWN_WAIT_MS);
     while Instant::now() < deadline {
-        if !pa_daemon::socket::can_connect(socket_path, Duration::from_millis(250)).await {
+        if !pa_core::platform::daemon_socket::can_connect(socket_path, Duration::from_millis(250))
+            .await
+        {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;

@@ -46,7 +46,7 @@ async fn run() -> Result<()> {
             pa_core::session::store::use_agent_dir(&agent_dir);
             let options = pa_daemon::supervisor::SupervisorOptions {
                 socket_path: socket_path
-                    .unwrap_or_else(pa_daemon::socket::default_daemon_socket_path),
+                    .unwrap_or_else(pa_core::platform::daemon_endpoint::default_daemon_socket_path),
                 agent_dir,
             };
             // Asked to be the restart owner: keep the supervisor this command line starts

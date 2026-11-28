@@ -275,8 +275,10 @@ fn a_well_behaved_worker_keeps_the_clean_stop() {
         "the cleanly stopped worker's descriptor must be gone"
     );
     assert_eq!(session_state(&session_file), "archived");
-    let log = std::fs::read_to_string(pa_daemon::paths::daemon_log_path(&socket, &agent_dir))
-        .unwrap_or_default();
+    let log = std::fs::read_to_string(pa_core::platform::daemon_endpoint::daemon_log_path(
+        &socket, &agent_dir,
+    ))
+    .unwrap_or_default();
     assert!(
         !log.contains("survived the shutdown escalation"),
         "the clean stop must not log a survivor: {log}"
