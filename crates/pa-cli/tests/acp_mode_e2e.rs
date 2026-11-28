@@ -1,13 +1,9 @@
 //! End-to-end ACP-mode verification: the real binary serves the ACP
 //! JSON-RPC surface over stdio on the daemon-attached transport (a
-//! sandboxed supervisor hosting a scripted faux worker), and the emitted
-//! frames are checked against the TS capture corpus
-//! (`crates/pa-runtime/testdata/acp`).
-//!
-//! Each test runs with the supervisor selected (`PRIME_AGENT_RUNTIME_DAEMON=0`),
-//! and those listed in `on_the_runtime_daemon!` run a second time on the
-//! default, the runtime daemon: the child spawns it on `daemon2.sock` and
-//! drives it over wire2, and the same assertions hold.
+//! sandboxed runtime daemon, the default, whose sessions answer a faux
+//! script), and the emitted frames are checked against the TS capture
+//! corpus (`crates/pa-runtime/testdata/acp`). The child spawns the daemon
+//! on `daemon2.sock` beside its `--daemon-socket` and drives it over wire2.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
@@ -18,36 +14,10 @@ use serde_json::{json, Value};
 
 mod support;
 
-/// The daemon a test's ACP child drives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Daemon {
-    /// The supervisor, on the old wire.
-    Supervisor,
-    /// The runtime daemon, on wire2.
-    #[cfg_attr(
-        not(unix),
-        allow(dead_code, reason = "the runtime variants run on unix")
-    )]
-    Runtime,
-}
-
-thread_local! {
-    /// The daemon of the test running on this thread (each test has its
-    /// own): `runtime_daemon::<test>` selects the runtime daemon.
-    static DAEMON: std::cell::Cell<Daemon> = const { std::cell::Cell::new(Daemon::Supervisor) };
-}
-
-fn daemon() -> Daemon {
-    DAEMON.with(std::cell::Cell::get)
-}
-
 /// The socket the test's daemon serves for the child's `--daemon-socket`:
-/// the runtime daemon's is `daemon2.sock` beside it.
+/// the runtime daemon's, beside it.
 fn served_socket(socket: &std::path::Path) -> std::path::PathBuf {
-    match daemon() {
-        Daemon::Supervisor => socket.to_path_buf(),
-        Daemon::Runtime => socket.with_file_name("daemon2.sock"),
-    }
+    pa_runtime::daemon::socket_path(socket)
 }
 
 /// The child plus the tempdir it runs in.
@@ -63,17 +33,17 @@ struct AcpChild {
     _home: Option<tempfile::TempDir>,
     /// The child's whole stderr, sent once the pipe ends.
     stderr: Receiver<String>,
-    /// The sandboxed supervisor socket the child spawned: the drop shuts
-    /// the supervisor down with it (a killed child must not leak the
-    /// supervisor into later test binaries).
+    /// The sandboxed daemon socket the child was given: the drop shuts
+    /// the daemon down with it (a killed child must not leak the daemon
+    /// into later test binaries).
     socket: std::path::PathBuf,
 }
 
 impl AcpChild {
     /// Wire one spawned process into the reader thread and the handle:
     /// the tempdir is held on the struct so the child's cwd directory
-    /// outlives the process, and the supervisor socket is the one the
-    /// drop shuts down.
+    /// outlives the process, and the daemon socket is the one the drop
+    /// shuts down.
     fn wrap(
         mut child: std::process::Child,
         home: Option<tempfile::TempDir>,
@@ -115,9 +85,9 @@ impl AcpChild {
     }
 
     /// The daemon-attached transport: the child spawns its own sandboxed
-    /// supervisor on `<home>/daemon.sock` and hosts the scripted worker
-    /// through the `PRIME_AGENT_FAUX_SCRIPT` create-config seam;
-    /// the drop shuts the supervisor down. The socket sits on the struct
+    /// runtime daemon beside `<home>/daemon.sock`, whose sessions answer
+    /// `script` (`PRIME_AGENT_FAUX_SCRIPT`, which the daemon reads as it
+    /// starts); the drop shuts the daemon down. The socket sits on the struct
     /// for tests that speak raw daemon commands alongside the ACP frames.
     fn spawn(args: &[&str], script: &serde_json::Value) -> AcpChild {
         let home = tempfile::TempDir::new().unwrap();
@@ -130,8 +100,8 @@ impl AcpChild {
     }
 
     /// The daemon-attached lane whose `rlm-spawn` children are scripted:
-    /// `<home>/child-script.json` rides the `PRIME_AGENT_FAUX_CHILD_SCRIPT`
-    /// create-config seam (the worker already consumes the key).
+    /// `<home>/child-script.json` rides `PRIME_AGENT_FAUX_CHILD_SCRIPT`,
+    /// which the daemon reads as it starts.
     fn spawn_with_child_script(
         args: &[&str],
         script: &serde_json::Value,
@@ -240,10 +210,7 @@ impl AcpChild {
 }
 
 /// The daemon-attached child's command on `home` and `socket`: the
-/// supervisor-lost exit (TS `exitIfSupervisorOrphanedForTooLong`) runs on
-/// a short window (the env flows child -> supervisor -> worker) instead
-/// of the 5-minute default, and the worker script is
-/// `<home>/worker-script.json`.
+/// sessions' script is `<home>/worker-script.json`.
 fn daemon_attached_command(
     home: &std::path::Path,
     socket: &std::path::Path,
@@ -256,37 +223,12 @@ fn daemon_attached_command(
         .arg(socket)
         .env("HOME", home)
         .env("PRIME_AGENT_FAUX_SCRIPT", home.join("worker-script.json"))
-        .env(
-            pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-            "15000",
-        )
         .env_remove("PRIME_AGENT_RUNTIME_DAEMON")
         .current_dir(home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // The runtime daemon is the default; the supervisor is selected by name.
-    if daemon() == Daemon::Supervisor {
-        command.env("PRIME_AGENT_RUNTIME_DAEMON", "0");
-    }
     command
-}
-
-/// The sandbox's single worker descriptor.
-fn worker_descriptor(home: &std::path::Path) -> Value {
-    std::fs::read_dir(home.join(".prime/agent/daemon-workers"))
-        .expect("descriptor instances")
-        .flatten()
-        .flat_map(|instance| {
-            std::fs::read_dir(instance.path())
-                .expect("instance dir")
-                .flatten()
-        })
-        .filter_map(|file| {
-            serde_json::from_str::<Value>(&std::fs::read_to_string(file.path()).ok()?).ok()
-        })
-        .find(|descriptor| descriptor.get("authenticationToken").is_some())
-        .expect("the worker descriptor")
 }
 
 impl Drop for AcpChild {
@@ -1115,11 +1057,10 @@ fn assert_prompt_ends_turn(client: &mut AcpChild, session_id: &str, text: &str) 
     updates
 }
 
-/// The supervisor's live sessions (`list`).
+/// The daemon's open sessions (`list`).
 fn live_sessions(socket: &std::path::Path) -> Vec<Value> {
     let list = daemon_request(
         socket,
-        "live-sessions",
         &json!({ "type": "list", "includeClientOwned": true }),
     );
     list["data"]["sessions"]
@@ -1131,7 +1072,6 @@ fn live_sessions(socket: &std::path::Path) -> Vec<Value> {
 fn probe_acp_mcp_servers(socket: &std::path::Path, active_session_id: &str) -> Value {
     daemon_request(
         socket,
-        "acp-mcp-replace",
         &json!({
             "type": "replace_acp_mcp_servers",
             "activeSessionId": active_session_id,
@@ -1166,7 +1106,7 @@ fn wait_live_session(socket: &std::path::Path) -> Value {
 #[test]
 fn acp_daemon_attached_default_session_persists_and_resumes() {
     // Without --no-session the daemon session is saved and resident: it
-    // survives the client's EOF, and --resume binds the same live worker.
+    // survives the client's EOF, and --resume binds the same live session.
     let home = tempfile::TempDir::new().unwrap();
     let home_path = home.path().to_path_buf();
     let socket = home_path.join("daemon.sock");
@@ -1200,13 +1140,8 @@ fn acp_daemon_attached_default_session_persists_and_resumes() {
         support::saved_transcript(&home_path.join(".prime/agent"), &session_file)
             .contains("Name a river.")
     );
-    let descriptor = worker_descriptor(&home_path);
-    assert_eq!(descriptor["telemetryDisabled"], json!(true), "{descriptor}");
-    assert!(
-        descriptor.get("ownerClientId").is_none(),
-        "a resident session has no owner: {descriptor}"
-    );
 
+    // A resident session has no owner: it outlives its client's EOF.
     first.close_stdin();
     assert!(first.child.wait().expect("the ACP child exits").success());
     let sessions = live_sessions(&socket);
@@ -1247,7 +1182,7 @@ fn acp_daemon_attached_default_session_persists_and_resumes() {
     assert_eq!(sessions.len(), 1, "{sessions:?}");
     assert_eq!(
         sessions[0]["activeSessionId"], active_session_id,
-        "--resume binds the live worker"
+        "--resume binds the live session"
     );
     let saved = support::saved_transcript(&home_path.join(".prime/agent"), &session_file);
     assert!(saved.contains("Name a river.") && saved.contains("Name a mountain."));
@@ -1440,7 +1375,6 @@ fn acp_daemon_attached_resident_eof_mid_turn_cancels_the_prompt() {
     assert!(client.child.wait().expect("the ACP child exits").success());
     let idle = daemon_request(
         &socket,
-        "idle",
         &json!({ "type": "wait_for_idle", "activeSessionId": active_session_id }),
     );
     assert_eq!(idle["success"], true, "{idle}");
@@ -1498,16 +1432,23 @@ fn acp_daemon_attached_close_keeps_the_worker_and_new_rebinds_it() {
         "{wrong_response}"
     );
     assert_prompt_ends_turn(&mut client, &first, "Name a river.");
-    let active_session_id = live_sessions(&socket)[0]["activeSessionId"].clone();
-    let descriptor = worker_descriptor(socket.parent().unwrap());
-    let owner = json!(format!("acp:{}", client.child.id()));
-    assert_eq!(descriptor["ownerClientId"], owner, "{descriptor}");
+    let sessions = live_sessions(&socket);
+    let active_session_id = sessions[0]["activeSessionId"].clone();
+    // A `--no-session` session is the client's in-memory one: no transcript.
+    assert!(
+        support::saved_transcripts(&socket.parent().unwrap().join(".prime/agent")).is_empty(),
+        "an ephemeral session keeps no transcript: {sessions:?}"
+    );
 
     let close = client.request("session/close", &json!({ "sessionId": first }));
     let (close_response, _) = client.wait_response(close, TIMEOUT);
     assert_eq!(close_response["result"], json!({}));
     let sessions = live_sessions(&socket);
-    assert_eq!(sessions.len(), 1, "close keeps the worker: {sessions:?}");
+    assert_eq!(
+        sessions.len(),
+        1,
+        "close keeps the daemon session: {sessions:?}"
+    );
     assert_eq!(sessions[0]["activeSessionId"], active_session_id);
 
     let second = new_session(&mut client);
@@ -1776,14 +1717,14 @@ fn acp_failed_prompt_error_data_marks_provider_failures_not_retryable() {
 #[cfg(unix)]
 #[test]
 fn acp_daemon_attached_supervisor_loss_fails_the_prompt() {
-    // The supervisor dies while a prompt is in flight: the pending
+    // The daemon dies while a prompt is in flight: the pending
     // request must fail fast with an error response, never hang, because
     // the link close is the turn's liveness bound (turn-long requests
     // carry no timer).
     let mut client = AcpChild::spawn(
         &["--mode", "acp", "--no-session"],
         &json!({ "engine": "faux", "tokensPerSecond": 2, "responses": [
-            { "text": "a paced answer that streams slowly enough to outlive the supervisor" },
+            { "text": "a paced answer that streams slowly enough to outlive the daemon" },
         ] }),
     );
     let socket = client.socket.clone();
@@ -1800,17 +1741,16 @@ fn acp_daemon_attached_supervisor_loss_fails_the_prompt() {
         &json!({ "sessionId": session_id, "prompt": [{ "type": "text", "text": "a slow question" }] }),
     );
     // Readiness is the turn's own first streamed chunk: the prompt is
-    // provably in flight before the supervisor goes away.
+    // provably in flight before the daemon goes away.
     client.wait_update("agent_message_chunk", TIMEOUT);
-    // Crash the supervisor (no graceful drain, so the in-flight response
-    // can never arrive). Its pid comes from the hello frame every new
-    // connection receives.
+    // Crash the daemon (no graceful drain, so the in-flight response can
+    // never arrive). Its pid comes from the agent dir's runtime-daemon lock.
     let pid = daemon_pid(&socket);
     let killed = std::process::Command::new("kill")
         .args(["-9", &pid.to_string()])
         .status()
-        .expect("kill the supervisor");
-    assert!(killed.success(), "the supervisor crash did not run");
+        .expect("kill the daemon");
+    assert!(killed.success(), "the daemon crash did not run");
     let (prompt_response, _) = client.wait_response(prompt, TIMEOUT);
     assert_eq!(
         prompt_response["error"],
@@ -1819,7 +1759,7 @@ fn acp_daemon_attached_supervisor_loss_fails_the_prompt() {
             "message": "Internal error",
             "data": {
                 "details": "the daemon connection closed mid-request",
-                // The lost supervisor link is classified like every other
+                // The lost daemon link is classified like every other
                 // failed-prompt arm: typed data a host can distinguish
                 // from an untyped error, and never retryable — the turn's
                 // outcome is unknown, so a host retry may re-run
@@ -1829,7 +1769,7 @@ fn acp_daemon_attached_supervisor_loss_fails_the_prompt() {
                 "retryable": false,
             }
         }),
-        "the in-flight prompt fails fast on supervisor loss: {prompt_response}"
+        "the in-flight prompt fails fast on daemon loss: {prompt_response}"
     );
 }
 
@@ -1866,11 +1806,10 @@ fn acp_daemon_attached_image_only_prompt_reaches_the_session() {
     );
     // The stored user row carries the image: an empty text block first,
     // then the images (TS `_buildPromptContent`).
-    let list = daemon_request(&socket, "img-list", &json!({ "type": "list" }));
+    let list = daemon_request(&socket, &json!({ "type": "list" }));
     let active_session_id = &list["data"]["sessions"][0]["activeSessionId"];
     let messages = daemon_request(
         &socket,
-        "img-msgs",
         &json!({ "type": "get_messages", "activeSessionId": active_session_id }),
     );
     let user = messages["data"]["messages"]
@@ -1888,63 +1827,39 @@ fn acp_daemon_attached_image_only_prompt_reaches_the_session() {
     );
 }
 
-/// Stop the sandboxed supervisor a test spawned (the shared-daemon
-/// product behavior leaves it running; a test owns its sandbox).
+/// Stop the sandboxed runtime daemon a test's child spawned beside
+/// `socket` (the shared-daemon product behavior leaves it running; a test
+/// owns its sandbox), and wait until its restart owner and the daemon are
+/// gone ([`support::stop_runtime_daemon`]); elsewhere by protocol
+/// (`daemon.shutdown`).
 fn shutdown_sandboxed_daemon(socket: &std::path::Path) {
-    use std::io::Write as _;
-    if daemon() == Daemon::Runtime {
-        shutdown_sandboxed_runtime_daemon(socket);
-        return;
-    }
-    let Ok(mut stream) = pa_types::platform::transport::connect_blocking(socket) else {
-        return;
-    };
-    let frame = format!(
-            "{{\"type\":\"command\",\"id\":\"shutdown-test\",\"protocol\":{{\"name\":\"prime-agent.daemon\",\"version\":{}}},\"command\":{{\"type\":\"shutdown\"}}}}\n",
-            pa_types::daemon::DAEMON_PROTOCOL_VERSION
-        );
-    let _ = stream.write_all(frame.as_bytes());
-    let _ = stream.flush();
-    // The supervisor exits after the shutdown response.
-    std::thread::sleep(Duration::from_millis(300));
-}
-
-/// The pid of the test's daemon on `socket`: the supervisor's, from the
-/// hello frame every new connection receives, or the runtime daemon's, from
-/// the agent dir's runtime-daemon lock.
-#[cfg(unix)]
-fn daemon_pid(socket: &std::path::Path) -> u64 {
-    if daemon() == Daemon::Runtime {
-        let lock = socket
+    #[cfg(unix)]
+    support::stop_runtime_daemon(
+        &socket
             .parent()
             .expect("the socket's sandbox")
-            .join(".prime/agent/runtime-daemon.lock");
-        let holder: Value =
-            serde_json::from_str(&std::fs::read_to_string(lock).expect("the runtime-daemon lock"))
-                .expect("the lock's record");
-        return holder["pid"].as_u64().expect("the runtime daemon's pid");
+            .join(".prime/agent"),
+    );
+    #[cfg(not(unix))]
+    if let Some(mut link) = Wire2Probe::try_connect(&served_socket(socket)) {
+        let _ = link.request(&json!({
+            "type": "call", "id": "shutdown", "method": "daemon.shutdown", "args": {},
+        }));
     }
-    let probe = pa_types::platform::transport::connect_blocking(socket).expect("daemon socket");
-    let reader = probe.try_clone_box().expect("daemon socket clone");
-    let _ = reader.set_read_timeout(Duration::from_mins(2));
-    let hello = BufReader::new(reader)
-        .lines()
-        .map(|line| {
-            serde_json::from_str::<Value>(&line.expect("daemon line")).expect("daemon JSON")
-        })
-        .find(|frame| frame["type"] == json!("daemon_hello"))
-        .expect("the daemon closed without a hello");
-    hello["supervisorPid"].as_u64().expect("supervisor pid")
 }
 
-/// Stop the sandboxed runtime daemon beside `socket`, and wait until its
-/// restart owner and the daemon are gone ([`support::stop_runtime_daemon`]).
-fn shutdown_sandboxed_runtime_daemon(socket: &std::path::Path) {
-    let home = socket.parent().expect("the socket's sandbox");
-    #[cfg(unix)]
-    support::stop_runtime_daemon(&home.join(".prime/agent"));
-    #[cfg(not(unix))]
-    let _ = home;
+/// The pid of the test's runtime daemon on `socket`, from the agent dir's
+/// runtime-daemon lock.
+#[cfg(unix)]
+fn daemon_pid(socket: &std::path::Path) -> u64 {
+    let lock = socket
+        .parent()
+        .expect("the socket's sandbox")
+        .join(".prime/agent/runtime-daemon.lock");
+    let holder: Value =
+        serde_json::from_str(&std::fs::read_to_string(lock).expect("the runtime-daemon lock"))
+            .expect("the lock's record");
+    holder["pid"].as_u64().expect("the runtime daemon's pid")
 }
 
 #[test]
@@ -2308,33 +2223,10 @@ fn acp_daemon_attached_reports_autonomous_accounting_and_limit_stop_reason() {
     drop(client);
 }
 
-/// One raw daemon command on a fresh connection (the hello frame is skipped by the id match).
-fn daemon_request(socket: &std::path::Path, id: &str, command: &Value) -> Value {
-    use std::io::{BufRead as _, BufReader, Write as _};
-    if daemon() == Daemon::Runtime {
-        return runtime_daemon_request(socket, command);
-    }
-    let mut writer =
-        pa_types::platform::transport::connect_blocking(socket).expect("daemon socket");
-    let reader = writer.try_clone_box().expect("daemon socket clone");
-    let _ = reader.set_read_timeout(Duration::from_mins(2));
-    let protocol = json!({ "name": "prime-agent.daemon", "version": pa_types::daemon::DAEMON_PROTOCOL_VERSION });
-    let frame = json!({ "type": "command", "id": id, "protocol": protocol, "command": command });
-    writeln!(writer, "{frame}").expect("daemon frame");
-    writer.flush().expect("daemon flush");
-    BufReader::new(reader)
-        .lines()
-        .map(|line| {
-            serde_json::from_str::<Value>(&line.expect("daemon line")).expect("daemon JSON")
-        })
-        .find(|frame| frame["id"] == json!(id))
-        .unwrap_or_else(|| panic!("the daemon closed without answering {id}"))
-}
-
-/// [`daemon_request`] on the runtime daemon: the old-wire command as the
+/// One old-wire daemon command on the runtime daemon: the command as the
 /// wire2 query, call or publish that does the same, on a fresh connection,
 /// answered in the old response's shape (`success`, `data`, `error`).
-fn runtime_daemon_request(socket: &std::path::Path, command: &Value) -> Value {
+fn daemon_request(socket: &std::path::Path, command: &Value) -> Value {
     let session = command["activeSessionId"].clone();
     let (kind, name, args) = match command["type"].as_str().unwrap_or_default() {
         "list" => ("query", "sessions.list", json!({ "open": true })),
@@ -2350,7 +2242,7 @@ fn runtime_daemon_request(socket: &std::path::Path, command: &Value) -> Value {
         "wait_for_idle" => {
             let deadline = Instant::now() + Duration::from_mins(2);
             loop {
-                let tasks = runtime_daemon_request(
+                let tasks = daemon_request(
                     socket,
                     &json!({ "type": "tasks", "activeSessionId": session }),
                 );
@@ -2417,8 +2309,13 @@ struct Wire2Probe {
 
 impl Wire2Probe {
     fn connect(socket: &std::path::Path) -> Wire2Probe {
-        let stream =
-            pa_types::platform::transport::connect_blocking(socket).expect("runtime daemon socket");
+        Wire2Probe::try_connect(socket).expect("runtime daemon socket")
+    }
+
+    /// A connection that has said hello, or `None` when nothing listens on
+    /// `socket` (a sandbox whose daemon is already gone).
+    fn try_connect(socket: &std::path::Path) -> Option<Wire2Probe> {
+        let stream = pa_types::platform::transport::connect_blocking(socket).ok()?;
         let mut probe = Wire2Probe {
             stream,
             decoder: pa_types::daemon::framing::PrivateFrameDecoder::new(
@@ -2433,7 +2330,7 @@ impl Wire2Probe {
         }));
         let welcome = probe.frame();
         assert_eq!(welcome["type"], "welcome", "{welcome}");
-        probe
+        Some(probe)
     }
 
     fn send(&mut self, frame: &Value) {
@@ -2507,10 +2404,10 @@ fn acp_daemon_attached_forwards_cli_session_options() {
     let _ = client.wait_response(init, TIMEOUT);
     let new = client.request("session/new", &json!({ "mcpServers": [] }));
     let (new_response, _) = client.wait_response(new, TIMEOUT);
-    let list = daemon_request(&socket, "argv-list", &json!({ "type": "list" }));
+    let list = daemon_request(&socket, &json!({ "type": "list" }));
     let active_session_id = &list["data"]["sessions"][0]["activeSessionId"];
     let get_prompt = json!({ "type": "get_system_prompt", "activeSessionId": active_session_id });
-    let reply = daemon_request(&socket, "argv-prompt", &get_prompt);
+    let reply = daemon_request(&socket, &get_prompt);
     let system_prompt = reply["data"]["systemPrompt"].as_str().unwrap_or_else(|| {
         panic!("the worker's system prompt: {reply} (list: {list}, new: {new_response})")
     });
@@ -3067,7 +2964,6 @@ fn acp_cancel_during_settle_cancels_the_subagents() {
     // The roster shows the child the stop sequence cancelled.
     let roster = daemon_request(
         &socket,
-        "children",
         &json!({ "type": "get_rlm_children", "activeSessionId": active_session_id }),
     );
     let children = roster["data"]["children"]
@@ -3102,7 +2998,6 @@ fn acp_eof_during_settle_exits_and_leaves_resident_subagents() {
     // The resident session survives with the held child still running.
     let roster = daemon_request(
         &socket,
-        "children",
         &json!({ "type": "get_rlm_children", "activeSessionId": active_session_id }),
     );
     let children = roster["data"]["children"]
@@ -3131,7 +3026,6 @@ fn acp_heartbeat_change_publishes_turn_zero_meta() {
     let active_session_id = live_sessions(&socket)[0]["activeSessionId"].clone();
     let set = daemon_request(
         &socket,
-        "heartbeat-set",
         &json!({
             "type": "heartbeat_set",
             "activeSessionId": active_session_id,
@@ -3161,7 +3055,6 @@ fn acp_user_bash_maps_to_a_synthetic_tool_call() {
     let active_session_id = live_sessions(&socket)[0]["activeSessionId"].clone();
     let run = daemon_request(
         &socket,
-        "bash",
         &json!({
             "type": "execute_bash",
             "activeSessionId": active_session_id,
@@ -3212,8 +3105,8 @@ fn acp_daemon_attached_close_stop_failure_fences_the_session() {
     let killed = std::process::Command::new("kill")
         .args(["-9", &pid.to_string()])
         .status()
-        .expect("kill the supervisor");
-    assert!(killed.success(), "the supervisor crash did not run");
+        .expect("kill the daemon");
+    assert!(killed.success(), "the daemon crash did not run");
 
     let close = client.request("session/close", &json!({ "sessionId": session_id }));
     let (close_response, _) = client.wait_response(close, TIMEOUT);
@@ -3280,12 +3173,10 @@ fn acp_daemon_attached_close_holds_the_input_pause_until_the_next_session_new() 
         .to_string();
     let _ = daemon_request(
         &socket,
-        "foreign-follow-up",
         &json!({ "type": "follow_up", "activeSessionId": active_session_id, "message": "foreign" }),
     );
     let idle = daemon_request(
         &socket,
-        "foreign-idle",
         &json!({ "type": "wait_for_idle", "activeSessionId": active_session_id }),
     );
     assert!(
@@ -3296,77 +3187,3 @@ fn acp_daemon_attached_close_holds_the_input_pause_until_the_next_session_new() 
     let _second = new_session(&mut client);
     drop(client);
 }
-
-/// Runs each test listed a second time with the runtime daemon selected.
-macro_rules! on_the_runtime_daemon {
-    ($($test:ident),* $(,)?) => {
-        #[cfg(unix)]
-        mod runtime_daemon {
-            $(
-                #[test]
-                fn $test() {
-                    super::DAEMON.with(|daemon| daemon.set(super::Daemon::Runtime));
-                    super::$test();
-                }
-            )*
-        }
-    };
-}
-
-// Not listed, each for its reason (the PR body has the diffs):
-// - `acp_daemon_attached_close_keeps_the_worker_and_new_rebinds_it` and
-//   `acp_daemon_attached_default_session_persists_and_resumes` read the
-//   supervisor's worker descriptors, which the runtime daemon has none of;
-on_the_runtime_daemon!(
-    acp_initialize_matches_the_ts_golden,
-    acp_second_initialize_is_served,
-    acp_client_pipes_end_with_the_child_while_its_daemon_runs,
-    acp_prompt_stream_completion_envelope_and_stop_reason_match_ts,
-    acp_prompt_chunk_carries_the_assistant_message_id,
-    acp_cwd_mismatch_is_reported_not_adopted,
-    acp_error_shapes_match_the_ts_goldens,
-    acp_initialize_with_string_protocol_version_is_invalid_params,
-    acp_image_block_without_mime_type_is_invalid_params,
-    acp_cancel_without_an_active_turn_is_a_noop,
-    acp_mcp_admission_accepts_valid_servers_and_close_releases,
-    acp_mcp_admission_rejects_a_second_session_only_when_open,
-    acp_mcp_admission_rejects_invalid_params_with_the_ts_reasons,
-    acp_mcp_schema_invalid_entries_are_dropped_like_the_sdk,
-    acp_mcp_long_names_fail_at_tool_derivation_with_internal_error,
-    acp_daemon_attached_close_clears_the_connection_mcp_servers,
-    acp_daemon_attached_eof_teardown_clears_the_connection_mcp_servers,
-    acp_mode_daemon_unreachable_exits_1_without_fallback,
-    acp_daemon_attached_cancels_mid_turn,
-    acp_daemon_attached_overlapping_prompt_is_refused,
-    acp_daemon_attached_close_mid_turn_answers_cancelled,
-    acp_session_load_refused_by_a_busy_worker_keeps_the_startup_binding,
-    acp_daemon_attached_resident_eof_mid_turn_cancels_the_prompt,
-    acp_daemon_attached_eof_during_session_new_exits,
-    acp_daemon_attached_prompt_during_cancel_is_refused,
-    acp_daemon_attached_failed_turn_publishes_only_the_error_boundary,
-    acp_failed_prompt_error_data_classifies_the_transport_failure,
-    acp_failed_prompt_error_data_marks_provider_failures_not_retryable,
-    acp_daemon_attached_supervisor_loss_fails_the_prompt,
-    acp_daemon_attached_image_only_prompt_reaches_the_session,
-    acp_compact_command_publishes_the_compaction_meta_and_end_turn,
-    acp_goal_command_publishes_goal_meta_and_runs_the_continuation,
-    acp_autonomous_token_limit_maps_to_max_tokens_stop_reason,
-    acp_autonomous_disabled_reports_end_turn_without_accounting,
-    acp_truncated_final_response_continues_then_fails_the_turn,
-    acp_silent_final_response_is_retried_before_the_turn_ends,
-    acp_daemon_attached_reports_autonomous_accounting_and_limit_stop_reason,
-    acp_threshold_auto_compaction_publishes_the_compaction_meta,
-    acp_settled_prompt_immediately_admits_the_next_prompt,
-    acp_overflow_recovery_compacts_and_retries_the_turn,
-    acp_overflow_recovery_recovers_from_the_live_413_body,
-    acp_prompt_reports_outstanding_background_bash_jobs,
-    acp_heartbeat_change_publishes_turn_zero_meta,
-    acp_user_bash_maps_to_a_synthetic_tool_call,
-    acp_daemon_attached_close_stop_failure_fences_the_session,
-    acp_daemon_attached_close_holds_the_input_pause_until_the_next_session_new,
-    acp_session_list_and_load_restore_a_saved_session_in_a_new_process,
-    acp_prompt_settles_after_rlm_quiescence,
-    acp_cancel_during_settle_cancels_the_subagents,
-    acp_eof_during_settle_exits_and_leaves_resident_subagents,
-    acp_daemon_attached_forwards_cli_session_options,
-);
