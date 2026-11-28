@@ -18,7 +18,15 @@
 //! - a kernel timer source keeps firing for its subscription after the
 //!   daemon restarts;
 //! - a stop cuts off a subagent's running turn, as the old worker closes its
-//!   children at a daemon-wide stop, so the daemon exits at once.
+//!   children at a daemon-wide stop, so the daemon exits at once;
+//! - `sessions.list` lists a running subagent with its place in its family,
+//!   as the old supervisor listed a child's session;
+//! - a stop that deletes a running subagent (the old `kill
+//!   {rlmLedgerDelete}`) writes its ledger tombstone and ends it, and its
+//!   retry writes no second one; a plain stop ends it, keeps its edge and
+//!   writes its transcript's catalog sidecar, as the old child worker's
+//!   lease release did;
+//! - `session.wait_idle` waits on a subagent's session too.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -28,7 +36,7 @@ use serde_json::{json, Value};
 
 use super::schedules::until;
 use super::turns::cell;
-use super::{ok, run_turn, Bed, Client};
+use super::{ok, run_turn, Bed, Client, Daemon};
 
 /// How long a test waits for a record or a state change before it fails.
 const WAIT: Duration = Duration::from_secs(90);
@@ -423,6 +431,164 @@ async fn a_stop_cuts_off_a_running_subagents_turn() {
     );
     ok(client.call("daemon.shutdown", json!({})).await);
     assert_eq!(super::lifecycle::exit_code(&mut daemon), Some(0));
+}
+
+/// A daemon whose session `id` has spawned `kid`, whose turn is held: the
+/// daemon, its client following the parent, and the kid's handle and id.
+async fn held_kid(bed: &Bed) -> (Daemon, Client, String, String, String) {
+    let records = bed.dir.path().join("records");
+    std::fs::create_dir_all(&records).unwrap();
+    let spawn = record(r#"(rlm-spawn "hold on" #:name "kid")"#, "spawn", &records);
+    let daemon = bed.runtime_daemon(&json!({
+        "responses": [cell("spawning", &spawn), "spawn turn done"],
+        "children": { "kid": { "responses": [{ "text": "kid done", "delayMs": 600_000 }] } },
+    }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = ok(client.call("session.create", json!({})).await);
+    let id = created["session"].as_str().unwrap().to_string();
+    client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
+    run_turn(&mut client, &id, "spawn the kid").await;
+    let handle = recorded(&records, "spawn").await["rlm_child_id"]
+        .as_str()
+        .expect("a child id")
+        .to_string();
+    let children = ok(client
+        .query("session.children", json!({ "session": id }))
+        .await);
+    let kid = children["children"][0]["activeSessionId"]
+        .as_str()
+        .expect("the kid's session")
+        .to_string();
+    (daemon, client, id, handle, kid)
+}
+
+/// `sessions.list` lists a running subagent as the old supervisor's list
+/// did its child's session: its row names its handle, its depth and its
+/// parent, open or saved alike.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_session_list_lists_a_running_subagent_in_its_family() {
+    let bed = Bed::new();
+    let (_daemon, mut client, id, handle, kid) = held_kid(&bed).await;
+    let family = |listed: Value| -> Vec<Value> {
+        listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["rlmChildId"].is_string())
+            .map(|row| {
+                json!([
+                    row["session"],
+                    row["rlmChildId"],
+                    row["rlmDepth"],
+                    row["parentActiveSessionId"],
+                    row["sessionName"],
+                    row["runtimeKind"]
+                ])
+            })
+            .collect()
+    };
+    let expected = vec![json!([kid, handle, 1, id, "kid", "subagent"])];
+    assert_eq!(
+        (
+            family(ok(client
+                .query("sessions.list", json!({ "open": true }))
+                .await)),
+            family(ok(client.query("sessions.list", json!({})).await)),
+        ),
+        (expected.clone(), expected)
+    );
+}
+
+/// A stop that deletes a running subagent (`rlmLedgerDelete`, the old
+/// supervisor's `kill` marker) tombstones its ledger edge and ends its
+/// session; a retry finds the boundary standing and writes no second one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_that_deletes_a_running_subagent_writes_its_boundary_once() {
+    let bed = Bed::new();
+    let (_daemon, mut client, id, handle, kid) = held_kid(&bed).await;
+    let delete = json!({ "session": kid, "rlmLedgerDelete": "user", "rlmChildId": handle });
+    let first = ok(client.call("session.stop", delete.clone()).await);
+    let retry = ok(client.call("session.stop", delete).await);
+    let children = ok(client
+        .query("session.children", json!({ "session": id }))
+        .await);
+    assert_eq!(
+        (
+            first,
+            retry,
+            ledger_ops(&bed.agent_dir()),
+            children["children"].clone()
+        ),
+        (
+            json!({ "session": kid, "stopped": true }),
+            json!({ "session": kid, "stopped": true }),
+            vec![
+                ("spawn".to_string(), handle.clone()),
+                ("delete".to_string(), handle)
+            ],
+            json!([])
+        )
+    );
+}
+
+/// A plain stop of a running subagent (the old `kill` of its session) ends
+/// it and keeps its ledger edge, so it lists as a passive child; its
+/// transcript's catalog sidecar is written as it closes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plain_stop_of_a_running_subagent_keeps_its_edge() {
+    let bed = Bed::new();
+    let (_daemon, mut client, id, handle, kid) = held_kid(&bed).await;
+    let listed = ok(client.query("sessions.list", json!({ "open": true })).await);
+    let file = listed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["session"] == json!(kid))
+        .and_then(|row| row["sessionFile"].as_str())
+        .map(PathBuf::from)
+        .expect("the kid's row");
+    let stopped = ok(client.call("session.stop", json!({ "session": kid })).await);
+    let children = ok(client
+        .query("session.children", json!({ "session": id }))
+        .await);
+    assert_eq!(
+        (
+            stopped,
+            ledger_ops(&bed.agent_dir()),
+            children["children"].clone(),
+            file.with_extension("info-cache.json").is_file(),
+        ),
+        (
+            json!({ "session": kid, "stopped": true }),
+            vec![("spawn".to_string(), handle)],
+            json!([]),
+            true
+        )
+    );
+}
+
+/// `session.wait_idle` of a subagent answers once its own work is done, as
+/// the old daemon's `wait_for_idle` of a child's session did.
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_for_idle_waits_on_a_subagents_session() {
+    let bed = Bed::new();
+    let _daemon = bed.runtime_daemon(&json!({
+        "responses": [cell("spawning", r#"(rlm-spawn "say done" #:name "kid")"#), "spawned"],
+        "children": { "kid": { "responses": ["kid done"] } },
+    }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = ok(client.call("session.create", json!({})).await);
+    let id = created["session"].as_str().unwrap().to_string();
+    client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
+    run_turn(&mut client, &id, "spawn the kid").await;
+    let children = ok(client
+        .query("session.children", json!({ "session": id }))
+        .await);
+    let kid = children["children"][0]["activeSessionId"].clone();
+    let idle = ok(client
+        .call("session.wait_idle", json!({ "session": kid }))
+        .await);
+    assert_eq!(idle["session"], kid);
 }
 
 #[tokio::test(flavor = "multi_thread")]

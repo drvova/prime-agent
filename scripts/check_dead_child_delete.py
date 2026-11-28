@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Hosted real RLM child deletion and idempotent retry.
 
-A real kernel admits a child whose model request is held. The ordinary daemon
-kill command closes the child's own session (hosted inside the daemon, beside
-its parent's) and removes its projection; rlmLedgerDelete persists the edge
-boundary, and a retry leaves it unchanged. The crashed-session and
-interrupted-cleanup branches are separately exercised by the Unix supervisor
-regressions; this fixture does not manufacture a session crash.
+A real kernel admits a child whose model request is held. The runtime daemon's
+stop (`session.stop`, the old `kill`) with rlmLedgerDelete closes the running
+child's session (a runtime session inside the daemon, beside its parent's) and
+removes its row; it persists the edge boundary, and a retry leaves it
+unchanged. The crashed-session and interrupted-cleanup branches are separately
+exercised by the Unix supervisor regressions; this fixture does not
+manufacture a session crash.
 """
 import argparse
 import json
@@ -16,12 +17,10 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 
 from check_ledger_liveness import Provider, PARENT, NAME
-from check_agent_bounce import Client
-from lifecycle_lib import digest, supervisor_env_for
-from lifecycle_lib import OwnedProcesses, TAG, finish, verify_session, session_serving
+from lifecycle_lib import Wire2Client, digest, env_for
+from lifecycle_lib import OwnedProcesses, TAG, finish, verify_runtime_session
 
 
 def delete_contract(rows, child_id):
@@ -32,10 +31,7 @@ def delete_contract(rows, child_id):
 
 
 def observe(binary, root, observed):
-    # On the supervisor's wire (`check_agent_bounce.Client`):
-    # the runtime daemon has no `kill` with `rlmLedgerDelete` (a running
-    # child's deletion boundary), and its `sessions.list` lists no subagent.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     env[TAG] = str(root)
     provider = Provider()
     threading.Thread(target=provider.serve_forever, daemon=True).start()
@@ -55,7 +51,7 @@ def observe(binary, root, observed):
         daemon = subprocess.Popen(command, cwd=root, env=env, stdout=log,
             stderr=subprocess.STDOUT, start_new_session=True)
         scope.register(daemon, command)
-        control = Client(path, daemon)
+        control = Wire2Client(path, daemon)
         created = control.call('create', config={'cwd': str(root), 'agentDir': str(root / 'agent'),
             'provider': 'parity-local', 'model': 'parity-1', 'telemetryDisabled': True})
         active = created.get('activeSessionId') or created.get('id')
@@ -70,23 +66,18 @@ def observe(binary, root, observed):
         child_active = row.get('activeSessionId') or row.get('id')
         assert child_active and row.get('parentActiveSessionId') == active, row
         observed['child_before'] = row
-        descriptors = [json.loads(p.read_text()) for p in (root / 'agent/daemon-workers').rglob('*.json')]
-        child_descriptors = [d for d in descriptors if d.get('rootActiveSessionId') == child_active]
-        assert len(child_descriptors) == 1, child_descriptors
-        child_socket, generation = verify_session(child_descriptors[0], child_active, binary, path, daemon.pid)
+        observed['child_session_identity'] = verify_runtime_session(control, child_active, binary, daemon.pid)
         scope.discover()
-        observed['child_session_identity'] = {'socket': child_socket, 'generation': generation}
         payload = {'activeSessionId': child_active, 'rlmLedgerDelete': 'user', 'rlmChildId': child_id}
         observed['delete_response'] = control.call('kill', **payload)
         after_list = control.call('list', all=True)
         observed['sessions_after'] = after_list
         assert not any(r.get('activeSessionId') == child_active for r in after_list['sessions']), after_list
         observed['child_session_closed'] = True
-        deadline = time.monotonic() + 15
-        # The child's session is gone when nothing serves its socket.
-        while session_serving(child_socket):
-            assert time.monotonic() < deadline, 'actual child session was still served after kill'
-            threading.Event().wait(0.025)
+        # The child's session is gone when the daemon no longer runs it: the
+        # stop answers once the session has closed.
+        open_rows = control.query('sessions.list', open=True)['sessions']
+        assert not any(r.get('session') == child_active for r in open_rows), open_rows
         observed['child_session_stopped'] = True
         def ledger():
             return [json.loads(line) for p in (root / 'agent/rlm-ledger').glob('*.jsonl')
