@@ -1,0 +1,41 @@
+{
+  "Shutdown": {
+    "stopper": [
+      {
+        "type": "response",
+        "success": true,
+        "command": "shutdown"
+      },
+      {
+        "type": "daemon_closing",
+        "reason": "shutdown"
+      }
+    ],
+    "watcher": [
+      {
+        "type": "daemon_closing",
+        "reason": "shutdown"
+      }
+    ],
+    "exit": 0,
+    "socket_left": false,
+    "lease_free": true
+  },
+  "Signal": {
+    "stopper": [
+      {
+        "type": "daemon_closing",
+        "reason": "shutdown"
+      }
+    ],
+    "watcher": [
+      {
+        "type": "daemon_closing",
+        "reason": "shutdown"
+      }
+    ],
+    "exit": 0,
+    "socket_left": false,
+    "lease_free": true
+  }
+}

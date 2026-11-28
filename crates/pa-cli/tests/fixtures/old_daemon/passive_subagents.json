@@ -1,0 +1,199 @@
+{
+  "lists": [
+    [
+      {
+        "id": "l1",
+        "type": "session_list_item",
+        "command": "list_saved_sessions",
+        "session": {
+          "path": "{old-daemon-bed}/agent/sessions/parent.jsonl",
+          "id": "parent",
+          "cwd": "/work/a",
+          "rlmDepth": 0,
+          "created": "2026-09-23T00:00:00.000Z",
+          "modified": "2026-09-22T20:46:40.000Z",
+          "messageCount": 1,
+          "firstMessage": "delegate the audit",
+          "state": null
+        }
+      },
+      {
+        "id": "l1",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 1,
+        "total": 1
+      },
+      {
+        "id": "l1",
+        "type": "session_list_item",
+        "command": "list_saved_sessions",
+        "session": {
+          "path": "{old-daemon-bed}/agent/session-artifacts/parent/sub-kid/kid.jsonl",
+          "id": "kid",
+          "cwd": "/work/a",
+          "rlmDepth": 1,
+          "created": "2026-09-23T00:00:00.000Z",
+          "modified": "2026-09-22T23:33:20.000Z",
+          "messageCount": 1,
+          "firstMessage": "audit the tests",
+          "state": null,
+          "parentSessionPath": "{old-daemon-bed}/agent/sessions/parent.jsonl"
+        }
+      },
+      {
+        "id": "l1",
+        "type": "session_list_item",
+        "command": "list_saved_sessions",
+        "session": {
+          "path": "{old-daemon-bed}/agent/session-artifacts/kid/sub-grandkid/grandkid.jsonl",
+          "id": "grandkid",
+          "cwd": "/work/b",
+          "rlmDepth": 2,
+          "created": "2026-09-23T00:00:00.000Z",
+          "modified": "2026-09-23T02:20:00.000Z",
+          "messageCount": 1,
+          "firstMessage": "audit one test",
+          "state": null,
+          "parentSessionPath": "{old-daemon-bed}/agent/session-artifacts/parent/sub-kid/kid.jsonl"
+        }
+      },
+      {
+        "id": "l1",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 1,
+        "total": 1
+      },
+      {
+        "id": "l1",
+        "type": "response",
+        "command": "list_saved_sessions",
+        "success": true,
+        "data": {
+          "sessions": [
+            {
+              "path": "{old-daemon-bed}/agent/sessions/parent.jsonl",
+              "id": "parent",
+              "cwd": "/work/a",
+              "rlmDepth": 0,
+              "created": "2026-09-23T00:00:00.000Z",
+              "modified": "2026-09-22T20:46:40.000Z",
+              "messageCount": 1,
+              "firstMessage": "delegate the audit",
+              "state": null
+            },
+            {
+              "path": "{old-daemon-bed}/agent/session-artifacts/parent/sub-kid/kid.jsonl",
+              "id": "kid",
+              "cwd": "/work/a",
+              "rlmDepth": 1,
+              "created": "2026-09-23T00:00:00.000Z",
+              "modified": "2026-09-22T23:33:20.000Z",
+              "messageCount": 1,
+              "firstMessage": "audit the tests",
+              "state": null,
+              "parentSessionPath": "{old-daemon-bed}/agent/sessions/parent.jsonl"
+            },
+            {
+              "path": "{old-daemon-bed}/agent/session-artifacts/kid/sub-grandkid/grandkid.jsonl",
+              "id": "grandkid",
+              "cwd": "/work/b",
+              "rlmDepth": 2,
+              "created": "2026-09-23T00:00:00.000Z",
+              "modified": "2026-09-23T02:20:00.000Z",
+              "messageCount": 1,
+              "firstMessage": "audit one test",
+              "state": null,
+              "parentSessionPath": "{old-daemon-bed}/agent/session-artifacts/parent/sub-kid/kid.jsonl"
+            }
+          ],
+          "remaining": 0
+        }
+      }
+    ],
+    [
+      {
+        "id": "l2",
+        "type": "session_list_item",
+        "command": "list_saved_sessions",
+        "session": {
+          "path": "{old-daemon-bed}/agent/sessions/parent.jsonl",
+          "id": "parent",
+          "cwd": "/work/a",
+          "rlmDepth": 0,
+          "created": "2026-09-23T00:00:00.000Z",
+          "modified": "2026-09-22T20:46:40.000Z",
+          "messageCount": 1,
+          "firstMessage": "delegate the audit",
+          "state": null
+        }
+      },
+      {
+        "id": "l2",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 1,
+        "total": 1
+      },
+      {
+        "id": "l2",
+        "type": "session_list_item",
+        "command": "list_saved_sessions",
+        "session": {
+          "path": "{old-daemon-bed}/agent/session-artifacts/parent/sub-kid/kid.jsonl",
+          "id": "kid",
+          "cwd": "/work/a",
+          "rlmDepth": 1,
+          "created": "2026-09-23T00:00:00.000Z",
+          "modified": "2026-09-22T23:33:20.000Z",
+          "messageCount": 1,
+          "firstMessage": "audit the tests",
+          "state": null,
+          "parentSessionPath": "{old-daemon-bed}/agent/sessions/parent.jsonl"
+        }
+      },
+      {
+        "id": "l2",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 1,
+        "total": 1
+      },
+      {
+        "id": "l2",
+        "type": "response",
+        "command": "list_saved_sessions",
+        "success": true,
+        "data": {
+          "sessions": [
+            {
+              "path": "{old-daemon-bed}/agent/sessions/parent.jsonl",
+              "id": "parent",
+              "cwd": "/work/a",
+              "rlmDepth": 0,
+              "created": "2026-09-23T00:00:00.000Z",
+              "modified": "2026-09-22T20:46:40.000Z",
+              "messageCount": 1,
+              "firstMessage": "delegate the audit",
+              "state": null
+            },
+            {
+              "path": "{old-daemon-bed}/agent/session-artifacts/parent/sub-kid/kid.jsonl",
+              "id": "kid",
+              "cwd": "/work/a",
+              "rlmDepth": 1,
+              "created": "2026-09-23T00:00:00.000Z",
+              "modified": "2026-09-22T23:33:20.000Z",
+              "messageCount": 1,
+              "firstMessage": "audit the tests",
+              "state": null,
+              "parentSessionPath": "{old-daemon-bed}/agent/sessions/parent.jsonl"
+            }
+          ],
+          "remaining": 0
+        }
+      }
+    ]
+  ]
+}

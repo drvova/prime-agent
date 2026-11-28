@@ -4,12 +4,16 @@
 //! `wire2_compat`, answers as the old daemon (the `pa-daemon` supervisor)
 //! answers it on the same turns, and leaves the same files on disk: the
 //! workspace as it was before that turn.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::path::Path;
 
 use serde_json::{json, Value};
 
 use super::info::runtime_answers;
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::switches::read_as_the_tui_does;
 use super::turns::{cell, Attached};
@@ -98,7 +102,8 @@ fn old_rewind(bed: &Bed) -> (Value, Value, Value) {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rewind_restores_the_files_as_the_old_daemons_does() {
     let bed = Bed::new();
-    let old = old_rewind(&bed);
+    let mut reference = OldReference::open("checkpoint_rewind", &bed);
+    let old: (Value, Value, Value) = reference.take("rewind", || old_rewind(&bed));
 
     let workspace = bed.dir.path().join("runtime-project");
     std::fs::create_dir_all(&workspace).unwrap();

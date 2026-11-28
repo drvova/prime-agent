@@ -1,0 +1,138 @@
+{
+  "answers": [
+    [
+      {
+        "type": "response",
+        "data": {
+          "messages": [
+            {
+              "entryId": "u1",
+              "text": "first question"
+            },
+            {
+              "entryId": "u2",
+              "text": "second question"
+            }
+          ]
+        },
+        "command": "get_user_messages_for_forking",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "text": "second answer"
+        },
+        "command": "get_last_assistant_text",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "cancelled": false,
+          "editorText": "second question"
+        },
+        "command": "navigate_tree",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "text": "first answer"
+        },
+        "command": "get_last_assistant_text",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "cancelled": false
+        },
+        "command": "navigate_tree",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "cancelled": false
+        },
+        "command": "navigate_tree",
+        "success": true
+      },
+      {
+        "type": "response",
+        "error": "Entry missing not found",
+        "command": "navigate_tree",
+        "success": false
+      },
+      {
+        "type": "response",
+        "data": {
+          "cancelled": false,
+          "summaryEntry": {
+            "type": "branch_summary",
+            "modelId": "m-1",
+            "parentId": "a1",
+            "provider": "loop",
+            "fromId": "a1",
+            "summary": "The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\nThe branch asked a second question.",
+            "details": {
+              "readFiles": [],
+              "modifiedFiles": []
+            },
+            "usage": {
+              "input": 40,
+              "output": 8,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 48,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            }
+          }
+        },
+        "command": "navigate_tree",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "text": "first answer"
+        },
+        "command": "get_last_assistant_text",
+        "success": true
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "abort_branch_summary"
+      },
+      {
+        "type": "response",
+        "data": {
+          "path": "{old-daemon-bed}/export.html"
+        },
+        "command": "export_html",
+        "success": true
+      }
+    ],
+    [
+      [
+        "message",
+        "message",
+        "message",
+        "message",
+        "label",
+        "branch_summary",
+        "label"
+      ],
+      true
+    ]
+  ],
+  "tree_rows": []
+}

@@ -1,0 +1,24 @@
+{
+  "restore": {
+    "status": {
+      "version": 1,
+      "phase": "complete",
+      "counts": {
+        "total": 1,
+        "restored": 1,
+        "resumed": 1,
+        "failed": 0
+      },
+      "failures": [],
+      "message": null
+    },
+    "texts": [
+      "hello",
+      "first answer",
+      "Prime Agent restarted after an update. Continue the interrupted task from the saved transcript and restored tool/kernel state. Inspect current state before retrying commands when needed.",
+      "continued after the update",
+      "queued follow-up",
+      "followed up after the update"
+    ]
+  }
+}

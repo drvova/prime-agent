@@ -6,6 +6,9 @@
 //! pa-tui's `wire2_compat`, answer as the old daemon (the `pa-daemon`
 //! supervisor) answers them on the same transcript, record the same label
 //! and summary rows, and export the same entries.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +16,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 
 use super::info::runtime_answers;
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::switches::read_as_the_tui_does;
 use super::{ok, Bed, Client};
@@ -257,7 +261,8 @@ async fn the_tree_moves_answer_and_record_as_the_old_daemons_do() {
     );
     let export = bed.dir.path().join("export.html");
 
-    let (old, old_export) = {
+    let mut reference = OldReference::open("tree_moves", &bed);
+    let (old, old_export): (Vec<Value>, (Vec<Value>, bool)) = reference.take("answers", || {
         let _daemon = bed.old_daemon_with(LOCAL);
         let socket = bed.old_socket();
         let created = old_list(
@@ -281,7 +286,8 @@ async fn the_tree_moves_answer_and_record_as_the_old_daemons_do() {
             })
             .collect();
         (answers, exported(&export))
-    };
+    });
+    let old_rows: Vec<Value> = reference.take("tree_rows", || tree_rows(&old_path));
 
     let _daemon = bed.runtime_daemon_with(&json!({ "responses": ["hi"] }), LOCAL);
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
@@ -327,6 +333,6 @@ async fn the_tree_moves_answer_and_record_as_the_old_daemons_do() {
         )
     );
     assert_eq!(answers, old);
-    assert_eq!(tree_rows(&runtime_path), tree_rows(&old_path));
+    assert_eq!(tree_rows(&runtime_path), old_rows);
     assert_eq!(exported(&export), old_export);
 }

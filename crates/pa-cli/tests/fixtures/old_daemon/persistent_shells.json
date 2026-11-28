@@ -1,0 +1,122 @@
+{
+  "answers": [
+    {
+      "persistentShells": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "command": "sleep 600",
+          "pid": "<n>",
+          "startedAt": "<time>",
+          "status": "running",
+          "persistent": true
+        }
+      ],
+      "factorySpecs": 2
+    },
+    {
+      "type": "response",
+      "data": {
+        "activities": [
+          {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "command": "sleep 600",
+            "pid": "<n>",
+            "startedAt": "<time>",
+            "status": "running",
+            "persistent": true,
+            "sessionId": "11111111-2222-3333-4444-555555555555",
+            "durationMs": "<n>"
+          },
+          {
+            "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "command": "sleep 600",
+            "pid": "<n>",
+            "startedAt": "<time>",
+            "status": "finished",
+            "persistent": true,
+            "sessionId": "11111111-2222-3333-4444-555555555555",
+            "exitCode": null,
+            "durationMs": null
+          },
+          {
+            "id": "cccccccccccccccccccccccccccccccc",
+            "command": "sleep 600",
+            "pid": "<n>",
+            "startedAt": "<time>",
+            "status": "running",
+            "persistent": true,
+            "sessionId": "another-session",
+            "durationMs": "<n>"
+          }
+        ]
+      },
+      "command": "list_persistent_shells",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "shellId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tail": "two\nthree"
+      },
+      "command": "tail_persistent_shell",
+      "success": true
+    },
+    {
+      "type": "response",
+      "error": "Unknown persistent shell",
+      "command": "tail_persistent_shell",
+      "success": false
+    },
+    {
+      "type": "response",
+      "data": {
+        "shellId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "command": "kill_persistent_shell",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "activities": [
+          {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "command": "sleep 600",
+            "pid": "<n>",
+            "startedAt": "<time>",
+            "status": "finished",
+            "persistent": true,
+            "sessionId": "11111111-2222-3333-4444-555555555555",
+            "exitCode": null,
+            "durationMs": null
+          },
+          {
+            "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "command": "sleep 600",
+            "pid": "<n>",
+            "startedAt": "<time>",
+            "status": "finished",
+            "persistent": true,
+            "sessionId": "11111111-2222-3333-4444-555555555555",
+            "exitCode": null,
+            "durationMs": null
+          },
+          {
+            "id": "cccccccccccccccccccccccccccccccc",
+            "command": "sleep 600",
+            "pid": "<n>",
+            "startedAt": "<time>",
+            "status": "finished",
+            "persistent": true,
+            "sessionId": "another-session",
+            "exitCode": null,
+            "durationMs": null
+          }
+        ]
+      },
+      "command": "list_persistent_shells",
+      "success": true
+    }
+  ]
+}

@@ -8,6 +8,9 @@
 //! `agent/<id>/side_question`, read back through the compat layer), and
 //! leave the same `/better` learning on disk. The expectations are the old
 //! daemon's `supervisor_e2e` side-question test's, on the faux provider.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -18,6 +21,7 @@ use std::time::{Duration, Instant};
 use pa_types::daemon::DaemonCommand;
 use serde_json::{json, Value};
 
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::switches::read_as_the_tui_does;
 use super::turns::Attached;
@@ -146,7 +150,7 @@ fn learning(agent_dir: &Path) -> Value {
 
 /// What one daemon did: its responses as the TUI reads them, its runs'
 /// events, and the learning it kept.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Recorded {
     responses: Vec<Value>,
     runs: Vec<Value>,
@@ -355,7 +359,9 @@ async fn runtime_record(bed: &Bed) -> Recorded {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn side_runs_answer_and_stream_as_the_old_daemons_do() {
-    let old = old_record(&Bed::new());
+    let old_bed = Bed::new();
+    let mut reference = OldReference::open("side_runs", &old_bed);
+    let old: Recorded = reference.take("record", || old_record(&old_bed));
     let runtime = runtime_record(&Bed::new()).await;
 
     let answered =

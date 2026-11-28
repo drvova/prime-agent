@@ -1,0 +1,474 @@
+{
+  "lists": [
+    [
+      {
+        "id": "l1",
+        "type": "session_list_item",
+        "command": "list_saved_sessions",
+        "session": {
+          "path": "{old-daemon-bed}/agent/sessions/child.jsonl",
+          "id": "child",
+          "cwd": "/work/a",
+          "rlmDepth": 1,
+          "created": "2026-09-23T00:00:00.000Z",
+          "modified": "2026-09-23T02:20:00.000Z",
+          "messageCount": 1,
+          "firstMessage": "check the tests",
+          "state": null,
+          "parentSessionPath": "{old-daemon-bed}/agent/sessions/alpha.jsonl"
+        }
+      },
+      {
+        "id": "l1",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 2,
+        "total": 2
+      },
+      {
+        "id": "l1",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 2,
+        "total": 2
+      },
+      {
+        "id": "l1",
+        "type": "response",
+        "command": "list_saved_sessions",
+        "success": true,
+        "data": {
+          "sessions": [
+            {
+              "path": "{old-daemon-bed}/agent/sessions/child.jsonl",
+              "id": "child",
+              "cwd": "/work/a",
+              "rlmDepth": 1,
+              "created": "2026-09-23T00:00:00.000Z",
+              "modified": "2026-09-23T02:20:00.000Z",
+              "messageCount": 1,
+              "firstMessage": "check the tests",
+              "state": null,
+              "parentSessionPath": "{old-daemon-bed}/agent/sessions/alpha.jsonl"
+            }
+          ],
+          "remaining": 2,
+          "nextCursor": "snapshot:53debd3d-3991-480d-803e-3ff86d7b24f8:2"
+        }
+      }
+    ],
+    [
+      {
+        "id": "l2",
+        "type": "session_list_item",
+        "command": "list_saved_sessions",
+        "session": {
+          "path": "{old-daemon-bed}/agent/sessions/beta.jsonl",
+          "id": "beta",
+          "cwd": "/work/b",
+          "rlmDepth": 0,
+          "created": "2026-09-23T00:00:00.000Z",
+          "modified": "2026-09-22T23:33:21.000Z",
+          "messageCount": 2,
+          "firstMessage": "beta question",
+          "state": null,
+          "model": {
+            "provider": "faux",
+            "modelId": "faux-1"
+          },
+          "usage": {
+            "inputTokens": 100,
+            "outputTokens": 10,
+            "cost": 0.1,
+            "billing": {
+              "payAsYouGo": {
+                "calls": 0,
+                "cost": 0.0
+              },
+              "plan": {
+                "calls": 0,
+                "cost": 0.0
+              },
+              "flatRate": {
+                "calls": 0,
+                "cost": 0.0
+              },
+              "free": {
+                "calls": 1,
+                "cost": 0.1
+              },
+              "unknown": {
+                "calls": 0,
+                "cost": 0.0
+              },
+              "unclassified": {
+                "calls": 0,
+                "cost": 0.0
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "l2",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 1,
+        "total": 2
+      },
+      {
+        "id": "l2",
+        "type": "session_list_item",
+        "command": "list_saved_sessions",
+        "session": {
+          "path": "{old-daemon-bed}/agent/sessions/alpha.jsonl",
+          "id": "alpha",
+          "cwd": "/work/a",
+          "rlmDepth": 0,
+          "created": "2026-09-23T00:00:00.000Z",
+          "modified": "2026-09-22T20:46:43.000Z",
+          "messageCount": 4,
+          "firstMessage": "plan the alpha release",
+          "state": {
+            "status": "archived"
+          },
+          "name": "alpha work",
+          "model": {
+            "provider": "faux",
+            "modelId": "faux-1"
+          },
+          "usage": {
+            "inputTokens": 200,
+            "outputTokens": 20,
+            "cost": 0.75,
+            "billing": {
+              "payAsYouGo": {
+                "calls": 0,
+                "cost": 0.0
+              },
+              "plan": {
+                "calls": 0,
+                "cost": 0.0
+              },
+              "flatRate": {
+                "calls": 0,
+                "cost": 0.0
+              },
+              "free": {
+                "calls": 1,
+                "cost": 0.25
+              },
+              "unknown": {
+                "calls": 1,
+                "cost": 0.5
+              },
+              "unclassified": {
+                "calls": 0,
+                "cost": 0.0
+              }
+            }
+          },
+          "thinkingLevel": "high"
+        }
+      },
+      {
+        "id": "l2",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 2,
+        "total": 2
+      },
+      {
+        "id": "l2",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 2,
+        "total": 2
+      },
+      {
+        "id": "l2",
+        "type": "response",
+        "command": "list_saved_sessions",
+        "success": true,
+        "data": {
+          "sessions": [
+            {
+              "path": "{old-daemon-bed}/agent/sessions/beta.jsonl",
+              "id": "beta",
+              "cwd": "/work/b",
+              "rlmDepth": 0,
+              "created": "2026-09-23T00:00:00.000Z",
+              "modified": "2026-09-22T23:33:21.000Z",
+              "messageCount": 2,
+              "firstMessage": "beta question",
+              "state": null,
+              "model": {
+                "provider": "faux",
+                "modelId": "faux-1"
+              },
+              "usage": {
+                "inputTokens": 100,
+                "outputTokens": 10,
+                "cost": 0.1,
+                "billing": {
+                  "payAsYouGo": {
+                    "calls": 0,
+                    "cost": 0.0
+                  },
+                  "plan": {
+                    "calls": 0,
+                    "cost": 0.0
+                  },
+                  "flatRate": {
+                    "calls": 0,
+                    "cost": 0.0
+                  },
+                  "free": {
+                    "calls": 1,
+                    "cost": 0.1
+                  },
+                  "unknown": {
+                    "calls": 0,
+                    "cost": 0.0
+                  },
+                  "unclassified": {
+                    "calls": 0,
+                    "cost": 0.0
+                  }
+                }
+              }
+            },
+            {
+              "path": "{old-daemon-bed}/agent/sessions/alpha.jsonl",
+              "id": "alpha",
+              "cwd": "/work/a",
+              "rlmDepth": 0,
+              "created": "2026-09-23T00:00:00.000Z",
+              "modified": "2026-09-22T20:46:43.000Z",
+              "messageCount": 4,
+              "firstMessage": "plan the alpha release",
+              "state": {
+                "status": "archived"
+              },
+              "name": "alpha work",
+              "model": {
+                "provider": "faux",
+                "modelId": "faux-1"
+              },
+              "usage": {
+                "inputTokens": 200,
+                "outputTokens": 20,
+                "cost": 0.75,
+                "billing": {
+                  "payAsYouGo": {
+                    "calls": 0,
+                    "cost": 0.0
+                  },
+                  "plan": {
+                    "calls": 0,
+                    "cost": 0.0
+                  },
+                  "flatRate": {
+                    "calls": 0,
+                    "cost": 0.0
+                  },
+                  "free": {
+                    "calls": 1,
+                    "cost": 0.25
+                  },
+                  "unknown": {
+                    "calls": 1,
+                    "cost": 0.5
+                  },
+                  "unclassified": {
+                    "calls": 0,
+                    "cost": 0.0
+                  }
+                }
+              },
+              "thinkingLevel": "high"
+            }
+          ],
+          "remaining": 0
+        }
+      }
+    ],
+    [
+      {
+        "id": "l3",
+        "type": "session_list_item",
+        "command": "list_saved_sessions",
+        "session": {
+          "path": "{old-daemon-bed}/agent/sessions/child.jsonl",
+          "id": "child",
+          "cwd": "/work/a",
+          "rlmDepth": 1,
+          "created": "2026-09-23T00:00:00.000Z",
+          "modified": "2026-09-23T02:20:00.000Z",
+          "messageCount": 1,
+          "firstMessage": "check the tests",
+          "state": null,
+          "parentSessionPath": "{old-daemon-bed}/agent/sessions/alpha.jsonl"
+        }
+      },
+      {
+        "id": "l3",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 2,
+        "total": 4
+      },
+      {
+        "id": "l3",
+        "type": "session_list_item",
+        "command": "list_saved_sessions",
+        "session": {
+          "path": "{old-daemon-bed}/agent/sessions/alpha.jsonl",
+          "id": "alpha",
+          "cwd": "/work/a",
+          "rlmDepth": 0,
+          "created": "2026-09-23T00:00:00.000Z",
+          "modified": "2026-09-22T20:46:43.000Z",
+          "messageCount": 4,
+          "firstMessage": "plan the alpha release",
+          "state": {
+            "status": "archived"
+          },
+          "name": "alpha work",
+          "model": {
+            "provider": "faux",
+            "modelId": "faux-1"
+          },
+          "usage": {
+            "inputTokens": 200,
+            "outputTokens": 20,
+            "cost": 0.75,
+            "billing": {
+              "payAsYouGo": {
+                "calls": 0,
+                "cost": 0.0
+              },
+              "plan": {
+                "calls": 0,
+                "cost": 0.0
+              },
+              "flatRate": {
+                "calls": 0,
+                "cost": 0.0
+              },
+              "free": {
+                "calls": 1,
+                "cost": 0.25
+              },
+              "unknown": {
+                "calls": 1,
+                "cost": 0.5
+              },
+              "unclassified": {
+                "calls": 0,
+                "cost": 0.0
+              }
+            }
+          },
+          "thinkingLevel": "high"
+        }
+      },
+      {
+        "id": "l3",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 4,
+        "total": 4
+      },
+      {
+        "id": "l3",
+        "type": "session_list_progress",
+        "command": "list_saved_sessions",
+        "loaded": 4,
+        "total": 4
+      },
+      {
+        "id": "l3",
+        "type": "response",
+        "command": "list_saved_sessions",
+        "success": true,
+        "data": {
+          "sessions": [
+            {
+              "path": "{old-daemon-bed}/agent/sessions/child.jsonl",
+              "id": "child",
+              "cwd": "/work/a",
+              "rlmDepth": 1,
+              "created": "2026-09-23T00:00:00.000Z",
+              "modified": "2026-09-23T02:20:00.000Z",
+              "messageCount": 1,
+              "firstMessage": "check the tests",
+              "state": null,
+              "parentSessionPath": "{old-daemon-bed}/agent/sessions/alpha.jsonl"
+            },
+            {
+              "path": "{old-daemon-bed}/agent/sessions/alpha.jsonl",
+              "id": "alpha",
+              "cwd": "/work/a",
+              "rlmDepth": 0,
+              "created": "2026-09-23T00:00:00.000Z",
+              "modified": "2026-09-22T20:46:43.000Z",
+              "messageCount": 4,
+              "firstMessage": "plan the alpha release",
+              "state": {
+                "status": "archived"
+              },
+              "name": "alpha work",
+              "model": {
+                "provider": "faux",
+                "modelId": "faux-1"
+              },
+              "usage": {
+                "inputTokens": 200,
+                "outputTokens": 20,
+                "cost": 0.75,
+                "billing": {
+                  "payAsYouGo": {
+                    "calls": 0,
+                    "cost": 0.0
+                  },
+                  "plan": {
+                    "calls": 0,
+                    "cost": 0.0
+                  },
+                  "flatRate": {
+                    "calls": 0,
+                    "cost": 0.0
+                  },
+                  "free": {
+                    "calls": 1,
+                    "cost": 0.25
+                  },
+                  "unknown": {
+                    "calls": 1,
+                    "cost": 0.5
+                  },
+                  "unclassified": {
+                    "calls": 0,
+                    "cost": 0.0
+                  }
+                }
+              },
+              "thinkingLevel": "high"
+            }
+          ],
+          "remaining": 0
+        }
+      }
+    ],
+    [
+      {
+        "id": "l4",
+        "type": "response",
+        "command": "list_saved_sessions",
+        "success": false,
+        "error": "The \"paths[0]\" property must be of type string, got undefined"
+      }
+    ]
+  ]
+}
