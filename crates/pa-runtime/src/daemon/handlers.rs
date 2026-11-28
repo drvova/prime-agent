@@ -21,6 +21,7 @@ use pa_core::session::lease::acquire_runtime_session_lease;
 use pa_core::session::manager::{get_session_file_path, load_entries_from_file, SessionManager};
 use pa_core::session::store::store;
 use pa_core::session_engine::kernel_activity::KernelBashAction;
+use pa_types::event_log::{NewEvent, Topic, Trust};
 use pa_types::session::FileEntry;
 use serde_json::{json, Value};
 
@@ -239,6 +240,19 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         // Closed: its lease goes, and it leaves the roster.
         self.open.remove(&id).await;
         self.feeds.due(&id);
+        // Its attached clients learn it was stopped, as the old worker's
+        // `session_closed {reason: "killed"}` told them.
+        self.runtime
+            .publish(NewEvent {
+                topic: Topic::new(format!("agent/{id}/closed"))?,
+                source: "runtime".to_string(),
+                session: Some(id.clone()),
+                payload: json!({ "reason": "killed" }),
+                trust: Trust::Owner,
+                cause: None,
+                reply: None,
+            })
+            .await?;
         Ok(json!({ "session": id, "stopped": true }))
     }
 
