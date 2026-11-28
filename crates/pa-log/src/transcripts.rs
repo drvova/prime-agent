@@ -164,7 +164,18 @@ fn by_id(connection: &Connection, id: i64) -> Result<Option<TranscriptRow>> {
 
 /// Split `bytes` into lines, each with its newline (the last may have none).
 fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
-    bytes.split_inclusive(|byte| *byte == b'\n')
+    // memchr's vector search, not a byte-at-a-time split: a whole transcript
+    // goes through here on import.
+    let mut rest = bytes;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let end = memchr::memchr(b'\n', rest).map_or(rest.len(), |at| at + 1);
+        let (line, tail) = rest.split_at(end);
+        rest = tail;
+        Some(line)
+    })
 }
 
 /// Store `bytes` as the lines of transcript `id` from line `seq` and byte

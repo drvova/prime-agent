@@ -1,0 +1,1 @@
+- Importing and opening long sessions splits their transcripts into lines faster.

@@ -17,6 +17,8 @@ tokio = { workspace = true }
 # version with no system library: the one owner of the database is this crate.
 rusqlite = { version = "0.43", features = ["bundled"] }
 sha2 = "0.10"
+# Vector newline search when a transcript's bytes are split into lines.
+memchr = "2"
 uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]

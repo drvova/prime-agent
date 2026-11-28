@@ -3398,6 +3398,7 @@ dependencies = [
  "image",
  "libc",
  "loom",
+ "memchr",
  "nix 0.29.0",
  "pa-agent",
  "pa-ai",
@@ -3468,6 +3469,7 @@ name = "pa-log"
 version = "0.10.3"
 dependencies = [
  "anyhow",
+ "memchr",
  "pa-types",
  "rusqlite",
  "serde",

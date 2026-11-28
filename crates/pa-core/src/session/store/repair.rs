@@ -38,7 +38,7 @@ pub(super) fn tail_looks_damaged(file: &mut dyn TranscriptReader) -> bool {
             return true;
         }
         let search_end = if end == size { chunk - 1 } else { chunk };
-        if let Some(position) = window[..search_end].iter().rposition(|byte| *byte == b'\n') {
+        if let Some(position) = memchr::memrchr(b'\n', &window[..search_end]) {
             let last_line_start = start + position as u64 + 1;
             return !last_line_is_json(file, last_line_start, size - 1);
         }
