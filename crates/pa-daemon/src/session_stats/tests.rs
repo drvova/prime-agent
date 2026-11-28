@@ -8,7 +8,7 @@ use super::*;
 #[test]
 fn captured_attribution_fixture_stats_count_the_fold() {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/attribution-fold-captured.jsonl");
+        .join("../pa-core/tests/fixtures/attribution-fold-captured.jsonl");
     let store = SessionFile::open(&path).unwrap();
     let stats = session_stats(&store, None);
     assert_eq!(stats["userMessages"], json!(2));
