@@ -1,0 +1,1 @@
+- `output-read` and `output-grep` split a large stored output into lines faster, and a streaming command's output is counted faster.

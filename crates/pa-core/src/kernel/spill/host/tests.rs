@@ -76,6 +76,38 @@ async fn page_reads_the_middle_of_a_megabyte_output_whole() {
 }
 
 #[tokio::test]
+async fn a_page_splits_lines_as_str_lines_does() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let store = SpillStore::unregistered(dir.path().join(SPILL_DIR), u64::MAX);
+    // A CRLF line, an empty CRLF line, and a final line with a bare `\r`
+    // and no newline: only a `\r` before a `\n` is a line return.
+    let text = "one\r\n\r\ntwo\nthree\r";
+    let handle = format!("out:{}", store.spill(SpillCopy::of_text(text)).id);
+    let handlers = handlers_over(Some(&store));
+
+    let reply = ask(
+        &handlers,
+        "ctx.page",
+        json!({"handle": handle, "start": 0, "lines": 10}),
+    )
+    .await;
+    assert_eq!(
+        reply,
+        json!({
+            "handle": handle,
+            "state": "stored",
+            "totalChars": text.len(),
+            "lines": 4,
+            "storedLines": 4,
+            "start": 0,
+            "end": 4,
+            "text": "one\n\ntwo\nthree\r\n",
+            "truncated": false,
+        })
+    );
+}
+
+#[tokio::test]
 async fn grep_and_tail_answer_within_the_cap() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let store = SpillStore::unregistered(dir.path().join(SPILL_DIR), u64::MAX);
