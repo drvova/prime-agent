@@ -2,6 +2,7 @@
 //! definitions in a real database, timers on a clock the test moves.
 
 use std::future::Future;
+use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use pa_types::event_log::{
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, watch};
 
-use super::{SourceDefinition, SourceLifetime, SourceManager};
+use super::{SourceDefinition, SourceLifetime, SourceManager, WebhookCredentials, WebhookSecrets};
 use crate::bus::{Bus, BusParts};
 use crate::routes::{TaskRequest, TaskSink};
 use crate::runtime::NoModelCalls;
@@ -92,7 +93,12 @@ impl Bed {
             tasks: Tasks(sender),
             listener_capacity: NonZeroUsize::new(64).unwrap(),
         });
-        let sources = SourceManager::spawn(log, &bus, Arc::clone(clock));
+        let sources = SourceManager::spawn(
+            log,
+            &bus,
+            Arc::clone(clock),
+            WebhookSecrets::in_agent_dir(dir),
+        );
         Bed {
             bus,
             sources,
@@ -285,21 +291,174 @@ async fn a_restart_catches_a_timer_up_once() {
     );
 }
 
-#[tokio::test]
-async fn a_webhook_definition_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let bed = Bed::open(dir.path(), &ManualClock::at(NOW));
-    let refused = bed
-        .sources
-        .define(definition(
+/// A webhook `hook` kept on `bind` (a loopback address, its port 0 for
+/// one the test picks), its token `token`.
+fn webhook(bind: &str) -> (SourceDefinition, WebhookCredentials) {
+    let mut bind: SocketAddr = bind.parse().unwrap();
+    if bind.port() == 0 {
+        bind = std::net::TcpListener::bind(bind)
+            .unwrap()
+            .local_addr()
+            .unwrap();
+    }
+    (
+        definition(
             "hook",
             SourceKind::Webhook,
-            json!({ "bind": "127.0.0.1:0" }),
-        ))
+            json!({
+                "bind": bind,
+                "path": "/in",
+                "max_body_bytes": 1024,
+                "secret": "webhook:hook",
+            }),
+        ),
+        WebhookCredentials {
+            token: Some("s3cret".to_string()),
+            hmac_secret: None,
+        },
+    )
+}
+
+/// `POST`s `body` to `address`'s `/in` with `token`; the answer's status.
+async fn post(address: SocketAddr, token: &str, body: &str) -> u16 {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let request = format!(
+        "POST /in HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).await.unwrap();
+    answer
+        .split(' ')
+        .nth(1)
+        .and_then(|status| status.parse().ok())
+        .unwrap_or_else(|| panic!("an HTTP answer: {answer:?}"))
+}
+
+#[tokio::test]
+async fn a_webhook_a_run_would_not_keep_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let bed = Bed::open(dir.path(), &ManualClock::at(NOW));
+    let (mut definition, credentials) = webhook("127.0.0.1:0");
+    definition.lifetime = SourceLifetime::Run;
+    let refused = bed
+        .sources
+        .define_webhook(definition, credentials)
         .await
         .unwrap_err();
     assert_eq!(
-        refused.to_string(),
-        "webhook \"hook\": webhook sources arrive with the daemon"
+        (
+            refused.to_string(),
+            WebhookSecrets::in_agent_dir(dir.path())
+                .read("webhook:hook")
+                .unwrap()
+        ),
+        (
+            "webhook \"hook\": a webhook source needs a long-lived listener: it runs in the \
+             runtime daemon, not in a headless run (`prime-agent -p`, `--mode json`)"
+                .to_string(),
+            None
+        )
     );
+}
+
+#[tokio::test]
+async fn a_kept_webhook_publishes_untrusted_events_and_keeps_its_secret_apart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bed = Bed::open(dir.path(), &ManualClock::at(NOW));
+    let (definition, credentials) = webhook("127.0.0.1:0");
+    let address: SocketAddr = definition.options["bind"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    bed.sources
+        .define_webhook(definition, credentials.clone())
+        .await
+        .unwrap();
+    let secrets = WebhookSecrets::in_agent_dir(dir.path());
+    let row = pa_log::Log::open(dir.path().join("agent.db"), pa_log::DEFAULT_EVENT_RETENTION)
+        .unwrap()
+        .sources(super::SOURCES_PARTITION)
+        .unwrap()
+        .sources
+        .remove(0);
+    assert_eq!(
+        (
+            row.spec.contains("s3cret"),
+            secrets.read("webhook:hook").unwrap()
+        ),
+        (false, Some(credentials))
+    );
+    bed.subscribe("hooks", "source/hook/received");
+    bed.running(&["hook"]).await;
+
+    assert_eq!(post(address, "wrong", "{}").await, 401);
+    assert_eq!(post(address, "s3cret", r#"{"ok":true}"#).await, 202);
+    let (subscription, event) = bed.task().await;
+    assert_eq!(
+        (subscription, event),
+        (
+            "hooks".to_string(),
+            NewEvent {
+                topic: Topic::new("source/hook/received").unwrap(),
+                source: "hook".to_string(),
+                session: None,
+                payload: json!({
+                    "body": { "ok": true },
+                    "headers": { "content-type": "application/json" },
+                }),
+                trust: Trust::Untrusted,
+                cause: None,
+                reply: None,
+            }
+        )
+    );
+
+    bed.sources.undefine("hook").await.unwrap();
+    assert_eq!(secrets.read("webhook:hook").unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_restarted_webhook_whose_port_is_taken_records_the_one_it_moved_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = ManualClock::at(NOW);
+    let first = Bed::open(dir.path(), &clock);
+    let (definition, credentials) = webhook("127.0.0.1:0");
+    let own: SocketAddr = definition.options["bind"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    first
+        .sources
+        .define_webhook(definition, credentials)
+        .await
+        .unwrap();
+    first.sources.shutdown().await;
+    drop(first);
+
+    let _taken = std::net::TcpListener::bind(own).unwrap();
+    let second = Bed::open(dir.path(), &clock);
+    second.subscribe("hooks", "source/hook/received");
+    second.running(&["hook"]).await;
+    let moved = second.sources.webhook_addresses()["hook"];
+    assert_ne!(moved, own);
+    assert_eq!(post(moved, "s3cret", "{}").await, 202);
+    second.sources.shutdown().await;
+    drop(second);
+
+    let third = Bed::open(dir.path(), &clock);
+    let mut listening = third.sources.webhooks.clone();
+    let recorded = tokio::time::timeout(
+        PATIENCE,
+        listening.wait_for(|listening| listening.contains_key("hook")),
+    )
+    .await
+    .expect("the webhook read within the test's patience")
+    .unwrap()["hook"];
+    assert_eq!(recorded, moved);
 }

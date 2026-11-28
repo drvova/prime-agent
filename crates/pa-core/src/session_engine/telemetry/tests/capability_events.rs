@@ -281,6 +281,9 @@ fn drive(counters: &SessionCounters) {
         EventRequestFact::SourceDefined {
             kind: EventSourceKind::Watch,
         },
+        EventRequestFact::SourceDefined {
+            kind: EventSourceKind::Webhook,
+        },
         EventRequestFact::Published { matched: 3 },
         EventRequestFact::Published { matched: 0 },
         EventRequestFact::Subscribed,
@@ -734,7 +737,7 @@ const EXPECTED: &[(&str, &str)] = &[
     ),
     (
         "agent kernel events",
-        r#"{"event_source_define_count":3,"event_source_define_timer_count":1,"event_source_define_watch_count":1,"event_publish_count":2,"event_publish_matched_count":3,"event_subscribe_count":2,"event_unsubscribe_count":1,"event_request_failed_count":1}"#,
+        r#"{"event_source_define_count":4,"event_source_define_timer_count":1,"event_source_define_watch_count":1,"event_source_define_webhook_count":1,"event_publish_count":2,"event_publish_matched_count":3,"event_subscribe_count":2,"event_unsubscribe_count":1,"event_request_failed_count":1}"#,
     ),
     (
         "agent kernel reference lookups",

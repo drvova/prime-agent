@@ -155,6 +155,7 @@ async fn a_published_event_reaches_the_subscribers_worker_as_an_agent_message() 
             schema: json!({ "type": "object", "properties": { "env": { "type": "string" } } }),
             timer: None,
             watch: None,
+            webhook: None,
         },
     )
     .await;

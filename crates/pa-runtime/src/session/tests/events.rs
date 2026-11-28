@@ -446,7 +446,7 @@ async fn timer_and_watch_definitions_are_refused_outside_their_rules() {
         "is not under this session's working directory",
         "deploy.finished",
         "is defined already as a bus source",
-        "an event source is a timer or a watch, not both",
+        "an event source is a timer, a watch or a webhook, not several",
         "a timer source's payload schema is its kind's",
         "scheduledFor",
         "is a timer source: it publishes its own events",

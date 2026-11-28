@@ -202,6 +202,7 @@ fn the_event_bus_imports_its_sources_and_subscriptions() {
                 published_count: 3,
                 timer: None,
                 watch: None,
+                webhook: None,
             },
         )]
         .into_iter()

@@ -28,7 +28,7 @@ use crate::session::{
     Finished, JobsSlot, Opening, Outbox, Outgoing, RuntimeTaskSink, SessionBuilder, SessionFaults,
     SessionJobs, SessionRunner, SessionSpec, Sessions, SettleAfter, Settled,
 };
-use crate::sources::{SourceDefinition, SourceManager};
+use crate::sources::{SourceDefinition, SourceManager, WebhookObserver, WebhookSecrets};
 use crate::subagents::{SessionControl, Subagents};
 use crate::subscriptions::DuplicateSubscription;
 use crate::subscriptions::MemorySessionTree;
@@ -161,6 +161,10 @@ impl<B: SessionBuilder> Runtime<B> {
     }
 
     /// [`Runtime::open`], with `faults` saying what a session's crash does.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the runtime's parts are built in the order they depend on each other, top to bottom"
+    )]
     pub(crate) async fn open_with(
         agent_dir: &Path,
         options: RuntimeOptions<B>,
@@ -243,8 +247,12 @@ impl<B: SessionBuilder> Runtime<B> {
             },
             trust: Trust::Owner,
         })?;
-        let sources =
-            SourceManager::spawn(Arc::clone(&log), &bus, Arc::new(pa_sources::SystemClock));
+        let sources = SourceManager::spawn(
+            Arc::clone(&log),
+            &bus,
+            Arc::new(pa_sources::SystemClock),
+            WebhookSecrets::in_agent_dir(agent_dir),
+        );
         events
             .attach(Arc::clone(&log), bus.registry(), sources.clone())
             .await;
@@ -275,12 +283,19 @@ impl<B: SessionBuilder> Runtime<B> {
         self.sessions.attach_jobs(jobs);
     }
 
-    /// Keeps the kernel's timer and watch sources defined from now on in the
-    /// database, so a runtime opened after this one runs them again for the
-    /// subscriptions the bus keeps (the runtime daemon's). Once; a second
-    /// call changes nothing.
+    /// Keeps the kernel's timer, watch and webhook sources defined from now
+    /// on in the database, so a runtime opened after this one runs them
+    /// again for the subscriptions the bus keeps (the runtime daemon's); a
+    /// webhook is defined only once they are kept. Once; a second call
+    /// changes nothing.
     pub(crate) fn keep_kernel_sources(&self) {
         self.sessions.events().keep_sources();
+    }
+
+    /// Tells `observer` of each `POST` a webhook source publishes (the
+    /// runtime daemon's adoption count); it must not block. Once.
+    pub(crate) fn observe_webhook_deliveries(&self, observer: WebhookObserver) {
+        self.sources.observe_webhook_deliveries(observer);
     }
 
     /// Undefines the source `name` ([`Runtime::define_source`]), stopping
@@ -346,8 +361,9 @@ impl<B: SessionBuilder> Runtime<B> {
     /// # Errors
     ///
     /// The name is not one topic level, the options are not the kind's, the
-    /// kind is a webhook (webhook sources arrive with the daemon), the name
-    /// is defined already another way, or the database failed to store it.
+    /// kind is a webhook (the kernel's `event-define` defines those, with
+    /// their secrets), the name is defined already another way, or the
+    /// database failed to store it.
     pub async fn define_source(&self, definition: SourceDefinition) -> anyhow::Result<()> {
         self.sources.define(definition).await
     }

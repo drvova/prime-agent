@@ -1,0 +1,1 @@
+- Sessions on the runtime daemon can define webhook sources (`event-define` with `#:webhook`): an authenticated `POST` to the reported loopback URL starts an untrusted turn in each subscribed session, its tools limited by the trust gate, with the token kept in `auth.json`.

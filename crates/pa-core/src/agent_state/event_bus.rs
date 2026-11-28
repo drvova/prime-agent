@@ -12,12 +12,16 @@
 //! ([`pa_agent::validation::validate_tool_arguments`]); who it reaches is the
 //! bus's to decide.
 //!
-//! Where the bus runs them ([`SourceKinds::Accepted`]: a headless run's), a
-//! source may instead be a timer or a folder watch, which publishes its own
-//! events under its kind's payload schema. Names, limits and ownership are
-//! one namespace across kinds. Timer and watch sources live only for the
-//! run: they, and the subscriptions naming them, are left out of the rows
-//! the bus stores.
+//! Where the bus runs them ([`SourceKinds::Accepted`]: a headless run's and
+//! the runtime daemon's), a source may instead be a timer, a folder watch or
+//! a webhook, which publishes its own events under its kind's payload
+//! schema. Names, limits and ownership are one namespace across kinds. A
+//! webhook's record says where a sender posts and how it authenticates,
+//! never with what: its runtime keeps the secret, and fills in the port and
+//! the secret before the request is applied. Timer, watch and webhook
+//! sources live only for the run unless the bus keeps them
+//! ([`StoredSources::Every`]): otherwise they, and the subscriptions naming
+//! them, are left out of the rows the bus stores.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -26,7 +30,7 @@ use anyhow::{anyhow, bail, ensure};
 use pa_log::{Log, Origin, Receipt, SourceKind, SourceRow, SourceSet, SubscriptionRow};
 use pa_types::event_log::TopicFilter;
 use pa_types::events::{
-    EventBusRequest, EventSourceKind, EventSourceRecord, EventSubscriptionRecord,
+    EventBusRequest, EventSourceKind, EventSourceRecord, EventSubscriptionRecord, WebhookRecord,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -45,6 +49,12 @@ const MAX_PROMPT_CHARS: usize = 4_000;
 /// Most sources one session owns, and most subscriptions one session holds.
 const MAX_SOURCES_PER_SESSION: usize = 32;
 const MAX_SUBSCRIPTIONS_PER_SESSION: usize = 64;
+/// A webhook's body limit when its definer gives none, and the most it may
+/// give: a delivery carries the body to the model.
+const DEFAULT_WEBHOOK_BODY_BYTES: u64 = 64 * 1024;
+const MAX_WEBHOOK_BODY_BYTES: u64 = 1024 * 1024;
+/// Longest webhook path.
+const MAX_WEBHOOK_PATH_CHARS: usize = 256;
 
 /// The session a bus request comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,12 +76,15 @@ pub enum TopicSubscriptions {
     Accepted,
 }
 
-/// Whether a bus defines timer and watch sources besides its bus sources.
+/// Whether a bus defines timer, watch and webhook sources besides its bus
+/// sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceKinds {
-    /// Only bus sources (the daemon's bus): a timer or a watch is refused.
+    /// Only bus sources (the daemon's bus): a timer, a watch or a webhook is
+    /// refused.
     BusOnly,
-    /// Timers and watches too, which its runtime runs.
+    /// Timers, watches and webhooks too, which its runtime runs (and refuses
+    /// what it cannot: a headless run, a webhook).
     Accepted,
 }
 
@@ -82,8 +95,8 @@ pub enum StoredSources {
     /// Its bus sources only: a timer or a watch lasts as long as the run
     /// that runs it.
     BusOnly,
-    /// Its timers and watches too (the runtime daemon's, whose runtime runs
-    /// them again after a restart).
+    /// Its timers, watches and webhooks too (the runtime daemon's, whose
+    /// runtime runs them again after a restart).
     Every,
 }
 
@@ -132,6 +145,7 @@ impl EventBusState {
                 schema,
                 timer,
                 watch,
+                webhook,
             } => {
                 ensure!(
                     name.chars().count() <= MAX_SOURCE_NAME_CHARS
@@ -152,14 +166,19 @@ impl EventBusState {
                     "event source description is longer than {MAX_PROMPT_CHARS} characters"
                 );
                 ensure!(
-                    timer.is_none() || watch.is_none(),
-                    "an event source is a timer or a watch, not both: give one of #:timer and \
-                     #:watch"
+                    [timer.is_some(), watch.is_some(), webhook.is_some()]
+                        .into_iter()
+                        .filter(|given| *given)
+                        .count()
+                        <= 1,
+                    "an event source is a timer, a watch or a webhook, not several: give one of \
+                     #:timer, #:watch and #:webhook"
                 );
-                let kind = match (&timer, &watch) {
-                    (Some(_), _) => EventSourceKind::Timer,
-                    (None, Some(_)) => EventSourceKind::Watch,
-                    (None, None) => EventSourceKind::Bus,
+                let kind = match (&timer, &watch, &webhook) {
+                    (Some(_), _, _) => EventSourceKind::Timer,
+                    (None, Some(_), _) => EventSourceKind::Watch,
+                    (None, None, Some(_)) => EventSourceKind::Webhook,
+                    (None, None, None) => EventSourceKind::Bus,
                 };
                 let schema = match kind {
                     EventSourceKind::Bus => {
@@ -174,19 +193,28 @@ impl EventBusState {
                         );
                         schema
                     }
-                    EventSourceKind::Timer | EventSourceKind::Watch => {
-                        let kind = kind.as_str();
+                    EventSourceKind::Timer | EventSourceKind::Watch | EventSourceKind::Webhook => {
+                        let kind_name = kind.as_str();
                         ensure!(
                             kinds == SourceKinds::Accepted,
-                            "this event bus (the daemon's) defines bus sources only: {kind} \
+                            "this event bus (the daemon's) defines bus sources only: {kind_name} \
                              sources run in headless runs (`prime-agent -p`) for now"
                         );
                         ensure!(
                             matches!(schema, Value::Null | Value::Bool(false)),
-                            "a {kind} source's payload schema is its kind's: give #f for the schema"
+                            "a {kind_name} source's payload schema is its kind's: give #f for the \
+                             schema"
                         );
-                        match timer {
-                            Some(_) => json!({
+                        match kind {
+                            EventSourceKind::Webhook => json!({
+                                "type": "object",
+                                "properties": {
+                                    "body": {},
+                                    "headers": { "type": "object" },
+                                },
+                                "required": ["body"],
+                            }),
+                            EventSourceKind::Timer => json!({
                                 "type": "object",
                                 "properties": {
                                     "scheduledFor": { "type": "integer" },
@@ -194,7 +222,7 @@ impl EventBusState {
                                 },
                                 "required": ["scheduledFor", "firedAt"],
                             }),
-                            None => json!({
+                            EventSourceKind::Watch | EventSourceKind::Bus => json!({
                                 "type": "object",
                                 "properties": {
                                     "paths": { "type": "array", "items": { "type": "string" } },
@@ -205,11 +233,65 @@ impl EventBusState {
                         }
                     }
                 };
+                let webhook = webhook
+                    .map(|spec| {
+                        let path = spec.path.unwrap_or_else(|| "/".to_string());
+                        ensure!(
+                            path.starts_with('/')
+                                && path.chars().count() <= MAX_WEBHOOK_PATH_CHARS
+                                && !path.contains(['?', '#'])
+                                && !path.chars().any(char::is_whitespace),
+                            "a webhook's 'path starts with `/`, is at most \
+                             {MAX_WEBHOOK_PATH_CHARS} characters, and has no spaces, `?` or `#`: \
+                             not {path:?}"
+                        );
+                        let port = spec.port.filter(|port| *port != 0).ok_or_else(|| {
+                            anyhow!("a webhook's port is picked by the runtime that runs it")
+                        })?;
+                        let auth: Vec<String> = [
+                            spec.token.as_ref().map(|_| "token"),
+                            spec.hmac_secret.as_ref().map(|_| "hmac-secret"),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .map(str::to_string)
+                        .collect();
+                        ensure!(
+                            !auth.is_empty(),
+                            "a webhook needs a 'token, an 'hmac-secret, or both"
+                        );
+                        let max_body_bytes =
+                            spec.max_body_bytes.unwrap_or(DEFAULT_WEBHOOK_BODY_BYTES);
+                        ensure!(
+                            max_body_bytes <= MAX_WEBHOOK_BODY_BYTES,
+                            "a webhook's 'max-body-bytes is at most {MAX_WEBHOOK_BODY_BYTES}"
+                        );
+                        Ok(WebhookRecord {
+                            url: format!("http://127.0.0.1:{port}{path}"),
+                            path,
+                            port,
+                            auth,
+                            max_body_bytes,
+                        })
+                    })
+                    .transpose()?;
                 let published_count = match self.sources.get(&name) {
                     Some(existing) if existing.owner_session_id != requester.session_id => bail!(
                         "event source {name:?} is defined by session {}; only it can redefine it",
                         existing.owner_name
                     ),
+                    // A webhook's secret is not the bus's to compare: one is
+                    // only replaced by removing it first.
+                    Some(existing)
+                        if existing.kind() == EventSourceKind::Webhook
+                            || kind == EventSourceKind::Webhook =>
+                    {
+                        bail!(
+                            "event source {name:?} is defined already as a {} source; remove it \
+                             (event-remove) before defining it again",
+                            existing.kind().as_str()
+                        )
+                    }
                     // A bus source's schema may change; what a timer or a
                     // watch runs is only replaced by removing it first.
                     Some(existing)
@@ -247,6 +329,7 @@ impl EventBusState {
                     published_count,
                     timer,
                     watch,
+                    webhook,
                 };
                 self.sources.insert(name, record.clone());
                 serde_json::to_value(record)?
@@ -396,8 +479,9 @@ impl EventBusState {
         Ok(record)
     }
 
-    /// Its rows: its bus sources and the subscriptions not naming a timer
-    /// or a watch, which live only for the run.
+    /// Its rows: its bus sources and the subscriptions not naming a timer,
+    /// a watch or a webhook, which live only for the run, unless `stored`
+    /// keeps every source.
     pub(super) fn rows(&self, stored: StoredSources) -> anyhow::Result<SourceSet> {
         let kept = |name: &str| match stored {
             StoredSources::Every => true,

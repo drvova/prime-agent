@@ -50,6 +50,11 @@ pub enum EventBusRequest {
         /// Makes it a folder-watch source, which reports changes on its own.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         watch: Option<WatchSpec>,
+        /// Makes it a webhook source, which publishes each authenticated
+        /// `POST` on its own. Boxed: it is many times the other kinds'
+        /// size.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        webhook: Option<Box<WebhookSpec>>,
     },
     /// Remove one of the requester's own sources and the subscriptions to it.
     RemoveSource { name: String },
@@ -91,17 +96,21 @@ pub struct EventSourceRecord {
     /// When it is a folder-watch source: what it watches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch: Option<WatchSpec>,
+    /// When it is a webhook source: where a sender posts, never its secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<WebhookRecord>,
 }
 
 impl EventSourceRecord {
-    /// Its kind: a timer or a watch by the spec it carries, else a bus
-    /// source its owner publishes.
+    /// Its kind: a timer, a watch or a webhook by the spec it carries, else
+    /// a bus source its owner publishes.
     #[must_use]
     pub fn kind(&self) -> EventSourceKind {
-        match (&self.timer, &self.watch) {
-            (Some(_), _) => EventSourceKind::Timer,
-            (None, Some(_)) => EventSourceKind::Watch,
-            (None, None) => EventSourceKind::Bus,
+        match (&self.timer, &self.watch, &self.webhook) {
+            (Some(_), _, _) => EventSourceKind::Timer,
+            (None, Some(_), _) => EventSourceKind::Watch,
+            (None, None, Some(_)) => EventSourceKind::Webhook,
+            (None, None, None) => EventSourceKind::Bus,
         }
     }
 }
@@ -115,6 +124,8 @@ pub enum EventSourceKind {
     Timer,
     /// A folder watch, on `source/<name>/changed` and `source/<name>/error`.
     Watch,
+    /// An HTTP listener, on `source/<name>/received`, always Untrusted.
+    Webhook,
 }
 
 impl EventSourceKind {
@@ -125,6 +136,7 @@ impl EventSourceKind {
             Self::Bus => "bus",
             Self::Timer => "timer",
             Self::Watch => "watch",
+            Self::Webhook => "webhook",
         }
     }
 }
@@ -156,6 +168,54 @@ pub struct WatchSpec {
     pub recursive: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debounce_ms: Option<u64>,
+}
+
+/// What a webhook source listens for, as its definer gives it: `path` (`/`
+/// by default) on a loopback port (`port`, or one picked when it is absent
+/// or 0), authenticated by `token` (`Authorization: Bearer`), `hmac-secret`
+/// (`X-Signature-256`), or both; a token is generated when neither is
+/// given. Bodies over `max-body-bytes` (1 MiB by default) are refused.
+/// `Debug` never prints a secret.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct WebhookSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hmac_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_body_bytes: Option<u64>,
+}
+
+impl std::fmt::Debug for WebhookSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebhookSpec")
+            .field("path", &self.path)
+            .field("port", &self.port)
+            .field("token", &self.token.as_ref().map(|_| ".."))
+            .field("hmac_secret", &self.hmac_secret.as_ref().map(|_| ".."))
+            .field("max_body_bytes", &self.max_body_bytes)
+            .finish()
+    }
+}
+
+/// A webhook source as the bus keeps and lists it: where a sender posts
+/// (`url`: `http://127.0.0.1:<port><path>`) and how it authenticates
+/// (`auth`: `"token"`, `"hmac-secret"`, or both). The secrets themselves are
+/// kept apart (the agent dir's `auth.json`), never here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct WebhookRecord {
+    pub path: String,
+    pub port: u16,
+    pub url: String,
+    pub auth: Vec<String>,
+    pub max_body_bytes: u64,
 }
 
 /// A subscription, as the bus keeps and lists it.

@@ -38,6 +38,7 @@ fn define(bus: &EventBus, owner: &Requester) {
                 }),
                 timer: None,
                 watch: None,
+                webhook: None,
             },
             1,
         )
@@ -158,6 +159,7 @@ fn the_bus_refuses_what_its_rules_do_not_allow() {
                 schema: json!({ "type": "object" }),
                 timer: None,
                 watch: None,
+                webhook: None,
             },
             3,
         )),
@@ -188,6 +190,7 @@ fn the_bus_refuses_what_its_rules_do_not_allow() {
                 schema: json!({ "type": "object" }),
                 timer: None,
                 watch: None,
+                webhook: None,
             },
             3,
         )),
@@ -202,6 +205,7 @@ fn the_bus_refuses_what_its_rules_do_not_allow() {
                     ..TimerSpec::default()
                 }),
                 watch: None,
+                webhook: None,
             },
             3,
         )),

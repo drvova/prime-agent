@@ -42,8 +42,8 @@ pub use track::{
     track_catalog_refresh, track_compaction_abort_declared, track_daemon_event_summary,
     track_deleted_child_usage_captured, track_interrupted_calls_reported, track_model_refused,
     track_provider_oauth_login, track_session_crashed, track_sessions_exported,
-    track_sessions_imported, track_transcripts_imported, track_worker_adoption,
-    track_worker_children_closed, DaemonKind, OAuthLoginSurface,
+    track_sessions_imported, track_transcripts_imported, track_webhooks_delivered,
+    track_worker_adoption, track_worker_children_closed, DaemonKind, OAuthLoginSurface,
 };
 
 mod classify;
@@ -911,6 +911,9 @@ impl SessionCounters {
                     }
                     EventSourceKind::Watch => {
                         self.note_capability("event_source_define_watch_count", 1);
+                    }
+                    EventSourceKind::Webhook => {
+                        self.note_capability("event_source_define_webhook_count", 1);
                     }
                 }
             }
