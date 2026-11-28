@@ -320,8 +320,17 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   entries) and agent traffic (`runtime/traffic`, the old `agent_traffic` entry;
   `runtime.traffic` reads each root's ring) are never stored, reach no model's context and are
   built off every turn's path (`pa-runtime` `daemon/handlers/feeds.rs`: one task hears the
-  bus, another composes the due entries from the same summary the attach serves). The inbox
-  reports a delivery's traffic once it landed, from the runtime daemon only.
+  bus, another composes the due entries from the same summary the attach serves). The roster's
+  row rules are pa-core's (`pa_core::session_engine::rlm_roster`), applied by both daemons: an
+  open root's ledger family is seeded as edge-only rows with the root's first entry and hydrated
+  off it (`seeded_child_summary`, `hydrate_seeded_summary`), a stopped root's row passivates in
+  place (`passivated_summary`: `status: inactive`, no `activeSessionId`) while an ephemeral
+  session's and a subagent's rows go, and every row carries its deleted descendants' spend
+  (`attach_deleted_descendant_usage`). On the runtime daemon a child its parent's family opened
+  again as settled and that has not run since is listed as its ledger row (the old daemon keeps
+  it passive), and a client opening its transcript gets it as its own session: the dormant child
+  leaves the family it was opened into (`Subagents::release_dormant`). The inbox reports a
+  delivery's traffic once it landed, from the runtime daemon only.
 - One saved-session catalog: the rows both daemons list, their fold and its warm cache and
   sidecar, the walk's pages and cursor, and a row's wire form are `pa_core::session::catalog`,
   and a session's own usage and its billing split are `pa_core::session::usage_scan`, read by
@@ -413,7 +422,7 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   the withdrawal takes the `heartbeat_prompt` row waiting on the session's agent, a kernel
   mutation that asks for it included. One passive roster walk
   (`pa_core::session_engine::rlm_roster`): both daemons' saved catalogs merge the subagents only
-  the spawn ledger keeps.
+  the spawn ledger keeps, and both live rosters seed, passivate and bill their rows by its rules.
 - One set of whole-session replacement rules: where a `fork {entryId, position}` starts and the
   text it hands back, where an `import_jsonl` copies its file, and the working directory a
   replaced session runs in with its refusals and their `errorInfo`
@@ -499,7 +508,8 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   at spawn, settle, rename and delete; a spawn whose edge is not written is refused), with RLM
   heartbeats of their own; a parent it opens again (created, revived or woken) reopens the live
   children the ledger records under its transcript, each on its own transcript, as settled
-  children. `agent_message.wait` parks on pa-core's receiving side
+  children, and a root's stop ends its subagents with it (the reopen stops too).
+  `agent_message.wait` parks on pa-core's receiving side
   (`pa_core::session_engine::agent_messaging::wait_for_arrival`, the supervisor's too) and refuses
   a cycle from the wait edges of every session it runs; `agent_observe.*` reads the family it
   runs. A row delivered to one of its root sessions (a settled child's notice, an agent

@@ -5,6 +5,14 @@
 //! display-grade. Moved from pa-daemon (8d-4c): the old supervisor's lists
 //! and the runtime daemon's saved catalog (`pa-runtime`
 //! `daemon/handlers/saved.rs`) walk it.
+//!
+//! The live roster's row rules both daemons apply (the supervisor's
+//! `supervisor_roster`, the runtime daemon's `daemon/handlers/feeds.rs`):
+//! a resident root's ledger family seeded as edge-only rows
+//! ([`seeded_child_summary`]) and hydrated from each child's transcript
+//! ([`hydrate_seeded_summary`]), a stopped session's row passivated in
+//! place ([`passivated_summary`]), and the deleted-descendant spend a row
+//! carries ([`attach_deleted_descendant_usage`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -13,6 +21,7 @@ use serde_json::{json, Value};
 
 use crate::session::catalog::{read_session_info, SessionInfo};
 use crate::session::lease::canonical_session_path;
+use crate::session::usage_summary::SessionUsageSummary;
 use crate::session_engine::rlm_ledger::{
     read_legacy_registry, read_rlm_subagent_display, LegacyRlmSubagentEntry, RlmLedgerEdge,
     RlmSpawnLedger,
@@ -239,6 +248,145 @@ pub fn passive_child_info(child: &PassiveRlmChild) -> SessionInfo {
     info.parent_session_path = Some(child.edge.parent.clone());
     info.rlm_depth = child.edge.depth;
     info
+}
+
+/// A resident root's ledger child as a roster row from the edge alone (TS
+/// `rosterEntryForSpawnLedgerEdge`): no transcript read, the child file's
+/// directory as its cwd until [`hydrate_seeded_summary`] reads the file. The
+/// row names no live session (`activeSessionId`), so a client opens it by its
+/// transcript.
+#[must_use]
+pub fn seeded_child_summary(edge: &RlmLedgerEdge) -> Value {
+    let child = Path::new(&edge.child);
+    let persisted_session_id = child
+        .file_stem()
+        .map_or_default(|stem| stem.to_string_lossy().to_string());
+    let dirname = child
+        .parent()
+        .map_or_default(|dir| dir.to_string_lossy().to_string());
+    json!({
+        "id": persisted_session_id,
+        "lifecycle": "live",
+        "activity": "idle",
+        "isSessionActive": false,
+        "runtimeKind": "subagent",
+        "rlmDepth": edge.depth,
+        "sessionId": persisted_session_id,
+        "sessionFile": edge.child,
+        "sessionName": edge.name,
+        "cwd": dirname,
+        "isStreaming": false,
+        "isCompacting": false,
+        "attachedClients": 0,
+        "messageCount": 0,
+        "parentSessionPath": edge.parent,
+        "rlmChildId": edge.child_id,
+    })
+}
+
+/// A seeded row's display fields from its child's transcript (TS
+/// `hydratedSeedEntry`): the cwd, the `{provider, modelId}` pair, the
+/// thinking level and the own-usage summary (a passive child never bills as
+/// zero).
+pub fn hydrate_seeded_summary(summary: &mut Value, info: &SessionInfo) {
+    let Some(object) = summary.as_object_mut() else {
+        return;
+    };
+    object.insert("cwd".to_string(), json!(info.cwd));
+    if let Some((provider, model_id)) = &info.model {
+        object.insert(
+            "model".to_string(),
+            json!({ "provider": provider, "modelId": model_id }),
+        );
+    }
+    if let Some(level) = &info.thinking_level {
+        object.insert("thinkingLevel".to_string(), json!(level));
+    }
+    if let Some(usage) = &info.usage {
+        object.insert("usage".to_string(), json!(usage));
+    }
+}
+
+/// A stopped session's row (TS `passivatedWorkerRosterEntry`): every durable
+/// display field kept, the live-runtime fields stripped (an armed heartbeat
+/// or cron mark survives), the activity idle, and the live model descriptor
+/// collapsed to the durable `{provider, modelId}` pair.
+#[must_use]
+pub fn passivated_summary(summary: Value) -> Value {
+    let mut summary = summary;
+    let Some(object) = summary.as_object_mut() else {
+        return summary;
+    };
+    let keep_heartbeat = object
+        .get("hasRegisteredHeartbeat")
+        .and_then(Value::as_bool)
+        == Some(true);
+    let keep_cron = object.get("hasRegisteredCronJob").and_then(Value::as_bool) == Some(true);
+    for key in [
+        "activeSessionId",
+        "directAttachedClients",
+        "hasActiveHeartbeat",
+        "hasRegisteredHeartbeat",
+        "hasRegisteredCronJob",
+        "hasRunningRlmChildren",
+        "isBashRunning",
+        "isRunningTools",
+        "workerState",
+        "workerPid",
+    ] {
+        object.remove(key);
+    }
+    object.insert("activity".to_string(), json!("idle"));
+    object.insert("isSessionActive".to_string(), json!(false));
+    object.insert("isStreaming".to_string(), json!(false));
+    object.insert("isCompacting".to_string(), json!(false));
+    object.insert("attachedClients".to_string(), json!(0));
+    if keep_heartbeat {
+        object.insert("hasRegisteredHeartbeat".to_string(), json!(true));
+    }
+    if keep_cron {
+        object.insert("hasRegisteredCronJob".to_string(), json!(true));
+    }
+    if let Some(session_id) = object.get("sessionId").and_then(Value::as_str) {
+        object.insert("id".to_string(), json!(session_id));
+    }
+    let durable = object.get("model").and_then(|model| {
+        let provider = model.get("provider").and_then(Value::as_str)?;
+        if model.get("modelId").and_then(Value::as_str).is_some() {
+            return None;
+        }
+        let model_id = model.get("id").and_then(Value::as_str)?;
+        Some(json!({ "provider": provider, "modelId": model_id }))
+    });
+    if let Some(durable) = durable {
+        object.insert("model".to_string(), durable);
+    }
+    summary
+}
+
+/// Sets or clears a row's `deletedDescendantUsage` (the spend of its
+/// tombstoned descendants, the agents view's and the title's rollup term);
+/// `true` when it changed.
+pub fn attach_deleted_descendant_usage(
+    summary: &mut Value,
+    usage: Option<&SessionUsageSummary>,
+) -> bool {
+    let Value::Object(object) = summary else {
+        return false;
+    };
+    let next = usage.map(|usage| json!(usage));
+    if object.get("deletedDescendantUsage") == next.as_ref() {
+        return false;
+    }
+    match next {
+        Some(value) => {
+            object.insert("deletedDescendantUsage".to_string(), value);
+        }
+        None => {
+            object.remove("deletedDescendantUsage");
+        }
+    }
+    true
 }
 
 #[cfg(test)]
