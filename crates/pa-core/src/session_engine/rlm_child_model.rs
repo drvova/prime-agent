@@ -1,6 +1,7 @@
-//! RLM child model resolution: reference resolution against the credential-backed catalog and
-//! the spawn-time thinking-support check (the requested child cwd, the one-line task label and
-//! the roster text caps are pa-core's, beside the notices).
+//! RLM child model resolution: reference resolution against the credential-backed catalog, the
+//! spawn-time thinking-support check, and the environment an `rlm.create_session` root runs in
+//! (the requested child cwd, the one-line task label and the roster text caps are pa-core's,
+//! beside the notices).
 
 use std::path::Path;
 
@@ -170,6 +171,39 @@ pub fn assert_thinking_supported(
     );
 }
 
+/// The environment an `rlm.create_session` root runs in (TS `createRlmRootSession`'s minimal
+/// map: `collectDaemonLaunchEnv({ PATH })`, the provider's env API-key variable, and
+/// `PRIME_TEAM_ID` for prime-inference), plus the telemetry switch variables so the creating
+/// session's opt-out carries over. `read_env` reads the creating session's environment.
+#[must_use]
+pub fn rlm_root_session_launch_env(
+    model: &str,
+    read_env: impl Fn(&str) -> Option<String>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut env = std::collections::BTreeMap::new();
+    for key in std::iter::once("PATH").chain(super::telemetry::TELEMETRY_SWITCH_VARS) {
+        if let Some(value) = read_env(key) {
+            env.insert(key.to_string(), value);
+        }
+    }
+    let provider = model
+        .split_once('/')
+        .map_or(model, |(provider, _)| provider);
+    if let Some(env_key) =
+        pa_ai::env_api_keys::find_env_keys(provider).and_then(|keys| keys.first().cloned())
+    {
+        if let Some(value) = read_env(&env_key) {
+            env.insert(env_key, value);
+        }
+    }
+    if provider == "prime-inference" {
+        if let Some(team) = read_env("PRIME_TEAM_ID") {
+            env.insert("PRIME_TEAM_ID".to_string(), team);
+        }
+    }
+    env
+}
+
 /// Rejection message for an unresolved model reference: the
 /// unavailability, the selector form, and close matches for retry.
 fn model_unavailable_error(
@@ -222,6 +256,22 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn a_root_session_carries_the_creators_telemetry_opt_out() {
+        let expected = std::collections::BTreeMap::from([
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("DO_NOT_TRACK".to_string(), "1".to_string()),
+            ("PI_OFFLINE".to_string(), "1".to_string()),
+            ("PRIME_AGENT_TELEMETRY".to_string(), "0".to_string()),
+        ]);
+        let mut parent = expected.clone();
+        parent.insert("UNRELATED".to_string(), "not forwarded".to_string());
+        assert_eq!(
+            rlm_root_session_launch_env("custom/custom", |key| parent.get(key).cloned()),
+            expected
+        );
     }
 
     #[test]

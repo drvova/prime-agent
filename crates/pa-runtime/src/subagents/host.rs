@@ -19,7 +19,7 @@ use pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason;
 use pa_core::session_engine::rlm_notices::{compact_rlm_text, rlm_child_label};
 use pa_types::event_log::{AgentTarget, Priority, Route, Scope, Subscription, TopicFilter, Trust};
 
-use super::family::SpawnRecord;
+use super::family::{RootSessionRequest, SpawnRecord};
 use super::{
     child_is_unsettled, deliver_row, dispose_child, lock, now_ms, tool_use_count, wake, Child,
     ChildState, Delivery, Node, Subagents, SUBSCRIPTION_PREFIX,
@@ -222,11 +222,51 @@ impl RlmSubagentHost for SessionSubagents {
         })
     }
 
+    /// A sibling root, created by the runtime daemon's handlers; a headless
+    /// run has none to create it, and a subagent may not ask.
     fn create_session(
         &self,
-        _request: RlmCreateSessionRequest,
+        request: RlmCreateSessionRequest,
     ) -> RlmHostFuture<RlmCreateSessionHandle> {
-        Box::pin(async { Err(rlm_create_session_daemonless_error()) })
+        let node = Arc::clone(&self.0);
+        Box::pin(async move {
+            let roots = node
+                .tree
+                .upgrade()
+                .and_then(|tree| tree.daemon().and_then(super::DaemonFamily::roots));
+            let Some(roots) = roots else {
+                return Err(rlm_create_session_daemonless_error());
+            };
+            anyhow::ensure!(
+                node.depth == 0,
+                "rlm.create_session is available only from a depth-0 session"
+            );
+            let creator_cwd = node.cwd();
+            let cwd =
+                resolve_child_cwd(&creator_cwd, request.cwd.as_deref(), "rlm.create_session")?;
+            let (creator_file, creator_model, creator_thinking) = {
+                let adopted = lock(&node.adopted);
+                (
+                    adopted.session_file.clone(),
+                    adopted.model_selector.clone(),
+                    adopted.thinking,
+                )
+            };
+            roots
+                .create_root(RootSessionRequest {
+                    prompt: request.prompt,
+                    name: request.name,
+                    model: request.model,
+                    thinking: request.thinking,
+                    cwd,
+                    creator_cwd,
+                    creator_file,
+                    creator_model,
+                    creator_thinking,
+                    creator_env: node.env.clone(),
+                })
+                .await
+        })
     }
 
     fn list_subagents(&self) -> RlmHostFuture<Vec<RlmSubagentEntry>> {

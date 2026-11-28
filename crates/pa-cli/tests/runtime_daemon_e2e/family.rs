@@ -44,7 +44,7 @@ const WAIT: Duration = Duration::from_secs(90);
 /// A form that writes `call`'s value as JSON to `<dir>/<name>.json`, or its
 /// error to `<name>.error`, with the call's wall time (`elapsedMs`) beside a
 /// hash result.
-fn record(call: &str, name: &str, dir: &Path) -> String {
+pub(super) fn record(call: &str, name: &str, dir: &Path) -> String {
     let path = dir.join(format!("{name}.json")).display().to_string();
     let error = dir.join(format!("{name}.error")).display().to_string();
     format!(
@@ -61,7 +61,7 @@ fn record(call: &str, name: &str, dir: &Path) -> String {
 }
 
 /// The recorded value once it lands (an `.error` record fails the test).
-async fn recorded(dir: &Path, name: &str) -> Value {
+pub(super) async fn recorded(dir: &Path, name: &str) -> Value {
     until(WAIT, name, async || {
         if let Ok(error) = std::fs::read_to_string(dir.join(format!("{name}.error"))) {
             panic!("{name} raised: {error}");
@@ -94,7 +94,7 @@ async fn transcript_text(client: &mut Client, id: &str) -> String {
 }
 
 /// The records of the spawn ledger under `agent_dir`, as `(op, childId)`.
-fn ledger_ops(agent_dir: &Path) -> Vec<(String, String)> {
+pub(super) fn ledger_ops(agent_dir: &Path) -> Vec<(String, String)> {
     let Ok(dir) = std::fs::read_dir(agent_dir.join("rlm-ledger")) else {
         return Vec::new();
     };

@@ -58,6 +58,7 @@ mod queue;
 mod queue_edit;
 mod replace;
 mod restore;
+mod roots;
 mod saved;
 mod side_runs;
 mod state;

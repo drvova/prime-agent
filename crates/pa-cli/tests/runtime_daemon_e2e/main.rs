@@ -85,6 +85,8 @@
 //!   daemon (phase 8d-5c): [`history_import`].
 //! - A kernel webhook source: an authenticated `POST` runs an untrusted
 //!   turn, a bad token none (phase 9): [`webhooks`].
+//! - A depth-0 session's `rlm.create_session`: a sibling root, shown under
+//!   its creator and kept through its creator's crash: [`root_sessions`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -109,6 +111,7 @@ mod questions;
 mod queue_edit;
 mod reliability;
 mod replace;
+mod root_sessions;
 mod saved_list;
 mod schedules;
 mod shutdown_flush;

@@ -100,7 +100,7 @@ fn crash_fields(crash: &Value) -> Value {
 }
 
 /// Waits until `path` exists.
-fn await_file(path: &Path) {
+pub(super) fn await_file(path: &Path) {
     let deadline = Instant::now() + STATE_WAIT;
     while !path.exists() {
         assert!(
@@ -114,7 +114,7 @@ fn await_file(path: &Path) {
 
 /// A cell that enters a native call no interrupt reaches: it writes
 /// `marker` once it is inside, and returns once the marker is gone.
-fn wedged_cell(marker: &Path) -> String {
+pub(super) fn wedged_cell(marker: &Path) -> String {
     format!(
         "(%test-block {})",
         serde_json::to_string(&marker.to_string_lossy()).expect("a Scheme string literal")
