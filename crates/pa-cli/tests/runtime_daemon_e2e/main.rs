@@ -98,6 +98,8 @@
 //!   ([`compaction_outcome`]), an imported session's compaction
 //!   ([`import_compaction`]) and the session-local harness store
 //!   ([`kernel_harness`]) (phase 10).
+//! - A depth-0 session's `rlm.create_session`: a sibling root, shown under
+//!   its creator and kept through its creator's crash: [`root_sessions`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -130,6 +132,7 @@ mod questions;
 mod queue_edit;
 mod reliability;
 mod replace;
+mod root_sessions;
 mod saved_list;
 mod schedules;
 mod shutdown_flush;

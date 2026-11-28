@@ -64,7 +64,7 @@ mod notices;
 mod tests;
 
 pub(crate) use controls::{ChildStop, ChildStopped};
-pub(crate) use family::DaemonFamily;
+pub(crate) use family::{DaemonFamily, RootSessionRequest, RootSessions};
 pub(crate) use host::SessionSubagents;
 pub(crate) use messages::{
     late_sent_agent_message_sink, FamilyMessages, FamilyObserve, MessageSender,

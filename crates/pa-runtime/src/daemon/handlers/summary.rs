@@ -21,6 +21,8 @@
 //!   saved session is idle, with none of these.
 //! - **Lifecycle.** `live` once the session has a message (or, open, a
 //!   running task), `draft` before.
+//! - **Lineage.** `parentSessionPath` when its header names the session it
+//!   was created under (a root an `rlm.create_session` made).
 //!
 //! - **Subagents.** Each subagent running below an open session follows the
 //!   open sessions (depth first, in spawn order, as the roster lists them),
@@ -287,7 +289,7 @@ fn row(id: &str, path: &Path, rows: &[Value], activity: Option<&Activity>) -> Va
     let queued = activity.map_or(0, |activity| {
         activity.steering.len() + activity.follow_ups.len()
     });
-    json!({
+    let mut row = json!({
         "session": id,
         "path": path,
         "cwd": header.and_then(|header| header.get("cwd")).cloned().unwrap_or(json!("")),
@@ -320,5 +322,14 @@ fn row(id: &str, path: &Path, rows: &[Value], activity: Option<&Activity>) -> Va
             "steering": activity.map_or_else(Vec::new, |activity| activity.steering.clone()),
             "followUps": activity.map_or_else(Vec::new, |activity| activity.follow_ups.clone()),
         },
-    })
+    });
+    // A root created under another session (`rlm.create_session`) names it in
+    // its header, as the old summary's `parentSessionPath` did.
+    if let Some(parent) = header
+        .and_then(|header| header.get("parentSession"))
+        .filter(|parent| parent.is_string())
+    {
+        row["parentSessionPath"] = parent.clone();
+    }
+    row
 }

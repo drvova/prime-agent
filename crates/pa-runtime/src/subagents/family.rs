@@ -25,12 +25,20 @@
 //! The ledger's own writes are durable, single `O_APPEND` records, and run
 //! on the blocking pool. A family with no transcripts (a parent kept in
 //! memory) writes nothing.
+//!
+//! A depth-0 session's kernel also asks the daemon for a sibling root
+//! (`rlm.create_session`, [`RootSessions`]): a session of its own, created as
+//! a client's `session.create` creates one, its header naming the creator's
+//! transcript, and never part of the creator's family (no edge, so the
+//! creator's crash, replacement or stop leaves it running), as the old
+//! supervisor's `createRlmRootSession` did.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 
 use anyhow::Context as _;
-use pa_core::session_engine::rlm_host::RlmFactoryTag;
+use pa_core::session_engine::rlm_host::{RlmCreateSessionHandle, RlmFactoryTag};
 use pa_core::session_engine::rlm_ledger::{
     read_rlm_subagent_display, write_rlm_subagent_display, RlmLedgerDeleteReason, RlmLedgerEdge,
     RlmSpawnInput, RlmSpawnLedger, RlmSubagentDisplayEntry,
@@ -53,6 +61,48 @@ pub(crate) struct SpawnRecord {
     pub(crate) created_at: u64,
 }
 
+/// One `rlm.create_session` a depth-0 session's kernel asked for, with what
+/// the new root inherits from the session that asked.
+pub(crate) struct RootSessionRequest {
+    /// The task the new root is prompted with.
+    pub(crate) prompt: String,
+    /// Its name; `None` leaves it unnamed (its handle names it by its id).
+    pub(crate) name: Option<String>,
+    /// The model selector asked for; `None` inherits the creator's.
+    pub(crate) model: Option<String>,
+    /// The thinking level asked for; `None` inherits the creator's.
+    pub(crate) thinking: Option<String>,
+    /// The new root's working directory, resolved against the creator's.
+    pub(crate) cwd: PathBuf,
+    /// The creator's working directory (its settings' `allowedModels`).
+    pub(crate) creator_cwd: PathBuf,
+    /// The creator's transcript, which the new header names; `None` for a
+    /// creator kept in memory.
+    pub(crate) creator_file: Option<String>,
+    /// The creator's model selector and thinking level.
+    pub(crate) creator_model: Option<String>,
+    pub(crate) creator_thinking: Option<pa_types::ai::ModelThinkingLevel>,
+    /// The creator's environment over the process's own.
+    pub(crate) creator_env: BTreeMap<String, String>,
+}
+
+/// Creates the depth-0 sessions a session's kernel asks for
+/// (`rlm.create_session`): the runtime daemon's handlers.
+///
+/// An implementation creates the root as a client's `session.create` does
+/// (its lease, kept options, open record and roster entry), on the model
+/// the request resolves to under the settings' `allowedModels` (else the
+/// creator's), prompts it with the task as its owner, and answers its
+/// handle once the task is queued; a root whose prompt is refused is
+/// stopped again. It never waits on the new root's turn.
+pub(crate) trait RootSessions: Send + Sync {
+    /// Creates and prompts the root `request` asks for.
+    fn create_root(
+        &self,
+        request: RootSessionRequest,
+    ) -> pa_agent::BoxFut<'_, anyhow::Result<RlmCreateSessionHandle>>;
+}
+
 /// Hears that a session's wait edge (its `waitingOn`) changed, by the
 /// session's id; it must return at once (it runs on the waiting cell's path).
 pub(crate) type WaitEdgeChanged = Arc<dyn Fn(&str) + Send + Sync>;
@@ -63,6 +113,9 @@ pub(crate) type WaitEdgeChanged = Arc<dyn Fn(&str) + Send + Sync>;
 pub(crate) struct DaemonFamily {
     ledger: Arc<RlmSpawnLedger>,
     wait_edge_changed: WaitEdgeChanged,
+    /// Who creates the roots the sessions' kernels ask for, once the
+    /// daemon serves.
+    roots: OnceLock<Weak<dyn RootSessions>>,
 }
 
 impl DaemonFamily {
@@ -79,7 +132,19 @@ impl DaemonFamily {
                 tracing::warn!("{message}");
             })),
             wait_edge_changed,
+            roots: OnceLock::new(),
         }
+    }
+
+    /// Gives the family who creates the sessions' roots; attached once, a
+    /// second attach changes nothing.
+    pub(crate) fn attach_roots(&self, roots: Weak<dyn RootSessions>) {
+        let _ = self.roots.set(roots);
+    }
+
+    /// Who creates the sessions' roots, while the daemon serves.
+    pub(crate) fn roots(&self) -> Option<Arc<dyn RootSessions>> {
+        self.roots.get().and_then(Weak::upgrade)
     }
 
     /// Session `id`'s wait edge changed.
