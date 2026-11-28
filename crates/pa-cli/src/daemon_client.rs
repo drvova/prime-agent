@@ -1,7 +1,9 @@
-//! Daemon socket client for the CLI's daemon-backed public commands (`list`,
-//! `stop`, `rename`, `send`, `schedule`): connect, read the `daemon_hello`,
-//! send one `command` envelope per request, match responses by id. The client
-//! never spawns a daemon; an unanswered socket surfaces the exact TS error.
+//! The old wire's socket client, for a supervisor an earlier release left
+//! running: `status`, `doctor` and `shutdown` probe and stop it with it.
+//! Connect, read the `daemon_hello`, send one `command` envelope per request,
+//! match responses by id. Built on `pa_types::daemon` alone. The client never
+//! spawns a daemon. Also the connect errors the runtime daemon's client
+//! reports (the exact TS text).
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -16,7 +18,6 @@ use serde_json::json;
 
 use crate::config;
 
-const REQUEST_TIMEOUT_MS: u64 = 30_000;
 /// Greeting timeout. The TS default is 3s; raised to 15s so daemons
 /// busy loading large sessions can still greet in time.
 const HELLO_TIMEOUT_MS: u64 = 15_000;
@@ -37,18 +38,8 @@ pub(crate) struct DaemonClient {
 }
 
 impl DaemonClient {
-    pub(crate) fn connect(socket_path: &Path) -> Result<Self> {
-        Self::connect_raw(socket_path).map_err(|error| {
-            anyhow!(
-                "Failed to connect to the Prime Agent daemon: {}. {}",
-                node_connect_error(&error, socket_path),
-                endpoint_details(socket_path)
-            )
-        })
-    }
-
-    /// [`Self::connect`] without the user-facing error decoration: discovery
-    /// probes classify unreachable sockets instead of surfacing the error.
+    /// Connect without the user-facing error decoration: discovery probes
+    /// classify unreachable sockets instead of surfacing the error.
     pub(crate) fn connect_probe(socket_path: &Path) -> Result<Self> {
         Self::connect_raw(socket_path).map_err(|error| anyhow!("connect: {error}"))
     }
@@ -68,14 +59,9 @@ impl DaemonClient {
         })
     }
 
-    /// Send one command envelope and wait for its response. Errors carry the exact
-    /// TS client message text (socket and daemon-log path), so users can self-diagnose.
-    pub(crate) fn request(&mut self, command: DaemonCommand) -> Result<DaemonResponse> {
-        self.request_with_timeout(command, REQUEST_TIMEOUT_MS)
-    }
-
-    /// [`Self::request`] with an explicit response deadline (daemon
-    /// discovery probes use the TS probe timeouts, not the CLI default).
+    /// Send one command envelope and wait for its response until `timeout_ms` (discovery
+    /// probes use the TS probe timeouts). Errors carry the exact TS client message text (socket
+    /// and daemon-log path), so users can self-diagnose.
     pub(crate) fn request_with_timeout(
         &mut self,
         command: DaemonCommand,
@@ -294,8 +280,10 @@ mod tests {
             );
             writer.write_all(response.as_bytes()).unwrap();
         });
-        let mut client = DaemonClient::connect(&socket).unwrap();
-        let response = client.request(list_command("daemon_1")).unwrap();
+        let mut client = DaemonClient::connect_probe(&socket).unwrap();
+        let response = client
+            .request_with_timeout(list_command("daemon_1"), 30_000)
+            .unwrap();
         assert!(response.success);
         assert!(server.join().is_ok());
     }
@@ -304,7 +292,10 @@ mod tests {
     fn connect_error_matches_node_text() {
         let dir = tempfile::TempDir::new().unwrap();
         let socket = dir.path().join("missing.sock");
-        let error = DaemonClient::connect(&socket).unwrap_err();
+        // The runtime daemon's client reports the old client's text.
+        let Err(error) = crate::runtime_daemon_client::RuntimeDaemonClient::connect(&socket) else {
+            panic!("nothing listens on {}", socket.display());
+        };
         let text = error.to_string();
         assert!(
             text.starts_with("Failed to connect to the Prime Agent daemon: connect ENOENT "),
@@ -336,8 +327,10 @@ mod tests {
             drop(writer);
             drop(reader);
         });
-        let mut client = DaemonClient::connect(&socket).unwrap();
-        let error = client.request(list_command("daemon_1")).unwrap_err();
+        let mut client = DaemonClient::connect_probe(&socket).unwrap();
+        let error = client
+            .request_with_timeout(list_command("daemon_1"), 30_000)
+            .unwrap_err();
         let text = error.to_string();
         assert!(
             text.starts_with("Connection to the Prime Agent daemon closed. Reason: shutdown."),
@@ -391,7 +384,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let socket = dir.path().join("daemon.sock");
         let _listener = UnixListener::bind(&socket).unwrap();
-        let mut client = DaemonClient::connect(&socket).unwrap();
+        let mut client = DaemonClient::connect_probe(&socket).unwrap();
         let line: &'static [u8] = "{\"type\":\"daemon_hello\",\"name\":\"é\"}\n".as_bytes();
         let split = line.len() - 4; // between the two bytes of "é"
         client.reader = BufReader::new(Box::new(ScriptedReads(

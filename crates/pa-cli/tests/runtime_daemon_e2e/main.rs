@@ -1,6 +1,6 @@
 //! The runtime daemon (phase 7a) end to end: the real `prime-agent --mode
-//! daemon` with `PRIME_AGENT_RUNTIME_DAEMON=1` on an isolated agent dir and
-//! the scripted faux provider, driven over wire2 on `daemon2.sock`.
+//! daemon` on an isolated agent dir and the scripted faux provider, driven
+//! over wire2 on `daemon2.sock`.
 //!
 //! - A turn: hello, `session.create`, a publish on `agent/<id>/input`, the
 //!   turn's stream and its `done`, then `transcript.page` holds the turn; a
@@ -168,12 +168,11 @@ const FRAME_WAIT: Duration = Duration::from_secs(60);
 
 /// Env keys the test's own environment may carry that must not reach the
 /// daemons it starts.
-const SCRUB_ENV: [&str; 6] = [
+const SCRUB_ENV: [&str; 5] = [
     "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
     "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
     "PRIME_AGENT_INTERNAL_SESSION_LEASES",
     "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",
-    "PRIME_AGENT_RUNTIME_DAEMON",
     "PI_PACKAGE_DIR",
 ];
 
@@ -273,7 +272,6 @@ impl Bed {
         command
             .args(["--mode", "daemon", "--daemon-socket"])
             .arg(daemon_socket)
-            .env("PRIME_AGENT_RUNTIME_DAEMON", "1")
             .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string());
         command
     }

@@ -10,6 +10,14 @@ use anyhow::{Context, Result};
 use pa_types::daemon::update_flow::{UpdateProcessIdentity, UPDATE_ROSTER_ENV};
 use serde_json::Value;
 
+/// The switch an earlier release reads to start the runtime daemon over its settings
+/// (`PRIME_AGENT_RUNTIME_DAEMON=1`); this release reads it no more.
+const ROLLBACK_RUNTIME_DAEMON_ENV: &str = "PRIME_AGENT_RUNTIME_DAEMON";
+
+/// The switch an earlier release reads to start the supervisor
+/// (`PRIME_AGENT_DAEMON_SUPERVISOR=1`); this release reads it no more.
+const ROLLBACK_SUPERVISOR_ENV: &str = "PRIME_AGENT_DAEMON_SUPERVISOR";
+
 /// How often the boot wait retries the hello handshake.
 const BOOT_POLL: Duration = Duration::from_millis(250);
 
@@ -59,15 +67,16 @@ pub fn spawn_supervisor(
     if let Some(roster_path) = roster_path {
         command.env(UPDATE_ROSTER_ENV, roster_path);
     }
-    // The successor is the daemon the update drives: the runtime daemon when it is the
-    // selected one, else the supervisor, whatever the successor's own settings say.
+    // This release's binary starts the runtime daemon whatever it is told. A rollback's binary
+    // is an earlier release's, which still reads the selection switches: it is told which daemon
+    // the update stopped, so it starts that one again whatever its settings say.
     if endpoint.is_runtime() {
-        command.env(crate::daemon_mode::RUNTIME_DAEMON_ENV, "1");
+        command.env(ROLLBACK_RUNTIME_DAEMON_ENV, "1");
     } else {
-        command.env(crate::daemon_mode::SUPERVISOR_ENV, "1");
+        command.env(ROLLBACK_SUPERVISOR_ENV, "1");
     }
-    // The successor runs under its own restart owner (see `pa_daemon::keeper`); a rollback
-    // binary that predates the owner ignores the variable and runs unkept.
+    // The successor runs under its own restart owner (see `pa_runtime::daemon::keeper`); a
+    // rollback binary that predates the owner ignores the variable and runs unkept.
     #[cfg(unix)]
     command.env(pa_runtime::daemon::keeper::KEEPER_ENV, "1");
     #[cfg(unix)]

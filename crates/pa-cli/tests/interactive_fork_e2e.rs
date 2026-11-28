@@ -299,7 +299,6 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
         .env("PRIME_AGENT_SESSION_DIR", &session_dir)
         .env("PI_OFFLINE", "1")
         .env("PRIME_AGENT_FAUX_SCRIPT", fork_script.display().to_string())
-        .env_remove("PRIME_AGENT_RUNTIME_DAEMON")
         .env_remove("TMUX")
         .env_remove("RLM_DEPTH")
         .stdin(slave.try_clone().expect("clone pty slave"))

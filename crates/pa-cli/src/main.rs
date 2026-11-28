@@ -13,12 +13,15 @@ fn main() {
     if args.first().map(String::as_str) == Some("--elevation-helper") {
         std::process::exit(pa_core::kernel::run_elevation_helper(&args[1..]));
     }
-    // A fresh top-level invocation sheds an inherited worker identity before
-    // any thread exists (edition 2021 makes `remove_var` safe, but it must
-    // still run single-threaded): everything but the supervisor-spawned
-    // `worker` subcommand.
-    if args.first().map(String::as_str) != Some("worker") {
-        pa_daemon::worker::strip_inherited_worker_env();
+    // A fresh top-level invocation sheds the session identity a daemon session's command hands
+    // its programs before any thread exists (edition 2021 makes `remove_var` safe, but it must
+    // still run single-threaded): a `prime-agent` started from a session's `bash` must not record
+    // its programs in that session's orphan journal or take its lease owner.
+    for inherited in [
+        pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
+        pa_core::kernel::orphan_journal::ORPHAN_PROCESS_JOURNAL_ENV,
+    ] {
+        std::env::remove_var(inherited);
     }
     // Still single-threaded: a kept daemon launch splits into the daemon and its restart
     // owner here (a launch written any other way is kept all the same, one program start

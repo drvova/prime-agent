@@ -14,8 +14,7 @@
 //!   again until the lock is stale;
 //! - a session stopped on purpose is never woken by its due job;
 //! - a closed session's job and state follow its close reason;
-//! - a plain scheduled job runs its prompt as a turn;
-//! - a runtime daemon the settings no longer select skips its jobs.
+//! - a plain scheduled job runs its prompt as a turn.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -24,7 +23,7 @@ use pa_types::wire2::Since;
 use serde_json::{json, Value};
 
 use super::turns::cell;
-use super::{ok, run_turn, Bed, Client, Daemon};
+use super::{ok, run_turn, Bed, Client};
 
 /// How long a test waits for a fire or a state change before it fails.
 const FIRE_WAIT: Duration = Duration::from_secs(60);
@@ -396,45 +395,5 @@ async fn a_scheduled_job_runs_its_prompt_as_a_turn() {
     assert_eq!(
         (job.status, job.last_error),
         (pa_core::cron::JobStatus::Completed, None)
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_runtime_daemon_the_settings_stop_selecting_skips_its_jobs() {
-    let bed = Bed::new();
-    let settings = bed.agent_dir().join("settings.json");
-    std::fs::write(&settings, json!({}).to_string()).unwrap();
-    // Selected by the settings (the default), not the environment.
-    let mut command = bed.runtime_daemon_command(&script(HEARTBEAT), &bed.old_socket());
-    command.env_remove("PRIME_AGENT_RUNTIME_DAEMON");
-    let mut child = command.spawn().expect("spawn the runtime daemon");
-    super::support::await_listening(&bed.runtime_socket(), &mut child);
-    let _daemon = Daemon(child);
-    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
-    let session = Session::create(&mut client).await;
-    let rows = until(FIRE_WAIT, "the first heartbeat", async || {
-        let rows = session.rows(&mut client, "heartbeat_prompt").await;
-        (rows > 0).then_some(rows)
-    })
-    .await;
-    let fired = until(FIRE_WAIT, "the fire recorded", async || {
-        let job = session.job(&bed);
-        (job.run_count > 0).then_some(job.run_count)
-    })
-    .await;
-    // The old daemon is selected again: the next fire is a skip.
-    std::fs::write(&settings, json!({ "daemon": "supervisor" }).to_string()).unwrap();
-    let job = until(FIRE_WAIT, "the skipped fire", async || {
-        let job = session.job(&bed);
-        job.last_skipped_at.is_some().then_some(job)
-    })
-    .await;
-    assert_eq!(
-        (
-            job.run_count,
-            session.rows(&mut client, "heartbeat_prompt").await
-        ),
-        (fired, rows),
-        "nothing ran once the runtime daemon was no longer selected"
     );
 }

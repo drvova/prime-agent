@@ -36,7 +36,7 @@ pub(super) async fn run(
     .await
 }
 
-/// The handoff from the TS daemon on `socket` to `successor`, the selected
+/// The handoff from the TS daemon on `socket` to `successor`, the runtime
 /// daemon, which restores the TS sessions.
 async fn run_in(
     socket: &Path,

@@ -223,7 +223,6 @@ fn daemon_attached_command(
         .arg(socket)
         .env("HOME", home)
         .env("PRIME_AGENT_FAUX_SCRIPT", home.join("worker-script.json"))
-        .env_remove("PRIME_AGENT_RUNTIME_DAEMON")
         .current_dir(home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -107,7 +107,6 @@ fn spawn_runtime_daemon(
         .env("PRIME_AGENT_AGENT_DIR", agent_dir)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env("DO_NOT_TRACK", "1")
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "1")
         .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -214,8 +213,6 @@ fn run_cli_with(
     for key in SCRUB_ENV {
         command.env_remove(key);
     }
-    // The runtime daemon is the default.
-    command.env_remove("PRIME_AGENT_RUNTIME_DAEMON");
     command.output().expect("spawn CLI binary")
 }
 

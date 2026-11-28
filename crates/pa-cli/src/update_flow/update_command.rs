@@ -43,11 +43,10 @@ pub struct UpdateCommandOptions {
 /// the lock, a status write, or the coordinator spawn fails.
 pub async fn run_update_command(options: &UpdateCommandOptions) -> Result<i32> {
     let agent_dir = crate::config::get_agent_dir();
-    // The daemon the update restarts: the selected one (its socket keys the update's lock and
+    // The daemon the update restarts: the runtime daemon (its socket keys the update's lock and
     // status).
-    let endpoint = super::endpoint::Endpoint::selected(
+    let endpoint = super::endpoint::Endpoint::runtime(
         &pa_core::platform::daemon_endpoint::default_daemon_socket_path(),
-        &agent_dir,
     );
     let socket_path = endpoint.socket().to_path_buf();
     let install_root = super::activation_root().map_err(|_| {
@@ -644,8 +643,8 @@ pub async fn run_coordinator_mode(
                 && value.get("phase").and_then(serde_json::Value::as_str) == Some("starting")
         }
     };
-    // The daemon the update drives: the selected one beside the daemon socket.
-    let endpoint = super::endpoint::Endpoint::selected(&socket_path, &agent_dir);
+    // The daemon the update drives: the runtime daemon beside the daemon socket.
+    let endpoint = super::endpoint::Endpoint::runtime(&socket_path);
     if legacy_handoff {
         return super::legacy_restart::run(
             &socket_path,
@@ -657,7 +656,7 @@ pub async fn run_coordinator_mode(
         .await;
     }
     let options = super::coordinator::CoordinatorOptions {
-        predecessor: super::endpoint::Endpoint::running(&socket_path, &agent_dir).await,
+        predecessor: super::endpoint::Endpoint::running(&socket_path).await,
         agent_dir,
         successor: endpoint,
         status_path,

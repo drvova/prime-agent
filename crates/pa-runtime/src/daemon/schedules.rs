@@ -50,9 +50,10 @@
 //!   woken as a session of its own). A child its parent's family opened
 //!   again is passive until its first use, its jobs armed as a dormant
 //!   session's: a due one builds it first.
-//! - **One daemon.** A job runs only while this daemon is the selected one
-//!   ([`super::DaemonOptions::selected`]); otherwise its fire is a skip, so
-//!   jobs never fire in both daemons.
+//! - **One daemon.** The runtime daemon is the only daemon this release
+//!   starts. A supervisor an earlier release left running holds its own
+//!   sessions under their leases, so a session's jobs fire only in the
+//!   daemon that holds it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -116,16 +117,12 @@ pub(super) enum JobsShown {
     All,
 }
 
-/// Whether this daemon is the selected one now.
-pub(super) type Selected = Arc<dyn Fn() -> bool + Send + Sync>;
-
 /// The runtime daemon's scheduled jobs, by session.
 pub(super) struct Schedules<B: SessionBuilder> {
     me: Weak<Self>,
     runtime: Weak<Runtime<B>>,
     open: Arc<OpenSessions>,
     agent_dir: PathBuf,
-    selected: Selected,
     /// Where the lanes run (arming is asked on a session's own thread).
     handle: tokio::runtime::Handle,
     armed: Mutex<HashMap<String, Arc<Armed>>>,
@@ -179,14 +176,12 @@ impl<B: SessionBuilder> Schedules<B> {
         runtime: &Arc<Runtime<B>>,
         open: Arc<OpenSessions>,
         agent_dir: PathBuf,
-        selected: Selected,
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Schedules {
             me: me.clone(),
             runtime: Arc::downgrade(runtime),
             open,
             agent_dir,
-            selected,
             handle: tokio::runtime::Handle::current(),
             armed: Mutex::new(HashMap::new()),
             subagents: Mutex::new(HashSet::new()),
@@ -645,9 +640,6 @@ impl<B: SessionBuilder> Schedules<B> {
         session: &str,
         job: &AgentCronJob,
     ) -> anyhow::Result<Option<&'static str>> {
-        if !(self.selected)() {
-            return Ok(Some(SKIPPED));
-        }
         let Some(armed) = lock(&self.armed).get(session).cloned() else {
             return Ok(Some(SKIPPED));
         };

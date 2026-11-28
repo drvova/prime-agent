@@ -2,9 +2,10 @@
 //! it for identity and session count — the OS census of listening sockets
 //! plus a sweep of the default socket dir (orphaned files included).
 //! Everything is scoped to one [`DaemonStateRoot`]. Both daemons are found:
-//! the supervisor on its socket (the old wire) and the runtime daemon on
-//! `daemon2.sock` beside it (wire2), each probed on its own wire
-//! ([`socket_kind`]).
+//! the runtime daemon on `daemon2.sock` (wire2), and a supervisor an earlier
+//! release left on the socket beside it (the old wire), each probed on its
+//! own wire ([`socket_kind`]). The runtime daemon's legacy greeter on that
+//! socket is not a daemon of its own and is not listed.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -14,7 +15,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::daemon_client::DaemonClient;
-use crate::daemon_mode::DaemonKind;
 
 mod format;
 mod kill;
@@ -60,6 +60,15 @@ pub(crate) enum DaemonStatus {
 pub(crate) enum PidSource {
     Listener,
     Hello,
+}
+
+/// The two daemons a socket can belong to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DaemonKind {
+    /// A supervisor an earlier release started, on its socket (the old wire).
+    Supervisor,
+    /// The runtime daemon on `daemon2.sock` (wire2).
+    Runtime,
 }
 
 /// Which daemon listens on a socket, by its name: the runtime daemon's
@@ -316,6 +325,8 @@ pub(crate) struct ProbeResult {
     supervisor_pid: Option<u32>,
     supervisor_process_start_id: Option<String>,
     reachable: bool,
+    /// The hello is the runtime daemon's legacy greeter's (`legacyGreeter`), not a supervisor's.
+    legacy_greeter: bool,
 }
 
 /// Probe one socket on its daemon's wire ([`socket_kind`]).
@@ -377,6 +388,7 @@ fn probe_supervisor(socket_path: &Path) -> ProbeResult {
         ..ProbeResult::default()
     };
     let greeted = client.wait_for_hello(HELLO_TIMEOUT_MS).ok().map(|hello| {
+        probe.legacy_greeter = hello.get("legacyGreeter").is_some();
         probe.version = hello
             .get("appVersion")
             .and_then(serde_json::Value::as_str)
@@ -412,6 +424,9 @@ fn probe_supervisor(socket_path: &Path) -> ProbeResult {
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
     });
+    if probe.legacy_greeter {
+        return probe;
+    }
     let timeout_ms = if greeted.is_some() {
         LIST_TIMEOUT_MS
     } else {
@@ -542,6 +557,10 @@ fn discover_daemons_with(root: &DaemonStateRoot, named_pipes: bool) -> Vec<Daemo
         .filter_map(|socket_path| {
             let proc = process_by_socket.get(&socket_path);
             let probe = probe_daemon(&socket_path);
+            // The runtime daemon's own greeter: found, probed and stopped with that daemon.
+            if probe.legacy_greeter {
+                return None;
+            }
             let pid = proc.map(|daemon| daemon.pid).or_else(|| {
                 verify_hello_supervisor_pid(
                     probe.supervisor_pid,

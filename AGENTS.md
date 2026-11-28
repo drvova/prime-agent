@@ -187,7 +187,7 @@ EXPLICIT EXCEPTION: wire-protocol identifiers (e.g. the PI_PACKAGE_DIR env var, 
 - A cell reaches the system only through those functions. Steel's own file, process, loader, environment, thread and blocking builtins are closed (`crates/pa-core/src/kernel/scheme/confinement.rs`) in both engines a cell's code runs in: the session's own, and the one Steel's compiler keeps for macro bodies (`defmacro`, `syntax-case`, `begin-for-syntax`), which also prints to the cell's ports and is interrupted with the cell. Steel builds every engine from one image, so no engine keeps an object of it a cell can change (modules, the documentation and memo tables, the will executor): each gets its own, and `#%module-add`, `#%module-add-doc`, `#%gc-collect`, `%memo-table-set!` and `command-line` are closed. The names a cell can reach in either are pinned in `confinement/open_globals.txt`: a Steel upgrade or a new builtin that changes the list fails its test and needs a deliberate decision. `vendor/steel-core/PRIME_AGENT_PATCH.md` lists every change to the vendored interpreter.
 - The product ships and installs no Python: no interpreter, venv, uv, or packages. The one place a Python is used is a factory machine's optional `python` state, which runs the `python3` already on `PATH` and fails that state when there is none. `--prime-agent-bootstrap` is accepted and does nothing, and a release archive keeps two placeholder files under `prime-agent-runtime/`, because installers and updaters already in the field require both (`docs/legacy-upgrade-contract.md`).
 - System prompt structure: layered — cache-stable static layer files (core harness description that names every kernel function, mandatory usage rules, opinionated guidelines, per-model additions from the model-prompts TOML rule map) followed by one dynamic tail (project context, skills inventory, MCP servers, environment, session role); the harness digest stays a separate `[harness-digest]` user message. The full reference is not in the prompt: the model reads it with `(api-help [topic])`. `prime-agent prompt` dumps the assembled prompt with its layer breakdown.
-- CLI shape: `prime-agent` keeps its existing commands and flags; headless modes (RPC/daemon) keep their behavior. `--mode daemon` is the runtime daemon (wire2 on `daemon2.sock` beside the daemon socket) unless the supervisor is selected (`"daemon": "supervisor"`, `PRIME_AGENT_RUNTIME_DAEMON=0`, kept for one release); every daemon-backed mode (the TUI, the session commands, ACP, the update) follows that selection, and `status`, `doctor --fix` and `shutdown` find, reap and stop both daemons. The RPC mode (`pa_runtime::rpc`) keeps the agent's own queue, not the runtime's task lanes. A prompt is refused while a turn streams unless it names a `streamingBehavior`. Steers and follow-ups wait on the agent, and the next prompt's run reads the parked ones after its own row, as one run (`rpc_mode_e2e`). The lanes run a follow-up as its own turn and parked steers before a later prompt (`runtime_daemon_e2e`), so neither contract can host the other.
+- CLI shape: `prime-agent` keeps its existing commands and flags; headless modes (RPC/daemon) keep their behavior. `--mode daemon` is the runtime daemon (wire2 on `daemon2.sock` beside the daemon socket), the only daemon it starts: a settings file that still says `"daemon": "supervisor"` loads and is ignored (the daemon log says so at each boot), and `PRIME_AGENT_RUNTIME_DAEMON` and `PRIME_AGENT_DAEMON_SUPERVISOR` select nothing. Every daemon-backed mode (the TUI, the session commands, ACP, the update) runs on it; `status`, `doctor --fix` and `shutdown` find, reap and stop it and a supervisor an earlier release left running. The daemon socket itself, while nothing else answers there, is the runtime daemon's legacy greeter: an old client is told on the old wire to restart, never left waiting. The RPC mode (`pa_runtime::rpc`) keeps the agent's own queue, not the runtime's task lanes. A prompt is refused while a turn streams unless it names a `streamingBehavior`. Steers and follow-ups wait on the agent, and the next prompt's run reads the parked ones after its own row, as one run (`rpc_mode_e2e`). The lanes run a follow-up as its own turn and parked steers before a later prompt (`runtime_daemon_e2e`), so neither contract can host the other.
 
 ## Crates
 
@@ -202,7 +202,7 @@ The table summarizes each crate's current direct workspace dependencies:
 | `pa-agent` | Provider-independent agent loop | none |
 | `pa-shell` | Built-in bash-compatible shell and its utilities | `pa-types` |
 | `pa-log` | SQLite store: the event log, session transcripts and the agent's other state (the transcript store's database) | `pa-types` |
-| `pa-runtime` | Event-driven runtime: bus, subscriptions, task lanes and their SQLite stores, the sessions that run tasks as turns, the event sources its subscriptions start and stop, the headless turn driver, the RPC and ACP modes, the runtime daemon (wire2 on its own socket; the default daemon) and the restart owner both daemons share | `pa-types`, `pa-log`, `pa-core`, `pa-agent`, `pa-ai`, `pa-sources` |
+| `pa-runtime` | Event-driven runtime: bus, subscriptions, task lanes and their SQLite stores, the sessions that run tasks as turns, the event sources its subscriptions start and stop, the headless turn driver, the RPC and ACP modes, the runtime daemon (wire2 on its own socket; the only daemon `--mode daemon` starts) and its restart owner | `pa-types`, `pa-log`, `pa-core`, `pa-agent`, `pa-ai`, `pa-sources` |
 | `pa-sources` | Event sources: timers, folder watches, webhooks; the schedule grammar and evaluator timers and scheduled jobs share | `pa-types` |
 | `pa-ai` | Providers, model registry, streaming | `pa-types` |
 | `pa-models` | Live model catalog and transport | `pa-ai`, `pa-types` |
@@ -266,8 +266,8 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   ends the daemon and every session in it. A restart owner (`crates/pa-runtime/src/daemon/keeper.rs`,
   unix, for interactive, ACP and post-update launches) restarts the daemon with the same
   backoff and give-up limit and records every death; a deliberate stop is not restarted. It
-  keeps whichever daemon the launch selects: the runtime daemon's keeper keeps its records
-  under `daemon2.sock`, apart from the supervisor's. A deliberate stop of either daemon (its
+  keeps the runtime daemon, its records under `daemon2.sock`, apart from those of a supervisor
+  an earlier release left running. A deliberate stop of either daemon (its
   stop signal, a client's `shutdown`/`restart`; on the runtime daemon `daemon.shutdown` and
   `daemon.restart`, which `prime-agent shutdown` sends it) records the stop intent, answers first, tells every client
   (`daemon_closing`; on wire2 the live-only `system/closing`, after which each connection is
@@ -282,8 +282,8 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `daemon_closing` payload. The successor's boot restores the roster's sessions with one pass both
   daemons share (`pa_core::update::restart::restore`), reported over `update_restore_status` (on
   the runtime daemon `daemon.update_restore_status`); the update stops the daemon it finds holding
-  the sessions (the selected one, else the other one if only it answers: the supervisor an earlier
-  release left running) and restores them on the selected one. A drain also cuts off every
+  the sessions (the runtime daemon, else a supervisor an earlier release left running if only it
+  answers) and restores them on the runtime daemon. A drain also cuts off every
   subagent's running turn (no continuation is queued for it), as the old worker closes its
   children: a stop never waits on a child's turn. At
   boot a session that was mid-turn is revived, its interrupted turn continued or settled by
@@ -453,29 +453,37 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   the runtime's `session.attach` on a wire2 connection, until its `session.detach` or the
   connection's end); otherwise `ask` settles as `no_user` at once. A surface never awaits a
   client: it publishes fire-and-forget and answers from state it holds.
-- The interactive TUI runs on the selected daemon (the runtime daemon by default since phase 8f;
-  the supervisor when selected by name): `pa_tui::daemon_client::DaemonClient` speaks the old wire to `daemon.sock`
-  or wire2 to `daemon2.sock` (`daemon_client::Transport`, declared per socket by the composition
-  root), its wire2 link carrying every command the TUI sends through `wire2_compat` (a guard
+- The interactive TUI runs on the runtime daemon: `pa_tui::daemon_client::DaemonClient` speaks
+  wire2 to `daemon2.sock` (`daemon_client::Transport`, declared per socket by the composition
+  root; the old wire stays for the update's and the launch's calls to a supervisor an earlier
+  release left running), its wire2 link carrying every command the TUI sends through `wire2_compat` (a guard
   test fails on one with no wire2 form) and mapping the runtime's topics back to the old events;
   an attach follows the session's topics before its call, holds its events until the snapshot
   and drops those the snapshot holds, and a reconnect replays the stored topics after the last
   stored event it saw. Nothing on that path awaits telemetry
   (`the_startup_flush_never_blocks_the_runtime_launch`).
-- Two daemons for one more release: `prime-agent --mode daemon` is the runtime daemon unless the
-  global setting `"daemon": "supervisor"` or `PRIME_AGENT_RUNTIME_DAEMON=0` selects the
-  supervisor (`pa-daemon`, the old wire on `daemon.sock`; `PRIME_AGENT_RUNTIME_DAEMON=1` selects
-  the runtime daemon over the settings), or its launcher asks for the supervisor
-  (`PRIME_AGENT_DAEMON_SUPERVISOR=1`, set by the update coordinator's successor or rollback while
-  the supervisor is the daemon it drives, and by a launch that selected the supervisor and waits
-  on its socket; the keeper keeps the supervisor for it). A launch on the runtime daemon stops an
-  idle supervisor it finds on the sibling socket (no session running a turn or with a window
-  attached), off the launch path, so its sessions' leases come free (`pa_runtime::daemon`, wire2 on
-  `daemon2.sock` beside it, one per agent dir by an OS lock on `runtime-daemon.lock`, whose
-  recorded holder and restart owner the supervisor's boot reap spares though their command lines
-  name the same socket; a holder that does not answer on the same socket is a wedged
-  predecessor, stopped once shown to be a runtime daemon holding that lock, SIGTERM then
-  SIGKILL, before the new one takes the lock). Both
+- One daemon, and the old one's leftovers (phase 10 C1): `prime-agent --mode daemon` is the
+  runtime daemon (`pa_runtime::daemon`, wire2 on `daemon2.sock` beside the daemon socket, one per
+  agent dir by an OS lock on `runtime-daemon.lock`; a holder that does not answer on the same
+  socket is a wedged predecessor, stopped once shown to be a runtime daemon holding that lock,
+  SIGTERM then SIGKILL, before the new one takes the lock). Nothing selects the supervisor
+  (`pa-daemon`, the old wire on `daemon.sock`) any more: a global setting `"daemon":
+  "supervisor"` still loads and is ignored, the runtime daemon appending a notice to its daemon
+  log at each boot (compatibility over refusal: a settings file an earlier release wrote keeps
+  working), and `PRIME_AGENT_RUNTIME_DAEMON` and `PRIME_AGENT_DAEMON_SUPERVISOR` are read by no
+  code of this release; the update's successor and rollback spawn still set them, for a
+  rollback binary of an earlier release (`update_flow/successor.rs`). A supervisor an earlier
+  release left running is still met: a launch stops it once it is idle (no session running a
+  turn or with a window attached), off the launch path, so its sessions' leases come free; the
+  update stops it when only it answers and restores its sessions on the runtime daemon; and
+  `status`, `doctor --fix` and `shutdown` find and stop it. Those calls speak the old wire
+  through clients built on `pa_types::daemon` (pa-tui's `daemon_client`, pa-cli's
+  `daemon_client.rs`); pa-cli links no pa-daemon code. The runtime daemon's lock records its
+  holder and restart owner, which that supervisor's boot reap spares though their command lines
+  name the same socket. While nothing answers on `daemon.sock`, the runtime daemon serves its
+  legacy greeter there (`crates/pa-runtime/src/daemon/legacy_greeter.rs`): each old-wire
+  connection gets a `daemon_hello` that names no supervisor (`legacyGreeter`), its first request
+  a failed `response` telling the client to restart, and discovery does not list it. Both
   keep sessions in the same transcript store; a session is owned by whichever process holds its
   session lease (`pa_core::session::lease`), so the two never write one session. The runtime
   daemon runs interactive turns on its task lanes (steers, follow-ups, `session.abort` parking the
@@ -499,8 +507,8 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   second death in a row under it, settled as failed. Its sessions' kernels serve `schedule.*` and
   `rlm_heartbeat.*` on the same stored jobs as the supervisor's (`pa_core::cron`), fired by the
   runtime's kept timer sources (`crates/pa-runtime/src/daemon/schedules.rs`) under the store's
-  claim and catch-up rule, and only while it is the selected daemon (the settings are read again
-  before each job; a fire while it is not is a skip), so a job never fires in both daemons. An
+  claim and catch-up rule; a supervisor an earlier release left running holds its own sessions
+  under their leases, so a job never fires in both daemons. An
   idle session it held when it died is held dormant and woken under its lease when a job of its
   is due; a session stopped on purpose is not. Its sessions' subagents are runtime sessions
   recorded in the supervisor's RLM spawn ledger and display files
@@ -530,7 +538,7 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   already (one its boot revived) is answered with that session, as the supervisor's create-open
   reuse does, and a change or state read right after `session.create` waits for the engine's
   first build. The daemon-backed CLI commands (`list`, `sessions`, `stop`, `rename`, `send`,
-  `schedule`) speak wire2 to it while it is selected (`crates/pa-cli/src/daemon_command.rs`:
+  `schedule`) speak wire2 to it (`crates/pa-cli/src/daemon_command.rs`:
   `sessions.list` rows in the supervisor's summary shape, `session.send` delivering the
   supervisor's `agent_message` row and waking a saved session, `schedules`/`schedule.add`/
   `schedule.cancel` on the same job store). For the ACP client it answers what that client asks
@@ -563,9 +571,8 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   (`get_rlm_children`/`cancel_rlm_child`).
   The ACP mode lives in pa-runtime (`crates/pa-runtime/src/acp/`, phase 7g-4); it links no
   pa-daemon code and sends its commands through a command-level transport
-  (`acp/transport.rs`, `DaemonTransport`). With the supervisor selected that is its socket on the
-  old wire (`DaemonLink`); by default pa-cli spawns or awaits `daemon2.sock` and ACP drives the
-  runtime daemon on wire2 (`acp/wire2_link.rs`, `Wire2Link`, phase 7g-6), each old command
+  (`acp/transport.rs`, `DaemonTransport`): pa-cli spawns or awaits `daemon2.sock` and ACP drives
+  the runtime daemon on wire2 (`acp/wire2_link.rs`, `Wire2Link`, phase 7g-6), each old command
   as the wire2 frames that do the same (a prompt is a publish answered by its task's
   `agent/<id>/done`). `--no-session` there is the old daemon's client-owned in-memory session:
   `session.create {"ephemeral": true}` (`daemon/handlers/owned.rs`) keeps no transcript file, no

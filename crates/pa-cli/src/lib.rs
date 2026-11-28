@@ -70,12 +70,9 @@ pub mod util_time;
 pub use print_runtime::PrintRuntime;
 
 /// Daemon wiring shared by the interactive runtime and the integration
-/// tests: spawn/probe the supervisor or the runtime daemon on a socket, and
-/// map `--daemon-socket`.
-pub use interactive_mode::{
-    ensure_daemon_running, ensure_daemon_running_with, ensure_runtime_daemon_running_with,
-    resolve_socket_path,
-};
+/// tests: spawn/probe the runtime daemon beside a socket, and map
+/// `--daemon-socket`.
+pub use interactive_mode::{ensure_runtime_daemon_running_with, resolve_socket_path};
 
 /// Entry point shared by the binary and the integration tests. Returns the
 /// process exit code.
@@ -102,8 +99,6 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     // Telemetry reports the version `--version` prints: the beta channel
     // restamps only the packaged manifest, never the compiled-in version.
     pa_telemetry::set_version(crate::config::version());
-    pa_daemon::protocol::configure_app_version(crate::config::version())
-        .map_err(|error| error.to_string())?;
 
     let offline_mode = args.iter().any(|arg| arg == "--offline")
         || crate::config::is_truthy_env_flag(
@@ -233,17 +228,6 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     ) && !parsed.file_args.is_empty()
     {
         return Err("@file arguments are not supported in RPC, daemon, or ACP mode".to_string());
-    }
-
-    // Daemon worker processes start with the worker role env var set: route
-    // straight into the worker runtime. The binary entry keeps the worker
-    // handshake env only for the supervisor-spawned `worker` subcommand (it
-    // strips an inherited one from every other invocation), so the routing
-    // reads that subcommand alone.
-    let is_worker_process =
-        std::env::var(pa_daemon::worker::WORKER_ROLE_ENV).unwrap_or_default() == "1";
-    if is_worker_process && args.first().map(String::as_str) == Some("worker") {
-        return run_worker_mode();
     }
 
     if let Some(fork) = &parsed.fork {
@@ -400,19 +384,6 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     match runtime.run(&options) {
         Ok(exit_code) => Ok(exit_code),
         Err(missing) => Err(missing.error_message()),
-    }
-}
-
-/// Run the daemon session-worker runtime (the process the supervisor spawns
-/// for each live session).
-fn run_worker_mode() -> Result<i32, String> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| error.to_string())?;
-    match runtime.block_on(pa_daemon::worker::run_worker()) {
-        Ok(()) => Ok(0),
-        Err(error) => Err(format!("{error:#}")),
     }
 }
 

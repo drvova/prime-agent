@@ -1,6 +1,6 @@
 //! The runtime daemon: a [`Runtime`] over the agent dir, serving wire2 to
-//! every client that connects to its socket, beside the old daemon until
-//! the TUI moves onto it (phase 8).
+//! every client that connects to its socket. It is the only daemon
+//! `prime-agent --mode daemon` starts.
 //!
 //! - **Endpoint.** [`socket_path`]: `daemon2.sock` beside the old daemon's
 //!   socket (Unix), or the old daemon's pipe name with `2` appended
@@ -8,6 +8,10 @@
 //!   (the old daemon's transport, its stale-socket cleanup included) and
 //!   hands [`run`] the listener; each connection is one
 //!   [`crate::WireServer::serve`].
+//! - **The old socket.** The old daemon's socket itself, when nothing else
+//!   answers on it, is the legacy greeter's ([`legacy_greeter`]): a client of
+//!   an earlier release is told to restart on the old wire, never left
+//!   waiting.
 //! - **One per agent dir.** The embedder takes
 //!   `pa_core::platform::RuntimeDaemonLock` with [`take_lock`] and holds it
 //!   for the process's life (an operating-system file lock on
@@ -52,8 +56,7 @@
 //!   after one that died revives those with unfinished work ([`held`]).
 //! - **Scheduled jobs.** The kernel's `schedule.*` and `rlm_heartbeat.*`
 //!   are served in the daemon's sessions, on the old daemon's stored jobs,
-//!   and fired by the runtime's timer sources while this daemon is the
-//!   selected one ([`DaemonOptions::selected`]); a job due in an idle
+//!   and fired by the runtime's timer sources; a job due in an idle
 //!   session the daemon holds down wakes it ([`schedules`]).
 //! - **Boot imports.** The old daemon's, shared (`pa_core::session::boot_import`):
 //!   a distribution build's history import, announced on the live-only
@@ -83,6 +86,7 @@ mod boot_reap;
 mod handlers;
 mod held;
 pub mod keeper;
+mod legacy_greeter;
 mod model_scope;
 mod schedules;
 
@@ -91,6 +95,11 @@ pub use boot_reap::take_lock;
 use handlers::RuntimeHandlers;
 use held::OpenSessions;
 pub(crate) use held::Revival;
+
+/// The daemon log's notice for a settings file that still says `"daemon": "supervisor"`.
+const SUPERVISOR_SETTING_IGNORED: &str = "the global setting \"daemon\": \"supervisor\" is \
+     ignored: this release has one daemon, the runtime daemon (remove the setting to silence \
+     this notice)";
 
 /// How long the drain waits for the connections to send what they hold
 /// (`system/closing` last) before it closes them.
@@ -168,6 +177,9 @@ pub struct DaemonOptions<B> {
     /// The socket the daemon serves ([`socket_path`]): an update's prepared
     /// roster is kept under its update dir (`daemon.prepare_update_restart`).
     pub socket: PathBuf,
+    /// The old daemon's socket `socket` sits beside, which the legacy
+    /// greeter answers while nothing else does ([`legacy_greeter`]).
+    pub legacy_socket: PathBuf,
     /// What an update's boot is started with (`handlers/restore.rs`).
     pub update: UpdateBoot,
     /// Where new sessions' transcripts go (`<sessions dir>/<id>.jsonl`).
@@ -176,10 +188,6 @@ pub struct DaemonOptions<B> {
     pub cwd: PathBuf,
     /// Builds each session's engine.
     pub builder: B,
-    /// Whether this daemon is the selected one now: asked before each
-    /// scheduled job runs, which is skipped while it is not, so a job never
-    /// fires in both daemons.
-    pub selected: Arc<dyn Fn() -> bool + Send + Sync>,
     /// Called once when the daemon begins to stop on purpose (its stop
     /// signal, `daemon.shutdown`, `daemon.restart`), before anything stops:
     /// the embedder records the stop intent its restart owner reads, so a
@@ -243,6 +251,21 @@ pub async fn run<B: SessionBuilder>(
     let telemetry = {
         use pa_core::session_engine::telemetry;
         let settings = pa_core::settings::SettingsManager::create(&options.cwd, &options.agent_dir);
+        // A settings file of an earlier release may still choose the supervisor, which this
+        // release no longer starts: the choice is ignored, and each boot says so in the log.
+        if settings.global_settings().daemon.as_deref() == Some("supervisor") {
+            pa_core::platform::daemon_endpoint::RotatingLog::new(
+                pa_core::platform::daemon_endpoint::daemon_log_path(
+                    &options.socket,
+                    &options.agent_dir,
+                ),
+            )
+            .append(&format!(
+                "{} runtime daemon {}: {SUPERVISOR_SETTING_IGNORED}",
+                pa_core::session::manager::iso_from_unix_ms(pa_core::update::restart::now_ms()),
+                std::process::id()
+            ));
+        }
         let client = (!matches!(
             telemetry::telemetry_switch(&settings),
             telemetry::TelemetrySwitch::Env { enabled: false, .. }
@@ -304,12 +327,8 @@ pub async fn run<B: SessionBuilder>(
         .await?,
     );
     let open = Arc::new(OpenSessions::new(Arc::clone(runtime.log())));
-    let schedules = schedules::Schedules::new(
-        &runtime,
-        Arc::clone(&open),
-        options.agent_dir.clone(),
-        options.selected,
-    );
+    let schedules =
+        schedules::Schedules::new(&runtime, Arc::clone(&open), options.agent_dir.clone());
     runtime.attach_jobs(Arc::clone(&schedules) as Arc<dyn crate::session::SessionJobs>);
     // Its sessions' timers, watches and webhooks outlive it, as their
     // subscriptions do.
@@ -400,7 +419,7 @@ pub async fn run<B: SessionBuilder>(
     let stop = Arc::new(handlers::DaemonStop::default());
     let update = Arc::new(pa_core::update::restart::UpdateRestart::new(
         options.agent_dir.clone(),
-        options.socket,
+        options.socket.clone(),
         pa_types::daemon::UpdateTimeoutBudget::from_env(),
         Box::new(|line: &str| tracing::info!("{line}")),
     ));
@@ -444,6 +463,7 @@ pub async fn run<B: SessionBuilder>(
         handlers.spawn_boot_import(boot_crash_log, Box::new(move || client.clone()))
     };
     let server = runtime.wire_server(Arc::clone(&handlers), WireConfig::default(), attached);
+    let greeter = tokio::spawn(legacy_greeter::serve(options.legacy_socket, options.socket));
     let mut connections = JoinSet::new();
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
@@ -466,6 +486,9 @@ pub async fn run<B: SessionBuilder>(
         }
     }
     drop(listener);
+    // The old socket closes with the daemon's own.
+    greeter.abort();
+    let _ = greeter.await;
     // A restore still running ends with the daemon: its rows are the next
     // boot's to revive.
     restore_pass.abort();

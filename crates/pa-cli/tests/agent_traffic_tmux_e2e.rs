@@ -144,7 +144,7 @@ fn start(dir: &Path) -> Pane {
         &launcher,
         format!(
             "cd {project}\nexec env -i PATH=/usr/bin:/bin HOME={home} TERM=xterm-256color \
-             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1{daemon_env} \
+             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 \
              PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_FAUX_CHILD_SCRIPT={script} \
              PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
             project = quote(&project),
@@ -152,7 +152,6 @@ fn start(dir: &Path) -> Pane {
             script = quote(&script),
             socket = quote(&dir.join("daemon.sock")),
             binary = quote(Path::new(env!("CARGO_BIN_EXE_prime-agent"))),
-            daemon_env = support::daemon_env(),
         ),
     )
     .expect("launcher");
@@ -214,5 +213,3 @@ fn two_children_messaging_each_other_show_in_the_traffic_pane() {
     assert!(open.contains("contract ready for review"), "{open}");
     assert!(open.contains("M hide traffic"), "{open}");
 }
-
-support::on_the_supervisor!(two_children_messaging_each_other_show_in_the_traffic_pane,);

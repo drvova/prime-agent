@@ -368,7 +368,7 @@ fn transports() -> &'static Mutex<HashMap<PathBuf, Transport>> {
 
 /// Declare the wire `socket_path` speaks: every [`DaemonClient::connect`] to it from now on uses
 /// `transport`. The composition root declares the socket it launched the UI against (the
-/// runtime daemon's unless the supervisor is selected); an undeclared socket speaks the old
+/// runtime daemon's); an undeclared socket (a supervisor an earlier release left running) speaks the old
 /// wire.
 pub fn use_transport(socket_path: &Path, transport: Transport) {
     transports()

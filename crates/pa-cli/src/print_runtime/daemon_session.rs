@@ -262,8 +262,9 @@ impl SessionBuilder for DaemonSessions {
 /// client's `daemon.shutdown` / `daemon.restart`: takes the
 /// agent dir's runtime-daemon lock (reaping a wedged predecessor on the same
 /// socket), binds `daemon2.sock` beside
-/// `daemon_socket` (the old daemon's stale-socket cleanup first), serves,
-/// and removes the socket on the way out unless a successor took it.
+/// `daemon_socket` (the old daemon's stale-socket cleanup first), serves
+/// (the legacy greeter on `daemon_socket` itself while nothing else answers
+/// there), and removes the socket on the way out unless a successor took it.
 ///
 /// # Errors
 ///
@@ -306,6 +307,7 @@ pub(crate) fn run_runtime_daemon(
             listener,
             pa_runtime::daemon::DaemonOptions {
                 socket: socket.clone(),
+                legacy_socket: daemon_socket.to_path_buf(),
                 // An update's successor: the roster the coordinator spawned it
                 // with, read before its boot sweep deletes the file.
                 update: pa_runtime::daemon::UpdateBoot {
@@ -320,14 +322,6 @@ pub(crate) fn run_runtime_daemon(
                 },
                 session_dir: super::replacement_session_dir(options),
                 cwd: options.config.cwd.clone(),
-                selected: {
-                    use crate::daemon_mode::DaemonKind;
-                    let (by_env, agent_dir) = (DaemonKind::from_env(), agent_dir.clone());
-                    Arc::new(move || {
-                        by_env.unwrap_or_else(|| DaemonKind::from_settings(&agent_dir))
-                            == DaemonKind::Runtime
-                    })
-                },
                 // A stop on purpose is not restarted by the restart owner,
                 // even one that ends in a kill: its intent is recorded first,
                 // as the old daemon records it.

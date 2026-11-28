@@ -119,14 +119,13 @@ fn start(dir: &Path, quota_origin: &str) -> Pane {
         &launcher,
         format!(
             "cd {project}\nexec env -i PATH=/usr/bin:/bin HOME={home} TERM=xterm-256color \
-             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1{daemon_env} PRIME_AGENT_QUOTA_BASE_URL={quota_origin} \
+             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 PRIME_AGENT_QUOTA_BASE_URL={quota_origin} \
              PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
             project = quote(&project),
             home = quote(&home),
             script = quote(&script),
             socket = quote(&dir.join("daemon.sock")),
             binary = quote(Path::new(env!("CARGO_BIN_EXE_prime-agent"))),
-            daemon_env = support::daemon_env(),
         ),
     )
     .expect("launcher");
@@ -364,9 +363,3 @@ fn the_usage_details_keep_the_overview_card_and_esc_returns_to_it() {
         "the overview:\n{overview}\nback:\n{back}"
     );
 }
-
-support::on_the_supervisor!(
-    a_subscription_session_titles_its_plan_without_a_dollar_figure,
-    the_usage_page_splits_plan_spend_and_the_title_shows_the_cached_quota,
-    the_usage_details_keep_the_overview_card_and_esc_returns_to_it,
-);
