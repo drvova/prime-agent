@@ -192,7 +192,7 @@ async fn get_context_tree_folds_the_captured_attributions() {
     let root = tmp.path().join("work");
     std::fs::create_dir_all(&root).unwrap();
     let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/attribution-fold-captured.jsonl");
+        .join("../pa-core/tests/fixtures/attribution-fold-captured.jsonl");
     let session_file = root.join("captured.jsonl");
     std::fs::copy(&fixture, &session_file).unwrap();
     let worker = created_worker_at(&root, &session_file).await;

@@ -14,7 +14,9 @@
 //!
 //! A model is resolved through the agent dir's model registry: a selector
 //! (`model`) as the command line reads one, or a `provider` and `modelId`
-//! among the models whose provider is signed in. The settings'
+//! among the models whose provider is signed in (a listed model whose
+//! provider is not is refused with the old `errorInfo`
+//! `modelProviderUnauthenticated`, the client's cue to sign in). The settings'
 //! `allowedModels` allowlist is enforced on the result through pa-core's
 //! gate, the one the old daemon calls, and fails closed: a global settings
 //! document that cannot be read, or an `allowedModels` that is not a list
@@ -38,13 +40,15 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use pa_core::models::ModelRegistry;
+use pa_core::models::{ModelRegistry, SetModelSelectionError};
 use pa_core::session_engine::provider_adapter::ProviderTarget;
 use pa_types::ai::{ModelThinkingLevel, ServiceTier};
+use pa_types::daemon::DaemonErrorInfo;
 use serde_json::{json, Value};
 
 use super::{optional_string_arg, string_arg, RuntimeHandlers};
 use crate::session::{LiveEngine, SessionBuilder};
+use crate::wire::ErrorWithInfo;
 
 /// The agent dir's model registry: its sign-ins and `models.json`.
 pub(super) fn registry(agent_dir: &Path) -> ModelRegistry {
@@ -83,7 +87,24 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 let model_id = optional_string_arg(&args, "modelId")?;
                 let model = match (provider, model_id, optional_string_arg(&args, "model")?) {
                     (Some(provider), Some(model_id), None) => registry
-                        .resolve_set_model_selection(&provider, &model_id)?
+                        .resolve_set_model_selection(&provider, &model_id)
+                        // A provider that is not signed in is the typed sign-in refusal
+                        // (`info` the old `errorInfo` `modelProviderUnauthenticated`), on
+                        // which a client offers the provider's sign-in and retries.
+                        .map_err(|refusal| match &refusal {
+                            SetModelSelectionError::ProviderUnauthenticated { provider } => {
+                                anyhow::Error::new(ErrorWithInfo {
+                                    message: refusal.to_string(),
+                                    info: serde_json::to_value(
+                                        DaemonErrorInfo::ModelProviderUnauthenticated {
+                                            provider: provider.clone(),
+                                        },
+                                    )
+                                    .unwrap_or(Value::Null),
+                                })
+                            }
+                            SetModelSelectionError::NotFound { .. } => anyhow::Error::new(refusal),
+                        })?
                         .clone(),
                     (None, None, Some(selector)) => {
                         let resolved = pa_core::models::resolve_cli_model(

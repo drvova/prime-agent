@@ -154,7 +154,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     }
 
     /// `session.stop` of session `id`, which is no open root (see the
-    /// module documentation).
+    /// module documentation), its clients told `reason`.
     pub(super) async fn stop_subagent(
         &self,
         id: &str,

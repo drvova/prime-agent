@@ -651,7 +651,8 @@ SQLite implementations over `pa-log`.
   manager (an open session's on its runtime, a saved one's opened for the read):
   `session.context` (`active_context`), `session.usage` (`usage_host::session_usage_json`, the
   branch's message counts, the context use against the open model's window), `session.tree`
-  (`SessionTree` nodes and the leaf), `session.context_tree` (the root's label, model, spend and
+  (`SessionTree` nodes, the old `get_session_tree`'s `flatNodes` the TUI's `/tree` reads, and
+  the leaf), `session.context_tree` (the root's label, model, spend and
   context use) and `session.breakdown` (`ContextBreakdown`: the open engine's
   `context_categories`, the prompt-cache totals, the compactions, the spend); an open
   session's tree has a child node and its breakdown an agent row for each subagent below it,
