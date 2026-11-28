@@ -6,98 +6,13 @@
 
 mod support;
 
+use support::runtime_daemon::RuntimeDaemon;
+
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
 
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewUiMode};
 use pa_tui::interactive::SessionSelection;
-
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        // Stop by protocol so the supervisor shuts its workers down; kill the
-        // child when it fails (a failing test must not leak workers).
-        graceful_shutdown(&self.socket);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-/// Stop the daemon on `socket` by protocol; kill the child when it fails.
-fn graceful_shutdown(socket: &Path) {
-    let Ok(stream) = UnixStream::connect(socket) else {
-        return;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    let _ = reader.read_line(&mut hello); // daemon_hello
-    let command = serde_json::json!({
-        "type": "command",
-        "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let Ok(mut line) = serde_json::to_string(&command) else {
-        return;
-    };
-    line.push('\n');
-    let _ = writer.write_all(line.as_bytes());
-    let _ = writer.flush();
-    let _ = reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)));
-    let mut response = String::new();
-    let _ = reader.read_line(&mut response);
-}
-
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    let socket = dir.join("daemon.sock");
-    let agent_dir = dir.join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(&socket, &mut child);
-    Supervisor { child, socket }
-}
 
 /// One saved-session fixture: header, display name, and an exchange.
 /// Identical timestamps make the list order fall to the title tie-break.
@@ -131,7 +46,7 @@ async fn entry_anchor_selects_the_left_session() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
 
     // The fixture roster: rows sort by last activity (mtime), so the cron session
     // lists first — the anchor is the second-listed gateway session.
@@ -149,7 +64,7 @@ async fn entry_anchor_selects_the_left_session() {
     );
 
     let options = AgentsViewOptions {
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         theme: "prime".to_string(),
@@ -205,7 +120,7 @@ async fn continue_recent_view_preselects_the_candidate_and_renders_the_notice() 
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
 
     // Two saved sessions for the launch cwd; the second write is the newest, so
     // the continue candidate is the second one even though the first would list first.
@@ -234,7 +149,7 @@ async fn continue_recent_view_preselects_the_candidate_and_renders_the_notice() 
         "bbbb-candidate"
     );
     let options = AgentsViewOptions {
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         theme: "prime".to_string(),
@@ -283,7 +198,7 @@ async fn continue_recent_view_preselects_the_candidate_and_renders_the_notice() 
         Some(SessionSelection::Resume(older_path.clone())),
         "the first-listed row did not open"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// Through the real daemon (`rename_saved_session` wire path, which a unit test cannot
@@ -295,7 +210,7 @@ async fn rename_saved_session_renames_the_row_and_the_file() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
     let path = write_fixture(
         &session_dir,
         "ren-01",
@@ -304,7 +219,7 @@ async fn rename_saved_session_renames_the_row_and_the_file() {
     );
 
     let options = AgentsViewOptions {
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         theme: "prime".to_string(),
@@ -370,5 +285,5 @@ async fn rename_saved_session_renames_the_row_and_the_file() {
         content.contains("\"name\":\"renamed agent\""),
         "the fixture gained the session_info name entry:\n{content}"
     );
-    drop(supervisor);
+    drop(daemon);
 }
