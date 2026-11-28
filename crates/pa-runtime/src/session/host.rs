@@ -57,8 +57,9 @@ use super::{
 use crate::events::{BusEvents, SessionEvents};
 use crate::lock;
 use crate::subagents::{
-    dispose, drive_to_quiescence, has_unsettled_rlm_work, kernel_notice_sink,
-    late_sent_agent_message_sink, FamilyMessages, FamilyObserve, Node, Rest, SessionSubagents,
+    close_children_after_crash, dispose, drive_to_quiescence, has_unsettled_rlm_work,
+    kernel_notice_sink, late_sent_agent_message_sink, FamilyMessages, FamilyObserve, Node, Rest,
+    SessionSubagents,
 };
 use crate::tasks::{Steered, TaskOutcome};
 use crate::trust::{RunningTask, TaskTrust, TrustGate, WorkingDir};
@@ -829,7 +830,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                     });
                     return Ended::Closed;
                 }
-                Err(crash) => return Self::crashed(runtime, hosted, crash),
+                Err(crash) => return self.crashed(runtime, hosted, crash),
             };
             if hosted.is_err() {
                 hosted = self.build(runtime);
@@ -842,7 +843,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                 }
             };
             if let Err(crash) = self.answer(runtime, session, work, faults) {
-                return Self::crashed(runtime, hosted, crash);
+                return self.crashed(runtime, hosted, crash);
             }
         }
     }
@@ -851,12 +852,19 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// again. Dropping it may panic too, and that is this lifetime's end as
     /// well.
     fn crashed(
+        &self,
         runtime: &tokio::runtime::Runtime,
         hosted: Result<Hosted, String>,
         crash: SessionCrash,
     ) -> Ended {
+        // Its subagents are closed with the lifetime they were spawned in,
+        // and its family opened again settled (`close_children_after_crash`).
+        let node = Arc::clone(&self.node);
         let _ = session_scope::catching_panics(AssertUnwindSafe(|| {
-            runtime.block_on(async move { drop(hosted) });
+            runtime.block_on(async move {
+                drop(hosted);
+                close_children_after_crash(&node).await;
+            });
         }));
         Ended::Crashed(crash)
     }

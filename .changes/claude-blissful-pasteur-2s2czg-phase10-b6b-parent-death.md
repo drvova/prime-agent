@@ -1,0 +1,1 @@
+- On the default daemon, a crashed session closes its running subagents and lists them again as failed, and a subagent's return is recorded in its parent's semantic-edge ledger.

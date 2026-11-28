@@ -1,0 +1,1 @@
+- `(rlm-spawn prompt #:root #t)` creates a sibling top-level session again on the default daemon, shown under the session that created it in the agents view and `prime-agent list`.

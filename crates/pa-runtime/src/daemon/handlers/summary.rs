@@ -21,6 +21,8 @@
 //!   saved session is idle, with none of these.
 //! - **Lifecycle.** `live` once the session has a message (or, open, a
 //!   running task), `draft` before.
+//! - **Lineage.** `parentSessionPath` when its header names the session it
+//!   was created under (a root an `rlm.create_session` made).
 //!
 //! - **Subagents.** Each subagent running below an open session follows the
 //!   open sessions (depth first, in spawn order, as the roster lists them),
@@ -78,11 +80,19 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         // the roster lists them (a dormant child is a passive one here too).
         let subagents = self.runtime.subagents();
         let mut children = Vec::new();
+        // A dormant child's transcript, which the passive walk lists.
+        let mut dormant = std::collections::HashSet::new();
         for (root, _) in &roots {
             let mut below: Vec<_> = subagents.family_of(root).await.into_iter().rev().collect();
             while let Some(member) = below.pop() {
                 below.extend(member.children.into_iter().rev());
                 if member.dormant {
+                    if let Some(file) = subagents
+                        .lineage(&member.session_id)
+                        .and_then(|lineage| lineage.session_file)
+                    {
+                        dormant.insert(canonical_session_path(Path::new(&file)));
+                    }
                     continue;
                 }
                 if let Some(lineage) = subagents.lineage(&member.session_id) {
@@ -136,29 +146,33 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         };
         // The subagents no session runs that the ledger keeps below the
         // listed sessions (pa-core's walk, the old `list --all`'s).
-        let passive =
-            match (open_only, subagents.daemon()) {
-                (false, Some(family)) => {
-                    let mut walk: Vec<RosterWalkRoot> = saved
-                        .iter()
-                        .map(|(path, _)| RosterWalkRoot {
-                            session_file: path.clone(),
-                            active_session_id: None,
-                        })
-                        .collect();
-                    walk.extend(subagents.resident_transcripts().into_iter().map(
-                        |(file, root)| RosterWalkRoot {
-                            session_file: canonical_session_path(&file),
+        let passive = match (open_only, subagents.daemon()) {
+            (false, Some(family)) => {
+                let mut walk: Vec<RosterWalkRoot> = saved
+                    .iter()
+                    .map(|(path, _)| RosterWalkRoot {
+                        session_file: path.clone(),
+                        active_session_id: None,
+                    })
+                    .collect();
+                walk.extend(
+                    subagents
+                        .resident_transcripts()
+                        .into_iter()
+                        .map(|(file, root)| (canonical_session_path(&file), root))
+                        .filter(|(file, _)| !dormant.contains(file))
+                        .map(|(session_file, root)| RosterWalkRoot {
+                            session_file,
                             active_session_id: Some(root),
-                        },
-                    ));
-                    family
-                        .passive_children(walk)
-                        .await
-                        .context("Could not walk passive RLM children")?
-                }
-                _ => Vec::new(),
-            };
+                        }),
+                );
+                family
+                    .passive_children(walk)
+                    .await
+                    .context("Could not walk passive RLM children")?
+            }
+            _ => Vec::new(),
+        };
         tokio::task::spawn_blocking(move || {
             let mut sessions: Vec<Value> = saved.into_iter().map(|(_, row)| row).collect();
             for child in &passive {
@@ -275,7 +289,7 @@ fn row(id: &str, path: &Path, rows: &[Value], activity: Option<&Activity>) -> Va
     let queued = activity.map_or(0, |activity| {
         activity.steering.len() + activity.follow_ups.len()
     });
-    json!({
+    let mut row = json!({
         "session": id,
         "path": path,
         "cwd": header.and_then(|header| header.get("cwd")).cloned().unwrap_or(json!("")),
@@ -308,5 +322,14 @@ fn row(id: &str, path: &Path, rows: &[Value], activity: Option<&Activity>) -> Va
             "steering": activity.map_or_else(Vec::new, |activity| activity.steering.clone()),
             "followUps": activity.map_or_else(Vec::new, |activity| activity.follow_ups.clone()),
         },
-    })
+    });
+    // A root created under another session (`rlm.create_session`) names it in
+    // its header, as the old summary's `parentSessionPath` did.
+    if let Some(parent) = header
+        .and_then(|header| header.get("parentSession"))
+        .filter(|parent| parent.is_string())
+    {
+        row["parentSessionPath"] = parent.clone();
+    }
+    row
 }
