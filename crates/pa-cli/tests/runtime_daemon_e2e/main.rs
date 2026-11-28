@@ -85,6 +85,8 @@
 //!   daemon (phase 8d-5c): [`history_import`].
 //! - A kernel webhook source: an authenticated `POST` runs an untrusted
 //!   turn, a bad token none (phase 9): [`webhooks`].
+//! - A goal rehydrated after its session's rebuild, and a prompt queued
+//!   behind the goal's continuations (phase 10): [`goal_recovery`].
 #![cfg(unix)]
 
 mod acp_calls;
@@ -95,6 +97,7 @@ mod checkpoints;
 mod client_surface;
 mod create;
 mod family;
+mod goal_recovery;
 mod goldens;
 mod heartbeats;
 mod history_import;

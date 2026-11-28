@@ -21,11 +21,17 @@ use crate::turn::goal::{NaturalContinuation, PrintGoalSurface};
 /// continuation arms defer behind it.
 pub type UnsettledWork = Arc<dyn Fn() -> pa_agent::BoxFut<'static, bool> + Send + Sync>;
 
+/// Answers whether input waits to run after the session's running turn (a
+/// task queued in its lane); it owns the turn's end.
+pub type QueuedInput = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Install the composed natural-turn-end continuation hook: the goal
 /// arm first, the autonomous arm on the fall-through. Both defer behind
 /// unsettled inline-subagent work (`unsettled_work`; without it no
 /// descendant work exists); the quiescence drive delivers after the
-/// settle.
+/// settle. Input queued behind the turn (`queued_input`; without it none
+/// waits outside the agent) ends the run before either arm, so the input
+/// runs next.
 pub fn wire_continuation_hook(
     engine: &Arc<SessionEngine>,
     agent: &Arc<Agent>,
@@ -33,6 +39,7 @@ pub fn wire_continuation_hook(
     goal: &Arc<PrintGoalSurface>,
     autonomous: &Arc<HeadlessAutonomous>,
     unsettled_work: Option<UnsettledWork>,
+    queued_input: Option<QueuedInput>,
 ) {
     let weak_engine = Arc::downgrade(engine);
     let weak_goal = Arc::downgrade(goal);
@@ -43,8 +50,12 @@ pub fn wire_continuation_hook(
         let weak_goal = weak_goal.clone();
         let weak_autonomous = weak_autonomous.clone();
         let unsettled_work = unsettled_work.clone();
+        let queued_input = queued_input.clone();
         let model = Arc::clone(&model);
         Box::pin(async move {
+            if queued_input.is_some_and(|queued| queued()) {
+                return Ok(Vec::new());
+            }
             let (Some(engine), Some(goal), Some(autonomous)) = (
                 weak_engine.upgrade(),
                 weak_goal.upgrade(),
