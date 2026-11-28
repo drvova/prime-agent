@@ -13,7 +13,9 @@
 //!   next, delivered together as one turn, then the rest in order.
 //! - **Wait.** `session.wait_idle` answers once the session is at rest (or,
 //!   with `"subagents": false`, once its own lane is idle), with its
-//!   autonomous accounting and its live background jobs.
+//!   autonomous accounting and its live background jobs. A subagent's
+//!   session is waited on too, as the old daemon's `wait_for_idle` waited on
+//!   a child's.
 //! - **Withdraw and restore.** `session.withdraw` takes every queued task out
 //!   of the lane (each ends `Cancelled`) and answers them in the order they
 //!   would have run, for a client to put back in its editor; the running one
@@ -43,7 +45,7 @@ use pa_types::event_log::{
 };
 use serde_json::{json, Value};
 
-use super::{optional_string_arg, RuntimeHandlers};
+use super::{optional_string_arg, string_arg, RuntimeHandlers};
 use crate::bus::Heard;
 use crate::runtime::AfterAbort;
 use crate::session::SessionBuilder;
@@ -81,7 +83,11 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     /// `DaemonAutonomousStatus`) and the kernel's live background jobs
     /// (`outstandingBackgroundJobs`), read once the wait is over.
     pub(super) async fn wait_idle(&self, args: &Value) -> anyhow::Result<Value> {
-        let id = self.open_session(args)?;
+        let id = string_arg(args, "session")?;
+        anyhow::ensure!(
+            self.open.contains(&id) || self.runtime.subagents().lineage(&id).is_some(),
+            "session {id} is not open in the runtime daemon"
+        );
         match args.get("subagents") {
             None | Some(Value::Null | Value::Bool(true)) => self.runtime.at_rest(&id).await,
             Some(Value::Bool(false)) => self.runtime.idle(&id).await,

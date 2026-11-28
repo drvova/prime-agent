@@ -8,6 +8,7 @@ use super::{
     WorkerRequest,
 };
 use anyhow::Context as _;
+use pa_core::session_engine::rlm_ledger::StoppedChildBoundary;
 
 /// The route-level wake outcome: a woken resident, or the fallthrough
 /// error the caller answers (no saved session matched).
@@ -1106,58 +1107,42 @@ impl Supervisor {
             .await
             .with_context(|| "resolve the spawn ledger sessions dir".to_string())?;
         // The child's identity: the explicit id the parent's delete carries, else
-        // the live ledger edge matching the selector.
-        let edges = ledger
-            .live_edges()
-            .with_context(|| "read the spawn ledger edges".to_string())?;
-        let (child_id, session_file) = if let Some(resolved) =
-            resolve_ledger_child(&edges, selector, child_id)
+        // the live ledger edge matching the selector; a tombstoned one on a retry.
+        let (child_id, session_file) = match ledger
+            .tombstone_stopped_child(selector, child_id, reason)?
         {
-            ledger
-                .append_delete(&resolved.0, &resolved.1, reason)
-                .with_context(|| format!("tombstone RLM subagent {}", resolved.0))?;
-            resolved
-        } else {
-            // A retry after the boundary already stands: an earlier attempt tombstoned the
-            // edge and ran its finalize, so only a still-running worker blocks the delete.
-            let tombstoned: Vec<_> = ledger
-                .edges(true)
-                .with_context(|| "read the spawn ledger edges".to_string())?
-                .into_iter()
-                .filter(|edge| edge.deleted.is_some())
-                .collect();
-            let Some((deleted_child_id, session_file)) =
-                resolve_ledger_child(&tombstoned, selector, child_id)
-            else {
-                anyhow::bail!("stopped RLM subagent \"{selector}\" is not in the spawn ledger");
-            };
-            let canonical = pa_core::session::lease::canonical_session_path(std::path::Path::new(
-                &session_file,
-            ));
-            for (_, descriptor) in
-                crate::descriptor::load_descriptors(&self.descriptor_dir, &self.options.socket_path)
-            {
-                let same_session = descriptor.session_file.as_deref().is_some_and(|file| {
-                    pa_core::session::lease::canonical_session_path(std::path::Path::new(file))
-                        == canonical
-                });
-                if same_session
-                    && !super::worker_lifecycle::worker_process_gone(
-                        descriptor.pid,
-                        descriptor.process_start_id.clone(),
-                    )
-                    .await
-                {
-                    anyhow::bail!(
-                        "deleted RLM subagent \"{selector}\": worker {} (pid {}) is still running; delete refused until it exits",
-                        descriptor.worker_id,
-                        descriptor.pid
-                    );
+            StoppedChildBoundary::Written { child_id, child } => (child_id, child),
+            StoppedChildBoundary::Standing { child_id, child } => {
+                // A retry after the boundary already stands: an earlier attempt tombstoned the
+                // edge and ran its finalize, so only a still-running worker blocks the delete.
+                let canonical =
+                    pa_core::session::lease::canonical_session_path(std::path::Path::new(&child));
+                for (_, descriptor) in crate::descriptor::load_descriptors(
+                    &self.descriptor_dir,
+                    &self.options.socket_path,
+                ) {
+                    let same_session = descriptor.session_file.as_deref().is_some_and(|file| {
+                        pa_core::session::lease::canonical_session_path(std::path::Path::new(file))
+                            == canonical
+                    });
+                    if same_session
+                        && !super::worker_lifecycle::worker_process_gone(
+                            descriptor.pid,
+                            descriptor.process_start_id.clone(),
+                        )
+                        .await
+                    {
+                        anyhow::bail!(
+                            "deleted RLM subagent \"{selector}\": worker {} (pid {}) is still running; delete refused until it exits",
+                            descriptor.worker_id,
+                            descriptor.pid
+                        );
+                    }
                 }
+                // The first attempt may have stopped after appending its tombstone.
+                // Reuse the same finalization without writing a second boundary.
+                (child_id, child)
             }
-            // The first attempt may have stopped after appending its tombstone.
-            // Reuse the same finalization without writing a second boundary.
-            (deleted_child_id, session_file)
         };
         // The stopped child's teardown mirrors the resident delete's end state: the usage
         // capture, archived state, and artifact sweep land as a live child's kill leaves them.
@@ -1221,29 +1206,6 @@ async fn saved_session_messages(
     let path = std::path::PathBuf::from(session_file);
     let slice = tokio::task::spawn_blocking(move || query.read_file(&path)).await??;
     Ok(slice.into_reply())
-}
-
-/// The ledger edge a delete addresses, as `(child_id, child_file)`. `rlmChildId` is the durable
-/// key; the selector is the child's LIVE id, NOT the file stem. Order: (1a) edge matching BOTH
-/// the stem and the id; (1b) the LAST edge carrying the id; (2) the stem-matching edge.
-fn resolve_ledger_child(
-    edges: &[pa_core::session_engine::rlm_ledger::RlmLedgerEdge],
-    selector: &str,
-    child_id: Option<&str>,
-) -> Option<(String, String)> {
-    let stem_matches = |edge: &pa_core::session_engine::rlm_ledger::RlmLedgerEdge| {
-        std::path::Path::new(&edge.child)
-            .file_stem()
-            .is_some_and(|name| name.to_string_lossy() == selector)
-    };
-    let found = match child_id {
-        Some(id) => edges
-            .iter()
-            .find(|edge| stem_matches(edge) && edge.child_id == id)
-            .or_else(|| edges.iter().rev().find(|edge| edge.child_id == id)),
-        None => edges.iter().find(|edge| stem_matches(edge)),
-    };
-    found.map(|edge| (edge.child_id.clone(), edge.child.clone()))
 }
 
 /// The client response line for one relayed worker payload: the worker's

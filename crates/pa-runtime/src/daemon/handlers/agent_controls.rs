@@ -25,15 +25,25 @@
 //! - The call `session.delete_child {session, child}` (`delete_rlm_subagent`,
 //!   `child` the subagent's handle): `{deleted}`, or `{deleted: false,
 //!   reason: "running"}` for a subagent with live work.
+//! - `session.stop {session, rlmLedgerDelete?, rlmChildId?}` of a subagent
+//!   (the old `kill` of a child's session, `subagents/controls.rs`): a plain
+//!   stop ends it and keeps its ledger edge; with `rlmLedgerDelete` (the
+//!   delete's reason, `user`) it is deleted, its deletion boundary written
+//!   before its teardown, and a delete aimed at a child no session runs (a
+//!   retry included) is the ledger's alone. Both answer `{session, stopped}`;
+//!   a boundary that is not written is `Failed to delete RLM subagent: ...`.
 
 use anyhow::Context as _;
 use pa_core::session_engine::agent_controls::{
     unscoped_agent_message_status, SetRlmMaxDepth, RLM_MAX_DEPTH_STATE_CUSTOM_TYPE,
 };
-use serde_json::Value;
+use pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason;
+use pa_types::event_log::{NewEvent, Topic, Trust};
+use serde_json::{json, Value};
 
 use super::{optional_string_arg, string_arg, RuntimeHandlers};
 use crate::session::SessionBuilder;
+use crate::subagents::{ChildStop, ChildStopped};
 
 impl<B: SessionBuilder> RuntimeHandlers<B> {
     /// `agent_messages` (see the module documentation).
@@ -120,5 +130,55 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         let child = string_arg(args, "child")?;
         let outcome = self.runtime.subagents().delete_child(&id, &child).await?;
         Ok(outcome.reply())
+    }
+
+    /// What `session.stop`'s `args` ask of a subagent (see the module
+    /// documentation).
+    pub(super) fn child_stop(args: &Value) -> anyhow::Result<ChildStop> {
+        let child_id = optional_string_arg(args, "rlmChildId")?;
+        match optional_string_arg(args, "rlmLedgerDelete")? {
+            None => Ok(ChildStop::Stop),
+            Some(wire) => Ok(ChildStop::Delete {
+                reason: RlmLedgerDeleteReason::from_wire(&wire)
+                    .with_context(|| format!("{wire:?} is no RLM ledger delete reason"))?,
+                child_id,
+            }),
+        }
+    }
+
+    /// `session.stop` of session `id`, which is no open root (see the
+    /// module documentation).
+    pub(super) async fn stop_subagent(&self, id: &str, stop: ChildStop) -> anyhow::Result<Value> {
+        let deleting = matches!(stop, ChildStop::Delete { .. });
+        let stopped = match self.runtime.subagents().stop_child(id, stop).await {
+            Ok(stopped) => stopped,
+            Err(error) if deleting => anyhow::bail!("Failed to delete RLM subagent: {error:#}"),
+            Err(error) => return Err(error),
+        };
+        match stopped {
+            ChildStopped::Unknown => {
+                anyhow::bail!("session {id} is not open in the runtime daemon")
+            }
+            ChildStopped::Ledger => {}
+            ChildStopped::Session => {
+                // Stopped on purpose: its jobs wake nothing.
+                self.schedules.disarm(id);
+                // It leaves the roster, and its attached clients learn it
+                // was stopped, as a root's do.
+                self.feeds.due(id);
+                self.runtime
+                    .publish(NewEvent {
+                        topic: Topic::new(format!("agent/{id}/closed"))?,
+                        source: "runtime".to_string(),
+                        session: Some(id.to_string()),
+                        payload: json!({ "reason": "killed" }),
+                        trust: Trust::Owner,
+                        cause: None,
+                        reply: None,
+                    })
+                    .await?;
+            }
+        }
+        Ok(json!({ "session": id, "stopped": true }))
     }
 }
