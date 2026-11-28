@@ -4,7 +4,8 @@
 //! - `session.pause_input` holds a session's input for the calling
 //!   connection (input is admitted `parked`), the same key answering the same
 //!   pause; `session.release_input` lets it run, and so does the holding
-//!   connection's end;
+//!   connection's end; another connection's release of it is refused, as
+//!   the old daemon's is;
 //! - `session.cancel_task` takes one queued prompt out of the lane, which
 //!   ends with its cancelled `done`;
 //! - `session.wait_idle` with `"subagents": false` answers the autonomous
@@ -105,6 +106,40 @@ async fn an_input_hold_parks_the_lane_until_released_or_its_connection_ends() {
     assert_eq!(
         (parked["admission"].clone(), second["outcome"].clone()),
         (json!("parked"), json!("done"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_connection_cannot_release_an_input_hold() {
+    let bed = Bed::new();
+    let _daemon = bed.runtime_daemon(&json!({ "responses": ["ok"], "repeatLastResponse": true }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let id = ok(client.call("session.create", json!({})).await)["session"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (mut holder, _) = Client::connect(&bed.runtime_socket()).await;
+    let held = ok(holder
+        .call("session.pause_input", json!({ "session": id, "key": "k" }))
+        .await);
+    let release = json!({ "session": id, "pauseId": held["pauseId"] });
+    let foreign = refused(client.call("session.release_input", release.clone()).await);
+    let parked = publish(&mut client, &id, "still held").await;
+    let owned = ok(holder.call("session.release_input", release).await);
+    assert_eq!(
+        (
+            foreign,
+            parked["admission"].clone(),
+            owned["released"].clone()
+        ),
+        (
+            format!(
+                "Session input pause is owned by another client: {}",
+                held["pauseId"].as_str().unwrap()
+            ),
+            json!("parked"),
+            json!(true)
+        )
     );
 }
 

@@ -23,6 +23,9 @@
 //!   running task), `draft` before.
 //!
 //! `{"open": true}` lists the open sessions only.
+//!
+//! `session.rename` answers the renamed session's row, as the old daemon's
+//! rename answers its summary.
 
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -56,27 +59,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             .paths()
             .into_iter()
             .map(|(id, path)| {
-                let lane = self.runtime.lane(&id);
-                let (steering, follow_ups) = lane
-                    .queued
-                    .iter()
-                    .partition::<Vec<_>, _>(|task| task.priority == Priority::Steer);
-                let activity = Activity {
-                    running: lane.running.is_some(),
-                    compacting: lane
-                        .running
-                        .as_ref()
-                        .is_some_and(|task| task.prompt.trim_start().starts_with("/compact")),
-                    steering: steering
-                        .into_iter()
-                        .map(|task| task.prompt.clone())
-                        .collect(),
-                    follow_ups: follow_ups
-                        .into_iter()
-                        .map(|task| task.prompt.clone())
-                        .collect(),
-                    attached: self.attached.clients_of(&id),
-                };
+                let activity = self.activity(&id);
                 (id, path, activity)
             })
             .collect();
@@ -107,6 +90,52 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         })
         .await
         .context("the session list's thread panicked")?
+    }
+}
+
+impl<B: SessionBuilder> RuntimeHandlers<B> {
+    /// What open session `id`'s row says beyond its transcript, from its
+    /// lane and its followers.
+    fn activity(&self, id: &str) -> Activity {
+        let lane = self.runtime.lane(id);
+        let (steering, follow_ups) = lane
+            .queued
+            .iter()
+            .partition::<Vec<_>, _>(|task| task.priority == Priority::Steer);
+        Activity {
+            running: lane.running.is_some(),
+            compacting: lane
+                .running
+                .as_ref()
+                .is_some_and(|task| task.prompt.trim_start().starts_with("/compact")),
+            steering: steering
+                .into_iter()
+                .map(|task| task.prompt.clone())
+                .collect(),
+            follow_ups: follow_ups
+                .into_iter()
+                .map(|task| task.prompt.clone())
+                .collect(),
+            attached: self.attached.clients_of(id),
+        }
+    }
+
+    /// Session `id`'s row, as `sessions.list` lists it: the old daemon's
+    /// session summary, which its rename answers.
+    pub(super) async fn summary(
+        &self,
+        id: &str,
+        path: PathBuf,
+        open: bool,
+    ) -> anyhow::Result<Value> {
+        let activity = open.then(|| self.activity(id));
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let rows = transcript_rows(&path, open)?;
+            anyhow::Ok(row(&id, &path, &rows, activity.as_ref()))
+        })
+        .await
+        .context("the session summary's thread panicked")?
     }
 }
 
