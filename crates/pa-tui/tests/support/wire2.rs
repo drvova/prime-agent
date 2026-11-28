@@ -7,8 +7,9 @@
 //! interactive TUI runs on by default. Each accepted connection is bridged to the stream the
 //! scenario gets back from `accept`:
 //!
-//! - **Handshake.** The client's `hello` is answered with `welcome` once the scenario wrote its
-//!   `daemon_hello`, and `daemon.identity` with that hello's fields (the runtime's identity).
+//! - **Handshake.** The client's `hello` is answered with `welcome` at once, before any later
+//!   frame of the client's is read, as the runtime answers it; `daemon.identity` is answered with
+//!   the fields of the scenario's `daemon_hello` (the runtime's identity) once it is written.
 //! - **Requests.** Each publish, query and call reaches the scenario as the old command it stands
 //!   for (`wire2_compat`'s mapping read backwards, checked by running it forwards again), under the
 //!   request's id; the scenario's response is the reply, in the runtime's own terms where its call
@@ -113,9 +114,7 @@ enum Pending {
 struct State {
     /// The scenario's `daemon_hello`, once written.
     hello: Option<Value>,
-    client_hello: bool,
-    welcomed: bool,
-    /// `daemon.identity` queries waiting for the welcome.
+    /// `daemon.identity` queries waiting for the scenario's `daemon_hello`.
     identity_requests: Vec<String>,
     subscriptions: Vec<(String, TopicFilter)>,
     /// Sessions whose `done` was just followed: their next publish is a `prompt_and_wait`.
@@ -150,8 +149,6 @@ impl Bridge {
             scenario: Mutex::new(scenario),
             state: Mutex::new(State {
                 hello: None,
-                client_hello: false,
-                welcomed: false,
                 identity_requests: Vec::new(),
                 subscriptions: Vec::new(),
                 fresh_done: HashSet::new(),
@@ -202,37 +199,6 @@ impl Bridge {
         let _ = lock(&self.scenario).write_all(line.as_bytes());
     }
 
-    /// The welcome, and the identity queries that waited for it, once both hellos are in.
-    fn greet(&self) {
-        let (identity, waiting) = {
-            let mut state = lock(&self.state);
-            if state.welcomed || !state.client_hello {
-                return;
-            }
-            let Some(hello) = state.hello.clone() else {
-                return;
-            };
-            state.welcomed = true;
-            (
-                identity(hello),
-                std::mem::take(&mut state.identity_requests),
-            )
-        };
-        self.send(&ServerFrame::Welcome {
-            version: pa_types::wire2::WIRE2_VERSION,
-            runtime_version: "0.0.0".to_string(),
-            last_seq: 0,
-        });
-        for id in waiting {
-            self.reply(
-                &id,
-                Outcome::Ok {
-                    result: identity.clone(),
-                },
-            );
-        }
-    }
-
     fn pump_client(&self, mut reader: UnixStream) {
         let mut decoder = PrivateFrameDecoder::new(DEFAULT_PRIVATE_FRAME_LIMITS);
         let mut chunk = [0u8; 8192];
@@ -258,10 +224,13 @@ impl Bridge {
 
     fn client_frame(&self, frame: &ClientFrame) -> Result<(), String> {
         match frame {
-            ClientFrame::Hello { .. } => {
-                lock(&self.state).client_hello = true;
-                self.greet();
-            }
+            // Written by this pump, before it reads the client's next frame: nothing the bridge
+            // sends the client can come ahead of it (its handshake refuses a reply before it).
+            ClientFrame::Hello { .. } => self.send(&ServerFrame::Welcome {
+                version: pa_types::wire2::WIRE2_VERSION,
+                runtime_version: "0.0.0".to_string(),
+                last_seq: 0,
+            }),
             ClientFrame::Subscribe { sub_id, filter, .. } => {
                 {
                     let mut state = lock(&self.state);
@@ -294,14 +263,14 @@ impl Bridge {
                 self.to_scenario(&id, &json!({ "type": old }));
             }
             ClientFrame::Query { id, name, .. } if name == "daemon.identity" => {
-                let welcomed = {
+                let hello = {
                     let mut state = lock(&self.state);
-                    if !state.welcomed {
+                    if state.hello.is_none() {
                         state.identity_requests.push(id.clone());
                     }
-                    state.welcomed.then(|| state.hello.clone()).flatten()
+                    state.hello.clone()
                 };
-                if let Some(hello) = welcomed {
+                if let Some(hello) = hello {
                     self.reply(
                         id,
                         Outcome::Ok {
@@ -400,9 +369,24 @@ impl Bridge {
                 continue;
             };
             match frame["type"].as_str() {
+                // The identity queries that waited for the scenario's hello are answered. They are
+                // taken under the hold that records it: a query the client's pump reads after it
+                // sees the hello and is answered there; one read before it is in the queue.
                 Some("daemon_hello") => {
-                    lock(&self.state).hello = Some(frame);
-                    self.greet();
+                    let identity = identity(frame.clone());
+                    let waiting = {
+                        let mut state = lock(&self.state);
+                        state.hello = Some(frame);
+                        std::mem::take(&mut state.identity_requests)
+                    };
+                    for id in waiting {
+                        self.reply(
+                            &id,
+                            Outcome::Ok {
+                                result: identity.clone(),
+                            },
+                        );
+                    }
                 }
                 Some("response") => self.response(&frame),
                 _ => self.publish(&frame),
@@ -593,7 +577,7 @@ fn wire2_result(command: &str, data: Value) -> Value {
 
 /// The queries and calls that carry their old command's own members (plus `session`): each wire2
 /// name and the old command it stands for.
-const PLAIN_REQUESTS: [(&str, &str); 71] = [
+const PLAIN_REQUESTS: [(&str, &str); 70] = [
     ("session.stop", "kill"),
     ("session.rename", "rename"),
     ("session.set_model", "set_model"),
@@ -602,7 +586,6 @@ const PLAIN_REQUESTS: [(&str, &str); 71] = [
     ("session.abort_bash", "abort_bash"),
     ("session.abort", "abort"),
     ("session.abort_and_send_queued", "abort_and_send_queued"),
-    ("session.model", "get_connection_state"),
     ("session.children", "get_rlm_children"),
     ("session.usage", "get_session_stats"),
     ("session.context_tree", "get_context_tree"),
@@ -685,6 +668,10 @@ fn old_request(name: &str, args: &Value) -> Result<Value, String> {
     };
     let old = match name {
         "session.create" => return old_create(args),
+        "session.snapshot" if fields.get("shape") == Some(&json!("connection")) => {
+            fields.remove("shape");
+            "get_connection_state"
+        }
         "session.snapshot" => {
             fields.remove("shape");
             "get_state"

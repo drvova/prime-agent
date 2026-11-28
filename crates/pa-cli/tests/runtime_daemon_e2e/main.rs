@@ -111,6 +111,7 @@ mod reliability;
 mod replace;
 mod saved_list;
 mod schedules;
+mod shutdown_flush;
 mod side_questions;
 mod stream;
 #[path = "../support/mod.rs"]
