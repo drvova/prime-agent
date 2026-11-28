@@ -88,6 +88,9 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
+        // The supervisor (selected by name: the runtime daemon is the default), which this
+        // suite drives on the old wire.
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
         .arg(&socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
         .stdin(Stdio::null())
@@ -277,9 +280,10 @@ async fn down_arrow_focuses_the_dock_and_enter_opens_the_scoped_agents_view() {
     );
     // The durable spawn edge: the roster surfaces the child as the
     // parent's passive descendant, so the parent renders the summary box.
-    let ledger = pa_daemon::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &session_dir, |_m| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &session_dir, |_m| {});
     ledger
-        .append_spawn(&pa_daemon::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "panel-nav-child".to_string(),
             parent: parent_path.to_string_lossy().to_string(),
             child: child_path.to_string_lossy().to_string(),
@@ -476,9 +480,10 @@ async fn the_title_bills_a_passive_subagents_spend() {
 
     // The durable spawn edge: the title rolls the child's spend up from
     // the real daemon's seeded row.
-    let ledger = pa_daemon::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &session_dir, |_m| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &session_dir, |_m| {});
     ledger
-        .append_spawn(&pa_daemon::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "title-bill-child".to_string(),
             parent: parent_path.to_string_lossy().to_string(),
             child: child_path.to_string_lossy().to_string(),
@@ -571,9 +576,10 @@ async fn the_title_bills_a_deleted_subagents_spend() {
     // The durable spawn edge plus the RLM delete's tombstone carrying
     // the captured usage (the amendment the stop finalize appends after
     // the flush barrier): the child's spend survives the deletion.
-    let ledger = pa_daemon::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &session_dir, |_m| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &session_dir, |_m| {});
     ledger
-        .append_spawn(&pa_daemon::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "title-del-child".to_string(),
             parent: parent_path.to_string_lossy().to_string(),
             child: child_path.to_string_lossy().to_string(),
@@ -586,8 +592,8 @@ async fn the_title_bills_a_deleted_subagents_spend() {
         .append_delete_with_usage(
             "title-del-child",
             &child_path.to_string_lossy(),
-            pa_daemon::rlm_ledger::RlmLedgerDeleteReason::User,
-            &pa_daemon::session_usage::SessionUsageSummary {
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
+            &pa_core::session::usage_summary::SessionUsageSummary {
                 input_tokens: 50,
                 output_tokens: 5,
                 cost: 0.3,

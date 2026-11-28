@@ -13,18 +13,11 @@ use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::worker::Worker;
 
 impl Worker {
-    /// `get_mcp_connections`: the roster from the session's MCP manager
-    /// (auth gating over settings plus the built-in catalog), the resolved
-    /// service-catalog views, and the api-key credential rows (the stored
-    /// keys the `/mcp` view manages alongside the connections), from ONE
-    /// fresh local read — the manager reloads the auth store and
-    /// re-resolves its integrations and catalog first (TS
-    /// `buildServiceCatalogViews` re-reads the store and re-resolves the
-    /// catalog on every open), so an externally changed settings file, a
-    /// record another process wrote, or a key the interactive client just
-    /// stored is visible on the next open. The roster and credential reads
-    /// gate through the auth store, whose snapshot takes a blocking lock —
-    /// never on the runtime.
+    /// `get_mcp_connections`: the session's MCP manager's `/mcp` page
+    /// (pa-core `McpManager::connections_view`: the roster, the
+    /// service-catalog views and the api-key credential rows from one fresh
+    /// local read), off the runtime: the reads take the auth store's
+    /// blocking lock.
     pub(crate) async fn handle_get_mcp_connections(&self) -> DaemonResponse {
         if let Err(response) = self.require_created("get_mcp_connections") {
             return response;
@@ -37,53 +30,22 @@ impl Worker {
                 None,
             );
         };
-        let roster_manager = std::sync::Arc::clone(&manager);
-        let (roster, services, credentials, diagnostics) =
-            match tokio::task::spawn_blocking(move || {
-                let mut manager = roster_manager.lock().unwrap();
-                // The auth store re-read comes FIRST: the interactive client
-                // stores the api-key credentials through its own storage
-                // instance (the `/mcp` key flow runs client-side), so the
-                // view's reads must reload the store to see them. A failed
-                // reload serves the roster's last-good credentials — the
-                // view reports what the manager has, not the reload's error.
-                let _auth_reload = manager.reload_auth_storage();
-                manager.refresh();
-                (
-                    manager.connection_roster(),
-                    manager.service_catalog_views(),
-                    manager.api_key_credential_views(),
-                    manager.service_catalog_diagnostics().to_vec(),
-                )
-            })
-            .await
-            {
-                Ok(read) => read,
-                Err(error) => {
-                    return response_failure(
-                        None,
-                        "get_mcp_connections",
-                        &format!("MCP roster read failed: {error}"),
-                        None,
-                    );
-                }
-            };
-        let connections: Vec<Value> = roster
-            .into_iter()
-            .map(|entry| serde_json::to_value(&entry).unwrap_or(Value::Null))
-            .collect();
-        let services = serde_json::to_value(&services).unwrap_or(Value::Array(Vec::new()));
-        let credentials = serde_json::to_value(&credentials).unwrap_or(Value::Array(Vec::new()));
-        response_success(
-            None,
-            "get_mcp_connections",
-            Some(json!({
-                "connections": connections,
-                "services": services,
-                "credentials": credentials,
-                "catalogDiagnostics": diagnostics,
-            })),
-        )
+        let view = tokio::task::spawn_blocking(move || {
+            manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .connections_view()
+        })
+        .await;
+        match view {
+            Ok(view) => response_success(None, "get_mcp_connections", Some(view)),
+            Err(error) => response_failure(
+                None,
+                "get_mcp_connections",
+                &format!("MCP roster read failed: {error}"),
+                None,
+            ),
+        }
     }
 
     /// `set_mcp_static_token`: the inline paste flow's install step — store

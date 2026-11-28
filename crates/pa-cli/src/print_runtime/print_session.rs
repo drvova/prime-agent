@@ -67,154 +67,16 @@ impl SessionBuilder for PrintSession {
         async move {
             if let Some(subagent) = &spec.subagent {
                 anyhow::ensure!(first_child_build, "a print session's engine is built once");
-                let mut options = self.options.clone();
-                options.config.cwd.clone_from(&spec.cwd);
-                let config = &options.config;
-                let name = spec
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| subagent.child_id.clone());
-                // The child's thinking: the requested level, else the
-                // parent's; a real-provider child clamps it to what its model
-                // supports.
-                let thinking = subagent
-                    .thinking
-                    .as_deref()
-                    .and_then(pa_ai::models::thinking_level_from_str)
-                    .or(subagent.parent_thinking)
-                    .unwrap_or(pa_types::ai::ModelThinkingLevel::Medium);
-                let (lane, thinking) = if let Some(script) = self.faux.as_ref() {
-                    let queue = script
-                        .get("children")
-                        .and_then(|children| children.get(&name))
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "PRIME_AGENT_FAUX_SCRIPT has no \"children.{name}\" entry: a scripted print run \
-                                 must script every spawned child"
-                            )
-                        })?;
-                    let steps = super::faux_response_steps(
-                        queue
-                            .get("responses")
-                            .and_then(serde_json::Value::as_array)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "PRIME_AGENT_FAUX_SCRIPT children.{name} requires a responses array"
-                                )
-                            })?,
-                    )
-                    .map_err(anyhow::Error::msg)?;
-                    let repeat_last = queue
-                        .get("repeatLastResponse")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false);
-                    (
-                        super::ChildLane::Faux(super::FauxChildQueue {
-                            child_id: subagent.child_id.clone(),
-                            steps,
-                            repeat_last,
-                        }),
-                        thinking,
-                    )
-                } else {
-                    let selector = pa_daemon::rlm_child_model::resolve_child_model_unchecked(
-                        &config.agent_dir,
-                        subagent.model.as_deref(),
-                        subagent.parent_model.as_deref(),
-                        "subagent",
-                    )
-                    .map_err(|error| anyhow::anyhow!("{error:#}"))?;
-                    pa_daemon::rlm_child_model::assert_thinking_supported(
-                        &config.agent_dir,
-                        subagent.thinking.as_deref(),
-                        &selector,
-                    )
-                    .map_err(|error| anyhow::anyhow!("{error:#}"))?;
-                    let auth = pa_core::auth::AuthStorage::create(&config.agent_dir);
-                    let registry = pa_core::models::ModelRegistry::create(
-                        auth,
-                        config.agent_dir.join("models.json"),
-                    );
-                    let all: Vec<pa_types::ai::Model> = registry.get_all().to_vec();
-                    let resolved = pa_core::models::resolve_cli_model(
-                        /*cli_provider*/ None, &selector, &all,
-                    );
-                    if let Some(error) = resolved.error {
-                        return Err(anyhow::Error::msg(error));
-                    }
-                    let Some(model) = resolved.model else {
-                        return Err(anyhow::Error::msg("No matching model found."));
-                    };
-                    let thinking = pa_ai::models::clamp_thinking_level(&model, thinking);
-                    (super::ChildLane::Real(Box::new(model)), thinking)
-                };
-                // The child's session: its own directory under the parent's
-                // artifacts tree; a persisted parent gives the child its own
-                // file with the parent edge, a no-session parent keeps the
-                // child in memory, still pinned to the child's dir for its
-                // artifacts.
-                let child_dir = pa_core::session_engine::rlm_host::rlm_child_session_dir(
-                    &config.agent_dir,
-                    subagent
-                        .parent_session_file
-                        .is_some()
-                        .then_some(subagent.parent.as_str()),
-                    &subagent.child_id,
-                )?;
-                let mut manager = if let Some(parent_file) = &subagent.parent_session_file {
-                    let mut manager = pa_core::session::manager::SessionManager::persisted(
-                        &config.cwd,
-                        &child_dir,
-                    );
-                    manager.new_session(&pa_core::session::manager::NewSessionOptions {
-                        id: Some(id.to_string()),
-                        parent_session: Some(parent_file.clone()),
-                        rlm_depth: Some(u64::from(subagent.depth)),
-                    });
-                    manager
-                } else {
-                    let mut manager =
-                        pa_core::session::manager::SessionManager::in_memory_in_session_dir(
-                            &config.cwd,
-                            &child_dir,
-                        );
-                    manager.new_session(&pa_core::session::manager::NewSessionOptions {
-                        id: Some(id.to_string()),
-                        ..Default::default()
-                    });
-                    manager
-                };
-                manager
-                    .append_session_info(&name)
-                    .map_err(anyhow::Error::from)?;
-                let headless = super::build_engine(
-                    &options,
+                return build_subagent(
+                    &self.options,
                     self.faux.as_ref(),
-                    Some(manager),
-                    "subagent",
-                    &super::HeadlessEmbedding::Child {
-                        seams,
-                        overrides: Box::new(super::ChildEngineOverrides {
-                            lane,
-                            thinking,
-                            depth: subagent.depth,
-                            session_dir: child_dir,
-                            semantic_parent_session_id: Some(subagent.parent.clone()),
-                            spawned_by_request_id: subagent.spawned_by_request_id.clone(),
-                            factory_child: subagent.factory,
-                        }),
-                    },
+                    /*child_script*/ None,
+                    id,
+                    spec,
+                    subagent,
+                    seams,
                 )
-                .await
-                .map_err(anyhow::Error::msg)?;
-                return Ok(BuiltSession {
-                    engine: Arc::new(headless.engine),
-                    model: headless.model,
-                    api_key: headless.api_key,
-                    agent_dir: config.agent_dir.clone(),
-                    events: DriverEvents::Quiet,
-                    autonomous: None,
-                });
+                .await;
             }
             let Some(FirstBuild { manager, opened }) = first else {
                 anyhow::bail!("a print session's engine is built once");
@@ -225,7 +87,11 @@ impl SessionBuilder for PrintSession {
                     self.faux.as_ref(),
                     Some(manager),
                     self.options.app_mode.as_str(),
-                    &super::HeadlessEmbedding::Root { seams },
+                    &super::HeadlessEmbedding::Root {
+                        seams,
+                        faux_lane: None,
+                        rlm_depth: None,
+                    },
                 )
                 .await?;
                 let engine = Arc::new(headless.engine);
@@ -242,6 +108,7 @@ impl SessionBuilder for PrintSession {
                     engine,
                     model: headless.model,
                     api_key: headless.api_key,
+                    provider_target: headless.provider_target,
                     agent_dir: self.options.config.agent_dir.clone(),
                     events: if self.options.app_mode == AppMode::Json {
                         DriverEvents::Stream
@@ -254,6 +121,7 @@ impl SessionBuilder for PrintSession {
                         .autonomous
                         .as_ref()
                         .map(autonomous_runtime_config),
+                    queue_modes: pa_runtime::QueueModes::Built,
                 };
                 Ok::<_, String>((built, header))
             }
@@ -270,6 +138,189 @@ impl SessionBuilder for PrintSession {
             }
         }
     }
+}
+
+/// Builds a spawned subagent's engine: its model lane (a scripted child's
+/// queue under `children.<spawn name>` of the faux script, or the catalog
+/// model the spawn names or the parent runs) over a transcript of its own
+/// under the parent's. The print run's and the runtime daemon's builders
+/// both build their sessions' children this way.
+pub(super) async fn build_subagent(
+    options: &RunOptions,
+    faux: Option<&serde_json::Value>,
+    child_script: Option<&serde_json::Value>,
+    id: &str,
+    spec: &SessionSpec,
+    subagent: &pa_runtime::SubagentSpec,
+    seams: pa_runtime::SessionSeams,
+) -> anyhow::Result<BuiltSession> {
+    let mut options = options.clone();
+    options.config.cwd.clone_from(&spec.cwd);
+    let config = &options.config;
+    let name = spec
+        .name
+        .clone()
+        .unwrap_or_else(|| subagent.child_id.clone());
+    // The child's thinking: the requested level, else the
+    // parent's; a real-provider child clamps it to what its model
+    // supports.
+    let thinking = subagent
+        .thinking
+        .as_deref()
+        .and_then(pa_ai::models::thinking_level_from_str)
+        .or(subagent.parent_thinking)
+        .unwrap_or(pa_types::ai::ModelThinkingLevel::Medium);
+    let (lane, thinking) = if let Some(script) = faux {
+        // Its `children.<name>` entry, else the script every child of the
+        // runtime daemon's scripted sessions runs
+        // (`PRIME_AGENT_FAUX_CHILD_SCRIPT`, the old worker's `childScript`).
+        let queue = script
+            .get("children")
+            .and_then(|children| children.get(&name))
+            .or(child_script)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "PRIME_AGENT_FAUX_SCRIPT has no \"children.{name}\" entry: a scripted print run \
+                     must script every spawned child"
+                )
+            })?;
+        let steps = super::faux_response_steps(
+            queue
+                .get("responses")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "PRIME_AGENT_FAUX_SCRIPT children.{name} requires a responses array"
+                    )
+                })?,
+        )
+        .map_err(anyhow::Error::msg)?;
+        let repeat_last = queue
+            .get("repeatLastResponse")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        (
+            super::ChildLane::Faux(super::FauxChildQueue {
+                child_id: subagent.child_id.clone(),
+                steps,
+                repeat_last,
+            }),
+            thinking,
+        )
+    } else {
+        let selector = pa_daemon::rlm_child_model::resolve_child_model_unchecked(
+            &config.agent_dir,
+            subagent.model.as_deref(),
+            subagent.parent_model.as_deref(),
+            "subagent",
+        )
+        .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+        pa_daemon::rlm_child_model::assert_thinking_supported(
+            &config.agent_dir,
+            subagent.thinking.as_deref(),
+            &selector,
+        )
+        .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+        let auth = pa_core::auth::AuthStorage::create(&config.agent_dir);
+        let registry =
+            pa_core::models::ModelRegistry::create(auth, config.agent_dir.join("models.json"));
+        let all: Vec<pa_types::ai::Model> = registry.get_all().to_vec();
+        let resolved =
+            pa_core::models::resolve_cli_model(/*cli_provider*/ None, &selector, &all);
+        if let Some(error) = resolved.error {
+            return Err(anyhow::Error::msg(error));
+        }
+        let Some(model) = resolved.model else {
+            return Err(anyhow::Error::msg("No matching model found."));
+        };
+        let thinking = pa_ai::models::clamp_thinking_level(&model, thinking);
+        (super::ChildLane::Real(Box::new(model)), thinking)
+    };
+    // The child's session: its own directory under the parent's
+    // artifacts tree; a persisted parent gives the child its own
+    // file with the parent edge, a no-session parent keeps the
+    // child in memory, still pinned to the child's dir for its
+    // artifacts.
+    // A child opened again (the runtime daemon's reopened family) keeps the
+    // transcript its spawn wrote, in its own directory.
+    let reopened = spec
+        .transcript
+        .as_ref()
+        .filter(|path| pa_core::session::store::store().exists(path));
+    let child_dir = match reopened.and_then(|path| path.parent()) {
+        Some(dir) => dir.to_path_buf(),
+        None => pa_core::session_engine::rlm_host::rlm_child_session_dir(
+            &config.agent_dir,
+            subagent
+                .parent_session_file
+                .is_some()
+                .then_some(subagent.parent.as_str()),
+            &subagent.child_id,
+        )?,
+    };
+    let mut manager = if let Some(path) = reopened {
+        pa_core::session::manager::SessionManager::open(&config.cwd, &child_dir, path)
+    } else if let Some(parent_file) = &subagent.parent_session_file {
+        let mut manager =
+            pa_core::session::manager::SessionManager::persisted(&config.cwd, &child_dir);
+        manager.new_session(&pa_core::session::manager::NewSessionOptions {
+            id: Some(id.to_string()),
+            parent_session: Some(parent_file.clone()),
+            rlm_depth: Some(u64::from(subagent.depth)),
+            // A child runs on its parent's pinned credential, as the old daemon's children do.
+            credential_pin: pa_core::session::manager::read_session_header(std::path::Path::new(
+                parent_file,
+            ))
+            .and_then(|header| header.credential_pin()),
+            ..Default::default()
+        });
+        manager
+    } else {
+        let mut manager = pa_core::session::manager::SessionManager::in_memory_in_session_dir(
+            &config.cwd,
+            &child_dir,
+        );
+        manager.new_session(&pa_core::session::manager::NewSessionOptions {
+            id: Some(id.to_string()),
+            ..Default::default()
+        });
+        manager
+    };
+    if reopened.is_none() {
+        manager
+            .append_session_info(&name)
+            .map_err(anyhow::Error::from)?;
+    }
+    let headless = super::build_engine(
+        &options,
+        faux,
+        Some(manager),
+        "subagent",
+        &super::HeadlessEmbedding::Child {
+            seams,
+            overrides: Box::new(super::ChildEngineOverrides {
+                lane,
+                thinking,
+                depth: subagent.depth,
+                session_dir: child_dir,
+                semantic_parent_session_id: Some(subagent.parent.clone()),
+                spawned_by_request_id: subagent.spawned_by_request_id.clone(),
+                factory_child: subagent.factory,
+            }),
+        },
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+    Ok(BuiltSession {
+        engine: Arc::new(headless.engine),
+        model: headless.model,
+        api_key: headless.api_key,
+        provider_target: headless.provider_target,
+        agent_dir: config.agent_dir.clone(),
+        events: DriverEvents::Quiet,
+        autonomous: None,
+        queue_modes: pa_runtime::QueueModes::Built,
+    })
 }
 
 /// A settle on its way: how the run ended, or `None` when its task stopped
@@ -332,7 +383,7 @@ async fn follow<T>(
 /// (the selected session file's) for the run.
 pub(super) async fn print_mode_main(
     options: &RunOptions,
-    lease: &mut Option<pa_daemon::lease::SessionLease>,
+    lease: &mut Option<pa_core::session::lease::SessionLease>,
 ) -> Result<i32, String> {
     // `print` or `json`: the telemetry execution mode is the app mode (TS
     // main.ts `executionMode: appMode`).
@@ -388,6 +439,9 @@ pub(super) async fn print_mode_main(
                     cwd: options.config.cwd.clone(),
                     env: std::collections::BTreeMap::new(),
                     subagent: None,
+                    transcript: None,
+                    options: pa_runtime::SessionOptions::default(),
+                    ephemeral: false,
                 }],
             },
         )

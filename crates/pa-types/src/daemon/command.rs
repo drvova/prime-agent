@@ -312,7 +312,8 @@ pub enum DaemonCommand {
         runtime_metadata: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lifecycle: Option<DaemonSessionLifecycle>,
-        /// Allowlisted client env vars (`env`), carried on create only.
+        /// Accepted from old clients and ignored: it carried the pane
+        /// identity of the removed Herdr integration.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         env: Option<std::collections::BTreeMap<String, String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -334,6 +335,8 @@ pub enum DaemonCommand {
         telemetry_disabled: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recovery_config: Option<Value>,
+        /// Accepted from old clients and ignored: it carried the pane
+        /// identity of the removed Herdr integration.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         env: Option<std::collections::BTreeMap<String, String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -356,6 +359,8 @@ pub enum DaemonCommand {
         telemetry_disabled: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recovery_config: Option<Value>,
+        /// Accepted from old clients and ignored: it carried the pane
+        /// identity of the removed Herdr integration.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         env: Option<std::collections::BTreeMap<String, String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -764,14 +764,11 @@ async fn an_abandoned_updates_failed_relaunch_arms_supervision_again() {
     // snapshot phase: the update state machine is driven directly.
     let update_id = UpdateId::from("u-abandon".to_string());
     let budget = UpdateTimeoutBudget::from_env();
-    supervisor
-        .update_prepare
-        .begin(update_id.clone(), util::now_ms(), &budget);
-    supervisor.update_prepare.drain_complete(&update_id);
-    supervisor
-        .update_prepare
-        .snapshot_written(&update_id, util::now_ms(), &budget);
-    supervisor.update_prepare.prepare_acked(&update_id);
+    let coordinator = supervisor.update.coordinator();
+    coordinator.begin(update_id.clone(), util::now_ms(), &budget);
+    coordinator.drain_complete(&update_id);
+    coordinator.snapshot_written(&update_id, util::now_ms(), &budget);
+    coordinator.prepare_acked(&update_id);
     let command = DaemonCommand::CommitUpdateRestart {
         id: None,
         update_id: Some("u-abandon".to_string()),
@@ -824,12 +821,12 @@ fn saved_session_rows_publish_deleted_descendant_usage() {
     let path = dir.join(format!("{}.jsonl", session.session_id()));
     session.set_path(path.clone());
     session.rewrite().unwrap();
-    let mut info = crate::session_store::read_session_info(&path).unwrap();
+    let mut info = pa_core::session::catalog::read_session_info(&path).unwrap();
     assert!(
         info.deleted_descendant_usage.is_none(),
         "the file scan never sets the ledger-derived field"
     );
-    info.deleted_descendant_usage = Some(crate::session_usage::SessionUsageSummary {
+    info.deleted_descendant_usage = Some(pa_core::session::usage_summary::SessionUsageSummary {
         input_tokens: 1_100,
         output_tokens: 110,
         cost: 0.5,
@@ -866,7 +863,7 @@ async fn saved_session_rows_count_the_sessions_stored_factory_specs() {
     let path = sessions.join(format!("{}.jsonl", session.session_id()));
     session.set_path(path.clone());
     session.rewrite().unwrap();
-    let info = crate::session_store::read_session_info(&path).unwrap();
+    let info = pa_core::session::catalog::read_session_info(&path).unwrap();
     let shells = std::collections::HashMap::new();
     let specs = super::sessions::stored_factory_specs(vec![info.clone()])
         .await
@@ -1036,7 +1033,7 @@ fn saved_session_rows_carry_the_persisted_thinking_level() {
     session.append_thinking_level_change("high");
     session.append_message(&json!({"role": "user", "content": "hi", "timestamp": 1u64}));
     session.rewrite().unwrap();
-    let info = crate::session_store::read_session_info(&path).unwrap();
+    let info = pa_core::session::catalog::read_session_info(&path).unwrap();
     assert_eq!(info.thinking_level.as_deref(), Some("high"));
     let summary = saved_session_summary(&info);
     assert_eq!(summary["thinkingLevel"], json!("high"));
@@ -1054,7 +1051,7 @@ fn saved_session_rows_carry_the_persisted_thinking_level() {
     let draft_path = dir.join(format!("{}.jsonl", draft.session_id()));
     draft.set_path(draft_path.clone());
     draft.rewrite().unwrap();
-    let draft_info = crate::session_store::read_session_info(&draft_path).unwrap();
+    let draft_info = pa_core::session::catalog::read_session_info(&draft_path).unwrap();
     assert_eq!(draft_info.thinking_level, None);
     assert!(saved_session_summary(&draft_info)
         .get("thinkingLevel")
@@ -1087,7 +1084,7 @@ fn saved_session_rows_publish_the_own_usage_summary() {
         }
     }));
     session.rewrite().unwrap();
-    let info = crate::session_store::read_session_info(&path).unwrap();
+    let info = pa_core::session::catalog::read_session_info(&path).unwrap();
     let row = saved_session_row(
         &info,
         &std::collections::HashMap::new(),
@@ -1107,7 +1104,7 @@ fn saved_session_rows_publish_the_own_usage_summary() {
     let draft_path = dir.join(format!("{}.jsonl", draft.session_id()));
     draft.set_path(draft_path.clone());
     draft.rewrite().unwrap();
-    let draft_info = crate::session_store::read_session_info(&draft_path).unwrap();
+    let draft_info = pa_core::session::catalog::read_session_info(&draft_path).unwrap();
     assert!(saved_session_row(
         &draft_info,
         &std::collections::HashMap::new(),
@@ -1156,7 +1153,7 @@ fn saved_session_rows_match_the_catalog_row_golden() {
     }));
     session.rewrite().unwrap();
 
-    let info = crate::session_store::read_session_info(&path).unwrap();
+    let info = pa_core::session::catalog::read_session_info(&path).unwrap();
     assert_eq!(
         saved_session_row(
             &info,
@@ -1194,7 +1191,7 @@ fn saved_session_summaries_carry_the_parent_binding() {
     bound.set_path(bound_path.clone());
     bound.append_message(&json!({"role": "user", "content": "hi", "timestamp": 1u64}));
     bound.rewrite().unwrap();
-    let bound_info = crate::session_store::read_session_info(&bound_path).unwrap();
+    let bound_info = pa_core::session::catalog::read_session_info(&bound_path).unwrap();
     let summary = saved_session_summary(&bound_info);
     assert_eq!(
         (summary.get("parentSessionPath"), summary.get("rlmDepth")),
@@ -1206,7 +1203,7 @@ fn saved_session_summaries_carry_the_parent_binding() {
     root.set_path(root_path.clone());
     root.append_message(&json!({"role": "user", "content": "hi", "timestamp": 1u64}));
     root.rewrite().unwrap();
-    let root_info = crate::session_store::read_session_info(&root_path).unwrap();
+    let root_info = pa_core::session::catalog::read_session_info(&root_path).unwrap();
     let summary = saved_session_summary(&root_info);
     assert_eq!(
         (summary.get("parentSessionPath"), summary.get("rlmDepth")),
@@ -1272,9 +1269,11 @@ async fn adoption_settles_then_seeds_the_roster_once() {
         })
         .unwrap(),
     );
-    let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+    let ledger =
+        pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-9".to_string(),
             parent: root_file.to_string_lossy().to_string(),
             child: child_file.to_string_lossy().to_string(),
@@ -1857,18 +1856,15 @@ async fn a_signal_during_an_in_flight_shutdown_forces() {
     let supervisor = Arc::new(Supervisor::new(options).expect("supervisor"));
     let update_id = UpdateId::from("u-signal".to_string());
     let budget = UpdateTimeoutBudget::from_env();
-    supervisor
-        .update_prepare
-        .begin(update_id.clone(), util::now_ms(), &budget);
-    supervisor.update_prepare.drain_complete(&update_id);
-    supervisor
-        .update_prepare
-        .snapshot_written(&update_id, util::now_ms(), &budget);
-    supervisor.update_prepare.prepare_acked(&update_id);
-    supervisor.update_prepare.commit(&update_id);
+    let coordinator = supervisor.update.coordinator();
+    coordinator.begin(update_id.clone(), util::now_ms(), &budget);
+    coordinator.drain_complete(&update_id);
+    coordinator.snapshot_written(&update_id, util::now_ms(), &budget);
+    coordinator.prepare_acked(&update_id);
+    coordinator.commit(&update_id);
     assert_eq!(
-        supervisor.update_prepare.active_state(),
-        Some(PrepareState::Stopping),
+        coordinator.active_state(),
+        Some(pa_core::update::restart::PrepareState::Stopping),
         "the transaction reached the committed stop window"
     );
     assert!(
@@ -2184,7 +2180,7 @@ async fn a_ledger_delete_of_a_stopped_child_tombstones_without_a_worker() {
         .await
         .expect("the spawn ledger resolves");
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-gone".to_string(),
             parent: parent_file.to_string_lossy().into_owned(),
             child: child_file.to_string_lossy().into_owned(),
@@ -2201,7 +2197,7 @@ async fn a_ledger_delete_of_a_stopped_child_tombstones_without_a_worker() {
         .tombstone_saved_rlm_child(
             "child-gone",
             Some("sub-gone"),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .await;
     assert!(
@@ -2216,7 +2212,7 @@ async fn a_ledger_delete_of_a_stopped_child_tombstones_without_a_worker() {
     let tombstones = ledger.edges(true).expect("tombstones");
     assert_eq!(
         tombstones[0].deleted,
-        Some(crate::rlm_ledger::RlmLedgerDeleteReason::User)
+        Some(pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User)
     );
 
     // An unknown selector with no ledger edge is a clean failure (the
@@ -2225,7 +2221,7 @@ async fn a_ledger_delete_of_a_stopped_child_tombstones_without_a_worker() {
         .tombstone_saved_rlm_child(
             "no-such-child",
             None,
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .await;
     assert!(miss.is_err(), "a selector with no edge must not delete");
@@ -2348,7 +2344,7 @@ async fn the_stopped_childs_delete_removes_its_row_and_bills_the_parent() {
         .await
         .expect("the spawn ledger resolves");
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-gone".to_string(),
             parent: parent_file.to_string_lossy().into_owned(),
             child: child_transcript.to_string_lossy().into_owned(),
@@ -2363,7 +2359,7 @@ async fn the_stopped_childs_delete_removes_its_row_and_bills_the_parent() {
         .tombstone_saved_rlm_child(
             "sub-gone",
             Some("sub-gone"),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .await
         .expect("the stopped child's delete tombstones");
@@ -2462,7 +2458,7 @@ async fn a_ledger_delete_never_tombstones_an_unrelated_edge_sharing_the_child_id
         .expect("the spawn ledger resolves");
     for (child, stem) in [(&file_a, "child-a"), (&file_b, "child-b")] {
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-shared".to_string(),
                 parent: parent.clone(),
                 child: child.clone(),
@@ -2479,7 +2475,7 @@ async fn a_ledger_delete_never_tombstones_an_unrelated_edge_sharing_the_child_id
         .tombstone_saved_rlm_child(
             "child-a",
             Some("sub-shared"),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .await
         .expect("the delete resolves the stem-matching edge");
@@ -2532,7 +2528,7 @@ async fn a_ledger_child_wake_joins_an_already_hosting_resident() {
         .await
         .expect("the spawn ledger resolves");
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-kid-1".to_string(),
             parent: parent_file.to_string_lossy().into_owned(),
             child: session_file.to_string_lossy().into_owned(),

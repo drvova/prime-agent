@@ -272,6 +272,35 @@ impl SessionManager {
         Ok(id)
     }
 
+    /// Whether the active branch carries the Anthropic subscription warning's shown marker (the
+    /// once-per-session-lifecycle gate, [`crate::session::ANTHROPIC_WARNING_SHOWN_CUSTOM_TYPE`]
+    /// with `data.shown == true`): the old daemon's `anthropicWarningShown`.
+    #[must_use]
+    pub fn anthropic_warning_shown(&self) -> bool {
+        self.get_branch(None)
+            .into_iter()
+            .any(crate::session::window::valid_warning_shown)
+    }
+
+    /// Records that the interactive client drew the Anthropic subscription warning (both
+    /// daemons' `mark_anthropic_warning_shown`): the marker row, so a reattach, a resume or a
+    /// rebuild reads the gate. Idempotent: a session already marked gets no second row.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying I/O error when the durable append fails; the gate stays open then,
+    /// so the next open warns again (a lost marker costs one repeated warning, never a suppressed
+    /// one).
+    pub fn mark_anthropic_warning_shown(&mut self) -> std::io::Result<()> {
+        if !self.anthropic_warning_shown() {
+            self.append_custom_entry(
+                crate::session::ANTHROPIC_WARNING_SHOWN_CUSTOM_TYPE,
+                Some(serde_json::json!({ "shown": true })),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Append a custom entry with the TS `_appendEntry` retained-write
     /// contract: a failed disk write keeps the entry in the live index and
     /// surfaces the error for the caller to log (the refine audit arm).

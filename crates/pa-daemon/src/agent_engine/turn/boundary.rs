@@ -144,7 +144,10 @@ impl AgentSessionEngine {
                 let entry = serde_json::to_value(&run.entry).unwrap_or(Value::Null);
                 // The wire result is the `CompactionResult` shape; the event reason
                 // is `requested`.
-                let result = crate::compaction::compaction_result_value(&run.result, &run.entry);
+                let result = pa_core::session_engine::compaction_exec::compaction_result_value(
+                    &run.result,
+                    &run.entry,
+                );
                 let event =
                     crate::compaction::compaction_end_success("requested", &result, false, None);
                 if !emit(EngineEvent::Compaction { entry, event }) {

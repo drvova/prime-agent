@@ -31,6 +31,9 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
+        // The supervisor (selected by name: the runtime daemon is the default), which this
+        // suite drives on the old wire.
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
         .arg(socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .stdin(Stdio::null())
@@ -208,7 +211,7 @@ fn print_continue_refuses_an_active_daemon_session() {
     // line, then the holder's identity and the next steps.
     let first_line = format!(
         "Error: Session is already active in {active_session_id}: {}\n",
-        pa_daemon::lease::canonical_session_path(&session_path).display()
+        pa_core::session::lease::canonical_session_path(&session_path).display()
     );
     assert!(
         stderr.starts_with(&first_line),
@@ -278,16 +281,16 @@ fn print_resume_refuses_a_foreign_lease_holder() {
     // exactly the role the other product's daemon worker plays. The
     // lease-enable env is consumed at the acquire itself, so it leaves this
     // test's window immediately.
-    std::env::set_var(pa_daemon::lease::SESSION_LEASES_ENABLED_ENV, "1");
+    std::env::set_var(pa_core::session::lease::SESSION_LEASES_ENABLED_ENV, "1");
     std::env::set_var(
-        pa_daemon::lease::SESSION_LEASE_OWNER_ID_ENV,
+        pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
         "foreign01ab3c",
     );
-    let holder = pa_daemon::lease::acquire_session_lease(Some(&session_path), &agent_dir)
+    let holder = pa_core::session::lease::acquire_session_lease(Some(&session_path), &agent_dir)
         .expect("lease acquire probe")
         .expect("the lease must be held");
-    std::env::remove_var(pa_daemon::lease::SESSION_LEASE_OWNER_ID_ENV);
-    std::env::remove_var(pa_daemon::lease::SESSION_LEASES_ENABLED_ENV);
+    std::env::remove_var(pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV);
+    std::env::remove_var(pa_core::session::lease::SESSION_LEASES_ENABLED_ENV);
 
     // The refusal: this test process runs a build of this product, so the
     // holder classification reads as another Rust build, never the TypeScript

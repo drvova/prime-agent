@@ -511,9 +511,9 @@ async fn a_late_admission_checkpoint_keeps_the_turn_its_prompt_started() {
     assert_eq!(
         (verdict, custom_types(&steering), custom_types(&follow_up)),
         (
-            Some(crate::revived_turn::RevivedTurn::Interrupted),
+            Some(pa_core::session::revival::RevivedTurn::Interrupted),
             vec![Some(json!(
-                crate::revived_turn::TURN_INTERRUPTED_CUSTOM_TYPE
+                pa_core::session::revival::TURN_INTERRUPTED_CUSTOM_TYPE
             ))],
             Vec::new(),
         ),

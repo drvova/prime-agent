@@ -343,7 +343,7 @@ impl Supervisor {
             Ok(edges) => edges,
             Err(error) => return Some(WakeOutcome::Failed(error.to_string())),
         };
-        let mut matches: Vec<&crate::rlm_ledger::RlmLedgerEdge> = edges
+        let mut matches: Vec<&pa_core::session_engine::rlm_ledger::RlmLedgerEdge> = edges
             .iter()
             .filter(|edge| ledger_edge_matches(edge, selector))
             .collect();
@@ -352,12 +352,13 @@ impl Supervisor {
             1 => {
                 let edge = matches.pop().expect("one match");
                 let session_file = edge.child.clone();
-                let (cwd, depth) =
-                    crate::session_store::read_session_info(std::path::Path::new(&session_file))
-                        .map_or_else(
-                            || ("/".to_string(), edge.depth),
-                            |info| (info.cwd, info.rlm_depth),
-                        );
+                let (cwd, depth) = pa_core::session::catalog::read_session_info(
+                    std::path::Path::new(&session_file),
+                )
+                .map_or_else(
+                    || ("/".to_string(), edge.depth),
+                    |info| (info.cwd, info.rlm_depth),
+                );
                 Some(
                     self.launch_ledger_child_wake(&session_file, cwd, &edge.child_id, depth)
                         .await,
@@ -448,7 +449,10 @@ impl Supervisor {
 
 /// Whether a ledger child edge answers a wake selector: by its recorded
 /// name, its RLM child id, or its persisted session id (the file stem).
-fn ledger_edge_matches(edge: &crate::rlm_ledger::RlmLedgerEdge, selector: &str) -> bool {
+fn ledger_edge_matches(
+    edge: &pa_core::session_engine::rlm_ledger::RlmLedgerEdge,
+    selector: &str,
+) -> bool {
     edge.name == selector
         || edge.child_id == selector
         || std::path::Path::new(&edge.child)
@@ -676,7 +680,7 @@ mod tests {
 
     #[test]
     fn ledger_edges_match_by_name_child_id_and_session_id() {
-        let edge = crate::rlm_ledger::RlmLedgerEdge {
+        let edge = pa_core::session_engine::rlm_ledger::RlmLedgerEdge {
             child_id: "sub-kid1".to_string(),
             parent: "/sessions/parent.jsonl".to_string(),
             child: "/artifacts/parent/sub-kid1/sess-kid.jsonl".to_string(),

@@ -1,0 +1,1 @@
+- Internal: the ACP mode's code moves from the daemon crate to the runtime crate; `--mode acp` behaves as before.

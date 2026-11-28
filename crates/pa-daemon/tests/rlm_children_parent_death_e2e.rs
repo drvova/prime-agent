@@ -505,7 +505,7 @@ fn a_parent_crash_closes_the_spawned_child_and_passivates_the_row() {
     assert_eq!(passive_row["parentActiveSessionId"], json!(parent_id));
 
     // The ledger carried the close as a stop, never a delete: no tombstone exists.
-    let ledger_dir = agent_dir.join(pa_daemon::rlm_ledger::RLM_LEDGER_DIR);
+    let ledger_dir = agent_dir.join(pa_core::session_engine::rlm_ledger::RLM_LEDGER_DIR);
     let ledger = std::fs::read_dir(&ledger_dir)
         .expect("ledger dir")
         .filter_map(std::result::Result::ok)

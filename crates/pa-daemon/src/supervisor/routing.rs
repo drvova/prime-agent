@@ -462,7 +462,7 @@ impl Supervisor {
                             if let Some(reason) = rest
                                 .get("rlmLedgerDelete")
                                 .and_then(Value::as_str)
-                                .and_then(crate::rlm_ledger::RlmLedgerDeleteReason::from_wire)
+                                .and_then(pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::from_wire)
                             {
                                 // The delete of a stopped child: no worker to kill — the ledger
                                 // tombstone IS the deletion boundary.
@@ -573,7 +573,7 @@ impl Supervisor {
             if let Some(reason) = rest
                 .get("rlmLedgerDelete")
                 .and_then(Value::as_str)
-                .and_then(crate::rlm_ledger::RlmLedgerDeleteReason::from_wire)
+                .and_then(pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::from_wire)
             {
                 let child_id = rest
                     .get("rlmChildId")
@@ -1029,7 +1029,7 @@ impl Supervisor {
                     )
                 })
         };
-        let cwd = crate::session_store::read_session_info(std::path::Path::new(&session_file))
+        let cwd = pa_core::session::catalog::read_session_info(std::path::Path::new(&session_file))
             .map_or_else(|| "/".to_string(), |info| info.cwd);
         // The identity rides `config.rlmDepth` + `runtime_metadata.rlmChildId` —
         // the keys launch_worker copies into the DURABLE create command's rest.
@@ -1099,7 +1099,7 @@ impl Supervisor {
         self: &Arc<Self>,
         selector: &str,
         child_id: Option<&str>,
-        reason: crate::rlm_ledger::RlmLedgerDeleteReason,
+        reason: pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason,
     ) -> anyhow::Result<()> {
         let ledger = self
             .rlm_spawn_ledger_for(None)
@@ -1131,13 +1131,15 @@ impl Supervisor {
             else {
                 anyhow::bail!("stopped RLM subagent \"{selector}\" is not in the spawn ledger");
             };
-            let canonical =
-                crate::lease::canonical_session_path(std::path::Path::new(&session_file));
+            let canonical = pa_core::session::lease::canonical_session_path(std::path::Path::new(
+                &session_file,
+            ));
             for (_, descriptor) in
                 crate::descriptor::load_descriptors(&self.descriptor_dir, &self.options.socket_path)
             {
                 let same_session = descriptor.session_file.as_deref().is_some_and(|file| {
-                    crate::lease::canonical_session_path(std::path::Path::new(file)) == canonical
+                    pa_core::session::lease::canonical_session_path(std::path::Path::new(file))
+                        == canonical
                 });
                 if same_session
                     && !super::worker_lifecycle::worker_process_gone(
@@ -1188,9 +1190,10 @@ impl Supervisor {
         // captured spend on the parent - the same settle the resident
         // delete's pass performs, in one push.
         let changed = self.refresh_deleted_descendant_usage().await;
-        let canonical = crate::lease::canonical_session_path(std::path::Path::new(&session_file))
-            .to_string_lossy()
-            .to_string();
+        let canonical =
+            pa_core::session::lease::canonical_session_path(std::path::Path::new(&session_file))
+                .to_string_lossy()
+                .to_string();
         let removed: Vec<String> = {
             let mut roster = self.roster.lock().unwrap();
             let agent_id = roster
@@ -1224,11 +1227,11 @@ async fn saved_session_messages(
 /// key; the selector is the child's LIVE id, NOT the file stem. Order: (1a) edge matching BOTH
 /// the stem and the id; (1b) the LAST edge carrying the id; (2) the stem-matching edge.
 fn resolve_ledger_child(
-    edges: &[crate::rlm_ledger::RlmLedgerEdge],
+    edges: &[pa_core::session_engine::rlm_ledger::RlmLedgerEdge],
     selector: &str,
     child_id: Option<&str>,
 ) -> Option<(String, String)> {
-    let stem_matches = |edge: &crate::rlm_ledger::RlmLedgerEdge| {
+    let stem_matches = |edge: &pa_core::session_engine::rlm_ledger::RlmLedgerEdge| {
         std::path::Path::new(&edge.child)
             .file_stem()
             .is_some_and(|name| name.to_string_lossy() == selector)

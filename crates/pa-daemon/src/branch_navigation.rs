@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 
 use crate::engine::{BranchSummaryRequest, SessionEngine};
 use crate::protocol::{response_failure, response_success, DaemonResponse};
-use crate::session_store::{SessionEntry, SessionFile};
+use crate::session_store::SessionFile;
 use crate::session_tree;
 use crate::worker::{SessionCore, Worker};
 use crate::workspace_checkpoints::WorkspaceCheckpoints;
@@ -94,9 +94,13 @@ impl TreeNavigation {
             Some(store) => response_success(
                 None,
                 "get_user_messages_for_forking",
-                Some(json!({
-                    "messages": session_tree::user_messages_for_forking(store),
-                })),
+                Some(pa_core::session::navigation::fork_messages(
+                    &store
+                        .entries()
+                        .iter()
+                        .map(session_tree::entry_json)
+                        .collect::<Vec<_>>(),
+                )),
             ),
             None => response_failure(
                 None,
@@ -136,20 +140,15 @@ impl TreeNavigation {
     /// abandoned branch first (TS `_navigateTree`). A tree move is NOT a runtime replacement:
     /// the kernel stays warm (`fork` is the only teardown flow).
     pub(crate) async fn navigate_tree(&self, payload: &Value) -> DaemonResponse {
-        let target_id = payload
-            .get("targetId")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let summarize = payload.get("summarize").and_then(Value::as_bool) == Some(true);
-        let custom_instructions = payload
-            .get("customInstructions")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let label = payload
-            .get("label")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let restore_files = payload.get("restoreFiles").and_then(Value::as_bool) == Some(true);
+        let pa_core::session::navigation::NavigateRequest {
+            target_id,
+            summarize,
+            custom_instructions,
+            replace_instructions,
+            label,
+            restore_files,
+        } = pa_core::session::navigation::NavigateRequest::from_payload(payload);
+        let target_id = target_id.as_str();
 
         // Snapshot the tree state under one lock pass; the model call below runs without it.
         let (target, old_leaf, entries, session_id) = {
@@ -182,12 +181,11 @@ impl TreeNavigation {
         // `acquireQueuedWorkPause` + `waitForIdle`).
         self.wait_turn_end().await;
 
-        let (new_leaf, editor_text) = navigation_point(&target);
+        let (new_leaf, editor_text) =
+            pa_core::session::navigation::navigation_point(&session_tree::entry_json(&target));
 
         // The abandoned-branch summary (TS `generateBranchSummary`).
         let mut summary: Option<PendingBranchSummary> = None;
-        let replace_instructions =
-            payload.get("replaceInstructions").and_then(Value::as_bool) == Some(true);
         if summarize {
             let file_entries: Vec<_> = entries
                 .iter()
@@ -352,7 +350,7 @@ impl TreeNavigation {
     pub(crate) async fn prepare_fork(
         &self,
         payload: &Value,
-    ) -> Result<(SessionFile, Option<String>), DaemonResponse> {
+    ) -> Result<(SessionFile, pa_core::session::replacement::ForkPoint), DaemonResponse> {
         let entry_id = payload
             .get("entryId")
             .and_then(Value::as_str)
@@ -361,7 +359,7 @@ impl TreeNavigation {
         // A fork interrupts the running turn first, like the TS replacement lease path.
         self.wait_turn_end().await;
 
-        let (target_leaf, selected_text, store, cwd) = {
+        let (point, store, cwd) = {
             let core = self.core.lock().unwrap();
             let Some(store) = core.store.as_ref() else {
                 return Err(response_failure(
@@ -371,31 +369,13 @@ impl TreeNavigation {
                     None,
                 ));
             };
-            let Some(target) = store.entry(entry_id) else {
-                return Err(response_failure(
-                    None,
-                    "fork",
-                    "Invalid entry ID for forking",
-                    None,
-                ));
-            };
-            let (target_leaf, selected_text) = if let Some("at") = position {
-                (Some(entry_id.to_string()), None)
-            } else {
-                let Some(text) = session_tree::user_entry_text(target) else {
-                    return Err(response_failure(
-                        None,
-                        "fork",
-                        "Invalid entry ID for forking",
-                        None,
-                    ));
-                };
-                (target.parent_id.clone(), Some(text))
-            };
-            (target_leaf, selected_text, store.clone(), core.cwd.clone())
+            let target = store.entry(entry_id).map(session_tree::entry_json);
+            let point = pa_core::session::replacement::ForkPoint::of(target.as_ref(), position)
+                .map_err(|refused| response_failure(None, "fork", &refused.message, None))?;
+            (point, store.clone(), core.cwd.clone())
         };
 
-        let forked = match target_leaf.as_deref() {
+        let forked = match point.leaf.as_deref() {
             None => {
                 // Fork at the root: a fresh empty session (TS `newSession` with
                 // the source as parent).
@@ -446,7 +426,7 @@ impl TreeNavigation {
             }
         };
 
-        Ok((forked, selected_text))
+        Ok((forked, point))
     }
 
     /// `fork`'s swap phase (TS `buildAndApplyReplacement`): the store, the engine's session
@@ -459,9 +439,10 @@ impl TreeNavigation {
         // summaries the swap's roster pushes read resume from this cache
         // and fold only the appended tail.
         let primed = new_path.clone();
-        let _ =
-            tokio::task::spawn_blocking(move || crate::session_store::read_session_info(&primed))
-                .await;
+        let _ = tokio::task::spawn_blocking(move || {
+            pa_core::session::catalog::read_session_info(&primed)
+        })
+        .await;
         let (previous, transferred) = {
             let mut core = self.core.lock().unwrap();
             // A navigating fork replaces its source: when the prepare could not
@@ -554,36 +535,6 @@ async fn rebuild_engine_context(
         .map_err(|error| format!("{error:#}"))
 }
 
-/// Where a navigation lands (TS `_navigateTreeUnderPause`): a user/custom message target
-/// re-enters its text with the leaf at its parent; others keep their own id.
-fn navigation_point(target: &SessionEntry) -> (Option<String>, Option<String>) {
-    if let Some(text) = session_tree::user_entry_text(target) {
-        return (target.parent_id.clone(), Some(text));
-    }
-    if target.type_ == "custom_message" {
-        let text = custom_message_text(target);
-        return (target.parent_id.clone(), text);
-    }
-    (Some(target.id.clone()), None)
-}
-
-/// The text of a custom-message entry (TS: string content, or the
-/// concatenated text blocks).
-fn custom_message_text(entry: &SessionEntry) -> Option<String> {
-    match entry.fields.get("content") {
-        Some(Value::String(text)) => Some(text.clone()),
-        Some(Value::Array(blocks)) => {
-            let text: String = blocks
-                .iter()
-                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|block| block.get("text").and_then(Value::as_str))
-                .collect();
-            Some(text).filter(|text| !text.is_empty())
-        }
-        _ => None,
-    }
-}
-
 impl Worker {
     /// `fork` (TS `AgentSessionRuntime.fork`): a whole-runtime replacement — prepare the
     /// fork file, retire the live runtime, swap the store, prewarm the replacement.
@@ -592,7 +543,7 @@ impl Worker {
         // The pause spans settle and replacement: no steer admits on the
         // branch being left.
         let _queued_work = self.hold_queued_work_pause("fork");
-        let (forked, selected_text) = match self.tree_navigation.prepare_fork(payload).await {
+        let (forked, point) = match self.tree_navigation.prepare_fork(payload).await {
             Ok(prepared) => prepared,
             Err(response) => return response,
         };
@@ -620,33 +571,9 @@ impl Worker {
                 // The fork swap is a whole-session replacement too: the fresh summary ships
                 // immediately.
                 self.push_roster_delta();
-                // The pane reporter re-reports for the forked session
-                // (the TS replacement arm: the old instance went silent
-                // at the teardown, the successor force-publishes with
-                // its own session reference immediately — same pane, new
-                // session).
-                let (active, session_ref) = {
-                    let core = self.core.lock().unwrap();
-                    (core.busy, Worker::herdr_session_ref(&core))
-                };
-                self.herdr
-                    .lock()
-                    .unwrap()
-                    .session_started(active, session_ref);
-                let mut data = json!({ "cancelled": false });
-                if let Some(selected_text) = selected_text {
-                    data["selectedText"] = json!(selected_text);
-                }
-                response_success(None, "fork", Some(data))
+                response_success(None, "fork", Some(point.reply()))
             }
-            Err(error) => {
-                // A failed fork tore the old session down without
-                // installing the successor: the reporter goes silent (the
-                // TS `session_shutdown` non-quit arm — never release, the
-                // pane is not the worker's to free here).
-                *self.herdr.lock().unwrap() = crate::herdr::HerdrReporter::default();
-                response_failure(None, "fork", &error, None)
-            }
+            Err(error) => response_failure(None, "fork", &error, None),
         }
     }
 }

@@ -69,7 +69,11 @@ impl Supervisor {
             return;
         }
         if let Some(client) = &*self.telemetry.lock().unwrap() {
-            pa_core::session_engine::telemetry::track_catalog_refresh(client, count);
+            pa_core::session_engine::telemetry::track_catalog_refresh(
+                client,
+                count,
+                pa_core::session_engine::telemetry::DaemonKind::Old,
+            );
         }
     }
 
@@ -174,82 +178,6 @@ impl Supervisor {
         }
     }
 
-    /// Report a settled boot history import: one log line, and its
-    /// `agent sessions imported` event (counts and a size bucket only).
-    /// Nothing ran: nothing to report.
-    pub(crate) fn note_history_import(
-        &self,
-        outcome: &crate::history_import::HistoryImportOutcome,
-        elapsed: std::time::Duration,
-    ) {
-        use crate::history_import::HistoryImportOutcome;
-        let (report, result) = match outcome {
-            HistoryImportOutcome::Idle => return,
-            HistoryImportOutcome::Completed(report) => (report.clone(), "completed"),
-            HistoryImportOutcome::Failed(error) => {
-                self.log_line(&format!(
-                    "history import stopped (resumes on the next boot): {error}"
-                ));
-                (pa_core::settings::HistoryImportReport::default(), "failed")
-            }
-        };
-        if result == "completed" {
-            self.log_line(&format!(
-                "history import: {} chat(s), {} file(s) copied, {} kept, config added: [{}]",
-                report.chats_imported,
-                report.files_imported,
-                report.kept.len(),
-                report.config_added.join(", ")
-            ));
-        }
-        if !self.telemetry_recording_on() {
-            return;
-        }
-        if let Some(client) = &*self.telemetry.lock().unwrap() {
-            pa_core::session_engine::telemetry::track_sessions_imported(
-                client,
-                "automatic",
-                result,
-                &report,
-                elapsed.as_millis() as u64,
-            );
-        }
-    }
-
-    /// Report a settled import of JSONL session files into the transcript
-    /// store: one log line, one per file that failed (skipped whole; the
-    /// next boot retries it), and its `agent transcripts imported` event
-    /// (counts and a size bucket only).
-    pub(crate) fn note_transcript_import(
-        &self,
-        report: &pa_core::session::store::TranscriptImportReport,
-        elapsed: std::time::Duration,
-    ) {
-        self.log_line(&format!(
-            "transcript import: {} session file(s) imported ({} bytes), {} already stored, {} failed",
-            report.imported,
-            report.bytes,
-            report.already_stored,
-            report.failed.len()
-        ));
-        for (path, error) in &report.failed {
-            self.log_line(&format!(
-                "transcript import skipped {} (retried on the next boot): {error}",
-                path.display()
-            ));
-        }
-        if !self.telemetry_recording_on() {
-            return;
-        }
-        if let Some(client) = &*self.telemetry.lock().unwrap() {
-            pa_core::session_engine::telemetry::track_transcripts_imported(
-                client,
-                report,
-                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-            );
-        }
-    }
-
     pub(crate) fn log_line(&self, message: &str) {
         self.log.append(&format!("[{}] {message}", util::now_iso()));
     }
@@ -260,7 +188,7 @@ impl Supervisor {
     pub(crate) async fn rlm_spawn_ledger_for(
         self: &Arc<Self>,
         session_dir: Option<&str>,
-    ) -> Result<std::sync::Arc<crate::rlm_ledger::RlmSpawnLedger>> {
+    ) -> Result<std::sync::Arc<pa_core::session_engine::rlm_ledger::RlmSpawnLedger>> {
         let default_dir = paths::sessions_dir(&self.options.agent_dir)?;
         let requested = match session_dir {
             Some(dir) => paths::expand_tilde(dir)?,
@@ -271,13 +199,16 @@ impl Supervisor {
                 &self.options.socket_path,
                 &self.options.agent_dir,
             ));
-            return Ok(std::sync::Arc::new(crate::rlm_ledger::RlmSpawnLedger::new(
-                &self.options.agent_dir,
-                &requested,
-                move |message| {
-                    log.append(&format!("[{}] {message}", util::now_iso()));
-                },
-            )));
+            return Ok(std::sync::Arc::new(
+                pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+                    &self.options.agent_dir,
+                    &requested,
+                    move |message| {
+                        log.append(&format!("[{}] {message}", util::now_iso()));
+                    },
+                )
+                .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage)),
+            ));
         }
         let mut cached = self.rlm_ledger.lock().await;
         if let Some(ledger) = cached.as_ref() {
@@ -287,13 +218,16 @@ impl Supervisor {
             &self.options.socket_path,
             &self.options.agent_dir,
         ));
-        let ledger = std::sync::Arc::new(crate::rlm_ledger::RlmSpawnLedger::new(
-            &self.options.agent_dir,
-            &requested,
-            move |message| {
-                log.append(&format!("[{}] {message}", util::now_iso()));
-            },
-        ));
+        let ledger = std::sync::Arc::new(
+            pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+                &self.options.agent_dir,
+                &requested,
+                move |message| {
+                    log.append(&format!("[{}] {message}", util::now_iso()));
+                },
+            )
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage)),
+        );
         *cached = Some(std::sync::Arc::clone(&ledger));
         Ok(ledger)
     }

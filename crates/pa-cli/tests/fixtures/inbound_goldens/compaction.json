@@ -1,0 +1,35 @@
+{
+  "prefix": "compa",
+  "settings": {
+    "onboardingCompleted": true,
+    "onboardingShown": true,
+    "telemetry": {
+      "noticeShown": true
+    },
+    "compaction": {
+      "keepRecentTokens": 1
+    }
+  },
+  "script": {
+    "responses": [
+      "First answer, long enough to be worth compacting later on.",
+      "Second answer, so the history has an older turn to summarize.",
+      "## Summary\nThe user greeted the agent and got a first answer.",
+      "## Turn prefix\nThe user asked again."
+    ],
+    "contextWindow": 128000
+  },
+  "steps": [
+    {
+      "prompt": "hi"
+    },
+    {
+      "queued": "and again",
+      "priority": "steer"
+    },
+    {
+      "queued": "/compact",
+      "priority": "steer"
+    }
+  ]
+}

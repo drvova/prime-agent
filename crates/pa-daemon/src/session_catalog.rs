@@ -7,7 +7,8 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::session_store::{list_sessions, session_file_name, SessionInfo};
+use crate::session_store::session_file_name;
+use pa_core::session::catalog::{list_sessions, SessionInfo};
 
 /// One selector match against saved sessions: the session id is addressable
 /// by prefix, the name only exactly; more than one match is ambiguous.
@@ -145,7 +146,7 @@ mod tests {
                 .unwrap()
                 .modified
                 .unwrap();
-            let mut expected = crate::session_store::read_session_info(&path).unwrap();
+            let mut expected = pa_core::session::catalog::read_session_info(&path).unwrap();
             expected.path = sessions.join(session_file_name(&id));
             let selector = [id.as_str(), &id[..8], "alpha"][selector_index];
             // A global lookup must still recover a root created before upgrade.

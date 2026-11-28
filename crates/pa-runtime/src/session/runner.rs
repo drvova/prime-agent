@@ -6,18 +6,24 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use pa_types::event_log::{AgentInput, AgentTarget, Cause, Task, TaskFailure, TaskState, Trust};
+use pa_types::event_log::{
+    AgentAccepted, AgentInput, AgentTarget, Cause, Task, TaskFailure, TaskState, Topic, Trust,
+};
 
 use super::host::{Ran, TaskEnd};
-use super::{done_event, Queued, SessionBuilder, SessionSpec, SessionTopics, Sessions};
+use super::{done_event, JobsSlot, Queued, SessionBuilder, SessionSpec, SessionTopics, Sessions};
 use crate::events::BusEvents;
 use crate::log_stores::LogTaskStore;
-use crate::routes::{TaskRequest, TaskSink};
+use crate::routes::{Announced, TaskRequest, TaskSink};
 use crate::subagents::{
     Subagents, INBOX_SUBSCRIPTION, NOTICE_SUBSCRIPTION, SUBSCRIPTION_PREFIX as SUBAGENT_PREFIX,
 };
 use crate::subscriptions::MemorySessionTree;
-use crate::tasks::{Steered, TaskOutcome, TaskQueue, TaskRunner};
+use crate::tasks::{LaneState, Steered, TaskOutcome, TaskQueue, TaskRunner};
+
+/// The prefix of the subscriptions that hear a scheduled job's timer
+/// (`schedule:<job>`, routed to the job's session).
+pub(crate) const SCHEDULE_PREFIX: &str = "schedule:";
 
 /// What an `Agent` route of the runtime does, by its subscription's id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +39,9 @@ enum RouteKind<'a> {
     /// `event-bus/<id>`: a kernel event subscription's task, over the
     /// message its event delivers.
     Event { subscription: &'a str },
+    /// [`SCHEDULE_PREFIX`]`<job>`: a scheduled job's timer fired; the
+    /// runtime daemon's jobs run the session's due ones. No task of its own.
+    Schedule,
     /// Any other: a task over the route's prompt or the event's input.
     Task,
 }
@@ -44,6 +53,9 @@ impl<'a> RouteKind<'a> {
         }
         if let Some(subscription) = subscription.strip_prefix(crate::events::SUBSCRIPTION_PREFIX) {
             return RouteKind::Event { subscription };
+        }
+        if subscription.starts_with(SCHEDULE_PREFIX) {
+            return RouteKind::Schedule;
         }
         match subscription {
             INBOX_SUBSCRIPTION => RouteKind::Inbox,
@@ -75,12 +87,13 @@ impl<B: SessionBuilder> SessionRunner<B> {
         SessionRunner { sessions }
     }
 
-    /// Cancels `session`'s running task: its turn is aborted and the task
-    /// ends `Cancelled`. Whether one was running.
-    pub(crate) fn cancel_running(&self, session: &str) -> bool {
-        self.sessions
-            .host(session)
-            .is_some_and(|host| host.cancel_running())
+    /// Cancels task `task`, the one `session`'s lane runs, also before it
+    /// reached the session's thread: its turn is aborted (or never starts)
+    /// and the task ends `Cancelled`. The steers it took and had not read,
+    /// queued again for the caller to put back in the lane, or `None` when it
+    /// has ended.
+    pub(crate) fn cancel_running_task(&self, session: &str, task: &str) -> Option<Vec<Task>> {
+        self.sessions.host(session)?.cancel_running_task(task)
     }
 }
 
@@ -119,10 +132,25 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
         end.outcome
     }
 
+    fn cancelled(&self, task: &Task) {
+        let Queued { cause, .. } = self.sessions.take_queued(task);
+        if let Ok(topics) = SessionTopics::of(&task.session) {
+            self.sessions
+                .outbox()
+                .send(done_event(&topics, task, &TaskEnd::CANCELLED, &cause));
+        }
+    }
+
     fn steer(&self, running: &Task, steer: &Task) -> Steered {
         self.sessions
             .host(&running.session)
             .map_or(Steered::Declined, |host| host.steer(running, steer))
+    }
+
+    fn lane_changed(&self, session: &str, lane: &LaneState) {
+        if let Some(stream) = self.sessions.subagents().stream(session) {
+            stream.lane_changed(lane);
+        }
     }
 }
 
@@ -144,6 +172,9 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
 /// the request's, and the event it runs for is the cause of what its turn
 /// publishes; an untrusted task's prompt is wrapped as
 /// `<untrusted-event source="<the event's source>">…</untrusted-event>`.
+/// A task queued for a session's input (`agent/<id>/input`) is announced on
+/// `agent/<id>/accepted` (an [`AgentAccepted`]: the task and how its lane
+/// admitted it), caused by the input, so the publish of the input carries it.
 pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
     pub(crate) queue: TaskQueue<SessionRunner<B>, LogTaskStore>,
     pub(crate) sessions: Arc<Sessions<B>>,
@@ -154,22 +185,43 @@ pub(crate) struct RuntimeTaskSink<B: SessionBuilder> {
     pub(crate) subagents: Arc<Subagents>,
     /// Where a spawned session without a `cwd` of its own runs.
     pub(crate) cwd: PathBuf,
+    /// The runtime daemon's scheduled jobs, once attached.
+    pub(crate) jobs: JobsSlot,
 }
 
 impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
-    async fn queue(&self, request: TaskRequest) -> anyhow::Result<()> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the route's kinds, its prompt, its task and its announcement read top to bottom"
+    )]
+    async fn queue(&self, request: TaskRequest) -> anyhow::Result<Option<Announced>> {
         let kind = RouteKind::of(&request.subscription);
         match kind {
             RouteKind::SubagentDone { child } => {
                 self.subagents.deliver_done(child, &request.event).await;
-                return Ok(());
+                return Ok(None);
             }
             RouteKind::Inbox => {
                 self.subagents.deliver_inbox(&request.event).await;
-                return Ok(());
+                return Ok(None);
             }
             RouteKind::Notice => {
-                return self.subagents.deliver_notice(&request.event).await;
+                return self
+                    .subagents
+                    .deliver_notice(&request.event)
+                    .await
+                    .map(|()| None);
+            }
+            RouteKind::Schedule => {
+                let AgentTarget::Session { session } = &request.target else {
+                    anyhow::bail!("a scheduled job's timer routes to its session");
+                };
+                let jobs = self
+                    .jobs
+                    .get()
+                    .context("this runtime runs no scheduled jobs")?;
+                jobs.fired(session);
+                return Ok(None);
             }
             RouteKind::Event { .. } | RouteKind::Task => {}
         }
@@ -181,13 +233,19 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                 .clone()
                 .context("the event was published in no session")?,
             AgentTarget::Spawn { name, cwd } => {
-                let id = self.sessions.open(SessionSpec {
-                    id: None,
-                    name,
-                    cwd: cwd.map_or_else(|| self.cwd.clone(), PathBuf::from),
-                    env: std::collections::BTreeMap::new(),
-                    subagent: None,
-                })?;
+                let id = self.sessions.open(
+                    SessionSpec {
+                        id: None,
+                        name,
+                        cwd: cwd.map_or_else(|| self.cwd.clone(), PathBuf::from),
+                        env: std::collections::BTreeMap::new(),
+                        subagent: None,
+                        transcript: None,
+                        options: crate::SessionOptions::default(),
+                        ephemeral: false,
+                    },
+                    super::Opening::Fresh,
+                )?;
                 if let Some(parent) = &event.session {
                     self.tree.insert(id.clone(), parent.clone());
                 }
@@ -199,7 +257,7 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
             // nothing (the subscriber's own event, or a session this runtime
             // does not run).
             let Some(message) = self.events.deliver(subscription, &request.event).await? else {
-                return Ok(());
+                return Ok(None);
             };
             (message, request.priority, Vec::new())
         } else if request.prompt.is_empty() {
@@ -244,10 +302,13 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                 },
             },
         );
-        self.queue
+        let input =
+            Topic::new(format!("agent/{session}/input")).is_ok_and(|input| input == event.topic);
+        let admission = self
+            .queue
             .push(Task {
-                id,
-                session,
+                id: id.clone(),
+                session: session.clone(),
                 priority,
                 state: TaskState::Queued,
                 trigger: request.event.id.clone(),
@@ -256,6 +317,18 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                 attempts: 0,
                 error: None,
             })
-            .await
+            .await?;
+        if !input {
+            return Ok(None);
+        }
+        let accepted = AgentAccepted {
+            task: id,
+            priority,
+            admission,
+        };
+        Ok(Some(Announced {
+            topic: Topic::new(format!("agent/{session}/accepted"))?,
+            payload: serde_json::to_value(accepted)?,
+        }))
     }
 }

@@ -8,9 +8,6 @@ use serde_json::{json, Value};
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::worker::Worker;
 
-/// The session-action recovery snapshot format.
-const SESSION_ACTION_RECOVERY_FORMAT_VERSION: u64 = 1;
-
 impl Worker {
     /// `append_custom_message { message }`: append the custom row durably, then
     /// broadcast its `message_start`/`message_end` pair.
@@ -66,90 +63,34 @@ impl Worker {
         if let Err(response) = self.require_created("restore_actions") {
             return response;
         }
-        let Some(snapshot) = payload.get("snapshot").and_then(Value::as_object) else {
-            return response_failure(
-                None,
-                "restore_actions",
-                "restore_actions requires a snapshot",
-                None,
-            );
-        };
-        let format_version = snapshot
-            .get("formatVersion")
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
-        if format_version != SESSION_ACTION_RECOVERY_FORMAT_VERSION {
-            return response_failure(
-                None,
-                "restore_actions",
-                &format!("Unsupported session action recovery format version: {format_version}"),
-                None,
-            );
-        }
-        let Some(actions) = snapshot.get("actions").and_then(Value::as_array) else {
-            return response_failure(
-                None,
-                "restore_actions",
-                "restore_actions requires a snapshot actions array",
-                None,
-            );
-        };
-        // Validation pass first: ids must be unique within the snapshot, and a
-        // turn payload's delivery records must correlate to their action.
-        let mut seen_ids = std::collections::HashSet::new();
-        for action in actions {
-            let Some(id) = action.get("id").and_then(Value::as_str) else {
-                return response_failure(
-                    None,
-                    "restore_actions",
-                    "restore_actions requires an action id",
-                    None,
-                );
-            };
-            if !seen_ids.insert(id.to_string()) {
-                return response_failure(
-                    None,
-                    "restore_actions",
-                    &format!("Duplicate session action id: {id}"),
-                    None,
-                );
-            }
-            let payload = action.get("payload").unwrap_or(&Value::Null);
-            if payload.get("kind").and_then(Value::as_str) == Some("turn") {
-                let records = payload
-                    .get("records")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let correlated = records
-                    .iter()
-                    .all(|record| record.get("ownerActionId").and_then(Value::as_str) == Some(id));
-                if !correlated {
-                    return response_failure(
-                        None,
-                        "restore_actions",
-                        &format!("Session action {id} has invalid delivery correlation"),
-                        None,
-                    );
-                }
-            }
-            // The reserved child-status kinds are daemon provenance (the queue-fold
-            // anti-spoof): a restored row claiming one refuses the whole snapshot
-            // before any action admits; only the recovery journal may park one.
-            if let Some(row) = payload.get("customMessage") {
-                if crate::child_status_notices::is_reserved_child_status_custom_type(row) {
-                    return response_failure(
-                        None,
-                        "restore_actions",
-                        &format!(
+        // The snapshot's check is pa-core's (both daemons refuse what it refuses); the
+        // reserved child-status kinds are daemon provenance (the queue-fold anti-spoof): a
+        // restored row claiming one refuses the whole snapshot before any action admits; only
+        // the recovery journal may park one.
+        let actions = match pa_core::update::restart::restore::validate_actions(
+            payload.get("snapshot"),
+            |id, action| {
+                let payload = action.get("payload").unwrap_or(&Value::Null);
+                match payload.get("customMessage") {
+                    Some(row)
+                        if crate::child_status_notices::is_reserved_child_status_custom_type(
+                            row,
+                        ) =>
+                    {
+                        Err(format!(
                             "{} (action {id})",
                             crate::child_status_notices::reserved_intake_error()
-                        ),
-                        None,
-                    );
+                        ))
+                    }
+                    Some(_) | None => Ok(()),
                 }
+            },
+        ) {
+            Ok(actions) => actions,
+            Err(message) => {
+                return response_failure(None, "restore_actions", &message, None);
             }
-        }
+        };
         // Restore pass: each action lands in its delivery lane —
         // `next_turn_boundary` is the steering schedule, `when_run_idle` the follow-up one.
         let restored = {

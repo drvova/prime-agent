@@ -75,6 +75,18 @@ pub enum SourceKinds {
     Accepted,
 }
 
+/// Which of a bus's sources, and the subscriptions to them, its stored state
+/// keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredSources {
+    /// Its bus sources only: a timer or a watch lasts as long as the run
+    /// that runs it.
+    BusOnly,
+    /// Its timers and watches too (the runtime daemon's, whose runtime runs
+    /// them again after a restart).
+    Every,
+}
+
 /// What an accepted request asks of the bus that keeps the state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventBusChange {
@@ -386,11 +398,13 @@ impl EventBusState {
 
     /// Its rows: its bus sources and the subscriptions not naming a timer
     /// or a watch, which live only for the run.
-    pub(super) fn rows(&self) -> anyhow::Result<SourceSet> {
-        let kept = |name: &str| {
-            self.sources
+    pub(super) fn rows(&self, stored: StoredSources) -> anyhow::Result<SourceSet> {
+        let kept = |name: &str| match stored {
+            StoredSources::Every => true,
+            StoredSources::BusOnly => self
+                .sources
                 .get(name)
-                .is_none_or(|record| record.kind() == EventSourceKind::Bus)
+                .is_none_or(|record| record.kind() == EventSourceKind::Bus),
         };
         Ok(SourceSet {
             sources: self
@@ -495,11 +509,11 @@ pub fn store_event_bus(path: &Path, state: &EventBusState) -> anyhow::Result<boo
     let Some(log) = process_log() else {
         return Ok(false);
     };
-    store_event_bus_in(log, path, state)?.wait_blocking()
+    store_event_bus_in(log, path, state, StoredSources::BusOnly)?.wait_blocking()
 }
 
-/// Store the bus whose file is `path` in `log`: the receipt says whether it
-/// was committed.
+/// Store the bus whose file is `path` in `log`, the sources `stored` keeps:
+/// the receipt says whether it was committed.
 ///
 /// # Errors
 ///
@@ -508,10 +522,11 @@ pub fn store_event_bus_in(
     log: &Log,
     path: &Path,
     state: &EventBusState,
+    stored: StoredSources,
 ) -> anyhow::Result<Receipt<bool>> {
     Ok(log.replace_sources(
         &StateFile::EventBus.scope(path),
-        state.rows()?,
+        state.rows(stored)?,
         Origin::Written,
     ))
 }

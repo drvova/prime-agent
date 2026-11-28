@@ -239,35 +239,6 @@ fn write_export(file_path: &Path, body: &str) -> Result<String> {
     Ok(file_path.to_string_lossy().into_owned())
 }
 
-/// The export's custom-tool renderer: resolves a tool by name against the
-/// session's live registry. The Rust tool surface carries no render functions,
-/// so the export falls back to the template's generic tool rendering.
-pub(crate) struct ExportToolRenderer<'a> {
-    /// The session's live tool registry (TS `getToolDefinition` source).
-    pub tools: &'a [std::sync::Arc<dyn pa_agent::types::AgentTool>],
-}
-
-impl pa_core::export_html::ToolHtmlRenderer for ExportToolRenderer<'_> {
-    fn render_call(&self, _tool_call_id: &str, tool_name: &str, _args: &Value) -> Option<String> {
-        // Registry lookup first (TS `getToolDefinition`): an unregistered tool never
-        // renders; a registered one has no render function.
-        self.tools.iter().find(|tool| tool.name() == tool_name)?;
-        None
-    }
-
-    fn render_result(
-        &self,
-        _tool_call_id: &str,
-        tool_name: &str,
-        _result: &[Value],
-        _details: &Value,
-        _is_error: bool,
-    ) -> Option<pa_core::export_html::RenderedToolResult> {
-        self.tools.iter().find(|tool| tool.name() == tool_name)?;
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

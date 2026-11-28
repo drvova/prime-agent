@@ -10,27 +10,46 @@
 //! used again: that lifetime ends (its scope is ended, so nothing of it
 //! writes again, and its runtime is shut down) and the next task runs on a
 //! fresh engine the builder makes in a new lifetime. Other sessions never
-//! see it.
+//! see it. Under the runtime daemon's supervision a panic on any of the
+//! session's threads, or a stuck cell, ends the lifetime the same way, and
+//! the crash is recorded and healed ([`super::faults`]).
+//!
+//! A session replaced by another transcript ([`SessionHost::replace`]: the
+//! runtime daemon's `fork` onto an entry and `import_jsonl`) goes the same
+//! way without a crash: once the work before it ends, the lifetime ends and
+//! the next one builds its engine (and a fresh kernel) from the new
+//! transcript in the new working directory. The session keeps its id, its
+//! topics and their subscribers, its stream and its tasks.
 
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pa_agent::agent::Agent;
+use pa_core::session::crash::{
+    restart_backoff_ms, SessionCrash, MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS,
+};
 use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
-use pa_core::session_engine::session_events::agent_event_json;
 use pa_types::ai::ImageContent;
-use pa_types::event_log::{Cause, EventId, NewEvent, Task, TaskFailure};
+use pa_types::daemon::SessionFaultEvent;
+use pa_types::event_log::{Cause, EventId, Task, TaskFailure};
 use pa_types::session_scope::{self, SessionScope};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use pa_core::agent_state::EventRequester;
-use pa_core::session_engine::agent_messaging::register_agent_message_host_handlers;
+use pa_core::session_engine::agent_messaging::{
+    register_agent_message_host_handlers, register_agent_observe_host_handlers,
+};
 use pa_core::session_engine::event_bus_host::register_event_bus_host_handlers;
 
+use super::checkpoints::Checkpoints;
+use super::faults::{
+    keep_fault, orphan_journal, publish_fault, reap_orphans, record_crash, LifetimeFaults, Rebuild,
+    SessionFaults,
+};
 use super::{
     done_event, BuiltSession, DriverEvents, Finished, Outbox, SessionBuilder, SessionSeams,
     SessionSpec, SessionTopics, SettleAfter, Settled,
@@ -39,7 +58,7 @@ use crate::events::{BusEvents, SessionEvents};
 use crate::lock;
 use crate::subagents::{
     dispose, drive_to_quiescence, has_unsettled_rlm_work, kernel_notice_sink,
-    late_sent_agent_message_sink, FamilyMessages, Node, SessionSubagents,
+    late_sent_agent_message_sink, FamilyMessages, FamilyObserve, Node, Rest, SessionSubagents,
 };
 use crate::tasks::{Steered, TaskOutcome};
 use crate::trust::{RunningTask, TaskTrust, TrustGate, WorkingDir};
@@ -51,6 +70,15 @@ use crate::turn::goal::PrintGoalSurface;
 /// How long a lifetime's runtime may take to drop its tasks once the
 /// lifetime has ended; threads still blocked after that are abandoned.
 const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(1);
+
+/// How a session's host starts.
+pub(crate) enum Opening {
+    /// Its first lifetime builds its engine.
+    Fresh,
+    /// The session is revived after a crash (its daemon's death): its first
+    /// lifetime is the rebuild.
+    Revived(Rebuild),
+}
 
 /// What the host runs, and where each answer goes.
 enum Work {
@@ -66,6 +94,41 @@ enum Work {
     Settle(SettleAnswer),
     /// The refinements drained and the subagents ended.
     Finish(oneshot::Sender<Result<Finished, String>>),
+}
+
+/// What the session's thread is sent: work for its lifetime, or the end of
+/// the lifetime in a replacement.
+enum Request {
+    Work(Work),
+    /// The session goes on from another transcript in a new lifetime.
+    Replace(Replacement),
+}
+
+impl From<Work> for Request {
+    fn from(work: Work) -> Self {
+        Request::Work(work)
+    }
+}
+
+impl Request {
+    /// Answers the request with `reason` as its failure, without running it.
+    fn fail(self, reason: &str) {
+        match self {
+            Request::Work(work) => work.fail(reason),
+            Request::Replace(replacement) => {
+                let _ = replacement.built.send(Err(reason.to_string()));
+            }
+        }
+    }
+}
+
+/// The transcript and working directory a replaced session goes on from,
+/// and where the answer goes once its new engine is built (or failed to
+/// be).
+pub(crate) struct Replacement {
+    pub(crate) transcript: PathBuf,
+    pub(crate) cwd: PathBuf,
+    built: oneshot::Sender<Result<(), String>>,
 }
 
 /// Where a settle's answer goes: how the run ended, or `None` when the task
@@ -92,7 +155,7 @@ impl TaskEnd {
         outcome: TaskOutcome::Done,
         failure: None,
     };
-    const CANCELLED: TaskEnd = TaskEnd {
+    pub(crate) const CANCELLED: TaskEnd = TaskEnd {
         outcome: TaskOutcome::Cancelled,
         failure: None,
     };
@@ -105,9 +168,25 @@ impl TaskEnd {
     }
 }
 
+/// A lifetime's engine, and a handle on the runtime it runs on (whose
+/// threads carry the lifetime's scope).
+#[derive(Clone)]
+pub(crate) struct LiveEngine {
+    pub(crate) engine: Arc<pa_core::session_engine::engine::SessionEngine>,
+    pub(crate) runtime: tokio::runtime::Handle,
+    /// The lifetime's autonomous run state, as its turns account it.
+    pub(crate) autonomous: Arc<tokio::sync::Mutex<pa_core::autonomous::AutonomousRuntimeState>>,
+    /// The slot its engine's stream reads its provider target from
+    /// ([`crate::BuiltSession::provider_target`]).
+    pub(crate) provider_target: pa_core::session_engine::provider_adapter::ProviderTargetSlot,
+    /// The lifetime's workspace checkpoints ([`Checkpoints`]); `None` for a
+    /// subagent or a session kept in memory.
+    pub(crate) checkpoints: Option<Arc<Checkpoints>>,
+}
+
 /// One session's host thread, as the runtime holds it.
 pub(crate) struct SessionHost {
-    work: Mutex<Option<mpsc::UnboundedSender<Work>>>,
+    work: Mutex<Option<mpsc::UnboundedSender<Request>>>,
     control: Arc<TurnControl>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -125,6 +204,9 @@ struct TurnControl {
 struct Turn {
     /// The engine's agent while a lifetime has one.
     agent: Option<Arc<Agent>>,
+    /// The lifetime's engine and the runtime it runs on, while it has one:
+    /// what a daemon call that changes the open session reaches.
+    engine: Option<LiveEngine>,
     /// The task running, if any.
     task: Option<String>,
     /// Whether the running task's turn still reads steering: from its start
@@ -132,18 +214,36 @@ struct Turn {
     steerable: bool,
     /// Whether the running task was cancelled.
     cancelled: bool,
+    /// A task the lane runs that was cancelled before it reached this
+    /// thread: it starts cancelled and runs nothing.
+    cancelled_ahead: Option<String>,
     /// Whether the running task's turn took a steer.
     steered: bool,
+    /// The steers the running task's turn took, each with the message it
+    /// handed the agent: the ones still unread when the turn is cancelled
+    /// go back to the lane ([`SessionHost::cancel_running`]).
+    taken: Vec<(Task, pa_agent::types::AgentMessage)>,
+    /// Steers offered to a task the queue is about to run, before it reached
+    /// this thread, by that task's id: its turn takes them as it starts.
+    pending: Vec<(String, Task, pa_agent::types::AgentMessage)>,
+    /// The task that ended here last: a steer offered to it is too late.
+    ended: Option<String>,
     /// The settle to run right after the task an input event queued, by that
     /// event's id ([`SettleAfter::Task`]).
     settle_after: Option<(EventId, SettleAnswer)>,
     /// The input event of the task the host finished last, and whether a
     /// settle may follow it.
     finished: Option<(EventId, bool)>,
+    /// Why the session takes no more work, once its supervision gave it up.
+    given_up: Option<String>,
 }
 
 impl SessionHost {
     /// Starts session `id`'s host thread; it builds the engine at once.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is a distinct part of the session the host thread owns"
+    )]
     pub(crate) fn start<B: SessionBuilder>(
         id: String,
         spec: SessionSpec,
@@ -152,6 +252,9 @@ impl SessionHost {
         builder: Arc<B>,
         outbox: Outbox,
         events: Arc<BusEvents>,
+        faults: SessionFaults,
+        jobs: super::JobsSlot,
+        opening: Opening,
     ) -> std::io::Result<Self> {
         let (work, queued) = mpsc::unbounded_channel();
         let control = Arc::new(TurnControl {
@@ -167,7 +270,7 @@ impl SessionHost {
                 let control = Arc::clone(&control);
                 move || {
                     serve(
-                        &Lifetime {
+                        &mut Lifetime {
                             id,
                             spec,
                             node,
@@ -176,8 +279,11 @@ impl SessionHost {
                             outbox,
                             control,
                             events,
+                            faults,
+                            jobs,
                         },
                         queued,
+                        opening,
                     );
                 }
             })?;
@@ -205,10 +311,7 @@ impl SessionHost {
             cause,
             outcome,
         }) {
-            return Ran::Unreported(TaskEnd::failed(
-                TaskFailure::Turn,
-                "the session is closed".to_string(),
-            ));
+            return Ran::Unreported(TaskEnd::failed(TaskFailure::Turn, self.closed_reason()));
         }
         answer.await.unwrap_or_else(|_| {
             Ran::Unreported(TaskEnd::failed(
@@ -250,9 +353,10 @@ impl SessionHost {
                 }
             }
         };
+        let closed = self.closed_reason();
         async move {
             if !queued {
-                return Err("the session is closed".to_string());
+                return Err(closed);
             }
             answer.await.unwrap_or_else(|_| {
                 Err("the session's host ended before the settle did".to_string())
@@ -264,61 +368,157 @@ impl SessionHost {
     pub(crate) async fn finish(&self) -> Result<Finished, String> {
         let (finished, answer) = oneshot::channel();
         if !self.send(Work::Finish(finished)) {
-            return Err("the session is closed".to_string());
+            return Err(self.closed_reason());
         }
         answer
             .await
             .unwrap_or_else(|_| Err("the session's host ended before the finish did".to_string()))
     }
 
-    /// Queues `work` for the session's thread; whether it is still open.
-    fn send(&self, work: Work) -> bool {
+    /// Ends the session's lifetime once the work before it has, and goes on
+    /// from `transcript` in `cwd` in a new one (see the module
+    /// documentation); answers once its engine is built.
+    ///
+    /// # Errors
+    ///
+    /// The session is closed, or its new engine could not be built (the
+    /// session runs on from the new transcript all the same, building again
+    /// for its next work).
+    pub(crate) async fn replace(&self, transcript: PathBuf, cwd: PathBuf) -> Result<(), String> {
+        let (built, answer) = oneshot::channel();
+        if !self.send(Request::Replace(Replacement {
+            transcript,
+            cwd,
+            built,
+        })) {
+            return Err(self.closed_reason());
+        }
+        answer
+            .await
+            .unwrap_or_else(|_| Err("the session's host ended before its replacement".to_string()))
+    }
+
+    /// Why work sent to the session's thread is refused.
+    fn closed_reason(&self) -> String {
+        lock(&self.control.turn)
+            .given_up
+            .clone()
+            .unwrap_or_else(|| "the session is closed".to_string())
+    }
+
+    /// Queues `request` for the session's thread; whether it is still open.
+    fn send(&self, request: impl Into<Request>) -> bool {
         lock(&self.work)
             .as_ref()
-            .is_some_and(|sender| sender.send(work).is_ok())
+            .is_some_and(|sender| sender.send(request.into()).is_ok())
     }
 
     /// Hands `steer`'s prompt to `running`'s turn while it still reads
     /// steering, unless it carries less trust than `running`: it would run
-    /// with the running task's, so it runs as its own task instead.
+    /// with the running task's, so it runs as its own task instead. A steer
+    /// offered to a task that has not reached this thread yet (the queue
+    /// offers the steers queued behind a steer as it starts it) is kept for
+    /// that task's turn, which takes it as it starts.
+    ///
+    /// An empty steer is a wake over rows already on the agent (a root's in
+    /// the runtime daemon): a turn that still reads steering takes it with
+    /// nothing to hand over, and any other runs it as its own task.
     pub(crate) fn steer(&self, running: &Task, steer: &Task) -> Steered {
+        if steer.trust.lowest(running.trust) != running.trust {
+            return Steered::Declined;
+        }
         let mut turn = lock(&self.control.turn);
+        if steer.prompt.is_empty() {
+            return match (&turn.agent, &turn.task) {
+                (Some(_), Some(task)) if turn.steerable && *task == running.id => {
+                    turn.steered = true;
+                    Steered::Taken
+                }
+                _ => Steered::Declined,
+            };
+        }
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+            });
+        let message = pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::User(
+            pa_agent::types::UserMessage {
+                content: pa_agent::types::UserContent::Text(steer.prompt.clone()),
+                timestamp,
+            },
+        ));
         match (&turn.agent, &turn.task) {
-            (Some(agent), Some(task))
-                if turn.steerable
-                    && *task == running.id
-                    && steer.trust.lowest(running.trust) == running.trust =>
-            {
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| {
-                        i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-                    });
-                agent.steer(pa_agent::types::AgentMessage::Standard(
-                    pa_agent::types::Message::User(pa_agent::types::UserMessage {
-                        content: pa_agent::types::UserContent::Text(steer.prompt.clone()),
-                        timestamp,
-                    }),
-                ));
+            (Some(agent), Some(task)) if turn.steerable && *task == running.id => {
+                agent.steer(message.clone());
                 turn.steered = true;
+                turn.taken.push((steer.clone(), message));
+                Steered::Taken
+            }
+            (_, None)
+                if turn.ended.as_deref() != Some(running.id.as_str())
+                    && turn.cancelled_ahead.as_deref() != Some(running.id.as_str()) =>
+            {
+                turn.pending
+                    .push((running.id.clone(), steer.clone(), message));
                 Steered::Taken
             }
             _ => Steered::Declined,
         }
     }
 
-    /// Cancels the running task: its turn is aborted and it ends
-    /// `Cancelled`. Whether a task was running.
-    pub(crate) fn cancel_running(&self) -> bool {
+    /// Cancels task `task`, the one the session's lane runs: its turn is
+    /// aborted and it ends `Cancelled`. The queue saves a task as running
+    /// before it hands it to this thread, so one that has not reached it yet
+    /// is marked to start cancelled and run nothing. The steers handed to the
+    /// task and not read yet are withdrawn from it and returned, queued
+    /// again, for the caller to put back in the lane; `None` when `task`
+    /// already ended here.
+    pub(crate) fn cancel_running_task(&self, task: &str) -> Option<Vec<Task>> {
         let mut turn = lock(&self.control.turn);
-        if turn.task.is_none() {
-            return false;
+        if turn.ended.as_deref() == Some(task) {
+            return None;
+        }
+        if turn.task.as_deref() != Some(task) {
+            let (pending, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut turn.pending)
+                .into_iter()
+                .partition(|(id, ..)| id == task);
+            turn.pending = kept;
+            turn.cancelled_ahead = Some(task.to_string());
+            return Some(
+                pending
+                    .into_iter()
+                    .map(|(_, steer, _)| Task {
+                        state: pa_types::event_log::TaskState::Queued,
+                        ..steer
+                    })
+                    .collect(),
+            );
         }
         turn.cancelled = true;
-        if let Some(agent) = &turn.agent {
-            agent.abort();
-        }
-        true
+        turn.steerable = false;
+        let taken = std::mem::take(&mut turn.taken);
+        let Some(agent) = &turn.agent else {
+            return Some(Vec::new());
+        };
+        agent.abort();
+        let unread = agent
+            .remove_queued_messages(|message| taken.iter().any(|(_, handed)| handed == message));
+        Some(
+            taken
+                .into_iter()
+                .filter(|(_, handed)| unread.contains(handed))
+                .map(|(task, _)| Task {
+                    state: pa_types::event_log::TaskState::Queued,
+                    ..task
+                })
+                .collect(),
+        )
+    }
+
+    /// The engine of the session's current lifetime, once it is built.
+    pub(crate) fn engine(&self) -> Option<LiveEngine> {
+        lock(&self.control.turn).engine.clone()
     }
 
     /// Closes the session: its thread finishes the task it runs, drops the
@@ -346,28 +546,55 @@ struct Lifetime<B> {
     control: Arc<TurnControl>,
     /// The runtime's event bus, which the kernel's `event.*` reach.
     events: Arc<BusEvents>,
+    /// What a crash does to the session.
+    faults: SessionFaults,
+    /// The runtime daemon's scheduled jobs, once attached.
+    jobs: super::JobsSlot,
 }
-
-/// A panic in a lifetime's work: the lifetime ends.
-struct Panicked;
 
 /// How a lifetime ended.
 enum Ended {
     /// The session was closed.
     Closed,
-    /// A turn panicked; the session goes on in a new lifetime.
-    Crashed,
+    /// It goes on from another transcript in a new lifetime.
+    Replaced(Replacement),
+    /// It crashed; the session goes on in a new lifetime (or, supervised and
+    /// crashing too often, is given up).
+    Crashed(SessionCrash),
 }
 
-/// The host thread: one lifetime after another until the session closes.
-fn serve<B: SessionBuilder>(lifetime: &Lifetime<B>, mut queued: mpsc::UnboundedReceiver<Work>) {
+/// The host thread: one lifetime after another until the session closes
+/// (or, supervised, is given up).
+#[expect(
+    clippy::too_many_lines,
+    reason = "a lifetime's end reads in the order it is handled: closed, replaced, crashed, \
+              recorded, given up or rebuilt"
+)]
+fn serve<B: SessionBuilder>(
+    lifetime: &mut Lifetime<B>,
+    mut queued: mpsc::UnboundedReceiver<Request>,
+    opening: Opening,
+) {
+    let mut rebuild = match opening {
+        Opening::Fresh => None,
+        // The crash the daemon's death was, recorded as the session opened:
+        // mirrored as a live one is (a client that attaches later replays
+        // it from the stored topics).
+        Opening::Revived(rebuild) => {
+            lifetime.node.stream.crashed(&rebuild.crash);
+            Some(rebuild)
+        }
+    };
+    let mut failures = rebuild.as_ref().map_or(0, |rebuild| rebuild.failures);
+    // The replacement whose new engine the next lifetime answers.
+    let mut replaced = None;
     loop {
-        let scope = Arc::new(SessionScope::new(
-            lifetime.id.clone(),
-            lifetime.spec.cwd.clone(),
-            lifetime.spec.env.clone(),
-            BTreeSet::new(),
-        ));
+        let scope = lifetime.scope();
+        let faults = Arc::new(LifetimeFaults::default());
+        match &lifetime.faults {
+            SessionFaults::Contained => {}
+            SessionFaults::Supervised(_) => faults.install(&scope),
+        }
         let _entered = session_scope::enter(Some(Arc::clone(&scope)));
         // Multi-threaded, as the daemon's session host is: what the session
         // spawns (a background refinement, its subagents' drivers) runs
@@ -391,16 +618,93 @@ fn serve<B: SessionBuilder>(lifetime: &Lifetime<B>, mut queued: mpsc::UnboundedR
                 return;
             }
         };
-        let ended = lifetime.run(&runtime, &mut queued);
-        lock(&lifetime.control.turn).agent = None;
+        let started = Instant::now();
+        let ended = lifetime.run(
+            &runtime,
+            &mut queued,
+            &faults,
+            rebuild.take(),
+            replaced.take(),
+        );
+        {
+            let mut turn = lock(&lifetime.control.turn);
+            turn.agent = None;
+            turn.engine = None;
+        }
         // The lifetime is cut off from the session's durable state before its
         // runtime goes, so nothing it leaves running writes again.
         scope.end();
         runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
-        match ended {
+        let crash = match ended {
             Ended::Closed => return,
-            Ended::Crashed => {}
+            Ended::Replaced(replacement) => {
+                lifetime.spec.transcript = Some(replacement.transcript);
+                lifetime.node.set_cwd(&replacement.cwd);
+                lifetime.spec.cwd = replacement.cwd;
+                replaced = Some(replacement.built);
+                continue;
+            }
+            Ended::Crashed(crash) => crash,
+        };
+        let supervision = match &lifetime.faults {
+            SessionFaults::Contained => continue,
+            SessionFaults::Supervised(supervision) => supervision,
+        };
+        // A lifetime that lived long enough proved healthy: this crash
+        // starts a fresh count.
+        failures = if started.elapsed() >= Duration::from_millis(STABLE_LIFETIME_MS) {
+            1
+        } else {
+            failures + 1
+        };
+        // The lifetime's runtime is gone: the programs its commands started
+        // and left running have no owner.
+        let reaped_programs = orphan_journal(&lifetime.spec)
+            .map_or(0, |journal| reap_orphans(&journal, std::process::id()));
+        let crashed = Rebuild {
+            crash,
+            failures,
+            reaped_programs,
+        };
+        record_crash(
+            supervision,
+            &lifetime.outbox,
+            &lifetime.topics,
+            &lifetime.id,
+            &crashed,
+        );
+        lifetime.node.stream.crashed(&crashed.crash);
+        if failures > MAX_CONSECUTIVE_FAILURES {
+            let given_up = SessionFaultEvent::SessionFailed { failures };
+            {
+                // The transcript keeps the give-up, written in a lifetime of
+                // its own (the crashed one's scope has ended).
+                let scope = lifetime.scope();
+                let _entered = session_scope::enter(Some(Arc::clone(&scope)));
+                keep_fault(&lifetime.spec, &crashed, &given_up);
+                scope.end();
+            }
+            publish_fault(
+                &lifetime.outbox,
+                &lifetime.topics.failed,
+                &lifetime.id,
+                &given_up,
+            );
+            lifetime.node.stream.fault(&given_up);
+            let reason = format!(
+                "the session was given up after {failures} crashes in a row: {}",
+                crashed.crash.reason()
+            );
+            lock(&lifetime.control.turn).given_up = Some(reason.clone());
+            while let Ok(work) = queued.try_recv() {
+                work.fail(&reason);
+            }
+            return;
         }
+        // Closing the session meanwhile waits the backoff out: at most the
+        // fifth crash's 4 s.
+        std::thread::sleep(Duration::from_millis(restart_backoff_ms(failures)));
+        rebuild = Some(crashed);
     }
 }
 
@@ -435,22 +739,75 @@ struct Hosted {
     /// it was capped by this run.
     goal_updated_at_start: Option<u64>,
     global_harness_dir: PathBuf,
+    /// The lifetime's workspace checkpoints; `None` for a subagent or a
+    /// session kept in memory.
+    checkpoints: Option<Arc<Checkpoints>>,
 }
 
 impl<B: SessionBuilder> Lifetime<B> {
-    /// Serves work on `runtime` until the session closes or a turn panics.
+    /// A new lifetime's scope.
+    fn scope(&self) -> Arc<SessionScope> {
+        SessionScope::new(
+            self.id.clone(),
+            self.spec.cwd.clone(),
+            self.spec.env.clone(),
+            BTreeSet::new(),
+        )
+    }
+
+    /// Serves work on `runtime` until the session closes or the lifetime
+    /// crashes. A rebuild after a crash first keeps the fault in the
+    /// transcript and answers the calls it cut off, then builds; once the
+    /// engine is built the session's clients hear it recovered. A lifetime
+    /// that follows a replacement answers it (`replaced`) once it built.
     fn run(
         &self,
         runtime: &tokio::runtime::Runtime,
-        queued: &mut mpsc::UnboundedReceiver<Work>,
+        queued: &mut mpsc::UnboundedReceiver<Request>,
+        faults: &LifetimeFaults,
+        rebuild: Option<Rebuild>,
+        replaced: Option<oneshot::Sender<Result<(), String>>>,
     ) -> Ended {
+        let mut recovering = rebuild.map(|rebuild| {
+            let recovered = SessionFaultEvent::SessionRecovered {
+                failures: rebuild.failures,
+                queued_input_suspended: false,
+            };
+            keep_fault(&self.spec, &rebuild, &recovered);
+            recovered
+        });
         let mut hosted = self.build(runtime);
+        if let Some(replaced) = replaced {
+            let _ = replaced.send(hosted.as_ref().map(|_| ()).map_err(Clone::clone));
+        }
         loop {
-            let Some(work) = runtime.block_on(queued.recv()) else {
-                // Dropped on its runtime: what the engine spawns as it goes
-                // down still has one to run on.
-                runtime.block_on(async move { drop(hosted) });
-                return Ended::Closed;
+            if hosted.is_ok() {
+                if let Some(recovered) = recovering.take() {
+                    publish_fault(&self.outbox, &self.topics.recovered, &self.id, &recovered);
+                    self.node.stream.fault(&recovered);
+                }
+            }
+            let next = runtime.block_on(async {
+                tokio::select! {
+                    biased;
+                    crash = faults.faulted() => Err(crash),
+                    work = queued.recv() => Ok(work),
+                }
+            });
+            let work = match next {
+                Ok(Some(Request::Work(work))) => work,
+                Ok(Some(Request::Replace(replacement))) => {
+                    // Dropped on its runtime, as a close drops it.
+                    runtime.block_on(async move { drop(hosted) });
+                    return Ended::Replaced(replacement);
+                }
+                Ok(None) => {
+                    // Dropped on its runtime: what the engine spawns as it
+                    // goes down still has one to run on.
+                    runtime.block_on(async move { drop(hosted) });
+                    return Ended::Closed;
+                }
+                Err(crash) => return Self::crashed(runtime, hosted, crash),
             };
             if hosted.is_err() {
                 hosted = self.build(runtime);
@@ -462,25 +819,69 @@ impl<B: SessionBuilder> Lifetime<B> {
                     continue;
                 }
             };
-            if self.answer(runtime, session, work).is_err() {
-                // The engine the panic left is not used again; dropping it
-                // may panic too, and that is this lifetime's end as well.
-                let _ = session_scope::catching_panics(AssertUnwindSafe(|| {
-                    runtime.block_on(async move { drop(hosted) });
-                }));
-                return Ended::Crashed;
+            if let Err(crash) = self.answer(runtime, session, work, faults) {
+                return Self::crashed(runtime, hosted, crash);
             }
         }
     }
 
-    /// Runs one item of work on `session` and answers it. A panic in it is
-    /// answered as its failure and returned: the lifetime ends.
+    /// The lifetime's end after `crash`: the engine it left is not used
+    /// again. Dropping it may panic too, and that is this lifetime's end as
+    /// well.
+    fn crashed(
+        runtime: &tokio::runtime::Runtime,
+        hosted: Result<Hosted, String>,
+        crash: SessionCrash,
+    ) -> Ended {
+        let _ = session_scope::catching_panics(AssertUnwindSafe(|| {
+            runtime.block_on(async move { drop(hosted) });
+        }));
+        Ended::Crashed(crash)
+    }
+
+    /// Runs `work` on `runtime` until it ends or a fault ends the lifetime:
+    /// its value, or the crash (a panic it raised, caught here, or a fault
+    /// on another of the session's threads, which the work's own result is
+    /// not trusted over).
+    fn contained<T>(
+        runtime: &tokio::runtime::Runtime,
+        faults: &LifetimeFaults,
+        work: impl std::future::Future<Output = T>,
+    ) -> Result<T, SessionCrash> {
+        let ran = session_scope::catching_panics(AssertUnwindSafe(|| {
+            runtime.block_on(async {
+                tokio::select! {
+                    biased;
+                    crash = faults.faulted() => Err(crash),
+                    value = work => Ok(value),
+                }
+            })
+        }));
+        match ran {
+            Ok(Ok(value)) => faults.fault().map_or(Ok(value), Err),
+            Ok(Err(crash)) => Err(crash),
+            Err(panic) => Err(faults.caught(&*panic)),
+        }
+    }
+
+    /// Why `what` failed when `crash` ended the lifetime under it: the
+    /// panic's text, or under supervision the crash's reason.
+    fn crash_reason(&self, what: &str, crash: &SessionCrash) -> String {
+        match &self.faults {
+            SessionFaults::Contained => format!("{what} panicked: {}", crash.message),
+            SessionFaults::Supervised(_) => crash.reason(),
+        }
+    }
+
+    /// Runs one item of work on `session` and answers it. A crash under it
+    /// is answered as its failure and returned: the lifetime ends.
     fn answer(
         &self,
         runtime: &tokio::runtime::Runtime,
         session: &mut Hosted,
         work: Work,
-    ) -> Result<(), Panicked> {
+        faults: &LifetimeFaults,
+    ) -> Result<(), SessionCrash> {
         match work {
             Work::Task {
                 task,
@@ -491,33 +892,43 @@ impl<B: SessionBuilder> Lifetime<B> {
                 {
                     let mut turn = lock(&self.control.turn);
                     turn.task = Some(task.id.clone());
-                    turn.steerable = true;
-                    turn.cancelled = false;
+                    turn.cancelled = turn.cancelled_ahead.take().as_ref() == Some(&task.id);
+                    turn.steerable = !turn.cancelled;
                     turn.steered = false;
+                    // The steers kept for this task: its run reads them as
+                    // it starts. Any kept for another never reached here.
+                    let pending = std::mem::take(&mut turn.pending);
+                    let mut taken = Vec::new();
+                    if let Some(agent) = turn.agent.clone() {
+                        for (_, steer, message) in
+                            pending.into_iter().filter(|(id, ..)| *id == task.id)
+                        {
+                            agent.steer(message.clone());
+                            taken.push((steer, message));
+                        }
+                    }
+                    turn.steered = !taken.is_empty();
+                    turn.taken = taken;
                 }
                 self.control.trust.set(Some(RunningTask {
                     trust: task.trust,
                     cause: cause.clone(),
                 }));
-                let ran = session_scope::catching_panics(AssertUnwindSafe(|| {
-                    runtime.block_on(self.run_task(session, &task, images))
-                }));
+                let ran = Self::contained(runtime, faults, self.run_task(session, &task, images));
                 let cancelled = {
                     let mut turn = lock(&self.control.turn);
-                    turn.task = None;
+                    turn.ended = turn.task.take();
                     turn.steerable = false;
+                    turn.taken.clear();
                     std::mem::take(&mut turn.cancelled)
                 };
                 self.control.trust.set(None);
                 let (end, panicked) = match ran {
                     Ok(_) if cancelled => (TaskEnd::CANCELLED, Ok(())),
                     Ok(end) => (end, Ok(())),
-                    Err(panic) => (
-                        TaskEnd::failed(
-                            TaskFailure::Turn,
-                            format!("the turn panicked: {}", panic_text(&*panic)),
-                        ),
-                        Err(Panicked),
+                    Err(crash) => (
+                        TaskEnd::failed(TaskFailure::Turn, self.crash_reason("the turn", &crash)),
+                        Err(crash),
                     ),
                 };
                 // A settle may follow a task that ended done or with a failed
@@ -538,13 +949,15 @@ impl<B: SessionBuilder> Lifetime<B> {
                     }
                 };
                 // The `done` goes behind the turn's stream and ahead of
-                // anything a settle streams.
+                // anything a settle streams; the queue view's end of the
+                // task goes ahead of it.
+                self.node.stream.task_ended(&task.id);
                 self.outbox
                     .send(done_event(&self.topics, &task, &end, &cause));
                 let _ = outcome.send(Ran::Reported(end));
                 match armed {
                     Some(settled) if settles => {
-                        self.answer(runtime, session, Work::Settle(settled))
+                        self.answer(runtime, session, Work::Settle(settled), faults)
                     }
                     Some(settled) => {
                         let _ = settled.send(Ok(None));
@@ -554,15 +967,10 @@ impl<B: SessionBuilder> Lifetime<B> {
                 }
             }
             Work::Settle(settled) => {
-                let answer = session_scope::catching_panics(AssertUnwindSafe(|| {
-                    runtime.block_on(self.settle(session))
-                }));
+                let answer = Self::contained(runtime, faults, self.settle(session));
                 let (answer, panicked) = match answer {
                     Ok(answer) => (answer.map(Some), Ok(())),
-                    Err(panic) => (
-                        Err(format!("the settle panicked: {}", panic_text(&*panic))),
-                        Err(Panicked),
-                    ),
+                    Err(crash) => (Err(self.crash_reason("the settle", &crash)), Err(crash)),
                 };
                 // Behind the settle's events: its caller has them all first.
                 self.outbox.then(move || {
@@ -571,15 +979,10 @@ impl<B: SessionBuilder> Lifetime<B> {
                 panicked
             }
             Work::Finish(finished) => {
-                let answer = session_scope::catching_panics(AssertUnwindSafe(|| {
-                    runtime.block_on(self.finish(session))
-                }));
+                let answer = Self::contained(runtime, faults, self.finish(session));
                 let (answer, panicked) = match answer {
                     Ok(answer) => (Ok(answer), Ok(())),
-                    Err(panic) => (
-                        Err(format!("the finish panicked: {}", panic_text(&*panic))),
-                        Err(Panicked),
-                    ),
+                    Err(crash) => (Err(self.crash_reason("the finish", &crash)), Err(crash)),
                 };
                 self.outbox.then(move || {
                     let _ = finished.send(answer);
@@ -618,6 +1021,18 @@ impl<B: SessionBuilder> Lifetime<B> {
                 Arc::new(FamilyMessages(Arc::clone(&self.node))),
                 &mut host_handlers,
             );
+            let in_daemon = self
+                .node
+                .tree
+                .upgrade()
+                .is_some_and(|tree| tree.daemon().is_some());
+            // The runtime daemon's sessions observe their families.
+            if in_daemon {
+                register_agent_observe_host_handlers(
+                    Arc::new(FamilyObserve(Arc::clone(&self.node))),
+                    &mut host_handlers,
+                );
+            }
             let seams = SessionSeams {
                 call_policy: Arc::new(gate),
                 host_handlers,
@@ -628,6 +1043,12 @@ impl<B: SessionBuilder> Lifetime<B> {
                     Arc::new(move || node.activity.notify_waiters())
                 },
                 kernel_notices: kernel_notice_sink(&self.node),
+                scheduled_jobs: self
+                    .jobs
+                    .get()
+                    .and_then(|jobs| jobs.wiring(&self.id, &self.spec)),
+                // The runtime daemon's sessions ask their attached clients.
+                interaction: in_daemon.then(|| self.node.interaction.lifetime_hub()),
             };
             runtime.block_on(self.builder.build(&self.id, &self.spec, seams))
         }));
@@ -644,22 +1065,57 @@ impl<B: SessionBuilder> Lifetime<B> {
             }
         };
         let agent = Arc::clone(built.engine.session.agent());
-        let json = built.events == DriverEvents::Stream;
+        let json = built.events != DriverEvents::Quiet;
         let hosted = runtime.block_on(async {
+            let stream = &self.node.stream;
+            stream.adopt(built.events, &built.engine).await;
             // The stream's listener first: on every agent event the stream
             // has it before the goal's accounting reports what it changed.
             agent
                 .subscribe({
-                    let publisher = self.publisher();
+                    let stream = Arc::clone(stream);
+                    let agent = Arc::downgrade(&agent);
                     move |event, _signal| {
-                        if let Some(payload) = agent_event_json(&event) {
-                            publisher(&payload);
+                        let stream = Arc::clone(&stream);
+                        let agent = agent.clone();
+                        Box::pin(async move {
+                            stream.agent_event(&event, &agent).await;
+                            Ok(())
+                        })
+                    }
+                })
+                .await;
+            // A cancel that lands after its task's last check and before the
+            // agent's run registers finds no run to abort (`Agent::abort`
+            // aborts only a live one): that run aborts as it starts.
+            agent
+                .subscribe({
+                    let control = Arc::clone(&self.control);
+                    move |event, _signal| {
+                        if matches!(event, pa_agent::types::AgentEvent::AgentStart) {
+                            let turn = lock(&control.turn);
+                            if let Some(agent) = turn.agent.as_ref().filter(|_| turn.cancelled) {
+                                agent.abort();
+                            }
                         }
                         Box::pin(std::future::ready(Ok(())))
                     }
                 })
                 .await;
             let engine = &built.engine;
+            // The summary's deltas while a compaction writes it, in the
+            // session-event shapes only (the json stream never had them).
+            if built.events == DriverEvents::SessionEvents {
+                let stream = Arc::clone(stream);
+                engine
+                    .session
+                    .set_compaction_summary_sink(Arc::new(move |delta: &str| {
+                        stream.publish(&serde_json::json!({
+                            "type": "compaction_summary_delta",
+                            "delta": delta,
+                        }));
+                    }));
+            }
             self.node
                 .adopt(engine, &built.model, &built.agent_dir)
                 .await;
@@ -695,16 +1151,35 @@ impl<B: SessionBuilder> Lifetime<B> {
             );
             let global_harness_dir =
                 pa_core::refinement::get_global_harness_state_dir(&built.agent_dir);
+            // A transcript kept on disk, of a root session: its workspace's
+            // checkpoints (a subagent's writes land in its parent's turn).
+            let checkpoints = (self.spec.subagent.is_none() && !self.spec.ephemeral).then(|| {
+                Arc::new(Checkpoints::new(
+                    built.agent_dir.clone(),
+                    self.spec.cwd.clone(),
+                ))
+            });
             Hosted {
                 boundary: TurnBoundary::with_sink(json, self.publisher()),
                 goal,
                 autonomous,
                 goal_updated_at_start,
                 global_harness_dir,
+                checkpoints,
                 built,
             }
         });
-        lock(&self.control.turn).agent = Some(agent);
+        {
+            let mut turn = lock(&self.control.turn);
+            turn.agent = Some(agent);
+            turn.engine = Some(LiveEngine {
+                engine: Arc::clone(&hosted.built.engine),
+                runtime: runtime.handle().clone(),
+                autonomous: hosted.autonomous.state_handle(),
+                provider_target: Arc::clone(&hosted.built.provider_target),
+                checkpoints: hosted.checkpoints.clone(),
+            });
+        }
         self.node.built(Ok(()));
         Ok(hosted)
     }
@@ -712,22 +1187,8 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// Publishes one json payload on the session's stream, with the running
     /// task's trust.
     fn publisher(&self) -> Arc<dyn Fn(&Value) + Send + Sync> {
-        let outbox = self.outbox.clone();
-        let control = Arc::clone(&self.control);
-        let topic = self.topics.stream.clone();
-        let id = self.id.clone();
-        Arc::new(move |payload: &Value| {
-            let trust = control.trust.current();
-            outbox.send(NewEvent {
-                topic: topic.clone(),
-                source: id.clone(),
-                session: Some(id.clone()),
-                payload: payload.clone(),
-                trust,
-                cause: None,
-                reply: None,
-            });
-        })
+        let stream = Arc::clone(&self.node.stream);
+        Arc::new(move |payload: &Value| stream.publish(payload))
     }
 
     /// One task. A session command runs at the boundary instead of a turn
@@ -747,13 +1208,24 @@ impl<B: SessionBuilder> Lifetime<B> {
         task: &Task,
         images: Vec<pa_agent::types::ImageContent>,
     ) -> TaskEnd {
+        // Cancelled before it started: nothing of it runs.
+        if lock(&self.control.turn).cancelled {
+            return TaskEnd::CANCELLED;
+        }
         let command = session
             .built
             .engine
             .session
             .classify_session_command(&task.prompt);
         if let Some(command) = command {
-            return Self::run_session_command(session, &command, &images).await;
+            self.node.stream.session_command_started();
+            let end = Self::run_session_command(session, &command, &images).await;
+            let error = match &end.outcome {
+                TaskOutcome::Failed(error) => Some(error.as_str()),
+                TaskOutcome::Done | TaskOutcome::Cancelled => None,
+            };
+            self.node.stream.session_command_ended(error);
+            return end;
         }
         let Hosted {
             built,
@@ -761,14 +1233,16 @@ impl<B: SessionBuilder> Lifetime<B> {
             goal,
             autonomous,
             global_harness_dir,
+            checkpoints,
             ..
         } = session;
         let engine = &built.engine;
         let turn_failed = |reason: String| TaskEnd::failed(TaskFailure::Turn, reason);
         // An empty input wakes the session over the rows delivered to it
         // (a subagent's task, a message to it): they run as its quiescence
-        // drive runs them, below.
-        if !task.prompt.is_empty() {
+        // drive runs them, below. An input of images alone is a prompt.
+        let wake = task.prompt.is_empty() && images.is_empty();
+        if !wake {
             if let Err(error) = boundary
                 .run_pre_turn(engine, &built.model, built.api_key.clone())
                 .await
@@ -779,10 +1253,30 @@ impl<B: SessionBuilder> Lifetime<B> {
             if lock(&self.control.turn).cancelled {
                 return TaskEnd::CANCELLED;
             }
-            let retry_policy =
-                pa_core::settings::SettingsManager::create(&self.spec.cwd, &built.agent_dir)
-                    .get_provider_retry_policy();
+            let settings =
+                pa_core::settings::SettingsManager::create(&self.spec.cwd, &built.agent_dir);
+            let retry_policy = settings.get_provider_retry_policy();
+            let agent = engine.session.agent();
+            match built.queue_modes {
+                super::QueueModes::Built => {}
+                super::QueueModes::Settings => {
+                    let queue_mode = |mode| match mode {
+                        pa_core::settings::QueueModeSetting::All => pa_agent::agent::QueueMode::All,
+                        pa_core::settings::QueueModeSetting::OneAtATime => {
+                            pa_agent::agent::QueueMode::OneAtATime
+                        }
+                    };
+                    agent.set_steering_mode(queue_mode(settings.get_steering_mode()));
+                    agent.set_follow_up_mode(queue_mode(settings.get_follow_up_mode()));
+                }
+            }
             let publish = self.publisher();
+            // The workspace before the turn, recorded with the workspace as
+            // it settled on the entries the turn appended.
+            let opening = match checkpoints {
+                Some(checkpoints) => checkpoints.begin(engine).await,
+                None => None,
+            };
             let prompted = engine
                 .session
                 .prompt_with_auto_retry(
@@ -796,12 +1290,14 @@ impl<B: SessionBuilder> Lifetime<B> {
                     },
                 )
                 .await;
-            let agent = engine.session.agent();
             let (cancelled, steered) = {
                 let mut turn = lock(&self.control.turn);
                 turn.steerable = false;
                 (turn.cancelled, turn.steered)
             };
+            if let Some(opening) = opening {
+                Checkpoints::settle(opening, engine).await;
+            }
             if cancelled {
                 return TaskEnd::CANCELLED;
             }
@@ -851,19 +1347,40 @@ impl<B: SessionBuilder> Lifetime<B> {
             }
         }
         // A subagent's task ends at rest: the rows its turns left and its own
-        // subagents' settles run first, so its `done` follows its subtree.
-        if task.prompt.is_empty() || self.node.is_subagent() {
-            if let Err(error) = drive_to_quiescence(
-                &self.node,
-                engine,
-                boundary,
-                &built.model,
-                built.api_key.clone(),
-                global_harness_dir.clone(),
-            )
-            .await
-            {
-                return turn_failed(error);
+        // subagents' settles run first, so its `done` follows its subtree. A
+        // root's empty input (its wake in the runtime daemon) runs the rows
+        // delivered to it and leaves its subagents to wake it again.
+        if wake || self.node.is_subagent() {
+            let rest = if self.node.is_subagent() {
+                Rest::Subtree
+            } else {
+                Rest::OwnRows
+            };
+            loop {
+                if let Err(error) = drive_to_quiescence(
+                    &self.node,
+                    engine,
+                    boundary,
+                    &built.model,
+                    built.api_key.clone(),
+                    global_harness_dir.clone(),
+                    rest,
+                )
+                .await
+                {
+                    return turn_failed(error);
+                }
+                // A root's wake takes no steer from here on (a later wake runs
+                // as its own task); a row whose wake it took as the drive
+                // returned runs now, once.
+                let steerable = match rest {
+                    Rest::OwnRows => std::mem::take(&mut lock(&self.control.turn).steerable),
+                    Rest::Subtree => false,
+                };
+                let taken_late = steerable && engine.session.agent().has_queued_messages();
+                if !taken_late {
+                    break;
+                }
             }
         }
         match latest_assistant_error(engine).await {
@@ -995,6 +1512,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                 model,
                 built.api_key.clone(),
                 global_harness_dir.clone(),
+                Rest::Subtree,
             )
             .await?
             {
@@ -1094,13 +1612,4 @@ impl<B: SessionBuilder> Lifetime<B> {
             refine_command_failed: boundary.refine_command_failed(),
         }
     }
-}
-
-/// A panic payload's text.
-fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
-    panic
-        .downcast_ref::<&str>()
-        .map(|text| (*text).to_string())
-        .or_else(|| panic.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a panic with a non-text payload".to_string())
 }

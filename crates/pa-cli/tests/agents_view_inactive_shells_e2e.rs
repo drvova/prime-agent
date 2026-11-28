@@ -40,6 +40,9 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
+        // The supervisor (selected by name: the runtime daemon is the default), which this
+        // suite drives on the old wire.
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
         .arg(&socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", dir.join("agent"))
         .env_remove("PRIME_AGENT_SESSION_DIR")
@@ -107,7 +110,7 @@ impl Shell {
         let record = json!({
             "id": id,
             "pid": pid,
-            "startId": pa_daemon::lease::get_process_start_id(pid).expect("start id"),
+            "startId": pa_core::session::lease::get_process_start_id(pid).expect("start id"),
             "command": "sleep 300",
             "startedAt": "2026-01-01T00:00:00+00:00",
             "sessionId": session_id,

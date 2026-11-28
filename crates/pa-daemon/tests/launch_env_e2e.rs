@@ -312,7 +312,7 @@ fn the_client_launch_env_reaches_only_its_own_session() {
             .expect("descriptor");
         let descriptor: Value = serde_json::from_str(&bytes).expect("descriptor json");
         u32::try_from(descriptor["pid"].as_u64().expect("recorded id"))
-            .is_ok_and(pa_daemon::session_host::is_hosted_pid)
+            .is_ok_and(pa_core::session::hosted::is_hosted_pid)
     };
     assert_eq!(
         (

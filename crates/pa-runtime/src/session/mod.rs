@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Context as _;
 use pa_core::autonomous::AgentAutonomousConfig;
@@ -20,7 +20,9 @@ use pa_core::kernel::{CallPolicy, HostRequestHandlers};
 use pa_core::session_engine::bash_notices::{BashNoticeWake, KernelNoticeSink};
 use pa_core::session_engine::engine::SessionEngine;
 use pa_core::session_engine::headless::HeadlessTerminalResult;
+use pa_core::session_engine::provider_adapter::ProviderTargetSlot;
 use pa_core::session_engine::rlm_host::RlmSubagentHost;
+use pa_core::session_engine::runtime_wiring::KernelCronWiring;
 use pa_core::LateSentAgentMessageHandler;
 use pa_types::ai::{ImageContent, Model, ModelThinkingLevel};
 use pa_types::event_log::{AgentDone, Cause, EventId, NewEvent, Task, TaskState, Topic};
@@ -31,14 +33,22 @@ use crate::events::BusEvents;
 use crate::lock;
 use crate::subagents::Subagents;
 
+mod checkpoints;
+mod faults;
 mod host;
+mod interaction;
 mod runner;
+mod stream;
 
+pub(crate) use faults::{reap_orphans, Rebuild, SessionFaults, Supervision};
 use host::SessionHost;
-pub(crate) use runner::{RuntimeTaskSink, SessionRunner};
+pub(crate) use host::{LiveEngine, Opening};
+pub(crate) use interaction::SessionInteraction;
+pub(crate) use runner::{RuntimeTaskSink, SessionRunner, SCHEDULE_PREFIX};
+pub(crate) use stream::{QueueLane, RowAt, SessionStream};
 
 /// A session to open.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionSpec {
     /// The session's id: the `<id>` of its `agent/<id>/*` topics, and the id
     /// the builder opens or creates its transcript under. `None` mints a new
@@ -54,6 +64,269 @@ pub struct SessionSpec {
     /// Where a spawned subagent sits under its parent; `None` for any other
     /// session.
     pub subagent: Option<SubagentSpec>,
+    /// The transcript the session opens, or creates under its id when it is
+    /// not there yet: a daemon session's, which the daemon holds the lease
+    /// of. `None` leaves it to the builder (the print session's selection, a
+    /// subagent's under its parent's).
+    pub transcript: Option<PathBuf>,
+    /// What a client chose for the session beyond the embedder's defaults
+    /// (`session.create`'s `options`: the flags an ACP launch gives its
+    /// session). The default chooses nothing.
+    pub options: SessionOptions,
+    /// The session keeps nothing: its transcript is in memory only (the
+    /// builder writes no file for it), and it ends with the client that
+    /// created it (`--no-session`, the old daemon's client-owned in-memory
+    /// session). `transcript` names no file for it. The runtime's stores
+    /// keep nothing of it or of the subagents it spawns: no event, task or
+    /// state of theirs is written to the agent's database.
+    pub ephemeral: bool,
+}
+
+/// A client's choices for one session's build, over the embedder's own
+/// (the launch flags a print run takes from its command line): its model,
+/// thinking level, system prompt, resources, autonomous run and goal.
+/// Each `None` or empty field leaves the embedder's choice.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SessionOptions {
+    /// `--provider`.
+    pub provider: Option<String>,
+    /// `--model`, a selector the model registry resolves.
+    pub model: Option<String>,
+    /// `--thinking`.
+    pub thinking: Option<ModelThinkingLevel>,
+    /// `--system-prompt`.
+    pub system_prompt: Option<String>,
+    /// `--append-system-prompt`, each in order.
+    pub append_system_prompt: Vec<String>,
+    /// `--skill` paths.
+    pub skills: Vec<PathBuf>,
+    /// `--prompt-template` paths.
+    pub prompt_templates: Vec<PathBuf>,
+    /// The autonomous run the session starts with (`--autonomous` and its
+    /// limits and gates).
+    pub autonomous: Option<AgentAutonomousConfig>,
+    /// `--goal`: a fresh session starts it; a resumed one keeps its own.
+    pub goal: Option<SessionGoal>,
+    /// The telemetry execution mode the session reports (`acp`); `None` is
+    /// the embedder's.
+    pub execution_mode: Option<String>,
+    /// `--api-key`: the key the session's requests send. It is never
+    /// written: [`SessionOptions::to_json`] keeps only that one was given
+    /// (`apiKeyGiven`), so a session built again from its stored options in a
+    /// process that no longer holds the key fails rather than run on another.
+    pub api_key: Option<pa_types::wire2::ApiKey>,
+    /// The stored options say a key was given that these options do not
+    /// hold.
+    pub api_key_given: bool,
+    /// `--credential <label|id>`: the named credential a new session pins.
+    pub credential: Option<String>,
+    /// `--profile`: the profile whose settings overlay the session reads, and
+    /// whose credential mapping a new session pins.
+    pub profile: Option<String>,
+    /// `--models` patterns, the session's model scope; `None` is the
+    /// settings' `enabledModels`.
+    pub models: Option<Vec<String>>,
+    /// The client's environment opts out of telemetry (the old create's
+    /// `telemetryDisabled`): the session reports nothing.
+    pub telemetry_disabled: bool,
+    /// The session a new one is created under (a scoped child).
+    pub parent: Option<pa_types::wire2::SessionParent>,
+}
+
+/// The goal a session starts with (`--goal`, `--goal-token-budget`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionGoal {
+    pub objective: String,
+    pub token_budget: Option<u64>,
+}
+
+impl SessionOptions {
+    /// The options a client gave as JSON (`{"provider", "model", "thinking",
+    /// "systemPrompt", "appendSystemPrompt", "skills", "promptTemplates",
+    /// "autonomous", "goal": {"objective", "tokenBudget"}, "executionMode",
+    /// "apiKey", "credential", "profile", "models", "telemetryDisabled",
+    /// "parent": {"path", "rlmDepth"}}`, and the stored `apiKeyGiven`),
+    /// refusing a key it does not know.
+    ///
+    /// # Errors
+    ///
+    /// `value` is not an object, names an unknown key, or a value has the
+    /// wrong shape.
+    pub fn from_json(value: &serde_json::Value) -> anyhow::Result<Self> {
+        use serde_json::Value;
+        let object = value
+            .as_object()
+            .context("the session options must be an object")?;
+        let text = |key: &str, value: &Value| -> anyhow::Result<String> {
+            value
+                .as_str()
+                .map(str::to_string)
+                .with_context(|| format!("the `{key}` option must be a string"))
+        };
+        let texts = |key: &str, value: &Value| -> anyhow::Result<Vec<String>> {
+            value
+                .as_array()
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .map(|item| item.as_str().map(str::to_string))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .with_context(|| format!("the `{key}` option must be a list of strings"))
+        };
+        let mut options = SessionOptions::default();
+        for (key, value) in object {
+            if value.is_null() {
+                continue;
+            }
+            match key.as_str() {
+                "provider" => options.provider = Some(text(key, value)?),
+                "model" => options.model = Some(text(key, value)?),
+                "thinking" => {
+                    options.thinking = Some(
+                        serde_json::from_value(value.clone())
+                            .with_context(|| format!("unknown thinking level {value}"))?,
+                    );
+                }
+                "systemPrompt" => options.system_prompt = Some(text(key, value)?),
+                "appendSystemPrompt" => options.append_system_prompt = texts(key, value)?,
+                "skills" => {
+                    options.skills = texts(key, value)?.into_iter().map(PathBuf::from).collect();
+                }
+                "promptTemplates" => {
+                    options.prompt_templates =
+                        texts(key, value)?.into_iter().map(PathBuf::from).collect();
+                }
+                "autonomous" => {
+                    options.autonomous = Some(
+                        serde_json::from_value(value.clone())
+                            .context("the `autonomous` option is not an autonomous config")?,
+                    );
+                }
+                "goal" => {
+                    let objective = value
+                        .get("objective")
+                        .and_then(Value::as_str)
+                        .filter(|objective| !objective.trim().is_empty())
+                        .context("the `goal` option needs an `objective`")?;
+                    let token_budget = match value.get("tokenBudget") {
+                        None | Some(Value::Null) => None,
+                        Some(budget) => Some(
+                            budget
+                                .as_u64()
+                                .context("the goal's `tokenBudget` must be a whole number")?,
+                        ),
+                    };
+                    options.goal = Some(SessionGoal {
+                        objective: objective.to_string(),
+                        token_budget,
+                    });
+                }
+                "executionMode" => options.execution_mode = Some(text(key, value)?),
+                "apiKey" => options.api_key = Some(pa_types::wire2::ApiKey::new(text(key, value)?)),
+                "apiKeyGiven" => {
+                    options.api_key_given = value
+                        .as_bool()
+                        .context("the `apiKeyGiven` option must be a boolean")?;
+                }
+                "credential" => options.credential = Some(text(key, value)?),
+                "profile" => options.profile = Some(text(key, value)?),
+                "models" => options.models = Some(texts(key, value)?),
+                "telemetryDisabled" => {
+                    options.telemetry_disabled = value
+                        .as_bool()
+                        .context("the `telemetryDisabled` option must be a boolean")?;
+                }
+                "parent" => {
+                    options.parent = Some(
+                        serde_json::from_value(value.clone())
+                            .context("the `parent` option must be {path, rlmDepth}")?,
+                    );
+                }
+                unknown => anyhow::bail!("unknown session option `{unknown}`"),
+            }
+        }
+        Ok(options)
+    }
+
+    /// The options as [`SessionOptions::from_json`] reads them, the chosen
+    /// ones only, and of an API key only that one was given.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut object = serde_json::Map::new();
+        let mut put = |key: &str, value: serde_json::Value| {
+            object.insert(key.to_string(), value);
+        };
+        if let Some(provider) = &self.provider {
+            put("provider", provider.clone().into());
+        }
+        if let Some(model) = &self.model {
+            put("model", model.clone().into());
+        }
+        if let Some(thinking) = self.thinking {
+            put(
+                "thinking",
+                serde_json::to_value(thinking).unwrap_or_default(),
+            );
+        }
+        if let Some(system_prompt) = &self.system_prompt {
+            put("systemPrompt", system_prompt.clone().into());
+        }
+        if !self.append_system_prompt.is_empty() {
+            put(
+                "appendSystemPrompt",
+                self.append_system_prompt.clone().into(),
+            );
+        }
+        let paths = |paths: &[PathBuf]| -> serde_json::Value {
+            paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .into()
+        };
+        if !self.skills.is_empty() {
+            put("skills", paths(&self.skills));
+        }
+        if !self.prompt_templates.is_empty() {
+            put("promptTemplates", paths(&self.prompt_templates));
+        }
+        if let Some(autonomous) = &self.autonomous {
+            put(
+                "autonomous",
+                serde_json::to_value(autonomous).unwrap_or_default(),
+            );
+        }
+        if let Some(goal) = &self.goal {
+            put(
+                "goal",
+                serde_json::json!({ "objective": goal.objective, "tokenBudget": goal.token_budget }),
+            );
+        }
+        if let Some(mode) = &self.execution_mode {
+            put("executionMode", mode.clone().into());
+        }
+        // The key itself is never written.
+        if self.api_key.is_some() || self.api_key_given {
+            put("apiKeyGiven", true.into());
+        }
+        if let Some(credential) = &self.credential {
+            put("credential", credential.clone().into());
+        }
+        if let Some(profile) = &self.profile {
+            put("profile", profile.clone().into());
+        }
+        if let Some(models) = &self.models {
+            put("models", models.clone().into());
+        }
+        if self.telemetry_disabled {
+            put("telemetryDisabled", true.into());
+        }
+        if let Some(parent) = &self.parent {
+            put("parent", serde_json::to_value(parent).unwrap_or_default());
+        }
+        serde_json::Value::Object(object)
+    }
 }
 
 /// A subagent's place under the session that spawned it (`rlm-spawn`): what
@@ -90,6 +363,12 @@ pub struct BuiltSession {
     pub engine: Arc<SessionEngine>,
     pub model: Model,
     pub api_key: Option<String>,
+    /// The slot the engine's stream reads its provider target (model, request
+    /// auth, service tier) from on every request: the runtime daemon's model
+    /// and tier switches write it, so the session's next request goes to
+    /// what the switch chose. An engine whose stream does not read it (a
+    /// test's) is not retargeted.
+    pub provider_target: ProviderTargetSlot,
     /// The agent dir the engine was built over: its settings and harness
     /// state.
     pub agent_dir: PathBuf,
@@ -99,15 +378,35 @@ pub struct BuiltSession {
     /// autonomous flags); `None` starts it disabled, and `/autonomous`
     /// rewrites it live.
     pub autonomous: Option<AgentAutonomousConfig>,
+    /// Where its turns take their steering and follow-up modes from.
+    pub queue_modes: QueueModes,
+}
+
+/// Where a session's turns take their steering and follow-up modes from
+/// (`all`: the steers or follow-ups waiting at a step are read together;
+/// `one-at-a-time`: one per step).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueModes {
+    /// The modes the engine was built with, unchanged.
+    Built,
+    /// The global settings' `steeringMode` and `followUpMode`, read as each
+    /// turn starts: a change applies from the next turn (the runtime
+    /// daemon's sessions).
+    Settings,
 }
 
 /// What a session's turn driver (its compaction, refinement, goal and
 /// autonomous arms) reports beside the agent's own events, which always go
-/// on the session's stream.
+/// on the session's stream, and in which shapes the stream carries both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverEvents {
     /// Its events, in the json stream's shapes, on the session's stream.
     Stream,
+    /// Its events and the agent's in the session-event shapes the old
+    /// daemon's clients read (`pa_core::session_engine::wire_events`), each
+    /// with the session's `meta.sequence`, and the compaction summary's
+    /// deltas: the runtime daemon's sessions.
+    SessionEvents,
     /// None on the stream; a background refinement that fails says so on
     /// stderr: the text print mode's surface.
     Quiet,
@@ -204,15 +503,49 @@ pub struct SessionSeams {
     /// `session/<id>/bash/done` or `/bash/quiet`, whose default subscription
     /// wakes the session (`SessionEngineConfig::kernel_notice_sink`).
     pub kernel_notices: KernelNoticeSink,
+    /// The session's scheduled jobs and heartbeats: the store the kernel's
+    /// `schedule.*` and `rlm_heartbeat.*` requests read and write, and the
+    /// identity its jobs bind to (`SessionEngineConfig::cron_store`).
+    /// `None` outside the runtime daemon: `schedule.*` then refuses and
+    /// `rlm_heartbeat.*` is not registered.
+    pub scheduled_jobs: Option<KernelCronWiring>,
+    /// The session's todo list and kernel questions: the hub whose events
+    /// reach the session's stream and whose questions wait for an attached
+    /// client that can answer them (`SessionEngineConfig::interaction`).
+    /// `None` outside the runtime daemon: the session runs headless, and
+    /// its `ask` settles as `no_user` at once.
+    pub interaction: Option<Arc<pa_core::interaction::InteractionHub>>,
 }
 
-/// The topics a session publishes on.
+/// The scheduled jobs of a runtime's sessions, which the runtime daemon
+/// keeps (`crate::daemon`); a runtime without one runs no scheduled job.
+///
+/// `wiring` is asked on the session's own thread each time a session's
+/// lifetime is built, and must not block: it answers the store the
+/// session's kernel binds its jobs to, or `None` for a session that keeps
+/// none (a subagent, a session without a transcript). `fired` is told,
+/// from the bus's routing, that a job timer of `session` fired; it must
+/// return at once and run the session's due jobs elsewhere.
+pub(crate) trait SessionJobs: Send + Sync {
+    fn wiring(&self, id: &str, spec: &SessionSpec) -> Option<KernelCronWiring>;
+    fn fired(&self, session: &str);
+}
+
+/// Where a runtime's sessions and its routing reach its [`SessionJobs`],
+/// once the runtime daemon attaches them.
+pub(crate) type JobsSlot = Arc<OnceLock<Arc<dyn SessionJobs>>>;
+
+/// The stored topics a session publishes on (its live `agent/<id>/stream`
+/// is its [`SessionStream`]'s).
 #[derive(Debug, Clone)]
 pub(crate) struct SessionTopics {
-    /// `agent/<id>/stream`: live only.
-    pub(crate) stream: Topic,
     /// `agent/<id>/done`: stored.
     pub(crate) done: Topic,
+    /// `agent/<id>/crashed`, `/recovered` and `/failed`: stored, the
+    /// session's faults under supervision (each a `SessionFaultEvent`).
+    pub(crate) crashed: Topic,
+    pub(crate) recovered: Topic,
+    pub(crate) failed: Topic,
 }
 
 impl SessionTopics {
@@ -233,8 +566,10 @@ impl SessionTopics {
             Ok(topic)
         };
         Ok(SessionTopics {
-            stream: topic("stream")?,
             done: topic("done")?,
+            crashed: topic("crashed")?,
+            recovered: topic("recovered")?,
+            failed: topic("failed")?,
         })
     }
 }
@@ -342,6 +677,13 @@ pub(crate) struct Sessions<B> {
     outbox: Outbox,
     events: Arc<BusEvents>,
     subagents: Arc<Subagents>,
+    /// What a crash does to a session.
+    faults: SessionFaults,
+    /// The sessions' scheduled jobs, in the runtime daemon.
+    jobs: JobsSlot,
+    /// The sessions the runtime's stores keep nothing of: an ephemeral
+    /// session joins as it opens, and so does a subagent of one.
+    unstored: crate::log_stores::Unstored,
     hosts: Mutex<HashMap<String, Arc<SessionHost>>>,
     /// What a queued task's store row does not keep, by task id, until it
     /// runs: its prompt's images and its trigger as a cause. A task restored
@@ -364,20 +706,51 @@ impl<B: SessionBuilder> Sessions<B> {
         outbox: Outbox,
         events: Arc<BusEvents>,
         subagents: Arc<Subagents>,
+        faults: SessionFaults,
+        jobs: JobsSlot,
     ) -> Self {
         Sessions {
             builder: Arc::new(builder),
             outbox,
             events,
             subagents,
+            faults,
+            jobs,
+            unstored: crate::log_stores::Unstored::default(),
             hosts: Mutex::new(HashMap::new()),
             queued: Mutex::new(HashMap::new()),
         }
     }
 
+    /// The sessions the runtime's stores keep nothing of.
+    pub(crate) fn unstored(&self) -> &crate::log_stores::Unstored {
+        &self.unstored
+    }
+
+    /// Attaches the runtime daemon's scheduled jobs (once; a second attach
+    /// changes nothing).
+    pub(crate) fn attach_jobs(&self, jobs: Arc<dyn SessionJobs>) {
+        let _ = self.jobs.set(jobs);
+    }
+
     /// Keeps `queued` for the task `task` until it runs.
     pub(crate) fn attach(&self, task: &str, queued: Queued) {
         lock(&self.queued).insert(task.to_string(), queued);
+    }
+
+    /// Queued task `task` runs with `images` instead of the ones it was
+    /// queued with.
+    pub(crate) fn set_images(&self, task: &Task, images: Vec<ImageContent>) {
+        let mut queued = lock(&self.queued);
+        let entry = queued.entry(task.id.clone()).or_insert_with(|| Queued {
+            images: Vec::new(),
+            cause: Cause {
+                id: task.trigger.clone(),
+                trust: task.trust,
+                hops: 0,
+            },
+        });
+        entry.images = images;
     }
 
     /// What `task` was queued with: its images, and its trigger as a cause
@@ -396,13 +769,13 @@ impl<B: SessionBuilder> Sessions<B> {
     }
 
     /// Opens a session on its own host thread, which starts building its
-    /// engine; returns its id.
+    /// engine (a revived one's first lifetime is its rebuild); returns its id.
     ///
     /// # Errors
     ///
     /// The id is not a topic level or is open already, or the operating
     /// system refused the thread.
-    pub(crate) fn open(&self, spec: SessionSpec) -> anyhow::Result<String> {
+    pub(crate) fn open(&self, spec: SessionSpec, opening: Opening) -> anyhow::Result<String> {
         let id = spec
             .id
             .clone()
@@ -410,6 +783,14 @@ impl<B: SessionBuilder> Sessions<B> {
         let topics = SessionTopics::of(&id)?;
         let mut hosts = lock(&self.hosts);
         anyhow::ensure!(!hosts.contains_key(&id), "session {id} is open already");
+        // Before it can publish anything.
+        let spawned_by_unstored = spec
+            .subagent
+            .as_ref()
+            .is_some_and(|subagent| self.unstored.contains(&subagent.parent));
+        if spec.ephemeral || spawned_by_unstored {
+            self.unstored.insert(&id);
+        }
         let node = self.subagents.node_for(&id, &spec);
         let host = SessionHost::start(
             id.clone(),
@@ -419,11 +800,65 @@ impl<B: SessionBuilder> Sessions<B> {
             Arc::clone(&self.builder),
             self.outbox.clone(),
             Arc::clone(&self.events),
+            self.faults.clone(),
+            Arc::clone(&self.jobs),
+            opening,
         )
         .context("start the session's host thread")?;
         hosts.insert(id.clone(), Arc::new(host));
         self.events.opened(&id);
         Ok(id)
+    }
+
+    /// Opens session `spec.id` again after its daemon died under it: the
+    /// crash is recorded (under supervision) and the session's first lifetime
+    /// is its rebuild.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sessions::open`]; or the spec names no id.
+    pub(crate) fn revive(&self, spec: SessionSpec, rebuild: Rebuild) -> anyhow::Result<String> {
+        let id = spec.id.clone().context("a revived session needs its id")?;
+        match &self.faults {
+            SessionFaults::Contained => {}
+            SessionFaults::Supervised(supervision) => faults::record_crash(
+                supervision,
+                &self.outbox,
+                &SessionTopics::of(&id)?,
+                &id,
+                &rebuild,
+            ),
+        }
+        self.open(spec, Opening::Revived(rebuild))
+    }
+
+    /// Stores `task`'s `done` as ending with `outcome` (a failure is its
+    /// turn's), for a task that will not run on the session's thread.
+    ///
+    /// # Errors
+    ///
+    /// The task's session id is not a topic level.
+    pub(crate) fn report_end(
+        &self,
+        task: &Task,
+        outcome: crate::tasks::TaskOutcome,
+    ) -> anyhow::Result<()> {
+        let failure = match &outcome {
+            crate::tasks::TaskOutcome::Failed(_) => Some(pa_types::event_log::TaskFailure::Turn),
+            crate::tasks::TaskOutcome::Done | crate::tasks::TaskOutcome::Cancelled => None,
+        };
+        let cause = Cause {
+            id: task.trigger.clone(),
+            trust: task.trust,
+            hops: 0,
+        };
+        self.outbox.send(done_event(
+            &SessionTopics::of(&task.session)?,
+            task,
+            &host::TaskEnd { outcome, failure },
+            &cause,
+        ));
+        Ok(())
     }
 
     pub(crate) fn host(&self, id: &str) -> Option<Arc<SessionHost>> {
@@ -434,10 +869,14 @@ impl<B: SessionBuilder> Sessions<B> {
         &self.outbox
     }
 
-    /// The sessions' family tree, for tests to reach its nodes.
-    #[cfg(test)]
+    /// The sessions' family tree.
     pub(crate) fn subagents(&self) -> &Arc<Subagents> {
         &self.subagents
+    }
+
+    /// The runtime's event bus, which its sessions' `event.*` reach.
+    pub(crate) fn events(&self) -> &Arc<BusEvents> {
+        &self.events
     }
 
     /// Closes session `id` and waits until its thread has let go.

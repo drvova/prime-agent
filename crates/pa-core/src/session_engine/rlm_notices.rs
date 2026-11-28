@@ -133,6 +133,21 @@ pub fn compact_rlm_text(text: &str) -> String {
     cap_text(&compact, ANSWER_PREVIEW_MAX_CHARS)
 }
 
+/// Cap on the one-line task label shown in kernel rosters.
+pub const LABEL_MAX_CHARS: usize = 200;
+
+/// One-line task label: collapsed prompt, capped for roster rows.
+#[must_use]
+pub fn rlm_child_label(prompt: &str) -> String {
+    let collapsed: String = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = if collapsed.is_empty() {
+        "child agent".to_string()
+    } else {
+        collapsed
+    };
+    cap_text(&collapsed, LABEL_MAX_CHARS)
+}
+
 /// Whitespace-collapsed text capped at `max` chars with an ellipsis.
 #[must_use]
 pub fn cap_text(text: &str, max: usize) -> String {
@@ -146,6 +161,22 @@ pub fn cap_text(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roster_text_is_collapsed_and_capped() {
+        let label = rlm_child_label("  ship   the\nlane  ");
+        assert_eq!(label, "ship the lane");
+        let long = "word ".repeat(100);
+        let label = rlm_child_label(&long);
+        assert!(label.chars().count() <= LABEL_MAX_CHARS);
+        assert!(label.ends_with("..."));
+        let preview = compact_rlm_text("  a\nshort   answer ");
+        assert_eq!(preview, "a short answer");
+        let long_answer = "x".repeat(ANSWER_PREVIEW_MAX_CHARS + 50);
+        let preview = compact_rlm_text(&long_answer);
+        assert_eq!(preview.chars().count(), ANSWER_PREVIEW_MAX_CHARS);
+        assert!(preview.ends_with("..."));
+    }
 
     #[test]
     fn the_binding_lane_keeps_far_more_than_the_preview_cap() {

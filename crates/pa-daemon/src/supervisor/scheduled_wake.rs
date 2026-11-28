@@ -70,7 +70,7 @@ impl Supervisor {
         else {
             return;
         };
-        let session_file = crate::lease::canonical_session_path(Path::new(session_file))
+        let session_file = pa_core::session::lease::canonical_session_path(Path::new(session_file))
             .to_string_lossy()
             .to_string();
         if !self
@@ -157,6 +157,6 @@ fn earliest_active_run(jobs_file: &Path) -> Option<u64> {
         .iter()
         .filter(|job| job.status == JobStatus::Active)
         .filter_map(|job| job.next_run_at.as_deref())
-        .filter_map(crate::util::iso_to_unix_ms)
+        .filter_map(pa_core::session::manager::iso_to_unix_ms)
         .min()
 }

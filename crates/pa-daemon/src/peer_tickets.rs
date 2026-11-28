@@ -159,7 +159,10 @@ impl Supervisor {
         // The TS supervisor additionally pins the worker's process-start
         // id; this supervisor never populated it, so the live-pid check is
         // the process-identity guarantee here.
-        if !matches!(crate::lease::is_process_alive(pid as u32), Ok(true)) {
+        if !matches!(
+            pa_core::session::lease::is_process_alive(pid as u32),
+            Ok(true)
+        ) {
             return Err(anyhow!(
                 "Direct transport worker process identity is not current"
             ));
@@ -257,7 +260,9 @@ fn mint_grant(
     DaemonWorkerPeerGrant {
         grant_id: uuid::Uuid::new_v4().to_string(),
         token: uuid::Uuid::new_v4().simple().to_string(),
-        expires_at: util::iso_from_unix_ms(util::now_ms() + PEER_TRANSPORT_GRANT_TTL_MS),
+        expires_at: pa_core::session::manager::iso_from_unix_ms(
+            util::now_ms() + PEER_TRANSPORT_GRANT_TTL_MS,
+        ),
         purpose: purpose.as_str().to_string(),
         worker_instance_id: worker_instance_id.to_string(),
         active_session_id: active_session_id.to_string(),
@@ -279,7 +284,8 @@ mod tests {
         assert_eq!(second.purpose, "worker");
         assert_eq!(first.worker_instance_id, "inst-1");
         assert_eq!(first.active_session_id, "abc123");
-        let expires = crate::util::iso_to_unix_ms(&first.expires_at).expect("iso expiry");
+        let expires =
+            pa_core::session::manager::iso_to_unix_ms(&first.expires_at).expect("iso expiry");
         let now = crate::util::now_ms();
         assert!(
             expires > now && expires <= now + PEER_TRANSPORT_GRANT_TTL_MS,

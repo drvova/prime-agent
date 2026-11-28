@@ -86,7 +86,7 @@ fn parent_binding(summary: &Value) -> Option<&str> {
 /// equality first, then the durable session id from the file name.
 pub(crate) fn same_session_file(left: &str, right: &str) -> bool {
     let canonical = |path: &str| {
-        crate::lease::canonical_session_path(Path::new(path))
+        pa_core::session::lease::canonical_session_path(Path::new(path))
             .to_string_lossy()
             .to_string()
     };

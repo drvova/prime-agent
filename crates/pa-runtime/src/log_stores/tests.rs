@@ -14,7 +14,9 @@ use crate::lock;
 use crate::routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
 use crate::store::MemoryStateStore;
 use crate::subscriptions::MemorySessionTree;
-use crate::tasks::{Steered, TaskOutcome, TaskQueue, TaskRunner, INTERRUPTED_BY_RESTART};
+use crate::tasks::{
+    LaneState, Steered, TaskOutcome, TaskQueue, TaskRunner, INTERRUPTED_BY_RESTART,
+};
 
 fn open(dir: &Path) -> Arc<Log> {
     Arc::new(Log::open(dir.join("agent.db"), DEFAULT_EVENT_RETENTION).expect("the log opens"))
@@ -30,8 +32,11 @@ impl ModelCaller for Idle {
 }
 
 impl TaskSink for Idle {
-    fn queue(&self, _request: TaskRequest) -> impl Future<Output = anyhow::Result<()>> + Send {
-        std::future::ready(Ok(()))
+    fn queue(
+        &self,
+        _request: TaskRequest,
+    ) -> impl Future<Output = anyhow::Result<Option<crate::routes::Announced>>> + Send {
+        std::future::ready(Ok(None))
     }
 }
 
@@ -141,6 +146,10 @@ impl TaskRunner for Gate {
     fn steer(&self, _running: &Task, _steer: &Task) -> Steered {
         Steered::Declined
     }
+
+    fn cancelled(&self, _task: &Task) {}
+
+    fn lane_changed(&self, _session: &str, _lane: &LaneState) {}
 }
 
 /// The database's task store, recording every save the queue makes.

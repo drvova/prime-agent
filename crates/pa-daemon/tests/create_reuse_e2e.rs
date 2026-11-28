@@ -321,7 +321,7 @@ fn the_lease_owner_names_the_live_worker_not_a_stale_inherited_id() {
         &socket,
         &agent_dir,
         &[(
-            pa_daemon::lease::SESSION_LEASE_OWNER_ID_ENV,
+            pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
             "stale-owner-245ddb974b6d",
         )],
     );

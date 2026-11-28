@@ -189,13 +189,18 @@ fn log_update_restart_wait(error: &anyhow::Error) {
     });
 }
 
-/// `YYYY-MM-DDTHH:MM:SS.mmmZ` — the TS `new Date().toISOString()` shape
-/// (the same algorithm as pa-daemon's util, which pa-tui cannot
-/// depend on).
+/// Now as `YYYY-MM-DDTHH:MM:SS.mmmZ` (see [`iso_from_unix_ms`]).
 fn now_iso() -> String {
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis() as u64);
+    iso_from_unix_ms(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis() as u64),
+    )
+}
+
+/// Epoch milliseconds as `YYYY-MM-DDTHH:MM:SS.mmmZ` — the TS `new Date().toISOString()` shape
+/// (the same algorithm as pa-daemon's util, which pa-tui cannot depend on).
+pub(crate) fn iso_from_unix_ms(ms: u64) -> String {
     let secs = (ms / 1000) as i64;
     let millis = (ms % 1000) as u32;
     let days = secs.div_euclid(86_400);

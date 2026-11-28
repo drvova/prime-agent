@@ -10,8 +10,14 @@
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
     reason = "64-bit targets; the narrowing casts sit at OS boundaries (pid, fd, time, size) the kernel bounds"
+)]
+#![cfg_attr(
+    test,
+    expect(
+        clippy::cast_precision_loss,
+        reason = "the roster push benchmark reports its ratios as floats"
+    )
 )]
 #![expect(
     clippy::too_many_lines,
@@ -33,11 +39,9 @@ macro_rules! eprintln {
     };
 }
 
-pub mod acp;
 pub mod agent_engine;
 pub mod agent_message_broadcast;
 pub mod agent_message_ingest;
-pub mod agent_message_wait;
 pub mod agent_messaging;
 pub(crate) mod agent_roster;
 pub(crate) mod agent_traffic;
@@ -64,8 +68,6 @@ pub(crate) mod factory_activity;
 pub mod framing;
 mod goal_continuation;
 pub(crate) mod goal_state_persist;
-pub(crate) mod herdr;
-pub(crate) mod history_import;
 pub mod hold_refusal;
 mod idle_eviction;
 pub(crate) mod image_route;
@@ -73,7 +75,6 @@ pub mod input_pause_lease;
 mod interrupted_calls;
 pub mod journal;
 pub mod keeper;
-pub mod lease;
 pub mod mcp_connections;
 pub mod mcp_login;
 pub(crate) mod messaging;
@@ -86,7 +87,6 @@ pub mod paths;
 pub(crate) mod peer;
 pub(crate) mod peer_client;
 pub(crate) mod peer_tickets;
-pub(crate) mod persistent_shells;
 pub mod platform;
 pub mod prompt_admission;
 pub mod protocol;
@@ -99,11 +99,8 @@ pub(crate) mod revived_turn;
 pub mod rlm_child_model;
 pub mod rlm_child_usage;
 pub mod rlm_children;
-pub mod rlm_ledger;
-pub(crate) mod rlm_roster;
 pub mod rlm_surface;
 pub(crate) mod roster_activity;
-pub mod rpc;
 pub(crate) mod saved_session_commands;
 pub(crate) mod scheduled_jobs;
 pub(crate) mod scheduling_catalog;
@@ -115,11 +112,9 @@ pub mod session_export;
 pub mod session_host;
 pub mod session_input_pause;
 pub mod session_navigation;
-pub(crate) mod session_scan;
 pub mod session_stats;
 pub mod session_store;
 pub mod session_tree;
-pub mod session_usage;
 pub(crate) mod setting_switches;
 pub mod side_question;
 mod signal_drain;
@@ -128,7 +123,6 @@ pub mod socket;
 pub(crate) mod state_getters;
 mod stop_cleanup;
 pub(crate) mod streaming;
-pub(crate) mod streaming_utf8;
 pub mod supervisor;
 pub mod supervisor_link;
 pub(crate) mod supervisor_lost;
@@ -137,7 +131,6 @@ pub(crate) mod supervisor_roster;
 pub(crate) mod supervisor_roster_seed;
 pub(crate) mod ts_era;
 pub mod types;
-pub(crate) mod update_prepare;
 pub(crate) mod update_restore;
 pub(crate) mod update_roster;
 pub(crate) mod update_stop;

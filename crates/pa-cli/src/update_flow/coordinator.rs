@@ -25,7 +25,12 @@ pub const UPDATE_CANDIDATE_DIR_ENV: &str = "PRIME_AGENT_UPDATE_CANDIDATE_DIR";
 /// One coordinator run's fixed inputs.
 pub struct CoordinatorOptions {
     pub agent_dir: PathBuf,
-    pub socket_path: PathBuf,
+    /// The daemon the update prepares and stops: the one it found running
+    /// ([`super::endpoint::Endpoint::running`]); a rollback starts it again.
+    pub predecessor: super::endpoint::Endpoint,
+    /// The daemon the new release starts and restores the sessions on: the
+    /// selected one.
+    pub successor: super::endpoint::Endpoint,
     pub status_path: PathBuf,
     pub budget: UpdateTimeoutBudget,
 }
@@ -73,8 +78,14 @@ pub async fn run(options: &CoordinatorOptions) -> Result<UpdateStatus> {
         );
     }
     let update_id = existing.update_id.clone();
-    let socket_lossy = options.socket_path.to_string_lossy().to_string();
-    let socket_dir = super::intent::socket_update_directory(&options.agent_dir, &socket_lossy);
+    // The lock and the status are keyed by the socket the invoking update keyed them by (a
+    // release from before the runtime daemon was the default keys them by the supervisor's);
+    // the prepared roster lives under the stopped daemon's own socket.
+    let socket_lossy = existing.socket_path.clone();
+    let socket_dir = super::intent::socket_update_directory(
+        &options.agent_dir,
+        &options.predecessor.socket().to_string_lossy(),
+    );
     let writer = Arc::new(Mutex::new(StatusWriter::adopt(
         &options.status_path,
         &update_id,
@@ -109,13 +120,10 @@ async fn drive(
     let budget = &options.budget;
     // `Preparing`: connect the old supervisor. An unreachable daemon means a
     // daemon-less update: the successor boots without a roster.
-    let daemon = match pa_tui::daemon_client::DaemonClient::connect(&options.socket_path).await {
-        Ok((client, _events)) => Some(client),
-        Err(_) => None,
-    };
+    let daemon = options.predecessor.connect().await.ok();
     let mut predecessor: Option<UpdateProcessIdentity> = None;
     let mut roster_path: Option<PathBuf> = None;
-    if let Some(client) = &daemon {
+    if let Some(client) = daemon {
         let identity = identity_from_hello(client.hello());
         writer
             .lock()
@@ -128,7 +136,7 @@ async fn drive(
             .await
             .set_state(UpdateState::Preparing)
             .map_err(PhaseFailure::before_stop)?;
-        prepare_to_prepared(client, update_id, budget)
+        prepare_to_prepared(&client, update_id, budget)
             .await
             .map_err(PhaseFailure::before_stop)?;
         let prepared_dir = update_prepared_dir(socket_dir, update_id);
@@ -148,7 +156,7 @@ async fn drive(
             .await
             .set_state(UpdateState::Stopping)
             .map_err(PhaseFailure::before_stop)?;
-        commit_update(client, update_id, budget)
+        commit_update(&client, update_id, budget)
             .await
             .map_err(PhaseFailure::after_stop)?;
         client.close();
@@ -214,12 +222,12 @@ async fn drive(
     let spawn_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     spawn_supervisor(
         &candidate.executable,
-        &options.socket_path,
+        &options.successor,
         roster_path.as_deref(),
         &spawn_cwd,
     )
     .map_err(PhaseFailure::after_stop)?;
-    let successor = wait_for_hello(&options.socket_path, budget.boot_ms)
+    let successor = wait_for_hello(&options.successor, budget.boot_ms)
         .await
         .ok_or_else(|| {
             PhaseFailure::after_stop(
@@ -238,7 +246,7 @@ async fn drive(
         .await
         .set_state(UpdateState::Restoring)
         .map_err(PhaseFailure::after_stop)?;
-    let (counts, failures) = restore_report(&options.socket_path, budget).await;
+    let (counts, failures) = restore_report(&options.successor, budget).await;
     writer
         .lock()
         .await
@@ -342,7 +350,7 @@ async fn finish_failure(
     let spawn_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     if let Err(error) = spawn_supervisor(
         previous.executable(),
-        &options.socket_path,
+        &options.predecessor,
         None,
         &spawn_cwd,
     ) {
@@ -352,10 +360,10 @@ async fn finish_failure(
         )))?;
         return Ok(());
     }
-    if let Some(identity) = wait_for_hello(&options.socket_path, options.budget.boot_ms).await {
+    if let Some(identity) = wait_for_hello(&options.predecessor, options.budget.boot_ms).await {
         writer.lock().await.set_successor(identity)?;
         writer.lock().await.set_state(UpdateState::Restoring)?;
-        let (counts, _failures) = restore_report(&options.socket_path, &options.budget).await;
+        let (counts, _failures) = restore_report(&options.predecessor, &options.budget).await;
         writer.lock().await.set_counts(counts)?;
         writer.lock().await.set_state(UpdateState::Complete)?;
         writer.lock().await.set_message(Some(format!(
@@ -401,4 +409,46 @@ fn activation_plan() -> Result<ActivationPlan> {
         version,
         root,
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A coordinator adopts the staged status the invoking update keyed by its own socket, also
+    /// when that is not the daemon the new release selects (an update started by a release from
+    /// before the runtime daemon was the default keys it by the supervisor's socket). With no
+    /// daemon running and no staged candidate, it then runs to its terminal failure.
+    #[tokio::test]
+    async fn the_staged_status_is_adopted_by_the_invokers_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon_socket = dir.path().join("daemon.sock");
+        let invokers_socket = daemon_socket.to_string_lossy().to_string();
+        let status_path = dir.path().join("status.json");
+        let id = UpdateId::from("adopted-by-socket".to_string());
+        let mut writer = StatusWriter::new(&status_path, &id, &invokers_socket).unwrap();
+        for state in [
+            UpdateState::Planning,
+            UpdateState::Downloading,
+            UpdateState::Staged,
+        ] {
+            writer.set_state(state).unwrap();
+        }
+        let status = run(&CoordinatorOptions {
+            agent_dir: dir.path().to_path_buf(),
+            predecessor: super::super::endpoint::Endpoint::Supervisor(daemon_socket.clone()),
+            successor: super::super::endpoint::Endpoint::Runtime {
+                socket: pa_runtime::daemon::socket_path(&daemon_socket),
+                daemon_socket,
+            },
+            status_path,
+            budget: UpdateTimeoutBudget::from_env(),
+        })
+        .await
+        .expect("the staged status is adopted");
+        assert_eq!(
+            (status.state, status.socket_path),
+            (UpdateState::Failed, invokers_socket)
+        );
+    }
 }

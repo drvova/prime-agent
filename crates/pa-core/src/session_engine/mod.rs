@@ -2,6 +2,7 @@
 //! (prompt normalization, busy-admission rules, `SessionManager`
 //! persistence); the Agent owns the loop, this layer decides admission.
 
+pub mod agent_controls;
 pub mod agent_messaging;
 pub mod auto_refine_trigger;
 pub mod auto_retry;
@@ -38,6 +39,7 @@ pub mod harness_digest;
 pub mod headless;
 pub mod host_requests;
 pub mod image_model_routing;
+pub mod kernel_activity;
 pub mod kernel_state_notice;
 pub mod late_sent_messages;
 pub mod messages;
@@ -51,7 +53,9 @@ pub mod resource_reload;
 mod rizin_usage;
 pub mod rlm_depth;
 pub mod rlm_host;
+pub mod rlm_ledger;
 pub mod rlm_notices;
+pub mod rlm_roster;
 pub mod rlm_usage;
 pub mod run_metrics;
 pub mod runtime;
@@ -62,14 +66,17 @@ pub mod session_events;
 mod session_search;
 pub mod settings_view;
 pub mod side_question;
+pub mod side_runs;
 pub mod slash_commands;
 pub mod state_restore_notice;
 pub mod telemetry;
 pub mod tool_bridge;
 pub mod turn_boundary;
+pub mod wire_events;
 
 mod admission;
 mod compaction_arms;
+pub use compaction_arms::CompactionAbortArm;
 mod loop_guard;
 mod nested_context;
 mod prompt_retry;
@@ -197,6 +204,12 @@ pub struct AgentSession {
     /// `in_flight`): every run holds its flight guard for its whole body.
     refinements_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     refinement_cancel: std::sync::Mutex<pa_agent::abort::AbortController>,
+    /// The controller of the compaction running under the session's own
+    /// signal ([`AgentSession::abort_compaction`]).
+    compaction_abort: std::sync::Mutex<Option<Arc<pa_agent::abort::AbortController>>>,
+    /// The retry abort of the prompt running under the auto-retry
+    /// ([`AgentSession::abort_retry`]); each prompt starts a fresh one.
+    retry_abort: std::sync::Mutex<pa_agent::abort::AbortController>,
     /// The session's semantic-edge recorder (TS
     /// `AgentSession._semanticEdges`): `None` in sessions the engine
     /// built without a semantic identity (verification harnesses
@@ -297,6 +310,8 @@ impl AgentSession {
             compaction_flight: Arc::new(tokio::sync::Mutex::new(())),
             refinements_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             refinement_cancel: std::sync::Mutex::default(),
+            compaction_abort: std::sync::Mutex::new(None),
+            retry_abort: std::sync::Mutex::default(),
             usage_store,
             billing,
         };

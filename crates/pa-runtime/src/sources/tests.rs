@@ -56,8 +56,16 @@ impl Clock for ManualClock {
 struct Tasks(mpsc::UnboundedSender<TaskRequest>);
 
 impl TaskSink for Tasks {
-    fn queue(&self, request: TaskRequest) -> impl Future<Output = anyhow::Result<()>> + Send {
-        std::future::ready(self.0.send(request).map_err(anyhow::Error::from))
+    fn queue(
+        &self,
+        request: TaskRequest,
+    ) -> impl Future<Output = anyhow::Result<Option<crate::routes::Announced>>> + Send {
+        std::future::ready(
+            self.0
+                .send(request)
+                .map(|()| None)
+                .map_err(anyhow::Error::from),
+        )
     }
 }
 

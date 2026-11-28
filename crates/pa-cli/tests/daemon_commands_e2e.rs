@@ -2,13 +2,17 @@
     unix,
     expect(
         clippy::too_many_lines,
-        reason = "`rust_daemon_cli_commands_end_to_end` walks every daemon command in one scenario"
+        reason = "`cli_commands_end_to_end` walks every daemon command in one scenario, against either daemon"
     )
 )]
 
 //! End-to-end daemon-command tests: spawn the real `pa-daemon` supervisor on a
 //! temp socket, drive `prime-agent` list/stop/rename against it, and diff the
 //! output against goldens captured from the installed TS `prime-agent` binary.
+//! The same scenario runs against the runtime daemon (`prime-agent --mode
+//! daemon`, the default, on `daemon2.sock`), the commands speaking wire2 to
+//! it (and selecting the old daemon with `PRIME_AGENT_RUNTIME_DAEMON=0`): the same outputs, except where the runtime
+//! daemon addresses a session by its durable id (see [`Kind`]).
 //!
 //! Goldens (captured from the live TS binary, protocol 7):
 //!
@@ -39,7 +43,8 @@
 
 mod support;
 
-use std::io::{BufRead, BufReader, Write};
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -61,6 +66,18 @@ const SCRUB_ENV: [&str; 10] = [
     "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",
     "PI_PACKAGE_DIR",
 ];
+
+/// Which daemon a scenario drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// The old daemon (`pa-daemon supervisor`): a session's address is its
+    /// worker's 12-hex active id, which a stopped session's no longer is.
+    Old,
+    /// The runtime daemon: a session's address is its durable id; the CLI
+    /// shows the id's last 12 hex digits, and that short form reaches open
+    /// sessions only.
+    Runtime,
+}
 
 /// Locate the built `pa-daemon` binary next to this crate's `prime-agent`
 /// binary (cargo builds the tested crate's bins only).
@@ -126,6 +143,107 @@ fn spawn_daemon(binary: &Path, socket: &Path, agent_dir: &Path) -> Daemon {
     Daemon {
         child,
         socket: socket.to_path_buf(),
+    }
+}
+
+/// The runtime daemon on the agent dir, beside `daemon_socket` (it listens
+/// on `daemon2.sock` there), its faux provider scripted by `script`.
+fn spawn_runtime_daemon(
+    dir: &Path,
+    agent_dir: &Path,
+    daemon_socket: &Path,
+    script: &Value,
+) -> Daemon {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
+    command
+        .args(["--mode", "daemon", "--daemon-socket"])
+        .arg(daemon_socket)
+        .current_dir(dir)
+        .env("HOME", dir)
+        .env("TMPDIR", dir)
+        .env("PRIME_AGENT_AGENT_DIR", agent_dir)
+        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
+        .env("DO_NOT_TRACK", "1")
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "1")
+        .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    for key in SCRUB_ENV {
+        command.env_remove(key);
+    }
+    let socket = daemon_socket.with_file_name("daemon2.sock");
+    let mut child = command.spawn().expect("spawn the runtime daemon");
+    support::await_listening(&socket, &mut child);
+    Daemon { child, socket }
+}
+
+/// A blocking wire2 client of the runtime daemon.
+struct Wire2 {
+    stream: UnixStream,
+    decoder: pa_types::daemon::framing::PrivateFrameDecoder,
+    frames: VecDeque<Value>,
+    next_id: u64,
+}
+
+impl Wire2 {
+    fn connect(socket: &Path) -> Self {
+        let stream = UnixStream::connect(socket).expect("connect to the runtime daemon");
+        stream
+            .set_read_timeout(Some(Duration::from_mins(1)))
+            .expect("set timeout");
+        let mut wire = Wire2 {
+            stream,
+            decoder: pa_types::daemon::framing::PrivateFrameDecoder::new(
+                pa_types::daemon::framing::DEFAULT_PRIVATE_FRAME_LIMITS,
+            ),
+            frames: VecDeque::new(),
+            next_id: 0,
+        };
+        wire.send(&json!({ "type": "hello", "version": pa_types::wire2::WIRE2_VERSION, "client": "daemon-commands-e2e" }));
+        let welcome = wire.frame();
+        assert_eq!(welcome["type"], "welcome", "{welcome}");
+        wire
+    }
+
+    fn send(&mut self, frame: &Value) {
+        let bytes = pa_types::daemon::framing::encode_private_frame(
+            frame,
+            &[],
+            pa_types::daemon::framing::DEFAULT_PRIVATE_FRAME_LIMITS,
+        )
+        .expect("encode a frame");
+        self.stream.write_all(&bytes).expect("send");
+    }
+
+    fn frame(&mut self) -> Value {
+        let mut chunk = [0_u8; 16 * 1024];
+        loop {
+            if let Some(frame) = self.frames.pop_front() {
+                return frame;
+            }
+            let read = self
+                .stream
+                .read(&mut chunk)
+                .expect("a frame within the wait");
+            assert!(read > 0, "the runtime daemon closed the connection");
+            for frame in self.decoder.push(&chunk[..read]).expect("decode frames") {
+                self.frames.push_back(frame.header);
+            }
+        }
+    }
+
+    /// Makes `method` with `args`; its result.
+    fn call(&mut self, method: &str, args: &Value) -> Value {
+        self.next_id += 1;
+        let id = format!("c{}", self.next_id);
+        self.send(&json!({ "type": "call", "id": id, "method": method, "args": args }));
+        loop {
+            let frame = self.frame();
+            if frame["type"] == "reply" && frame["id"] == id.as_str() {
+                assert_eq!(frame["status"], "ok", "{method}: {frame}");
+                return frame["result"].clone();
+            }
+        }
     }
 }
 
@@ -226,15 +344,33 @@ fn create_session(
 
 /// Run a CLI in an isolated env (agent dir + TMPDIR point into the temp dir).
 fn run_cli(binary: &Path, dir: &Path, agent_dir: &Path, args: &[&str]) -> Output {
+    run_cli_for(Kind::Old, &[], binary, dir, agent_dir, args)
+}
+
+/// [`run_cli`] with the daemon `kind` selected and `env` set.
+fn run_cli_for(
+    kind: Kind,
+    env: &[(&str, &str)],
+    binary: &Path,
+    dir: &Path,
+    agent_dir: &Path,
+    args: &[&str],
+) -> Output {
     let mut command = Command::new(binary);
     command
         .args(args)
+        .envs(env.iter().copied())
         .current_dir(dir)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env("TMPDIR", dir);
     for key in SCRUB_ENV {
         command.env_remove(key);
     }
+    // The runtime daemon is the default; the old daemon is selected by name.
+    match kind {
+        Kind::Old => command.env("PRIME_AGENT_RUNTIME_DAEMON", "0"),
+        Kind::Runtime => command.env_remove("PRIME_AGENT_RUNTIME_DAEMON"),
+    };
     command.output().expect("spawn CLI binary")
 }
 
@@ -344,14 +480,35 @@ fn list_args<'a>(socket: &'a str, rest: &[&'a str]) -> Vec<&'a str> {
 
 #[test]
 fn rust_daemon_cli_commands_end_to_end() {
+    cli_commands_end_to_end(Kind::Old);
+}
+
+#[test]
+fn runtime_daemon_cli_commands_end_to_end() {
+    cli_commands_end_to_end(Kind::Runtime);
+}
+
+fn cli_commands_end_to_end(kind: Kind) {
     let dir = fixture_dir();
     let agent_dir = dir.path().join("agent");
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
     let socket = dir.path().join("daemon.sock");
     let cli = PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
-    let daemon = spawn_daemon(&daemon_binary(), &socket, &agent_dir);
+    let script = json!({ "responses": [{ "text": "hello", "delayMs": 0 }] });
+    let daemon = match kind {
+        Kind::Old => spawn_daemon(&daemon_binary(), &socket, &agent_dir),
+        Kind::Runtime => spawn_runtime_daemon(
+            dir.path(),
+            &agent_dir,
+            &socket,
+            &json!({ "responses": ["hello"], "repeatLastResponse": true }),
+        ),
+    };
     let socket_str = socket.to_string_lossy().to_string();
+    let run_cli = |binary: &Path, dir: &Path, agent_dir: &Path, args: &[&str]| {
+        run_cli_for(kind, &[], binary, dir, agent_dir, args)
+    };
 
     let list = run_cli(
         &cli,
@@ -408,15 +565,38 @@ fn rust_daemon_cli_commands_end_to_end() {
         "Error: Unknown sessions option: --bogus\n"
     );
 
-    let script = dir.path().join("script.json");
-    std::fs::write(
-        &script,
-        json!({ "responses": [{ "text": "hello", "delayMs": 0 }] }).to_string(),
-    )
-    .expect("write script");
-    let (mut wire, _hello) = Wire::connect(&daemon.socket);
-    let session = create_session(&mut wire, "c1", "parity", dir.path(), &sessions, &script);
-    assert_eq!(session.len(), 12, "short active id: {session}");
+    // `session` addresses the session; `printed` is the id a rename prints.
+    let (session, printed) = match kind {
+        Kind::Old => {
+            let script_file = dir.path().join("script.json");
+            std::fs::write(&script_file, script.to_string()).expect("write script");
+            let (mut wire, _hello) = Wire::connect(&daemon.socket);
+            let session = create_session(
+                &mut wire,
+                "c1",
+                "parity",
+                dir.path(),
+                &sessions,
+                &script_file,
+            );
+            assert_eq!(session.len(), 12, "short active id: {session}");
+            (session.clone(), session)
+        }
+        Kind::Runtime => {
+            let mut wire = Wire2::connect(&daemon.socket);
+            let created = wire.call("session.create", &json!({ "cwd": dir.path() }));
+            let id = created["session"]
+                .as_str()
+                .expect("a session id")
+                .to_string();
+            wire.call(
+                "session.rename",
+                &json!({ "session": id, "name": "parity" }),
+            );
+            let hex = id.replace('-', "");
+            (hex[hex.len() - 12..].to_string(), id)
+        }
+    };
 
     let list = run_cli(
         &cli,
@@ -425,10 +605,18 @@ fn rust_daemon_cli_commands_end_to_end() {
         &list_args(&socket_str, &["list"]),
     );
     assert_eq!(list.status.code(), Some(0), "{}", stderr(&list));
+    // The scripted old-daemon engine runs no model; a runtime daemon
+    // session runs the faux provider's.
+    let model = match kind {
+        Kind::Old => "",
+        Kind::Runtime => "faux/faux-1 ",
+    };
     assert_eq!(
         normalize(&stdout(&list)),
-        "name id status age model messages clients\n\
-         parity <timestamp> idle <time> 0 0\n",
+        format!(
+            "name id status age model messages clients\n\
+             parity <timestamp> idle <time> {model}0 0\n"
+        ),
         "table shape must match the TS golden"
     );
 
@@ -496,7 +684,56 @@ fn rust_daemon_cli_commands_end_to_end() {
         &list_args(&socket_str, &["rename", session.as_str(), "renamed"]),
     );
     assert_eq!(rename.status.code(), Some(0), "{}", stderr(&rename));
-    assert_eq!(stdout(&rename), format!("Renamed {session} to renamed\n"));
+    assert_eq!(stdout(&rename), format!("Renamed {printed} to renamed\n"));
+
+    // A prompt scheduled on the live session, listed, then cancelled (the
+    // schedule commands take no socket flag: the socket comes from the
+    // environment).
+    let schedule = |args: &[&str]| {
+        let mut full = vec!["schedule"];
+        full.extend(args);
+        let out = run_cli_for(
+            kind,
+            &[("PRIME_AGENT_DAEMON_SOCKET", socket_str.as_str())],
+            &cli,
+            dir.path(),
+            &agent_dir,
+            &full,
+        );
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", stderr(&out));
+        stdout(&out)
+    };
+    let added = schedule(&[
+        "add",
+        session.as_str(),
+        "every 5 minutes",
+        "--",
+        "do the thing",
+    ]);
+    assert_eq!(
+        normalize(&added),
+        "Scheduled <timestamp> next=<timestamp>\n",
+        "{added}"
+    );
+    let job = added
+        .split_whitespace()
+        .nth(1)
+        .expect("the job id")
+        .to_string();
+    assert_eq!(
+        normalize(&schedule(&["list"])),
+        "<timestamp> active next=<timestamp>, <time> <time> last=- runs=0 schedule=\"every 5 minutes\" prompt=\"do the thing\"\n"
+    );
+    assert_eq!(
+        schedule(&["cancel", job.as_str()]),
+        format!("Cancelled {job}\n")
+    );
+    // The old daemon's selector-less cancel answers `Cancelled` but its
+    // list still shows the job active (a separate fix); the runtime daemon
+    // lists it no more.
+    if kind == Kind::Runtime {
+        assert_eq!(schedule(&["list"]), "No scheduled prompts.\n");
+    }
 
     let stop = run_cli(
         &cli,

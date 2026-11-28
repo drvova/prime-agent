@@ -8,8 +8,9 @@ use super::{
     RouteAdmission, Supervisor, TempSync, TypedCreateRejection, Value, WorkerReply, WorkerRequest,
     WorkerTransition, DEFAULT_PRIVATE_FRAME_LIMITS, ROUTE_TIMEOUT_MS, WORKER_AUTH_FLOOR_MS,
 };
-use crate::lease::is_process_alive;
 use crate::registry::WorkerRelay;
+use pa_core::session::crash::{MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS};
+use pa_core::session::lease::is_process_alive;
 
 /// The immutable cleanup identity of one worker process lifetime.
 #[derive(Clone, Debug)]
@@ -79,7 +80,7 @@ fn session_env(
 }
 
 impl SpawnedWorker {
-    /// The hosted lifetime's id (see [`crate::session_host::is_hosted_pid`]).
+    /// The hosted lifetime's id (see [`pa_core::session::hosted::is_hosted_pid`]).
     pub(crate) fn id(&self) -> Option<u32> {
         Some(self.session.pid())
     }
@@ -91,13 +92,6 @@ impl SpawnedWorker {
         Ok(())
     }
 }
-
-pub(super) const MAX_CONSECUTIVE_FAILURES: u32 = 5;
-/// A crash-path child that lived at least this long proved health: its death resets
-/// the failure count instead of accumulating toward the give-up cap.
-pub(super) const STABLE_LIFETIME_MS: u64 = 30_000;
-const BASE_BACKOFF_MS: u64 = 250;
-const MAX_BACKOFF_MS: u64 = 30_000;
 
 /// A failed/cancelled authentication must close both pump-owned socket halves.
 struct PreAuthPumps {
@@ -203,7 +197,7 @@ impl Supervisor {
                 let reaped_programs = child.orphan_generation.reap().await;
                 let agent_dir = self.options.agent_dir.clone();
                 let _ = tokio::task::spawn_blocking(move || {
-                    crate::lease::reclaim_dead_owner_leases(&agent_dir)
+                    pa_core::session::lease::reclaim_dead_owner_leases(&agent_dir)
                 })
                 .await;
                 if resident.route_state().stop_requested()
@@ -224,7 +218,7 @@ impl Supervisor {
                         self.record_session_crash(
                             &resident,
                             &crash,
-                            super::crash::InterruptedTurn::Settle,
+                            pa_core::session::revival::InterruptedTurn::Settle,
                             reaped_programs,
                         )
                         .await;
@@ -307,7 +301,7 @@ impl Supervisor {
                 if super::worker_lifecycle::recovery_journal_owner_is_gone(
                     is_process_alive(owner_pid).ok(),
                     owner_start_id.as_deref(),
-                    crate::lease::get_process_start_id(owner_pid).as_deref(),
+                    pa_core::session::lease::get_process_start_id(owner_pid).as_deref(),
                 ) {
                     if let Err(error) = crate::journal::WorkerRecoveryJournal::settle_busy_records(
                         std::path::Path::new(&journal_path),
@@ -359,7 +353,7 @@ impl Supervisor {
                 );
                 return;
             }
-            let backoff_ms = (BASE_BACKOFF_MS << (failures - 1).min(7)).min(MAX_BACKOFF_MS);
+            let backoff_ms = pa_core::session::crash::restart_backoff_ms(failures);
             self.log_line(&format!(
                 "session worker {} exited unexpectedly; restarting in {backoff_ms}ms (failure {failures}/{MAX_CONSECUTIVE_FAILURES})",
                 resident.worker_id

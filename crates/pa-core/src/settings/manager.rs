@@ -1091,6 +1091,7 @@ fn load_scope(
         settings.shell_path = None;
         settings.shell = None;
         settings.transcript_store = None;
+        settings.daemon = None;
         settings.shell_command_prefix = None;
         settings.npm_command = None;
         settings.packages = None;

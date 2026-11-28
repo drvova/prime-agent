@@ -83,6 +83,8 @@ pub mod hyperlinks;
 mod image_component;
 pub mod image_load;
 mod image_markers;
+#[cfg(debug_assertions)]
+mod inbound_recording;
 pub mod incident_notices;
 pub mod info_commands;
 pub mod info_panel;
@@ -145,6 +147,14 @@ pub mod usage_page;
 pub mod user_message_selector;
 pub mod view;
 pub mod width;
+// The TUI's commands and events on wire2: the `daemon_client` facade's wire2 link carries them.
+mod wire2_compat;
+#[doc(hidden)]
+pub use wire2_compat::{
+    history_import_reply_frame as wire2_history_import_reply_frame,
+    history_import_request as wire2_history_import_request, live_frames as wire2_live_frames,
+    request_frames as wire2_request_frames, response_frame as wire2_response_frame,
+};
 
 use ratatui::style::Style;
 

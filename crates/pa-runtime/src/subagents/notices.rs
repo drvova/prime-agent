@@ -11,7 +11,8 @@
 //! `session/<id>/bash/done` (every other) as a [`NoticeEvent`], and the
 //! runtime's notice subscription ([`super::NOTICE_SUBSCRIPTION`]) wakes the
 //! session for one it steered ([`Subagents::deliver_notice`]): its drive
-//! looks again, and a settled child is given its next task over it.
+//! looks again, a settled child is given its next task over it, and a root
+//! in the runtime daemon is woken for it (the old daemon's notice turn).
 
 use std::sync::Arc;
 
@@ -24,7 +25,7 @@ use pa_core::session_engine::messages::ASYNC_BASH_QUIET_CUSTOM_TYPE;
 use pa_types::event_log::{Event, NewEvent, Topic};
 use serde_json::{json, Value};
 
-use super::{retask_if_settled, Node, Subagents};
+use super::{wake_on_delivery, Node, Subagents};
 
 /// What became of a notice as its session admitted it: the `taken` of
 /// what `session/<id>/bash/*` carries (`{taken, row}`, the row as the
@@ -140,7 +141,7 @@ impl Subagents {
             return Ok(());
         };
         node.activity.notify_waiters();
-        retask_if_settled(&node, event.event.trust).await;
+        wake_on_delivery(&node, event.event.trust).await;
         Ok(())
     }
 }

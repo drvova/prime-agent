@@ -4,11 +4,10 @@ use super::{
     app_version, broadcast, command_type_name, current_protocol_info,
     daemon_closing_shutdown_event, input_admission_id, json, parse_supervisor_command_line,
     response_failure, response_line, response_success, salvage_command_type, salvage_id,
-    subscribers, update_gate_refuses, util, Arc, AsyncBufReadExt, AsyncWriteExt, BufReader,
-    ClientRouting, DaemonCommand, DaemonOutbound, DaemonRuntimeIdentity, Duration,
-    EnvelopeParseError, Map, Ordering, Outbound, ResidentWorker, Result, RouteAdmission,
-    Supervisor, TransportStream, TypedCreateRejection, Value, DAEMON_SCHEMA_ID,
-    DAEMON_SCHEMA_REVISION, ROUTE_TIMEOUT_MS, UPDATE_PREPARING_MESSAGE,
+    subscribers, util, Arc, AsyncBufReadExt, AsyncWriteExt, BufReader, ClientRouting,
+    DaemonCommand, DaemonOutbound, DaemonRuntimeIdentity, Duration, EnvelopeParseError, Map,
+    Ordering, Outbound, ResidentWorker, Result, RouteAdmission, Supervisor, TransportStream,
+    TypedCreateRejection, Value, DAEMON_SCHEMA_ID, DAEMON_SCHEMA_REVISION, ROUTE_TIMEOUT_MS,
 };
 
 /// TS `OWNED_WORKER_DISCONNECT_GRACE_MS`: how long a client-owned worker
@@ -159,7 +158,7 @@ impl Supervisor {
         let mut events = self.events.subscribe();
         // A history import already running: this client hears its started frame now (the
         // finished one rides the broadcast it just subscribed to).
-        let running_import = self.history_import.lock().unwrap().clone();
+        let running_import = self.history_import.running();
         if let Some(frame) = running_import {
             write_line(&mut writer, &frame).await?;
         }
@@ -577,40 +576,32 @@ impl Supervisor {
                 false,
             );
         }
-        // Update-prepare watchdog on any later command (spec §5): an expired marker
-        // returns the supervisor to Serving before the command is served.
-        if let Some(abort) = self.update_prepare.abort_if_expired(util::now_ms()) {
-            self.finish_update_abort(&abort);
-        }
-        // Admission gate: mutating commands are refused while a prepare transaction is
-        // active, except the drain commands during `Draining`.
+        // The update gate (pa-core's, spec §5): an expired transaction returns the
+        // supervisor to Serving first; mutating commands are refused while a prepare
+        // transaction is active, except the drain commands during `Draining`, and the
+        // admitted ones count against its drain until they are answered.
         let is_update_driver = matches!(
             &envelope.command,
             DaemonCommand::PrepareUpdateRestart { .. } | DaemonCommand::CommitUpdateRestart { .. }
         );
-        if !is_update_driver {
-            if let Some(state) = self.update_prepare.active_state() {
-                if update_gate_refuses(state, &type_name) {
+        let _mutation = if is_update_driver {
+            None
+        } else {
+            match self.update.admit(&type_name) {
+                Ok(guard) => guard,
+                Err(refusal) => {
                     return (
                         vec![Outbound::Line(response_line(&response_failure(
                             Some(&command_id),
                             &type_name,
-                            UPDATE_PREPARING_MESSAGE,
-                            // The typed `update_restarting` info rides beside the plain message,
-                            // so clients can recognize the transient state and wait through it.
-                            Some(pa_types::daemon::DaemonErrorInfo::UpdateRestarting),
+                            &refusal.message,
+                            refusal.info,
                         )))],
                         false,
                     );
                 }
             }
-        }
-        // Mutating commands count against the prepare transaction's drain.
-        let mutating =
-            !is_update_driver && pa_types::daemon::is_daemon_mutating_command(&type_name);
-        if mutating {
-            self.mutation_drain.begin();
-        }
+        };
         let outcome = self
             .execute_parsed_command(
                 &envelope.command,
@@ -625,9 +616,6 @@ impl Supervisor {
                 stream,
             )
             .await;
-        if mutating {
-            self.mutation_drain.end();
-        }
         (
             outcome
                 .0
@@ -873,7 +861,7 @@ impl Supervisor {
             DaemonCommand::UpdateRestoreStatus { .. } => {
                 // The boot restore pass's live snapshot (spec §6/§9): the successor
                 // coordinator's `Restoring` report polls this for real counts and failures.
-                let data = self.restore_status_body();
+                let data = self.restore.status_body();
                 (
                     vec![response_line(&response_success(
                         Some(&command_id),
@@ -886,10 +874,8 @@ impl Supervisor {
             DaemonCommand::ListPersistentShells { .. } => {
                 // The machine-wide persistent shells, each with its assigned session id.
                 let agent_dir = self.options.agent_dir.clone();
-                let line = crate::persistent_shells::respond(&command_id, &type_name, move || {
-                    Ok(Some(
-                        json!({ "activities": crate::persistent_shells::shell_rows(&agent_dir) }),
-                    ))
+                let line = persistent_shell_response(&command_id, &type_name, move || {
+                    Ok(pa_core::kernel::persistent_shells::list(&agent_dir))
                 })
                 .await;
                 (vec![line], false)
@@ -899,9 +885,8 @@ impl Supervisor {
             } => {
                 let agent_dir = self.options.agent_dir.clone();
                 let (shell_id, lines) = (shell_id.clone(), *lines as usize);
-                let line = crate::persistent_shells::respond(&command_id, &type_name, move || {
-                    crate::persistent_shells::output_tail(&agent_dir, &shell_id, lines)
-                        .map(|tail| tail.map(|tail| json!({ "shellId": shell_id, "tail": tail })))
+                let line = persistent_shell_response(&command_id, &type_name, move || {
+                    pa_core::kernel::persistent_shells::tail(&agent_dir, &shell_id, lines)
                 })
                 .await;
                 (vec![line], false)
@@ -909,9 +894,8 @@ impl Supervisor {
             DaemonCommand::KillPersistentShell { shell_id, .. } => {
                 let agent_dir = self.options.agent_dir.clone();
                 let shell_id = shell_id.clone();
-                let line = crate::persistent_shells::respond(&command_id, &type_name, move || {
-                    crate::persistent_shells::kill_shell(&agent_dir, &shell_id)
-                        .map(|known| known.then(|| json!({ "shellId": shell_id })))
+                let line = persistent_shell_response(&command_id, &type_name, move || {
+                    pa_core::kernel::persistent_shells::kill(&agent_dir, &shell_id)
                 })
                 .await;
                 (vec![line], false)
@@ -1790,4 +1774,19 @@ mod tests {
         );
         connection.abort();
     }
+}
+
+/// One persistent-shell arm's response line, its read or kill run off the runtime (file reads
+/// and the kill's grace block).
+async fn persistent_shell_response(
+    command_id: &str,
+    type_name: &str,
+    run: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) -> Value {
+    let response = match tokio::task::spawn_blocking(run).await {
+        Ok(Ok(data)) => response_success(Some(command_id), type_name, Some(data)),
+        Ok(Err(error)) => response_failure(Some(command_id), type_name, &error, None),
+        Err(error) => response_failure(Some(command_id), type_name, &error.to_string(), None),
+    };
+    response_line(&response)
 }

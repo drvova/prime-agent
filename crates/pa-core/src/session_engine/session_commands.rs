@@ -59,6 +59,9 @@ pub struct SessionCommandExecution {
     /// A compaction skipped: the message the wire `compaction_end`
     /// event carries (the durable transcript records nothing).
     pub compaction_skipped: Option<&'static str>,
+    /// The compaction was aborted (`AgentSession::abort_compaction`): the
+    /// wire `compaction_end` says so, with no message.
+    pub compaction_aborted: bool,
     /// An injected custom row the follow-up turn runs on (goal start/resume):
     /// the transcript holds ONE representation of the turn, NOT part of
     /// `messages` — the loop's `message_end` persists it once admitted.
@@ -251,11 +254,18 @@ async fn execute_compact(
     execution: &mut SessionCommandExecution,
 ) -> Result<(), String> {
     let instructions = (!command.args.is_empty()).then_some(command.args.as_str());
-    let outcome = engine
+    let outcome = match engine
         .session
         .compact(instructions, params.model, params.api_key.clone(), None)
         .await
-        .map_err(|error| format!("{error:#}"))?;
+    {
+        Ok(outcome) => outcome,
+        Err(error) if pa_agent::abort::is_abort_error(&error) => {
+            execution.compaction_aborted = true;
+            return Err("Compaction cancelled".to_string());
+        }
+        Err(error) => return Err(format!("{error:#}")),
+    };
     match outcome {
         CompactOutcome::Skipped(message) => {
             execution.compaction_skipped = Some(message);

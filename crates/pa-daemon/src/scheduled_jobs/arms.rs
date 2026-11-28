@@ -1,11 +1,18 @@
 //! The scheduling protocol arms on the worker (`cron_list`, `heartbeats_list`,
 //! `heartbeat_manage`, `cron_add`, `cron_cancel`, `heartbeat_get`,
 //! `heartbeat_set`, `heartbeat_update`): payload validation and the store
-//! calls behind each `scheduled`-surface command.
+//! calls behind each `scheduled`-surface command. The heartbeat commands'
+//! rules and replies are pa-core's (`cron::heartbeat_commands`), which the
+//! runtime daemon shares.
+use pa_core::cron::heartbeat_commands::{
+    heartbeat_manage_action, heartbeat_reply, no_active_heartbeat, withdraws_queued_fire,
+    HeartbeatSet, HeartbeatUpdate, HEARTBEATS_NEED_A_SESSION_FILE,
+};
+use pa_core::cron::store::SessionBinding;
+
 use super::{
-    is_heartbeat_cron_job, json, normalize_heartbeat_delivery_mode, normalize_heartbeat_schedule,
-    response_failure, response_success, CreateAgentCronJobInput, DaemonResponse,
-    HeartbeatManagementAction, JobStatus, Value, Worker,
+    is_heartbeat_cron_job, json, response_failure, response_success, CreateAgentCronJobInput,
+    DaemonResponse, JobStatus, Value, Worker,
 };
 
 impl Worker {
@@ -104,11 +111,7 @@ impl Worker {
             .unwrap_or_default()
             .to_string();
         // The TS store treats any non-pause/non-stop action as resume.
-        let action = match payload.get("action").and_then(Value::as_str) {
-            Some("pause") => HeartbeatManagementAction::Pause,
-            Some("stop") => HeartbeatManagementAction::Stop,
-            _ => HeartbeatManagementAction::Resume,
-        };
+        let action = heartbeat_manage_action(payload.get("action").and_then(Value::as_str));
         {
             let core = self
                 .core
@@ -126,19 +129,15 @@ impl Worker {
             return response_failure(
                 None,
                 "heartbeat_manage",
-                &format!("No active heartbeat found: {job_id}"),
+                &no_active_heartbeat(&job_id),
                 None,
             );
         };
-        if action != HeartbeatManagementAction::Resume {
+        if withdraws_queued_fire(action) {
             self.scheduled.remove_queued_heartbeat_follow_up(&job);
         }
         self.scheduled.wake().await;
-        response_success(
-            None,
-            "heartbeat_manage",
-            Some(json!({ "heartbeat": serde_json::to_value(&job).unwrap_or(Value::Null) })),
-        )
+        response_success(None, "heartbeat_manage", Some(heartbeat_reply(Some(&job))))
     }
 
     /// `cron_add` (TS daemon-mode case over `createCronJobForState`).
@@ -255,15 +254,11 @@ impl Worker {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.bind_store_artifact(&core);
         }
-        let heartbeat = self
-            .scheduled
-            .store()
-            .get_heartbeat(&active_session_id)
-            .and_then(|job| serde_json::to_value(&job).ok());
+        let heartbeat = self.scheduled.store().get_heartbeat(&active_session_id);
         response_success(
             None,
             "heartbeat_get",
-            Some(json!({ "heartbeat": heartbeat.unwrap_or(Value::Null) })),
+            Some(heartbeat_reply(heartbeat.as_ref())),
         )
     }
 
@@ -273,10 +268,8 @@ impl Worker {
         if let Err(response) = self.require_created("heartbeat_set") {
             return response;
         }
-        let delivery_mode = match normalize_heartbeat_delivery_mode(
-            payload.get("deliveryMode").and_then(Value::as_str),
-        ) {
-            Ok(mode) => mode,
+        let set = match HeartbeatSet::parse(payload) {
+            Ok(set) => set,
             Err(error) => return response_failure(None, "heartbeat_set", &error.to_string(), None),
         };
         let (previous, input) = {
@@ -291,7 +284,7 @@ impl Worker {
                     return response_failure(
                         None,
                         "heartbeat_set",
-                        "Heartbeats require a persisted session file",
+                        HEARTBEATS_NEED_A_SESSION_FILE,
                         None,
                     )
                 }
@@ -302,31 +295,17 @@ impl Worker {
                 .get_heartbeat(&core.active_session_id);
             // A replacement keeps the previous delivery mode unless the
             // command carries one (TS `createHeartbeatForState`).
-            let delivery_mode =
-                delivery_mode.or(previous.as_ref().and_then(|job| job.delivery_mode));
-            (
-                previous,
-                CreateAgentCronJobInput {
+            let input = set.input(
+                SessionBinding {
                     active_session_id: core.active_session_id.clone(),
                     session_id: store.session_id().to_string(),
                     session_file: store.path.to_string_lossy().to_string(),
                     cwd: core.cwd.clone(),
-                    runtime_kind: Some(core.runtime_kind.clone()),
-                    delivery_mode,
-                    schedule_text: normalize_heartbeat_schedule(Some(
-                        payload
-                            .get("schedule")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default(),
-                    )),
-                    prompt: payload
-                        .get("prompt")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    ..Default::default()
                 },
-            )
+                &core.runtime_kind,
+                previous.as_ref(),
+            );
+            (previous, input)
         };
         match self.scheduled.store().create_heartbeat(&input) {
             Ok(job) => {
@@ -334,11 +313,7 @@ impl Worker {
                     self.scheduled.remove_queued_heartbeat_follow_up(&previous);
                 }
                 self.scheduled.wake().await;
-                response_success(
-                    None,
-                    "heartbeat_set",
-                    Some(json!({ "heartbeat": serde_json::to_value(&job).unwrap_or(Value::Null) })),
-                )
+                response_success(None, "heartbeat_set", Some(heartbeat_reply(Some(&job))))
             }
             Err(error) => response_failure(None, "heartbeat_set", &error.to_string(), None),
         }
@@ -355,7 +330,7 @@ impl Worker {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let resume = payload.get("action").and_then(Value::as_str) == Some("resume");
+        let update = HeartbeatUpdate::parse(payload.get("action").and_then(Value::as_str));
         let now = crate::util::now_ms();
         {
             let core = self
@@ -364,22 +339,7 @@ impl Worker {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.bind_store_artifact(&core);
         }
-        let outcome = match payload.get("action").and_then(Value::as_str) {
-            Some("pause") => self
-                .scheduled
-                .store()
-                .pause_heartbeat(&active_session_id, now),
-            Some("resume") => self
-                .scheduled
-                .store()
-                .resume_heartbeat(&active_session_id, now),
-            // TS `updateHeartbeatForState`: anything but pause/resume clears the
-            // heartbeat.
-            _ => self
-                .scheduled
-                .store()
-                .clear_heartbeat(&active_session_id, now),
-        };
+        let outcome = update.apply(self.scheduled.store(), &active_session_id, now);
         let outcome = match outcome {
             Ok(job) => job,
             Err(error) => {
@@ -387,18 +347,15 @@ impl Worker {
             }
         };
         if let Some(job) = &outcome {
-            if !resume {
+            if withdraws_queued_fire(update.as_management()) {
                 self.scheduled.remove_queued_heartbeat_follow_up(job);
             }
         }
         self.scheduled.wake().await;
-        let heartbeat = outcome
-            .and_then(|job| serde_json::to_value(&job).ok())
-            .unwrap_or(Value::Null);
         response_success(
             None,
             "heartbeat_update",
-            Some(json!({ "heartbeat": heartbeat })),
+            Some(heartbeat_reply(outcome.as_ref())),
         )
     }
 }

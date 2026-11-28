@@ -101,8 +101,9 @@ fn boot_cleanup_preserves_unverifiable_journals_and_waiting_callers_status() {
 
     let live_session = dir.path().join("live-session.jsonl");
     std::fs::write(&live_session, "{}\n").expect("live session");
-    let live_lease = pa_daemon::lease::acquire_runtime_session_lease(&live_session, &agent_dir)
-        .expect("live lease");
+    let live_lease =
+        pa_core::session::lease::acquire_runtime_session_lease(&live_session, &agent_dir)
+            .expect("live lease");
     let dead_lease = agent_dir.join("session-leases/dead.lock");
     std::fs::create_dir_all(&dead_lease).expect("dead lease");
     std::fs::write(
@@ -165,7 +166,7 @@ fn boot_cleanup_preserves_unverifiable_journals_and_waiting_callers_status() {
         "the unused root cache was removed"
     );
     assert!(
-        pa_daemon::lease::acquire_runtime_session_lease(&live_session, &agent_dir).is_err(),
+        pa_core::session::lease::acquire_runtime_session_lease(&live_session, &agent_dir).is_err(),
         "the live fixture still owns its session"
     );
     live_lease.release();

@@ -8,7 +8,7 @@ struct Fixture {
     _dir: tempfile::TempDir,
     supervisor: Arc<Supervisor>,
     child_file: String,
-    ledger: Arc<crate::rlm_ledger::RlmSpawnLedger>,
+    ledger: Arc<pa_core::session_engine::rlm_ledger::RlmSpawnLedger>,
 }
 
 async fn fixture() -> Fixture {
@@ -37,7 +37,7 @@ async fn fixture() -> Fixture {
         .expect("the spawn ledger resolves");
     let child_file = child_file.to_string_lossy().into_owned();
     ledger
-        .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+        .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-dead".to_string(),
             parent: parent_file.to_string_lossy().into_owned(),
             child: child_file.clone(),
@@ -90,7 +90,7 @@ fn reaped_pid() -> (u32, Option<String>) {
         .spawn()
         .expect("spawn true");
     let pid = child.id();
-    let start_id = crate::lease::get_process_start_id(pid);
+    let start_id = pa_core::session::lease::get_process_start_id(pid);
     child.wait().expect("reap true");
     (pid, start_id)
 }
@@ -166,7 +166,7 @@ async fn a_delete_of_a_live_workers_child_still_routes_the_kill() {
         &supervisor,
         &child_file,
         pid,
-        crate::lease::get_process_start_id(pid).as_deref(),
+        pa_core::session::lease::get_process_start_id(pid).as_deref(),
     );
     let resident = ResidentWorker::new("w-child".to_string(), descriptor, descriptor_path);
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<WorkerRequest>(4);
@@ -222,14 +222,14 @@ async fn a_retried_delete_after_the_tombstone_is_gated_on_the_worker_process() {
         .append_delete(
             "sub-dead",
             &child_file,
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
         .expect("the first attempt's tombstone");
     let retry = || {
         supervisor.tombstone_saved_rlm_child(
             "w-child",
             Some("sub-dead"),
-            crate::rlm_ledger::RlmLedgerDeleteReason::User,
+            pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
         )
     };
 
@@ -253,7 +253,7 @@ async fn a_retried_delete_after_the_tombstone_is_gated_on_the_worker_process() {
         .expect("a dead worker no longer blocks the delete");
     assert!(!artifacts.exists(), "the retry finishes the artifact sweep");
     assert_eq!(
-        crate::session_store::read_session_info(std::path::Path::new(&child_file))
+        pa_core::session::catalog::read_session_info(std::path::Path::new(&child_file))
             .expect("session metadata")
             .state
             .as_deref(),
@@ -270,7 +270,7 @@ async fn a_retried_delete_after_the_tombstone_is_gated_on_the_worker_process() {
         &supervisor,
         &child_file,
         live_pid,
-        crate::lease::get_process_start_id(live_pid).as_deref(),
+        pa_core::session::lease::get_process_start_id(live_pid).as_deref(),
     );
     let ledger_before = std::fs::read(ledger.ledger_path()).unwrap();
     let refused = retry().await;

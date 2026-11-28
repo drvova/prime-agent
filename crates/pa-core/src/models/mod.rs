@@ -1,10 +1,15 @@
 //! Model subsystem: resolver and Prime Inference private models.
 
-pub use allowlist::{model_allowed, ModelAllowlistRefusal};
+pub use allowlist::{
+    assert_model_allowed, load_model_allowlist, model_allowed, ModelAllowlist,
+    ModelAllowlistRefusal,
+};
 pub use registry::{
     ModelRegistry, ProviderRequestConfig, QuotaFallback, ResolvedRequestAuth,
     SetModelSelectionError,
 };
+
+pub use catalog_view::CatalogRefresh;
 
 pub use catalog_chain::{
     catalog_for, install_catalog, prime_credentials_for_dir, spawn_hourly_refresh, startup_refresh,
@@ -16,6 +21,7 @@ pub use pa_models::RefreshTrigger;
 
 pub mod allowlist;
 pub(crate) mod catalog_chain;
+pub(crate) mod catalog_view;
 pub(crate) mod custom;
 pub mod image_model_routing;
 pub(crate) mod prime_inference;

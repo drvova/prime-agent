@@ -157,7 +157,7 @@ fn window_preserves_transcript_metadata_and_append_then_hydrate() {
     );
     full.append_message(&json!({"role":"user","content":"after","timestamp":221}));
     full.rewrite().unwrap();
-    let lease = crate::lease::acquire_runtime_session_lease(&path, dir.path()).unwrap();
+    let lease = pa_core::session::lease::acquire_runtime_session_lease(&path, dir.path()).unwrap();
     let mut window = SessionFile::open_windowed(&path).unwrap();
     window.lease = Some(std::sync::Arc::new(lease));
     assert!(window.window.is_some());
@@ -227,7 +227,7 @@ fn captured_window_matches_full_transcript_and_stats() {
     let path = dir.path().join("capture.jsonl");
     std::fs::copy(source, &path).unwrap();
     let lease = std::sync::Arc::new(
-        crate::lease::acquire_runtime_session_lease(&path, dir.path()).unwrap(),
+        pa_core::session::lease::acquire_runtime_session_lease(&path, dir.path()).unwrap(),
     );
     let start = std::time::Instant::now();
     let full = SessionFile::open(&path).unwrap();

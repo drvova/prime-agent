@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::ValueEnum;
-use pa_daemon::rlm_ledger::RlmSpawnLedger;
+use pa_core::session_engine::rlm_ledger::RlmSpawnLedger;
 use serde::{Deserialize, Serialize};
 
 use crate::rng::Rng;
@@ -645,7 +645,7 @@ mod tests {
             let manifest = super::generate(&options).expect("generate child trees");
             // Two direct children, four grandchildren, and three wide children.
             assert_eq!(manifest.counts.child_sessions, 9);
-            let ledger = pa_daemon::rlm_ledger::RlmSpawnLedger::new(
+            let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
                 &manifest.paths.agent_dir,
                 &manifest.paths.sessions_dir,
                 |_| {},

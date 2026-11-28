@@ -1,7 +1,7 @@
 //! The engine wire types: the prompt records, the event stream shape, the
 //! goal-continuation + bash-notice plumbing, the RLM session identity, and
-//! the compaction/branch-summary/side-question records.
-use super::{json, json_round_trip, Arc, SideQuestionTurn, Value};
+//! the compaction and branch-summary records.
+use super::{json, AssistantSnapshot, Value};
 
 /// One user prompt accepted by the engine.
 #[derive(Debug, Clone)]
@@ -164,50 +164,6 @@ pub enum EngineEvent {
     },
 }
 
-/// A streamed assistant message: already in wire form, or the loop's typed
-/// partial, converted only when a frame is built.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AssistantSnapshot {
-    Wire(Value),
-    Loop(Arc<pa_agent::types::AgentMessage>),
-}
-
-impl AssistantSnapshot {
-    pub(crate) fn into_wire(self) -> Option<Value> {
-        match self {
-            Self::Wire(value) => Some(value),
-            Self::Loop(message) => session_wire_value(&message),
-        }
-    }
-}
-
-/// Serialize a pa-agent message through the session wire shape (adds `role`).
-pub(crate) fn session_wire_value(agent_message: &pa_agent::types::AgentMessage) -> Option<Value> {
-    use pa_agent::types::Message as LoopMessage;
-    let session_message = match agent_message {
-        pa_agent::types::AgentMessage::Standard(LoopMessage::User(user)) => {
-            pa_types::session::AgentMessage::User(json_round_trip(user)?)
-        }
-        pa_agent::types::AgentMessage::Standard(LoopMessage::Assistant(assistant)) => {
-            pa_types::session::AgentMessage::Assistant(json_round_trip(assistant)?)
-        }
-        pa_agent::types::AgentMessage::Standard(LoopMessage::ToolResult(tool_result)) => {
-            pa_types::session::AgentMessage::ToolResult(json_round_trip(tool_result)?)
-        }
-        // A custom row: the payload is the session-shape custom message and
-        // the wire form is the tagged session message (payload plus role).
-        pa_agent::types::AgentMessage::Custom(custom) => {
-            let mut value = custom.payload.clone();
-            let object = value.as_object_mut()?;
-            object
-                .entry("role".to_string())
-                .or_insert_with(|| Value::String(custom.role.clone()));
-            return Some(value);
-        }
-    };
-    serde_json::to_value(&session_message).ok()
-}
-
 /// The post-compaction goal continuation: the follow-up turn to admit
 /// (continuation text + goal-context custom row) plus its `goal_update`.
 #[derive(Debug, Clone)]
@@ -340,122 +296,4 @@ pub enum CompactionOutcome {
     Aborted,
     /// Failed; the string is the engine error message.
     Failed { error: String },
-}
-
-/// One branch-summary request (`navigate_tree` with `summarize`): the
-/// abandoned branch's durable entries (wire `FileEntry` form) and the
-/// summarizer guidance from the client.
-#[derive(Debug, Clone)]
-pub struct BranchSummaryRequest {
-    pub entries: Vec<pa_types::session::FileEntry>,
-    pub custom_instructions: Option<String>,
-    /// Replace the default prompt instead of appending the custom focus.
-    pub replace_instructions: bool,
-    /// The session's durable id: the summary call carries it like the main requests
-    /// (opencode rejects a request without `x-opencode-session`).
-    pub session_id: String,
-}
-
-/// One completed branch summary: the final summary text, the summarizer
-/// usage, and the file-operation details block persisted on the entry.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BranchSummaryRun {
-    pub summary: String,
-    pub usage: Option<Value>,
-    pub details: Option<Value>,
-    /// The model that served the call (`provider`, `modelId`), persisted
-    /// on the `branch_summary` entry for the per-model cost fold.
-    pub model: Option<(String, String)>,
-}
-
-/// How one branch-summary run ended (TS `BranchSummaryResult` outcomes).
-#[derive(Debug, Clone, PartialEq)]
-pub enum BranchSummaryOutcome {
-    /// Summary generated; the run carries text, usage, and details.
-    Complete { run: BranchSummaryRun },
-    /// Aborted mid-run (`abort_branch_summary`).
-    Aborted,
-    /// Failed; the string is the user-facing error.
-    Failed { error: String },
-}
-
-/// One side-question request (the `start_side_question` command fields).
-#[derive(Debug, Clone)]
-pub struct SideQuestionRequest {
-    /// Caller-generated id; echoed on every event of the run.
-    pub side_question_id: String,
-    pub question: String,
-    /// A `/btw` question, or a `/better` rewrite of `question` (whose running events then carry
-    /// progress labels, and whose final answer is the rewrite).
-    pub kind: pa_types::better::SideRunKind,
-    /// Earlier `{question, answer}` exchanges replayed before the question.
-    pub previous_turns: Vec<SideQuestionTurn>,
-}
-
-/// How one side-question run ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SideQuestionOutcome {
-    /// Answered; the string is the final answer text.
-    Complete { answer: String },
-    /// Aborted mid-run; the string is the partial answer streamed so far.
-    Aborted { answer: String },
-    /// Failed; the string is the provider/engine error message.
-    Failed { answer: String, error: String },
-}
-
-/// Wire form of one side-question status.
-pub const SIDE_QUESTION_STATUS_RUNNING: &str = "running";
-pub const SIDE_QUESTION_STATUS_COMPLETE: &str = "complete";
-pub const SIDE_QUESTION_STATUS_CANCELLED: &str = "cancelled";
-pub const SIDE_QUESTION_STATUS_ERROR: &str = "error";
-
-/// Wire form of one side-question event.
-#[must_use]
-pub fn side_question_event_value(
-    request: &SideQuestionRequest,
-    answer: &str,
-    status: &str,
-    error_message: Option<&str>,
-) -> Value {
-    let mut event = json!({
-        "id": request.side_question_id,
-        "question": request.question,
-        "answer": answer,
-        "status": status,
-    });
-    if let Some(error_message) = error_message {
-        event["errorMessage"] = json!(error_message);
-    }
-    event
-}
-
-impl SideQuestionOutcome {
-    /// The wire status of this outcome.
-    #[must_use]
-    pub fn status_str(&self) -> &'static str {
-        match self {
-            SideQuestionOutcome::Complete { .. } => SIDE_QUESTION_STATUS_COMPLETE,
-            SideQuestionOutcome::Aborted { .. } => SIDE_QUESTION_STATUS_CANCELLED,
-            SideQuestionOutcome::Failed { .. } => SIDE_QUESTION_STATUS_ERROR,
-        }
-    }
-
-    /// The answer text carried by the final event (partial on abort/failure).
-    #[must_use]
-    pub fn answer(&self) -> &str {
-        match self {
-            SideQuestionOutcome::Complete { answer }
-            | SideQuestionOutcome::Aborted { answer }
-            | SideQuestionOutcome::Failed { answer, .. } => answer,
-        }
-    }
-
-    /// The error message carried by the final event, when the run failed.
-    #[must_use]
-    pub fn error_message(&self) -> Option<&str> {
-        match self {
-            SideQuestionOutcome::Failed { error, .. } => Some(error.as_str()),
-            _ => None,
-        }
-    }
 }

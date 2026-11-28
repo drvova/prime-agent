@@ -1,0 +1,59 @@
+{
+  "prefix": "subag",
+  "settings": {
+    "onboardingCompleted": true,
+    "onboardingShown": true,
+    "telemetry": {
+      "noticeShown": true
+    }
+  },
+  "script": {
+    "responses": [
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "name": "eval",
+            "arguments": {
+              "code": "(define marker \"{marker}\")\n(if (not (= 0 (hash-ref (bash (string-append \"test -e '\" marker \"'\")) 'exit-code)))\n    (begin\n      (fs-write marker \"\")\n      (rlm-collect (rlm-spawn \"say hello\" #:name \"alpha\") #:timeout-ms 30000))\n    \"child\")\n"
+            }
+          }
+        ]
+      },
+      {
+        "text": "alpha reported back."
+      },
+      {
+        "text": "noted"
+      }
+    ],
+    "repeatLastResponse": true,
+    "contextWindow": 128000,
+    "children": {
+      "alpha": {
+        "responses": [
+          {
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "eval",
+                "arguments": {
+                  "code": "(define marker \"{marker}\")\n(if (not (= 0 (hash-ref (bash (string-append \"test -e '\" marker \"'\")) 'exit-code)))\n    (begin\n      (fs-write marker \"\")\n      (rlm-collect (rlm-spawn \"say hello\" #:name \"alpha\") #:timeout-ms 30000))\n    \"child\")\n"
+                }
+              }
+            ]
+          },
+          {
+            "text": "alpha reported back."
+          }
+        ]
+      }
+    }
+  },
+  "steps": [
+    {
+      "prompt": "spawn a helper",
+      "until": "rest"
+    }
+  ]
+}

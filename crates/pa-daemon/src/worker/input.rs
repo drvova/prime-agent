@@ -168,7 +168,7 @@ impl Worker {
             Err(_) => response_failure(
                 None,
                 "prompt_and_wait",
-                &crate::session_host::recorded_crash(crate::session_host::session_pid())
+                &crate::session_host::recorded_crash(pa_core::session::hosted::session_pid())
                     .map_or_else(
                         || "Prompt did not complete".to_string(),
                         |crash| crash.reason(),
@@ -466,20 +466,22 @@ impl Worker {
         // `waitingOn`, which reaches the supervisor's roster before the receipt does: the sender
         // may wait on this session next, and its cycle walk reads that roster.
         if let Some(waits) = self.engine.agent_message_waits() {
-            let withdrawn = waits.deliver(crate::agent_message_wait::AgentMessageArrival {
-                message_id: id.clone(),
-                sender_ids: ["activeSessionId", "sessionId"]
-                    .iter()
-                    .filter_map(|key| sender.get(*key).and_then(Value::as_str))
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_string)
-                    .collect(),
-                sender_name: sender_label,
-                preview: pa_core::session_engine::agent_messaging::create_agent_message_preview(
-                    message,
-                ),
-                kind,
-            });
+            let withdrawn = waits.deliver(
+                pa_core::session_engine::agent_messaging::AgentMessageArrival {
+                    message_id: id.clone(),
+                    sender_ids: ["activeSessionId", "sessionId"]
+                        .iter()
+                        .filter_map(|key| sender.get(*key).and_then(Value::as_str))
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                    sender_name: sender_label,
+                    preview: pa_core::session_engine::agent_messaging::create_agent_message_preview(
+                        message,
+                    ),
+                    kind,
+                },
+            );
             if withdrawn {
                 self.roster_pushes.flush().await;
             }

@@ -3,9 +3,10 @@
 use super::{
     clear_withdrawn_progress_note, json, persist_custom_row, response_failure, response_success,
     KillCloseReason, Lane, QueueCheckpoint, QueuedItem, Result, SessionFile, TurnSettle, VecDeque,
-    Worker, PROMPT_ABORTED_BEFORE_DELIVERY, SIDE_QUESTION_SETTLE_TIMEOUT,
+    Worker, PROMPT_ABORTED_BEFORE_DELIVERY,
 };
 
+use pa_core::session_engine::kernel_activity::KernelBashAction;
 use serde_json::Value;
 
 use crate::protocol::DaemonResponse;
@@ -141,8 +142,16 @@ impl Worker {
             "execute_bash" => self.handle_execute_bash(payload),
             "execute_bash_and_wait" => self.handle_execute_bash_and_wait(payload).await,
             "abort_bash" => self.handle_abort_bash(),
-            "list_kernel_bash" | "tail_kernel_bash" | "kill_kernel_bash" => {
-                self.handle_kernel_bash_activity(command_type, payload)
+            "list_kernel_bash" => {
+                self.handle_kernel_bash_activity(command_type, KernelBashAction::List, payload)
+                    .await
+            }
+            "tail_kernel_bash" => {
+                self.handle_kernel_bash_activity(command_type, KernelBashAction::Tail, payload)
+                    .await
+            }
+            "kill_kernel_bash" => {
+                self.handle_kernel_bash_activity(command_type, KernelBashAction::Kill, payload)
                     .await
             }
             "append_custom_message" => self.handle_append_custom_message(payload),
@@ -715,20 +724,11 @@ impl Worker {
         // The newest non-empty assistant text: an ended turn's final
         // assistant row may hold only the tool call, so the answer sits in
         // the last assistant row with text (the file fallback's rule).
-        let text = core.store.as_ref().and_then(|store| {
-            store
-                .messages()
-                .into_iter()
-                .rev()
-                .filter(|message| crate::types::message_role(message) == Some("assistant"))
-                .map(|message| crate::types::message_text(&message))
-                .find(|text| !text.is_empty())
-        });
-        response_success(
-            None,
-            "get_last_assistant_text",
-            Some(json!({ "text": text })),
-        )
+        let data = core.store.as_ref().map_or_else(
+            || json!({ "text": null }),
+            |store| pa_core::session::navigation::last_assistant_text(store.messages().iter()),
+        );
+        response_success(None, "get_last_assistant_text", Some(data))
     }
 
     async fn handle_kill(&self, payload: &Value) -> DaemonResponse {
@@ -741,7 +741,7 @@ impl Worker {
         // TS `closeSession` aborts the side questions per attached client
         // before `closeSessionOnce`'s arms run.
         self.side_questions
-            .abort_all_and_settle(SIDE_QUESTION_SETTLE_TIMEOUT)
+            .abort_all_and_settle(pa_core::session_engine::side_runs::SIDE_RUN_SETTLE_TIMEOUT)
             .await;
         // `killed` cancels the session's scheduled jobs; `replaced` keeps the plain
         // cron jobs but cancels the subagent's RLM heartbeats; `shutdown` keeps them
@@ -816,14 +816,6 @@ impl Worker {
         let _ = self.emit_session_closed(&active_session_id, reason.session_closed_reason());
         let _ = self.record_recovery(false, reason.recovery_operation());
         self.release_session_lease();
-        // The session runtime ended (TS `prime-agent stop <agent>`): the
-        // pane reporter releases its pane as the last write on the wire —
-        // no report may reclaim it afterwards. The slot is taken out
-        // first (swapped to the disabled no-op) so a later attach can
-        // adopt the pane again; the taken handle's release is the
-        // release of the session this kill stopped.
-        let reporter = std::mem::take(&mut *self.herdr.lock().unwrap());
-        reporter.release().await;
         response_success(None, "kill", None)
     }
 

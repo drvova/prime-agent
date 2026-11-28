@@ -3,6 +3,7 @@
 //! command parsing; the file-backed job store lives in the `store`
 //! submodule.
 
+pub mod heartbeat_commands;
 pub mod scheduler;
 pub mod store;
 

@@ -15,8 +15,8 @@ use super::{
     Duration, EngineModelSelection, Map, Ordering, Path, ResidentWorker, Result, RouteAdmission,
     Supervisor, TempSync, TypedCreateRejection, Value, WorkerTransition, ROUTE_TIMEOUT_MS,
 };
-use crate::lease::is_process_alive;
 use crate::protocol::{response_failure, response_success, DaemonResponse};
+use pa_core::session::lease::is_process_alive;
 
 /// Which admission path publishes a fresh worker's passive family.
 pub(crate) enum RosterFamilySeedOwner {
@@ -117,24 +117,12 @@ impl Supervisor {
             config,
             telemetry_disabled,
             runtime_metadata,
-            env,
             launch_env,
             ..
         } = create
         else {
             return Err(anyhow!("launch_worker requires a create command"));
         };
-        // The allowlisted client env (the pane identity, e.g. Herdr's
-        // `HERDR_*`) re-filtered here (the socket peer is untrusted) and
-        // carried on the durable create command: the worker resolves its
-        // session's pane identity from the create payload — never from
-        // this supervisor process's boot environment (the TS daemon
-        // boot-context bug class, not reproduced) — and a respawned
-        // worker re-receives the same identity.
-        let client_env = env
-            .as_ref()
-            .map(crate::herdr::filter_client_env)
-            .filter(|env| !env.is_empty());
         // The client's launch env (TS `launchEnv`) re-filtered on receipt
         // (the socket peer is untrusted). In-memory only; the lifetime is
         // documented on the `ResidentWorker::launch_env` field.
@@ -301,12 +289,6 @@ impl Supervisor {
             if let Some(value) = config_object.and_then(|config| config.get(key)) {
                 durable_rest.insert(key.to_string(), value.clone());
             }
-        }
-        // The session's pane identity (the allowlisted client env) rides
-        // the durable create command so the worker's `create` payload
-        // carries it and a respawn replays it.
-        if let Some(client_env) = client_env {
-            durable_rest.insert("env".to_string(), serde_json::to_value(client_env)?);
         }
         // A child's RLM identity rides the durable create command too, so a
         // respawned or adopted child stays identifiable for ledger appends.
@@ -540,7 +522,7 @@ impl Supervisor {
         self: &Arc<Self>,
         resident: &Arc<ResidentWorker>,
         child_id: Option<&str>,
-        reason: crate::rlm_ledger::RlmLedgerDeleteReason,
+        reason: pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason,
     ) -> Result<()> {
         let (session_file, session_dir, child_id) = {
             let descriptor = resident.descriptor.lock().await;
@@ -586,8 +568,9 @@ impl Supervisor {
             .with_context(|| format!("tombstone RLM subagent {child_id}"))?;
         // The display tombstone keeps the child's identity for hydration retries;
         // best-effort because the ledger tombstone is the authority.
-        let display = crate::rlm_ledger::read_rlm_subagent_display(Path::new(&session_dir));
-        let tombstone = crate::rlm_ledger::RlmSubagentDisplayEntry {
+        let display =
+            pa_core::session_engine::rlm_ledger::read_rlm_subagent_display(Path::new(&session_dir));
+        let tombstone = pa_core::session_engine::rlm_ledger::RlmSubagentDisplayEntry {
             type_tag: "rlm_subagent".to_string(),
             child_id: child_id.clone(),
             session_name: display
@@ -606,7 +589,9 @@ impl Supervisor {
             status: "deleted".to_string(),
             created_at: display.as_ref().map_or(0, |entry| entry.created_at),
         };
-        if let Err(error) = crate::rlm_ledger::write_rlm_subagent_display(&tombstone) {
+        if let Err(error) =
+            pa_core::session_engine::rlm_ledger::write_rlm_subagent_display(&tombstone)
+        {
             self.log_line(&format!(
                 "failed to reconcile display entry for tombstoned RLM subagent {child_id}: {error:#}"
             ));
@@ -636,7 +621,7 @@ impl Supervisor {
         let deleted_child = rest
             .get("rlmLedgerDelete")
             .and_then(Value::as_str)
-            .and_then(crate::rlm_ledger::RlmLedgerDeleteReason::from_wire)
+            .and_then(pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::from_wire)
             .map(|_| crate::stop_cleanup::DeletedChild {
                 child_id: rest
                     .get("rlmChildId")
@@ -830,10 +815,10 @@ impl Supervisor {
         // behind such a pid keeps its tombstoned descriptor like a SIGKILL survivor (the
         // next boot retries the stop).
         let alive_unverified = (start_id.is_none()
-            || crate::lease::get_process_start_id(pid).is_none())
-            && crate::lease::is_process_alive(pid).unwrap_or(false);
+            || pa_core::session::lease::get_process_start_id(pid).is_none())
+            && pa_core::session::lease::is_process_alive(pid).unwrap_or(false);
         match crate::boot_reap::stop_process(pid, start_id.clone()).await {
-            crate::boot_reap::ReapOutcome::Survived => {
+            pa_core::platform::process_stop::StopOutcome::Survived => {
                 self.log_line(&format!(
                     "session worker {} survived the shutdown escalation; descriptor tombstoned for the next boot",
                     resident.worker_id
@@ -871,9 +856,9 @@ impl Supervisor {
                 // as gone. Journal deletion needs positive owner-death evidence:
                 // an unobservable process may still be writing durable work.
                 if recovery_journal_owner_is_gone(
-                    crate::lease::is_process_alive(pid).ok(),
+                    pa_core::session::lease::is_process_alive(pid).ok(),
                     start_id.as_deref(),
-                    crate::lease::get_process_start_id(pid).as_deref(),
+                    pa_core::session::lease::get_process_start_id(pid).as_deref(),
                 ) {
                     let _ = std::fs::remove_file(&recovery_journal_path);
                 }
@@ -926,7 +911,7 @@ impl Supervisor {
         // that hosted it, and their journal records name that process as
         // the owner: the generation (`hosted:<daemon pid>:<uuid>`) carries
         // it. A worker process's records name the worker itself.
-        let journal_owner = if crate::session_host::is_hosted_pid(worker_pid as u32) {
+        let journal_owner = if pa_core::session::hosted::is_hosted_pid(worker_pid as u32) {
             start_id
                 .as_deref()
                 .and_then(|generation| generation.strip_prefix("hosted:"))
@@ -945,9 +930,9 @@ impl Supervisor {
             // Stop escalation and adopted-process watch failures do not
             // prove death. The proof and reap must use the same owner pid.
             if !recovery_journal_owner_is_gone(
-                crate::lease::is_process_alive(worker_pid as u32).ok(),
+                pa_core::session::lease::is_process_alive(worker_pid as u32).ok(),
                 start_id.as_deref(),
-                crate::lease::get_process_start_id(worker_pid as u32).as_deref(),
+                pa_core::session::lease::get_process_start_id(worker_pid as u32).as_deref(),
             ) {
                 return 0;
             }
@@ -990,9 +975,9 @@ pub(super) async fn worker_process_gone(pid: u64, start_id: Option<String>) -> b
     // On macOS the start-id probe shells out to `ps`: keep it off the executor.
     tokio::task::spawn_blocking(move || {
         recovery_journal_owner_is_gone(
-            crate::lease::is_process_alive(pid).ok(),
+            pa_core::session::lease::is_process_alive(pid).ok(),
             start_id.as_deref(),
-            crate::lease::get_process_start_id(pid).as_deref(),
+            pa_core::session::lease::get_process_start_id(pid).as_deref(),
         )
     })
     .await

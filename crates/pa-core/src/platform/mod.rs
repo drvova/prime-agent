@@ -7,6 +7,8 @@ pub mod fs;
 pub mod lock_dir;
 pub mod perms;
 pub mod process;
+pub mod process_stop;
+pub mod runtime_daemon_lock;
 pub mod shell;
 
 pub use fs::fsync;
@@ -16,6 +18,7 @@ pub use process::{
     kill_pid, kill_process_group_or_pid, normalized_exit_code, pid_exists, set_new_process_group,
     set_no_window, termination_signal, Signal,
 };
+pub use runtime_daemon_lock::RuntimeDaemonLock;
 // The rename-onto-destination primitive (bounded win32 destination-busy
 // retry) lives in pa-types beside the atomic file replacement built on it
 // (`pa_types::platform::replace_file`); re-exported so the platform wall

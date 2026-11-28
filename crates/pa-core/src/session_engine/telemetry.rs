@@ -43,7 +43,7 @@ pub use track::{
     track_deleted_child_usage_captured, track_interrupted_calls_reported, track_model_refused,
     track_provider_oauth_login, track_session_crashed, track_sessions_exported,
     track_sessions_imported, track_transcripts_imported, track_worker_adoption,
-    track_worker_children_closed, OAuthLoginSurface,
+    track_worker_children_closed, DaemonKind, OAuthLoginSurface,
 };
 
 mod classify;

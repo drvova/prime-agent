@@ -8,17 +8,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use pa_core::platform::process_stop::{StopOutcome, StopTarget};
+
 use crate::supervisor::Supervisor;
 
-/// Grace after SIGTERM before the force escalation (the CLI stop contract's
-/// worker grace).
-const TERM_GRACE: Duration = Duration::from_secs(2);
-/// Verify window after SIGKILL before the reap reports the survivor.
-const KILL_VERIFY: Duration = Duration::from_secs(1);
 /// Hard deadline after SIGKILL on the intentional-stop path (TS `STOP_FORCE_TIMEOUT`):
 /// a killed worker's teardown may still take before the stop reports the survivor.
 const STOP_FORCE_TIMEOUT: Duration = Duration::from_secs(10);
-const POLL: Duration = Duration::from_millis(25);
 
 /// One reap target discovered on this socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,24 +30,17 @@ pub(crate) struct ReapTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReapKind {
     /// A leftover session worker of a previous daemon on this socket.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "only the linux /proc census finds leftover workers; elsewhere the reap's target list is empty"
+        )
+    )]
     Worker,
     /// A wedged supervisor process bound to this socket path (linux census only).
     #[cfg(target_os = "linux")]
     Supervisor,
-}
-
-/// The per-target outcome (the boot log line's evidence).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReapOutcome {
-    /// The process was gone before any signal.
-    AlreadyGone,
-    /// The process exited inside the SIGTERM grace.
-    Term,
-    /// The process died to SIGKILL.
-    Kill,
-    /// The process outlived SIGKILL (a D-state wedged task): its lease
-    /// stays held; the operator-facing refusal keeps naming the holder.
-    Survived,
 }
 
 /// Reap the same-socket predecessors before a client or adoption races the reap.
@@ -64,7 +53,18 @@ pub(crate) async fn reap_predecessors(supervisor: &Arc<Supervisor>) {
         // protected while the identity still matches (none recorded stays protected).
         let protected: HashSet<u32> = protected_worker_pids(&agent_dir, &socket_path);
         let mut targets = same_socket_worker_targets(&socket_path, &protected, None);
-        targets.extend(same_socket_supervisor_targets(&socket_path));
+        // The runtime daemon's command line names this socket too, and so does its restart
+        // owner's; it serves its own socket beside this one and neither is a predecessor.
+        let runtime_daemon: HashSet<u32> =
+            pa_core::platform::RuntimeDaemonLock::recorded(&agent_dir)
+                .into_iter()
+                .flat_map(|holder| [Some(holder.pid), holder.keeper])
+                .flatten()
+                .collect();
+        targets.extend(same_socket_supervisor_targets(
+            &socket_path,
+            &runtime_daemon,
+        ));
         targets
     })
     .await;
@@ -106,7 +106,7 @@ pub(crate) async fn reap_predecessors(supervisor: &Arc<Supervisor>) {
     .await;
     // The dead workers' socket files leave with them (a killed process cannot clean up).
     for (target, outcome) in outcomes {
-        if let (Some(socket), ReapOutcome::Term | ReapOutcome::Kill) =
+        if let (Some(socket), StopOutcome::Term | StopOutcome::Kill) =
             (&target.worker_socket, outcome)
         {
             if is_unix_socket_file(socket) {
@@ -119,31 +119,26 @@ pub(crate) async fn reap_predecessors(supervisor: &Arc<Supervisor>) {
 /// Stop one worker process by identity: the terminal-stop escalation (a worker that missed
 /// its routed `shutdown`) on the `STOP_FORCE_TIMEOUT` budget, not the boot reap's fast
 /// verify. `None` as the start id trusts liveness alone.
-pub(crate) async fn stop_process(pid: u32, start_id: Option<String>) -> ReapOutcome {
+pub(crate) async fn stop_process(pid: u32, start_id: Option<String>) -> StopOutcome {
     // A hosted session is not a process: no signal reaches it. Its forced
     // stop ends its host thread, and only the lifetime the caller named.
-    if crate::session_host::is_hosted_pid(pid) {
-        let current = crate::session_host::hosted_generation(pid);
+    if pa_core::session::hosted::is_hosted_pid(pid) {
+        let current = pa_core::session::hosted::hosted_generation(pid);
         return if current.is_some()
             && current == start_id
             && crate::session_host::stop_hosted(pid).await
         {
-            ReapOutcome::Kill
+            StopOutcome::Kill
         } else {
-            ReapOutcome::AlreadyGone
+            StopOutcome::AlreadyGone
         };
     }
-    stop_target_within(
-        &ReapTarget {
-            pid,
-            start_id,
-            worker_socket: None,
-            kind: ReapKind::Worker,
-        },
-        TERM_GRACE,
-        STOP_FORCE_TIMEOUT,
-    )
-    .await
+    StopTarget { pid, start_id }
+        .stop(pa_core::platform::process_stop::StopBudgets {
+            kill_verify: STOP_FORCE_TIMEOUT,
+            ..pa_core::platform::process_stop::BOOT_REAP_BUDGETS
+        })
+        .await
 }
 
 /// The give-up belt: when the supervisor abandons a worker id, no live process of THIS daemon
@@ -184,7 +179,7 @@ pub(crate) async fn reap_abandoned_workers(supervisor: &Arc<Supervisor>, worker_
     .await;
     // The reaped leftovers' endpoint files leave with them (the same gate as the boot reap).
     for (target, outcome) in outcomes {
-        if let (Some(socket), ReapOutcome::Term | ReapOutcome::Kill) =
+        if let (Some(socket), StopOutcome::Term | StopOutcome::Kill) =
             (&target.worker_socket, outcome)
         {
             if is_unix_socket_file(socket) {
@@ -194,120 +189,14 @@ pub(crate) async fn reap_abandoned_workers(supervisor: &Arc<Supervisor>, worker_
     }
 }
 
-/// Whether the current identity snapshot agrees with the discovered process.
-/// This preflight check cannot itself bind a later numeric signal to an instance.
-/// An UNVERIFIABLE identity never signals - safe for lease retention, not for termination.
-fn identity_current(target: &ReapTarget) -> bool {
-    match &target.start_id {
-        Some(expected) => {
-            crate::lease::get_process_start_id(target.pid).as_deref() == Some(expected.as_str())
-        }
-        None => false,
+/// Stop one target, by its identity at discovery, on the boot reap's fast budgets.
+async fn stop_target(target: &ReapTarget) -> StopOutcome {
+    StopTarget {
+        pid: target.pid,
+        start_id: target.start_id.clone(),
     }
-}
-
-/// Stop one target on the boot reap's fast budgets.
-async fn stop_target(target: &ReapTarget) -> ReapOutcome {
-    stop_target_within(target, TERM_GRACE, KILL_VERIFY).await
-}
-
-struct PidfdGuard(i32);
-
-impl Drop for PidfdGuard {
-    fn drop(&mut self) {
-        pa_core::platform::process::close_pidfd(self.0);
-    }
-}
-
-/// Stop one target with explicit escalation budgets: gone check, SIGTERM,
-/// grace, SIGKILL, verify. The signals ride the kernel-held pidfd, which
-/// pins the process, where the platform has one; on unix without one
-/// they ride kill(2), with the identity check re-run immediately before
-/// each signal, narrowing pid reuse to the check-to-kill gap.
-async fn stop_target_within(
-    target: &ReapTarget,
-    term_grace: Duration,
-    kill_verify: Duration,
-) -> ReapOutcome {
-    match pa_core::platform::process::open_pidfd(target.pid) {
-        // The fd opens before the identity check and is held across it and
-        // every signal, so only the pinned process can receive one.
-        Ok(pidfd) => {
-            let pidfd = PidfdGuard(pidfd);
-            escalate(
-                target,
-                |signal| pa_core::platform::process::pidfd_signal(pidfd.0, signal),
-                term_grace,
-                kill_verify,
-            )
-            .await
-        }
-        Err(error) if cfg!(unix) && error.kind() == std::io::ErrorKind::Unsupported => {
-            escalate(
-                target,
-                |signal| {
-                    if identity_current(target) {
-                        let _ = pa_core::platform::process::kill_pid(target.pid as i32, signal);
-                    }
-                    true
-                },
-                term_grace,
-                kill_verify,
-            )
-            .await
-        }
-        // Every other unobtainable handle keeps the conservative default:
-        // it never signals. A LIVE process behind it is NOT gone: the
-        // terminal stop keeps its tombstoned descriptor (the next boot
-        // retries), never deletes it behind a false AlreadyGone.
-        Err(_) => {
-            if identity_current(target)
-                && crate::lease::is_process_alive(target.pid).unwrap_or(false)
-            {
-                ReapOutcome::Survived
-            } else {
-                ReapOutcome::AlreadyGone
-            }
-        }
-    }
-}
-
-/// The escalation ladder both signal carriers ride: gone check, SIGTERM,
-/// grace, SIGKILL, verify.
-async fn escalate(
-    target: &ReapTarget,
-    signal: impl Fn(pa_core::platform::process::Signal) -> bool,
-    term_grace: Duration,
-    kill_verify: Duration,
-) -> ReapOutcome {
-    if !identity_current(target) || !crate::lease::is_process_alive(target.pid).unwrap_or(false) {
-        return ReapOutcome::AlreadyGone;
-    }
-    if signal(pa_core::platform::process::Signal::Term) {
-        if await_gone(target, term_grace).await {
-            return ReapOutcome::Term;
-        }
-        if signal(pa_core::platform::process::Signal::Kill) && await_gone(target, kill_verify).await
-        {
-            return ReapOutcome::Kill;
-        }
-    }
-    ReapOutcome::Survived
-}
-
-/// Poll until the identity-gated pid is gone or the budget runs out.
-async fn await_gone(target: &ReapTarget, budget: Duration) -> bool {
-    let deadline = tokio::time::Instant::now() + budget;
-    loop {
-        if !identity_current(target) || !crate::lease::is_process_alive(target.pid).unwrap_or(false)
-        {
-            return true;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(POLL).await;
-    }
+    .stop(pa_core::platform::process_stop::BOOT_REAP_BUDGETS)
+    .await
 }
 
 /// The same-socket leftover workers, identified by the WORKER PROCESS SHAPE,
@@ -327,7 +216,7 @@ fn same_socket_worker_targets(
         }
         // The identity captures BEFORE every /proc read and re-verifies AFTER the
         // qualification: a recycled pid must never leave a target under the REPLACEMENT'S identity.
-        let start_id = crate::lease::get_process_start_id(pid);
+        let start_id = pa_core::session::lease::get_process_start_id(pid);
         // The abandoned-id filter: workers whose env names the given-up id; `None` = whole census.
         if let Some(active_session) = active_session {
             if !proc_environ_names_active_session(pid, active_session) {
@@ -342,7 +231,7 @@ fn same_socket_worker_targets(
         }
         // The executable check rides the UNFORGEABLE identity: argv[0] can be forged
         // (`exec -a`); /proc/<pid>/exe names the binary the kernel actually loaded.
-        if !exe_is_product_binary(pid) {
+        if !pa_core::platform::process_stop::exe_is_product_binary(pid) {
             continue;
         }
         let Some(environ) = read_proc_environ(pid) else {
@@ -356,7 +245,7 @@ fn same_socket_worker_targets(
             continue;
         }
         // The post-qualification identity re-check: the pid must still name the qualified process.
-        if crate::lease::get_process_start_id(pid).as_deref() != start_id.as_deref() {
+        if pa_core::session::lease::get_process_start_id(pid).as_deref() != start_id.as_deref() {
             continue;
         }
         // The KILL decision rests on the worker role and the same-socket identity alone - a
@@ -391,23 +280,6 @@ fn socket_spelling_of(pid: u32, value: &str) -> String {
     }
 }
 
-/// The product's own binary names: `prime-agent` (release/install) and
-/// `pa-daemon` (the workspace binary). Unix only, as [`is_worker_argv`].
-#[cfg(unix)]
-#[cfg_attr(
-    not(target_os = "linux"),
-    allow(
-        dead_code,
-        reason = "the Linux reaper is the only caller; other unixes compile it for parity"
-    )
-)]
-pub(crate) fn is_product_binary(exe: &str) -> bool {
-    matches!(
-        Path::new(exe).file_name().and_then(|name| name.to_str()),
-        Some("prime-agent" | "pa-daemon")
-    )
-}
-
 /// Whether a command line is the product's worker role: a product binary
 /// with `worker` as its first argument. Unix only.
 #[cfg(unix)]
@@ -419,7 +291,8 @@ pub(crate) fn is_product_binary(exe: &str) -> bool {
     )
 )]
 pub(crate) fn is_worker_argv(argv: &[String]) -> bool {
-    argv.first().is_some_and(|exe| is_product_binary(exe))
+    argv.first()
+        .is_some_and(|exe| pa_core::platform::process_stop::is_product_binary(exe))
         && argv.get(1).map(String::as_str) == Some("worker")
 }
 
@@ -474,16 +347,22 @@ fn proc_environ_names_active_session(_pid: u32, _active_session: &str) -> bool {
 /// The wedged supervisors of this socket path, excluding this process. A healthy
 /// predecessor never reaches here: its listener refused this daemon's bind.
 #[cfg(target_os = "linux")]
-fn same_socket_supervisor_targets(socket_path: &Path) -> Vec<ReapTarget> {
+fn same_socket_supervisor_targets(
+    socket_path: &Path,
+    runtime_daemon: &HashSet<u32>,
+) -> Vec<ReapTarget> {
     let socket = normalize_socket_spelling(socket_path);
     let mut targets = Vec::new();
     for pid in numeric_proc_entries() {
         // This daemon's restart owner runs the same command line; it is not a predecessor.
-        if pid == std::process::id() || Some(pid) == crate::keeper::keeper_pid() {
+        if pid == std::process::id()
+            || Some(pid) == crate::keeper::keeper_pid()
+            || runtime_daemon.contains(&pid)
+        {
             continue;
         }
         // Identity-first capture, as the worker census.
-        let start_id = crate::lease::get_process_start_id(pid);
+        let start_id = pa_core::session::lease::get_process_start_id(pid);
         let Some(mut argv) = read_proc_argv(pid) else {
             continue;
         };
@@ -492,11 +371,11 @@ fn same_socket_supervisor_targets(socket_path: &Path) -> Vec<ReapTarget> {
             continue;
         }
         // Same unforgeable-exe gate as the worker census.
-        if !exe_is_product_binary(pid) {
+        if !pa_core::platform::process_stop::exe_is_product_binary(pid) {
             continue;
         }
         // The post-qualification identity re-check.
-        if crate::lease::get_process_start_id(pid).as_deref() != start_id.as_deref() {
+        if pa_core::session::lease::get_process_start_id(pid).as_deref() != start_id.as_deref() {
             continue;
         }
         targets.push(ReapTarget {
@@ -510,7 +389,10 @@ fn same_socket_supervisor_targets(socket_path: &Path) -> Vec<ReapTarget> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn same_socket_supervisor_targets(_socket_path: &Path) -> Vec<ReapTarget> {
+fn same_socket_supervisor_targets(
+    _socket_path: &Path,
+    _runtime_daemon: &HashSet<u32>,
+) -> Vec<ReapTarget> {
     Vec::new()
 }
 
@@ -544,7 +426,7 @@ pub(crate) fn supervisor_argv_names_socket(argv: &[String], socket: &str) -> boo
     let Some(exe) = argv.first() else {
         return false;
     };
-    if !is_product_binary(exe) {
+    if !pa_core::platform::process_stop::is_product_binary(exe) {
         return false;
     }
     let after_flag = |flag: &str| {
@@ -637,8 +519,10 @@ fn protected_worker_pids(agent_dir: &Path, socket_path: &Path) -> HashSet<u32> {
                 continue;
             }
             let identity_holds = match &descriptor.process_start_id {
-                Some(expected) => crate::lease::get_process_start_id(descriptor.pid as u32)
-                    .is_none_or(|observed| observed == expected.as_str()),
+                Some(expected) => {
+                    pa_core::session::lease::get_process_start_id(descriptor.pid as u32)
+                        .is_none_or(|observed| observed == expected.as_str())
+                }
                 None => true,
             };
             if identity_holds {
@@ -716,19 +600,6 @@ fn read_proc_environ(pid: u32) -> Option<Vec<String>> {
     )
 }
 
-/// The UNFORGEABLE executable check for one pid: /proc/<pid>/exe names the
-/// binary the kernel loaded (argv[0] is forgeable via `exec -a`).
-#[cfg(target_os = "linux")]
-fn exe_is_product_binary(pid: u32) -> bool {
-    std::fs::read_link(format!("/proc/{pid}/exe"))
-        // The kernel appends " (deleted)" to a replaced binary's exe link (in-place upgrade).
-        .is_ok_and(|exe| {
-            let name = exe.to_string_lossy();
-            let name = name.trim_end_matches(" (deleted)");
-            is_product_binary(name)
-        })
-}
-
 /// One process's argv (None when unreadable).
 #[cfg(target_os = "linux")]
 fn read_proc_argv(pid: u32) -> Option<Vec<String>> {
@@ -745,15 +616,6 @@ fn read_proc_argv(pid: u32) -> Option<Vec<String>> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-
-    fn target(pid: u32) -> ReapTarget {
-        ReapTarget {
-            pid,
-            start_id: crate::lease::get_process_start_id(pid),
-            worker_socket: None,
-            kind: ReapKind::Worker,
-        }
-    }
 
     /// Kills and reaps the child on any exit path (a failed assertion in
     /// between would otherwise leak the `sleep` into the test machine: the
@@ -833,104 +695,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn a_real_process_stops_inside_the_term_grace() {
-        let mut child = pa_types::session_scope::std_command("sleep")
-            .arg("300")
-            .spawn()
-            .expect("spawn sleep");
-        let pid = child.id();
-        assert!(
-            pa_core::platform::process::open_pidfd(pid).is_ok(),
-            "the kernel-held handle opens"
-        );
-        let outcome = stop_target(&target(pid)).await;
-        let _ = child.wait();
-        assert_eq!(outcome, ReapOutcome::Term, "sleep must exit on SIGTERM");
-    }
-
-    /// The `bash` records SIGTERM without exiting or spawning a child (a leaked
-    /// grandchild would outlive the guard's kill); the trap marker is the readiness
-    /// barrier and the TERM record the escalation must leave before its KILL.
-    #[tokio::test]
-    async fn a_term_ignoring_process_dies_to_the_stop_escalation() {
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let trap_armed = dir.path().join("trap-armed");
-        let term_delivered = dir.path().join("term-delivered");
-        let child = pa_types::session_scope::std_command("bash")
-            .arg("-c")
-            .arg("trap ': > \"$2\"' TERM; : > \"$1\"; while :; do :; done")
-            .arg("bash")
-            .arg(&trap_armed)
-            .arg(&term_delivered)
-            .spawn()
-            .expect("spawn term-ignoring bash");
-        let mut guard = ReapOnDrop(Some(child));
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while !trap_armed.exists() && tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(trap_armed.exists(), "the trap never armed");
-        let pid = guard.0.as_ref().expect("guard holds the child").id();
-        let outcome = stop_process(pid, crate::lease::get_process_start_id(pid)).await;
-        assert_eq!(
-            outcome,
-            ReapOutcome::Kill,
-            "the stop escalation must SIGKILL a term-ignoring worker"
-        );
-        assert!(
-            term_delivered.exists(),
-            "the escalation must deliver its TERM before the KILL"
-        );
-        let mut child = guard.0.take().expect("guard holds the child");
-        let status = child.wait().expect("reap the escalated child");
-        assert_eq!(
-            pa_core::platform::process::termination_signal(&status),
-            Some(9),
-            "the child's death must be the escalation's SIGKILL"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_vanished_pid_reports_already_gone() {
-        let mut child = pa_types::session_scope::std_command("true")
-            .spawn()
-            .expect("spawn true");
-        let pid = child.id();
-        let _ = child.wait();
-        assert_eq!(stop_target(&target(pid)).await, ReapOutcome::AlreadyGone);
-    }
-
-    #[tokio::test]
-    async fn a_recycled_pid_is_never_signaled() {
-        let mut child = pa_types::session_scope::std_command("sleep")
-            .arg("300")
-            .spawn()
-            .expect("spawn sleep");
-        let pid = child.id();
-        let mut stale = target(pid);
-        stale.start_id = stale.start_id.map(|id| id + "recycled");
-        assert_eq!(stop_target(&stale).await, ReapOutcome::AlreadyGone);
-        assert!(
-            child.try_wait().expect("child alive").is_none(),
-            "the recycled identity must not have been signaled"
-        );
-        let mut unobservable = target(pid);
-        unobservable.start_id = None;
-        assert_eq!(
-            stop_target(&unobservable).await,
-            ReapOutcome::AlreadyGone,
-            "an unverifiable identity is never signaled"
-        );
-        assert!(
-            child.try_wait().expect("child alive").is_none(),
-            "the unverifiable identity must not have been signaled"
-        );
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-
     #[test]
     fn worker_argv_shapes() {
         let worker = ["/bin/prime-agent", "worker"]
@@ -986,30 +750,6 @@ mod tests {
         assert!(
             !is_worker_argv(&foreign_worker_arg),
             "a foreign binary with a worker argument never matches"
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn the_exe_gate_reads_the_kernel_binary() {
-        let mut child = pa_types::session_scope::std_command("sleep")
-            .arg("2")
-            .spawn()
-            .expect("spawn sleep");
-        assert!(
-            !exe_is_product_binary(child.id()),
-            "a foreign executable never passes the unforgeable gate"
-        );
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-
-    #[test]
-    fn the_exe_gate_accepts_replaced_binaries() {
-        let replaced = "/opt/prime-agent/bin/prime-agent (deleted)";
-        assert!(
-            is_product_binary(replaced.trim_end_matches(" (deleted)")),
-            "the deleted-suffix spelling still identifies the product binary"
         );
     }
 

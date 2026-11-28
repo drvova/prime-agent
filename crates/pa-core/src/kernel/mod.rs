@@ -16,6 +16,7 @@ pub(crate) mod elevation_runs;
 pub mod error_context;
 pub(crate) mod hypotheses;
 pub mod orphan_journal;
+pub mod persistent_shells;
 pub mod rlm_runtime;
 pub mod scheme;
 pub mod shared;

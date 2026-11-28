@@ -3,11 +3,7 @@
 Session supervision and wire serving.
 
 ## Scope
-ACP stdio transport (`acp`): the JSON-RPC serve surface for Agent
-Client Protocol clients, served over a daemon session (initialize, session/new, session/prompt, session/close,
-session/cancel, and the outgoing session/update notification with
-namespaced `_meta` correlation), owned by this crate because
-wire-protocol serving is its area; the worker turn loop owns compaction
+The worker turn loop owns compaction
 arms, auto-refine, and goal continuation. The compact-trigger
 auto-refine scheduling owns its surface here (`compact_autorefine.rs`
 for the daemon worker: every compaction arm plus the manual `compact`
@@ -48,7 +44,10 @@ session-artifacts tree - and wake over their own session file), wire protocol se
 `set_model`/`set_thinking_level` commands — `model_switch.rs`: registry
 resolution, the durable `model_change`/`thinking_level_change` rows, the
 settings defaults, and the engine's live agent/provider-target/level
-switch), session export commands (`session_export.rs`: the worker-side
+switch; `setting_switches.rs`: `cycle_model`, `set_scoped_models`,
+`cycle_thinking_level`, the service tier, transport, queue-mode, auto-compaction and
+auto-retry switches, over pa-core's `settings::switches` rules, which the runtime
+daemon applies too), session export commands (`session_export.rs`: the worker-side
 `export_html`/`export_jsonl` handlers; the HTML data carries the engine's
 tools section and custom-tool pre-render through the
 `SessionEngine::export_tools`/`export_rendered_tools` seams, built
@@ -69,18 +68,22 @@ of resident workers seed into the live roster - roots are the resident
 session files, descent is membership at any parent-walk step, and
 present rows by agent id or session file are never overwritten - at
 subscribe, spawn-admission, and worker-stop moments, so subscribers see
-the full family, not just resident rows), cloud sandbox attach, session
-leases (`core/session-lease.ts` port). Daemon-owned RLM spawn ledger (`rlm_ledger.rs`):
+the full family, not just resident rows), cloud sandbox attach; the session
+leases are pa-core's (`pa_core::session::lease`, the `core/session-lease.ts` port), and a lease
+this daemon holds writes its info sidecar through `pa_core::session::catalog::write_info_sidecar`. The crash record (`SessionCrash`), the crash log's name, the restart backoff and give-up limits and the process panic hook are pa-core's (`pa_core::session::crash`; the session host puts a `PanicSink` on each hosted session's scope), and so are the revival rules the boot adoption and the rebuilt worker apply (`pa_core::session::revival`: how far an interrupted turn got, a daemon death's verdict, the interrupted-turn notice and the outcome-unknown results); the recovery journal's use of them stays here (`revived_turn.rs`, `interrupted_calls.rs`, `supervisor/crash.rs`). RLM spawn ledger (`pa_core::session_engine::rlm_ledger`, moved to pa-core so the runtime daemon writes the same rows; the daemon gives it its legacy-tombstone usage reader, `pa_core::session::catalog::legacy_ledger_usage`):
 one append-only JSONL per sessions dir (spawn/rename/delete admissions with
 the TS `rlm-ledger.ts` record grammar, bounds, stat-guarded replay, and
 legacy-registry seeding) plus the per-child display files; family topology
 is read from the ledger, never re-derived from session files. Passive-RLM
-roster walk (`rlm_roster.rs`): `list --all` and the saved-session catalog
+roster walk (pa-core's `session_engine::rlm_roster`, moved from here and shared
+with the runtime daemon's saved catalog): `list --all` and the saved-session catalog
 merge non-resident ledger children (walk roots = saved + resident session
 files), so passivated children stay roster-visible (TS
 `walkPassiveRlmSubagents` / `withPassiveRlmDescendantInfos`). The saved
-session scan (`session_store.rs`) folds each file once into the durable
-catalog row.
+session catalog (`pa_core::session::catalog`, shared with the runtime daemon)
+folds each file once into the durable catalog row; `list_saved_sessions`
+(`supervisor/sessions.rs`) streams its rows and merges the passive children,
+the live persistent shells and the stored factory specs.
 Supervisor-backed RLM child sessions
 (`rlm_children.rs`, the daemon side of the pa-core `RlmSubagentHost` seam):
 `rlm.spawn`/`rlm.create_session` create real daemon sessions through the
@@ -178,9 +181,11 @@ Live token-stream rendering
 (`streaming`): turn events forward from the hosted engine to the worker's
 emit path as they arrive (one `message_update` per provider delta, the
 full partial message per frame - never buffered until turn settle); the
-worker coalesces them for broadcast in a single-slot coalescer (the
-leading edge at once; the trailing edge on an adaptive 16..=100 ms
-interval, `streaming::FlushPacer`: `pa_types::control`'s controller fed by
+worker coalesces them for broadcast in pa-core's single-slot coalescer
+(`pa_core::session_engine::wire_events`, with the update routing, the wire
+forms and the streaming context estimate; `streaming` frames and pumps what
+it flushes; the leading edge at once; the trailing edge on an adaptive
+16..=100 ms interval, `FlushPacer`: `pa_types::control`'s controller fed by
 the slowest subscriber's backlog and its dropped frames, starting at
 50 ms), while `message_start`/`message_end`/tool frames flush the
 parked update first and go out directly, so wire order and event-sequence
@@ -213,7 +218,7 @@ round-trips through a real worker session and kernel - the kernel cell's
 session's host handlers, spawn the fixture
 (`tests/fixtures/mcp_echo_server.py`), and echo back.
 
-Update-prepare transaction (`update_prepare.rs`): the supervisor-side FSM
+Update-prepare transaction (pa-core's `update::restart`, shared with the runtime daemon; the supervisor's residents' snapshot and stop are `supervisor/update_restart.rs`): the FSM
 `Draining -> Fenced -> Snapshotted -> Prepared -> Stopping` with the
 mutation-drain latch + admission gate (mutating commands refused with
 "Daemon is preparing an update restart" while active; reads/attach and the
@@ -224,8 +229,8 @@ re-checked on a timer and on any later command — idempotent
 the coordinator maps to Join), and `Aborted -> Serving` with prepared-dir
 cleanup as the failure default. The prepare RPC drives accept
 through the mutation drain to `Fenced`, snapshots every resident worker
-(`update_snapshot`, `worker.rs`), assembles the roster (`update_roster.rs`:
-sessions/workers/subagents from the ledger + displays, heartbeats as a
+(`update_snapshot`, `worker.rs`), assembles the roster (`update_roster.rs`'s session and worker
+rows, pa-core's `update::restart::roster` for subagents from the ledger + displays and heartbeats as a
 read-only `scheduled-jobs.json` projection), writes
 `prepared/<id>/{roster,marker}.json` durably, and acks `Prepared` — all
 inside the prepare budget. `commit_update_restart` consumes the
@@ -235,7 +240,8 @@ supervisor resumes `Serving`, refused sessions untouched, stopped workers
 relaunched — never a kill), or the update exit when all workers stopped
 (descriptors survive for the new supervisor's create-or-adopt restore).
 The new supervisor's boot owns the update's restore side
-(`update_restore.rs`, spec §6): it consumes `PRIME_AGENT_UPDATE_ROSTER`
+(pa-core's `update::restart::restore`, shared with the runtime daemon; the
+supervisor is its `RestoreHost` in `update_restore.rs`, spec §6): it consumes `PRIME_AGENT_UPDATE_ROSTER`
 from its spawn env before the unconditional scratch-dir sweep (this
 socket's `update-restarts/` subtree plus the TS-era legacy names — no
 liveness checks, no exceptions), then restores the roster rows bottom-up
@@ -262,7 +268,15 @@ broadcast owns its surface here too (the worker's cron-store
 to every client, so any heartbeat mutation anywhere in the daemon reaches
 attached UIs daemon-wide).
 
-Workspace checkpoints (`workspace_checkpoints.rs`): a shadow git store per
+Tree moves (`branch_navigation.rs`): `navigate_tree`'s landing point, the fork list, the copy
+text (`get_last_assistant_text`), the branch summary run and the export's tool renderer are
+pa-core's (`session::navigation`, `branch_summarization::run_branch_summary`,
+`export_html::RegistryToolRenderer`), shared with the runtime daemon. The whole-session
+replacements' rules (`fork`'s starting point, `import_jsonl`'s copy target, the replaced session's
+working directory and their refusals) are pa-core's `session::replacement`, shared with it too.
+
+Workspace checkpoints (`workspace_checkpoints.rs`, over pa-core's
+`session::checkpoints::CheckpointStore`, which the runtime daemon shares): a shadow git store per
 workspace (own git dir, one index per session, user git config shut out)
 snapshots the files before and after every turn, on the turn's blocking thread;
 `navigate_tree` with `restoreFiles` restores the target's tree after the leaf move, leaving paths
@@ -273,7 +287,7 @@ worker's `WorkspaceCheckpointController` on the same store: a checkpoint is a ca
 row in the session's own `<session>.repl.jsonl`, so ids never cross sessions or mix with the
 rewind records; the restore gate reads `replCanRestoreCheckpoints` from the global settings.
 
-The `/usage` page's supervisor arm (`usage_report.rs`, `get_usage`, no session selector): `quotas` reads the stored subscription credentials through pa-core's auth store and fetches each provider's usage endpoint (pa-ai `quota`) concurrently, each under a bounded timeout, with a per-provider cache (5 min, 30 s for a failed card; `forceRefresh` bypasses it; `PRIME_AGENT_QUOTA_BASE_URL` points every origin at one fixture host for end-to-end runs); `spend` aggregates every session file's billed calls (each assistant row's own usage plus the shared billed-row classifier's rows, never the child-attributed aggregate) by local day and provider/model on the blocking pool (each span's totals split by the rows' stamped billing modes, and each model row carrying its latest call's mode), cached per file by length and mtime, plus the latest rate-limited (HTTP 429) response per provider from the stream-failure diagnostics.
+The `/usage` page's supervisor arm (`usage_report.rs`, `get_usage`, no session selector; the page's logic is pa-core's `usage_report`, which the runtime daemon's `usage` query serves too, and the supervisor adds its request admission's pacing rows): `quotas` reads the stored subscription credentials through pa-core's auth store and fetches each provider's usage endpoint (pa-ai `quota`) concurrently, each under a bounded timeout, with a per-provider cache (5 min, 30 s for a failed card; `forceRefresh` bypasses it; `PRIME_AGENT_QUOTA_BASE_URL` points every origin at one fixture host for end-to-end runs); `spend` aggregates every session file's billed calls (each assistant row's own usage plus the shared billed-row classifier's rows, never the child-attributed aggregate) by local day and provider/model on the blocking pool (each span's totals split by the rows' stamped billing modes, and each model row carrying its latest call's mode), cached per file by length and mtime, plus the latest rate-limited (HTTP 429) response per provider from the stream-failure diagnostics.
 
 Kernel todos and questions (`user_interaction`): the worker's `InteractionSurface` over the
 session core — the hub's events framed as `todo_update`/`question_open`/`question_closed`
@@ -298,11 +312,29 @@ child worker spawns (subagent class), every worker's kernel starts, and the supe
 crash-recovery adoption (background class) take a boot permit from it, so a fan-out paces with
 the host's load; the spawn handle and `rlm.collect` results carry the boot's `queued_ms`.
 
+The heartbeat commands (`scheduled_jobs/arms.rs`, the supervisor's passive `heartbeat_manage`
+in `scheduling_catalog.rs`): `heartbeat_get`, `heartbeat_set`, `heartbeat_update` and
+`heartbeat_manage` over pa-core's `cron::heartbeat_commands` (the parse, the actions, the queued
+fire's withdrawal rule, the replies), which the runtime daemon shares.
+
+The user's `!` commands (`user_bash.rs`): the worker's `execute_bash`, `execute_bash_and_wait` and
+`abort_bash` arms, with their shutdown-gate admission and the `bashExecution` row in the worker's
+session store, over pa-core's `pa_core::user_bash` (the slot, the run and its event shapes), which
+the runtime daemon shares. The agents view's kernel activity: the worker's `list_kernel_bash`,
+`tail_kernel_bash`, `kill_kernel_bash` (`user_bash.rs`) and `factory_activity`
+(`factory_activity.rs`) arms and the supervisor's persistent-shell commands, over pa-core's
+`session_engine::kernel_activity` and `kernel::persistent_shells`, which the runtime daemon shares.
+The agents view's session controls: the worker's `agent_messages_*` arms
+(`agent_message_ingest.rs`, the supervisor's selector-less broadcast in
+`agent_message_broadcast.rs`), `get_rlm_max_depth_status`, `set_rlm_max_depth` and
+`delete_rlm_subagent` (`rlm_surface.rs`), over pa-core's `session_engine::agent_controls`, which the
+runtime daemon shares.
+
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.
 
 ## Public API
-Supervisor entrypoint, worker entrypoint, `keeper::{enter, run_keeper, KeeperOptions, record_stop_intent, KEEPER_ENV, DAEMON_DEATH_LOG}` (the daemon's restart owner: a kept launch splits into the daemon and the process that restarts it with backoff when it dies abnormally, records every death and stops at a crash-loop limit; the launchers set `KEEPER_ENV`, the binaries call `enter` first thing in `main`, and a stop that may end in a kill records its intent first), `mcp_login::{WorkerMcpLoginUi, wire_worker_mcp_login}` (the worker's browser+callback login behind `mcp.begin_login`; wired by the agent engine before sessions register host handlers), client connection API for pa-tui/pa-cli, `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions}` (pa-cli dispatches `--mode acp` through it), `agent_messaging::LinkAgentMessageController` + `rlm_children::{SupervisorChildSessions, ParentIdentity, RlmChildIdentity}` (e2e verifiers construct the worker-side family controller and the children registry; the engine wires the same types), `agent_engine::AgentSessionEngine::dispose_kernel` (the session-end kernel teardown the worker invokes at kill/shutdown/orphan exit — the engine outlives the session, so the pa-core engine-drop teardown cannot run there), the worker's `get_mcp_connections` command (`mcp_connections.rs`: the `/mcp` view's roster from the session's MCP manager overlaid with the session kernel's per-server tool listing, plus the api-key credential rows the same response serves — Rust-native session-plane extension; the TS daemon has no counterpart). `agent_message_wait::{AgentMessageWaits, AgentMessageArrival}` (the session's `agent_message.wait` receiving side the `SessionEngine` trait hands the worker). The display-only agent traffic feed (`agent_traffic.rs`): `worker_agent_traffic` from the receiving worker after each accepted delivery, a bounded in-memory ring per root tree, `agent_traffic_subscribe`/`agent_traffic_unsubscribe` and the `agent_traffic` push to opted-in clients. Supervision internals `pub(crate)`.
+Supervisor entrypoint, worker entrypoint, `worker::read_script_file` (the worker's read of a verification script file, which pa-cli's `PRIME_AGENT_FAUX_SCRIPT` seam reuses for the runtime daemon), `keeper::{enter, run_keeper, KeeperOptions, KeptDaemon, record_stop_intent, KEEPER_ENV, DAEMON_DEATH_LOG}` (the daemon's restart owner: a kept launch splits into the daemon and the process that restarts it with backoff when it dies abnormally, records every death and stops at a crash-loop limit; `KeptDaemon` names which daemon it keeps, the supervisor or the runtime daemon, whose records it keeps under `daemon2.sock`; the launchers set `KEEPER_ENV`, the binaries call `enter` first thing in `main`, and a stop that may end in a kill records its intent first), `mcp_login::{WorkerMcpLoginUi, wire_worker_mcp_login}` (the worker's browser+callback login behind `mcp.begin_login`; wired by the agent engine before sessions register host handlers), client connection API for pa-tui/pa-cli, `agent_messaging::LinkAgentMessageController` + `rlm_children::{SupervisorChildSessions, ParentIdentity, RlmChildIdentity}` (e2e verifiers construct the worker-side family controller and the children registry; the engine wires the same types), `agent_engine::AgentSessionEngine::dispose_kernel` (the session-end kernel teardown the worker invokes at kill/shutdown/orphan exit — the engine outlives the session, so the pa-core engine-drop teardown cannot run there), the worker's `get_mcp_connections` command (`mcp_connections.rs`: the `/mcp` view's roster from the session's MCP manager overlaid with the session kernel's per-server tool listing, plus the api-key credential rows the same response serves, built by pa-core's `McpManager::connections_view`, which the runtime daemon serves too — Rust-native session-plane extension; the TS daemon has no counterpart), and the worker's `get_model_catalog` (`model_catalog.rs`, over pa-core's `models::CatalogRefresh`, a changed snapshot broadcasting `model_catalog_changed`). The session's `agent_message.wait` receiving side (`AgentMessageWaits`, `AgentMessageArrival`) and the park, cycle walk and timeout (`wait_for_arrival`) are pa-core's (`pa_core::session_engine::agent_messaging`); the worker feeds it and its controller calls it. The display-only agent traffic feed (`agent_traffic.rs`): `worker_agent_traffic` from the receiving worker after each accepted delivery, a bounded in-memory ring per root tree, `agent_traffic_subscribe`/`agent_traffic_unsubscribe` and the `agent_traffic` push to opted-in clients. Supervision internals `pub(crate)`.
 
 
 ## Depends on

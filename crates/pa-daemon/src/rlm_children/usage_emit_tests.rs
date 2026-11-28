@@ -250,8 +250,8 @@ async fn reseed_lists_live_ledger_children_settled_and_bills_only_after_a_delive
         ("sub-a", &child_one, "completed", Some("finished task")),
         ("sub-b", &child_two, "running", None),
     ] {
-        crate::rlm_ledger::write_rlm_subagent_display(
-            &crate::rlm_ledger::RlmSubagentDisplayEntry {
+        pa_core::session_engine::rlm_ledger::write_rlm_subagent_display(
+            &pa_core::session_engine::rlm_ledger::RlmSubagentDisplayEntry {
                 type_tag: "rlm_subagent".to_string(),
                 child_id: child_id.to_string(),
                 session_name: child_id.to_string(),
@@ -279,7 +279,8 @@ async fn reseed_lists_live_ledger_children_settled_and_bills_only_after_a_delive
         })
         .to_string()
     };
-    let ledger_path = crate::rlm_ledger::rlm_ledger_path(&agent, &daemon_sessions);
+    let ledger_path =
+        pa_core::session_engine::rlm_ledger::rlm_ledger_path(&agent, &daemon_sessions);
     std::fs::create_dir_all(ledger_path.parent().expect("ledger dir")).unwrap();
     std::fs::write(
         ledger_path,

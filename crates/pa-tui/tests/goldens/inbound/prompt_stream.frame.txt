@@ -1,0 +1,30 @@
+                                                tmp  $—
+
+                  ▗▄▄█▀
+    ███▄       ▗▄███▀
+   ▗█▛▐█▙   ▗▄█▀▗█▀       prime agent v0.0.0
+  ▗█▛ ▟██▙▄██▛ ▟▛         model faux-1
+  ▗▟▌ ▐███▛▘▗▄█▖          cwd /tmp
+ ▟███▄  ▄▄▟███▀
+ ▜█▛▀▘  ▜█▛▀▘
+
+
+  hello                                                                                      ##:##
+
+
+ • Thought · ~9 tokens
+
+ Hello! I stream this answer in small pieces so the client sees several message updates before the
+ turn ends.
+
+ Worked for # · 0 tool calls · 18k tokens
+
+
+
+                                                                  Collapsed mode (Ctrl+O to expand)
+
+ >
+
+← manage (context tray)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ 0 subagents  ·  ◷ 0 heartbeats  ·  ▸ 0 shells

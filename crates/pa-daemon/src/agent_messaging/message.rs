@@ -22,7 +22,7 @@ pub struct LinkAgentMessageController {
     /// This session's resident RLM children; `None` for standalone workers.
     pub(super) children: Option<Arc<crate::rlm_children::SupervisorChildSessions>>,
     /// This session's receiving side for `agent_message.wait`.
-    pub(super) waits: Arc<crate::agent_message_wait::AgentMessageWaits>,
+    pub(super) waits: Arc<pa_core::session_engine::agent_messaging::AgentMessageWaits>,
 }
 
 impl LinkAgentMessageController {
@@ -32,7 +32,7 @@ impl LinkAgentMessageController {
         worker_token: String,
         own_summary: Arc<std::sync::Mutex<Option<Value>>>,
         children: Option<Arc<crate::rlm_children::SupervisorChildSessions>>,
-        waits: Arc<crate::agent_message_wait::AgentMessageWaits>,
+        waits: Arc<pa_core::session_engine::agent_messaging::AgentMessageWaits>,
     ) -> Self {
         LinkAgentMessageController {
             link,

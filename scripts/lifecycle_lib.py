@@ -54,7 +54,11 @@ def env_for(root):
                PRIME_AGENT_CODING_AGENT_DIR=str(root / "agent"),
                PI_CODING_AGENT_DIR=str(root / "agent"), TERM="xterm-256color",
                PRIME_AGENT_MODEL_PROVIDER="parity-local", PRIME_AGENT_MODEL="parity-1",
-               PI_OFFLINE="1", DO_NOT_TRACK="1")
+               PI_OFFLINE="1", DO_NOT_TRACK="1",
+               # These checks speak the old supervisor's wire on its socket
+               # (`daemon.sock`); the runtime daemon (wire2, `daemon2.sock`) is
+               # the default, so the supervisor is selected by name.
+               PRIME_AGENT_RUNTIME_DAEMON="0")
     (root / "agent/settings.json").write_text(json.dumps({
         "onboardingCompleted": True, "onboardingShown": True,
         "telemetry": {"noticeShown": True}}))

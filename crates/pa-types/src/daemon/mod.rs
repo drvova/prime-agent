@@ -97,7 +97,6 @@ pub mod agent_roster;
 mod command;
 mod crash;
 pub mod framing;
-pub mod herdr_env;
 pub mod launch_env;
 pub mod message_delta;
 mod outbound;
@@ -152,6 +151,70 @@ pub(crate) fn rt<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(json: &
     let out = serde_json::to_string(&parsed).expect("serialize");
     let reparsed: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(original, reparsed, "round trip changed the value: {out}");
+}
+
+/// The replay info an attach answers (TS `createDaemonReplayInfo`): a
+/// resume cursor from another generation, ahead of the session, or behind it
+/// (no event replay) is `unavailable`; none, or one at the session's last
+/// event, is `complete`.
+#[must_use]
+pub fn replay_info(
+    resume_cursor: Option<&DaemonResumeCursor>,
+    last_event_sequence: DaemonEventSequence,
+    generation: &str,
+) -> DaemonReplayInfo {
+    let to_cursor = DaemonEventCursor {
+        generation: generation.to_string(),
+        sequence: last_event_sequence,
+    };
+    let Some(resume) = resume_cursor else {
+        return DaemonReplayInfo {
+            status: DaemonReplayStatus::Complete,
+            from_sequence: None,
+            to_sequence: last_event_sequence,
+            from_cursor: None,
+            to_cursor: Some(to_cursor),
+            reason: None,
+        };
+    };
+    let resume_sequence = resume
+        .sequence
+        .or(resume.event_sequence)
+        .unwrap_or_default();
+    let from_cursor = resume
+        .generation
+        .as_deref()
+        .map(|generation| DaemonEventCursor {
+            generation: generation.to_string(),
+            sequence: resume_sequence,
+        });
+    let unavailable = |reason: &str| DaemonReplayInfo {
+        status: DaemonReplayStatus::Unavailable,
+        from_sequence: Some(resume_sequence),
+        to_sequence: last_event_sequence,
+        from_cursor: from_cursor.clone(),
+        to_cursor: Some(to_cursor.clone()),
+        reason: Some(reason.to_string()),
+    };
+    if let Some(from) = &from_cursor {
+        if from.generation != generation {
+            return unavailable("event_generation_changed");
+        }
+    }
+    if resume_sequence > last_event_sequence {
+        return unavailable("resume_cursor_ahead_of_session");
+    }
+    if resume_sequence == last_event_sequence {
+        return DaemonReplayInfo {
+            status: DaemonReplayStatus::Complete,
+            from_sequence: Some(resume_sequence),
+            to_sequence: last_event_sequence,
+            from_cursor,
+            to_cursor: Some(to_cursor),
+            reason: None,
+        };
+    }
+    unavailable("event_replay_not_available")
 }
 
 #[cfg(test)]

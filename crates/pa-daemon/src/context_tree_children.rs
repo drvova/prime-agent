@@ -28,14 +28,14 @@ const ELLIPSIS: &str = "...";
 pub struct ContextLedger {
     tombstoned: HashMap<PathBuf, HashSet<String>>,
     tombstoned_files: HashSet<PathBuf>,
-    deleted: HashMap<PathBuf, Vec<crate::rlm_ledger::DeletedChildUsage>>,
-    factory: HashMap<PathBuf, crate::rlm_ledger::RlmFactoryTag>,
+    deleted: HashMap<PathBuf, Vec<pa_core::session_engine::rlm_ledger::DeletedChildUsage>>,
+    factory: HashMap<PathBuf, pa_core::session_engine::rlm_host::RlmFactoryTag>,
 }
 
 impl ContextLedger {
     /// Read the facts from one ledger. An unreadable ledger degrades to no
     /// filtering and no deleted rows.
-    pub fn read(ledger: &crate::rlm_ledger::RlmSpawnLedger) -> Self {
+    pub fn read(ledger: &pa_core::session_engine::rlm_ledger::RlmSpawnLedger) -> Self {
         let mut facts = Self::default();
         let (edges, deleted) = ledger.edges_with_deleted_children().unwrap_or_default();
         // A reused path with a live edge bills as live, like the ledger's
@@ -43,23 +43,23 @@ impl ContextLedger {
         let live_files: HashSet<PathBuf> = edges
             .iter()
             .filter(|edge| edge.deleted.is_none())
-            .map(|edge| crate::lease::canonical_session_path(Path::new(&edge.child)))
+            .map(|edge| pa_core::session::lease::canonical_session_path(Path::new(&edge.child)))
             .collect();
         // Replay order: the last edge at a child session file decides its tag.
         for edge in edges {
-            let child = crate::lease::canonical_session_path(Path::new(&edge.child));
+            let child = pa_core::session::lease::canonical_session_path(Path::new(&edge.child));
             match edge.factory.clone() {
                 Some(tag) => facts.factory.insert(child, tag),
                 None => facts.factory.remove(&child),
             };
             if edge.deleted.is_some() {
-                let file = crate::lease::canonical_session_path(Path::new(&edge.child));
+                let file = pa_core::session::lease::canonical_session_path(Path::new(&edge.child));
                 if !live_files.contains(&file) {
                     facts.tombstoned_files.insert(file);
                 }
                 facts
                     .tombstoned
-                    .entry(crate::lease::canonical_session_path(Path::new(
+                    .entry(pa_core::session::lease::canonical_session_path(Path::new(
                         &edge.parent,
                     )))
                     .or_default()
@@ -75,7 +75,9 @@ impl ContextLedger {
     /// The tombstoned child ids of one parent session file.
     pub fn tombstoned_ids(&self, parent_file: &Path) -> HashSet<String> {
         self.tombstoned
-            .get(&crate::lease::canonical_session_path(parent_file))
+            .get(&pa_core::session::lease::canonical_session_path(
+                parent_file,
+            ))
             .cloned()
             .unwrap_or_default()
     }
@@ -83,7 +85,7 @@ impl ContextLedger {
     /// Whether this exact session file was tombstoned; called on the blocking walk.
     pub(crate) fn is_tombstoned_file(&self, path: &Path) -> bool {
         self.tombstoned_files
-            .contains(&crate::lease::canonical_session_path(path))
+            .contains(&pa_core::session::lease::canonical_session_path(path))
     }
 
     /// Set a child node's `factory` run tag from the ledger edge of its
@@ -91,7 +93,9 @@ impl ContextLedger {
     fn tag(&self, node: &mut Value, session_file: &Path) {
         if let Some(tag) = self
             .factory
-            .get(&crate::lease::canonical_session_path(session_file))
+            .get(&pa_core::session::lease::canonical_session_path(
+                session_file,
+            ))
         {
             node["factory"] = json!(tag);
         }
@@ -105,7 +109,9 @@ impl ContextLedger {
     pub fn deleted_nodes(&self, parent_file: &Path) -> Vec<Value> {
         let Some(children) = self
             .deleted
-            .get(&crate::lease::canonical_session_path(parent_file))
+            .get(&pa_core::session::lease::canonical_session_path(
+                parent_file,
+            ))
         else {
             return Vec::new();
         };
@@ -759,7 +765,7 @@ mod tests {
         let mut ledger = ContextLedger::default();
         ledger
             .tombstoned
-            .entry(crate::lease::canonical_session_path(
+            .entry(pa_core::session::lease::canonical_session_path(
                 &child_dir.join("01a0child-0000.jsonl"),
             ))
             .or_default()

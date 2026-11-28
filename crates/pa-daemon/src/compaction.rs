@@ -297,24 +297,6 @@ pub(crate) fn compaction_summary_delta_event(delta: &str) -> Value {
     json!({ "type": "compaction_summary_delta", "delta": delta })
 }
 
-/// The client-facing `CompactionResult` of a successful compaction (TS `_performCompaction`'s
-/// return): summary, firstKeptEntryId, tokensBefore, and the entry's file-op `details` verbatim.
-/// `usage` never rides the wire result.
-pub(crate) fn compaction_result_value(
-    result: &pa_core::session_engine::compaction_exec::CompactionResult,
-    entry: &pa_types::session::CompactionEntry,
-) -> Value {
-    let mut value = json!({
-        "summary": result.summary,
-        "firstKeptEntryId": result.first_kept_entry_id,
-        "tokensBefore": result.tokens_before,
-    });
-    if let Some(details) = &entry.details {
-        value["details"] = details.clone();
-    }
-    value
-}
-
 /// The `compaction_end` payload of a successful compaction (TS `AgentSessionEvent`): the
 /// client-facing `CompactionResult` plus the failed-turn retry flag.
 pub(crate) fn compaction_end_success(
@@ -501,60 +483,6 @@ mod tests {
         assert_eq!(
             sequences,
             vec![json!(1), json!(2), json!(3), json!(4), json!(5)]
-        );
-    }
-
-    #[test]
-    fn compaction_result_value_mirrors_the_ts_datakeys() {
-        let result = pa_core::session_engine::compaction_exec::CompactionResult {
-            summary: "the story so far".to_string(),
-            first_kept_entry_id: "abcd1234".to_string(),
-            tokens_before: 1234,
-            usage: Some(pa_types::ai::Usage::default()),
-        };
-        let entry = pa_types::session::CompactionEntry {
-            summary: result.summary.clone(),
-            first_kept_entry_id: result.first_kept_entry_id.clone(),
-            tokens_before: result.tokens_before,
-            details: Some(json!({ "readFiles": ["a.rs"], "modifiedFiles": ["b.rs"] })),
-            from_hook: Some(false),
-            custom_instructions: None,
-            usage: result.usage,
-            harness_digest: None,
-            harness_state_fingerprint: None,
-        };
-        // The TS `compact` response dataKeys (the live golden,
-        // `tests/goldens/compaction-live-ts.json`): summary,
-        // firstKeptEntryId, tokensBefore, details — with the entry's
-        // `details` verbatim and the summarizer usage never on the wire.
-        assert_eq!(
-            compaction_result_value(&result, &entry),
-            json!({
-                "summary": "the story so far",
-                "firstKeptEntryId": "abcd1234",
-                "tokensBefore": 1234,
-                "details": { "readFiles": ["a.rs"], "modifiedFiles": ["b.rs"] },
-            })
-        );
-        // Byte order: the JSON map preserves the TS dataKeys' insertion
-        // order (readFiles first inside `details`).
-        assert_eq!(
-            serde_json::to_string(&compaction_result_value(&result, &entry)).unwrap(),
-            "{\"summary\":\"the story so far\",\"firstKeptEntryId\":\"abcd1234\",\"tokensBefore\":1234,\"details\":{\"readFiles\":[\"a.rs\"],\"modifiedFiles\":[\"b.rs\"]}}"
-        );
-        // A run whose entry carries no details drops the key, like TS's
-        // `undefined` under JSON serialization.
-        let bare = pa_types::session::CompactionEntry {
-            details: None,
-            ..entry
-        };
-        assert_eq!(
-            compaction_result_value(&result, &bare),
-            json!({
-                "summary": "the story so far",
-                "firstKeptEntryId": "abcd1234",
-                "tokensBefore": 1234,
-            })
         );
     }
 

@@ -649,7 +649,7 @@ fn owned_tail_completion_obeys_a_managed_lease_and_refuses_a_released_one() {
     FAIL_CHILD_TAIL_COMPLETION.with(|fault| fault.set(false));
     let partial = pa_core::session::store::store().read(&store.path).unwrap();
     let stale = std::sync::Arc::new(
-        crate::lease::acquire_runtime_session_lease(&store.path, dir.path()).unwrap(),
+        pa_core::session::lease::acquire_runtime_session_lease(&store.path, dir.path()).unwrap(),
     );
     stale.release();
     store.lease = Some(stale);
@@ -661,7 +661,7 @@ fn owned_tail_completion_obeys_a_managed_lease_and_refuses_a_released_one() {
         partial
     );
     store.lease = Some(std::sync::Arc::new(
-        crate::lease::acquire_runtime_session_lease(&store.path, dir.path()).unwrap(),
+        pa_core::session::lease::acquire_runtime_session_lease(&store.path, dir.path()).unwrap(),
     ));
     assert!(matches!(
         store
@@ -681,7 +681,7 @@ fn owned_tail_completion_obeys_a_managed_lease_and_refuses_a_released_one() {
 fn admitted_confirmation_finishes_while_release_drains_and_later_writes_are_refused() {
     let (dir, mut store, target) = fixture();
     let lease = std::sync::Arc::new(
-        crate::lease::acquire_runtime_session_lease(&store.path, dir.path()).unwrap(),
+        pa_core::session::lease::acquire_runtime_session_lease(&store.path, dir.path()).unwrap(),
     );
     store.lease = Some(std::sync::Arc::clone(&lease));
     FAIL_AFTER_CHILD_APPEND.with(|fault| fault.set(true));

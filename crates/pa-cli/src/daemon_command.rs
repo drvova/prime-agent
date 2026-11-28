@@ -2,6 +2,27 @@
 //! `sessions`, `stop`, `rename`, `send`, and `schedule`: argument parsing,
 //! request shaping, and output rendering. `schedule` maps to the internal
 //! `cron` command and `stop` to `kill`.
+//!
+//! On the runtime daemon (the default; the supervisor is selected with
+//! `"daemon": "supervisor"` in the global settings or
+//! `PRIME_AGENT_RUNTIME_DAEMON=0`) each command speaks wire2 to it on
+//! `daemon2.sock` beside the socket it was given, and renders its answers
+//! the same way as the supervisor's:
+//!
+//! | command | wire2 |
+//! | --- | --- |
+//! | `list`, `sessions` | query `sessions.list` (`{"open": true}` without `--all`) |
+//! | `stop` | call `session.stop` |
+//! | `rename` | call `session.rename` |
+//! | `send` | call `session.send` (a saved session is woken for it) |
+//! | `schedule list` | query `schedules` |
+//! | `schedule add` | call `schedule.add` |
+//! | `schedule cancel` | call `schedule.cancel` |
+//!
+//! The old daemon resolves a session selector itself; for the runtime daemon
+//! the command resolves it against `sessions.list` by the same rules: an
+//! open session by its id, name or an unambiguous id suffix, and, for
+//! `send` only, a saved session by its exact id or name.
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +35,7 @@ use crate::daemon_session_list::{
     format_session_list_table, get_session_summaries, live_session_summary,
     matches_session_id_suffix,
 };
+use crate::runtime_daemon_client::RuntimeDaemonClient;
 
 #[derive(Debug)]
 struct ParsedDaemonCommand {
@@ -25,6 +47,23 @@ struct ParsedDaemonCommand {
     help: bool,
 }
 
+/// The daemon a command speaks to.
+enum Daemon {
+    /// The old daemon, over its JSONL command wire.
+    Old(DaemonClient),
+    /// The runtime daemon, over wire2.
+    Runtime(RuntimeDaemonClient),
+}
+
+/// How far a session selector reaches on the runtime daemon.
+#[derive(Clone, Copy)]
+enum Reach {
+    /// The open sessions only.
+    Open,
+    /// The open sessions, then the saved ones by exact id or name.
+    OpenOrSaved,
+}
+
 /// Run one internal daemon command. Errors are printed by the public command
 /// router exactly like the `handleDaemonCommand` catch in the TS CLI.
 pub(crate) fn run_daemon_command(command: &str, args: &[String]) -> Result<()> {
@@ -32,15 +71,34 @@ pub(crate) fn run_daemon_command(command: &str, args: &[String]) -> Result<()> {
     if parsed.help {
         return Ok(());
     }
-    let mut client = DaemonClient::connect(&parsed.socket_path)?;
+    let selected = crate::daemon_mode::DaemonKind::selected(&crate::config::get_agent_dir());
+    let mut daemon = if selected == crate::daemon_mode::DaemonKind::Runtime {
+        Daemon::Runtime(RuntimeDaemonClient::connect(
+            &pa_runtime::daemon::socket_path(&parsed.socket_path),
+        )?)
+    } else {
+        Daemon::Old(DaemonClient::connect(&parsed.socket_path)?)
+    };
     match command {
-        "list" => run_list(&mut client, &parsed.positionals, parsed.json),
-        "sessions" => run_sessions(&mut client, &parsed.positionals, parsed.json),
-        "kill" => run_kill(&mut client, &parsed.positionals, parsed.json),
-        "rename" => run_rename(&mut client, &parsed.positionals, parsed.json),
-        "send" => run_send(&mut client, &parsed.positionals, parsed.json),
-        "cron" => run_cron(&mut client, &parsed.positionals, parsed.json),
+        "list" => run_list(&mut daemon, &parsed.positionals, parsed.json),
+        "sessions" => run_sessions(&mut daemon, &parsed.positionals, parsed.json),
+        "kill" => run_kill(&mut daemon, &parsed.positionals, parsed.json),
+        "rename" => run_rename(&mut daemon, &parsed.positionals, parsed.json),
+        "send" => run_send(&mut daemon, &parsed.positionals, parsed.json),
+        "cron" => run_cron(&mut daemon, &parsed.positionals, parsed.json),
         other => bail!("Unknown daemon command: {other}"),
+    }
+}
+
+/// The session list: the old daemon's `list` (live sessions, or `all` of
+/// them), or the runtime daemon's `sessions.list` (its open sessions, or
+/// `all` of them).
+fn list_data(daemon: &mut Daemon, all: bool) -> Result<Value> {
+    match daemon {
+        Daemon::Old(client) => {
+            Ok(require_success(client.request(list_command(all))?)?.unwrap_or(Value::Null))
+        }
+        Daemon::Runtime(client) => client.query("sessions.list", json!({ "open": !all })),
     }
 }
 
@@ -134,7 +192,7 @@ fn require_active_session_id(args: &[String]) -> Result<String> {
         .ok_or_else(|| anyhow!("Missing agent id or name"))
 }
 
-fn run_list(client: &mut DaemonClient, args: &[String], json: bool) -> Result<()> {
+fn run_list(daemon: &mut Daemon, args: &[String], json: bool) -> Result<()> {
     let mut all = false;
     for arg in args {
         if arg == "-a" || arg == "--all" {
@@ -143,8 +201,7 @@ fn run_list(client: &mut DaemonClient, args: &[String], json: bool) -> Result<()
         }
         bail!("Unknown list option: {arg}");
     }
-    let response = client.request(list_command(all))?;
-    let data = require_success(response)?.unwrap_or(Value::Null);
+    let data = list_data(daemon, all)?;
     if json {
         print_json(&data);
         return Ok(());
@@ -181,7 +238,7 @@ fn list_command(all: bool) -> DaemonCommand {
 
 /// The same list RPC as `prime-agent list`, rendered as the
 /// one-line-per-agent operator table.
-fn run_sessions(client: &mut DaemonClient, args: &[String], json: bool) -> Result<()> {
+fn run_sessions(daemon: &mut Daemon, args: &[String], json: bool) -> Result<()> {
     let mut all = false;
     for arg in args {
         if arg == "-a" || arg == "--all" {
@@ -190,8 +247,7 @@ fn run_sessions(client: &mut DaemonClient, args: &[String], json: bool) -> Resul
         }
         bail!("Unknown sessions option: {arg}");
     }
-    let response = client.request(list_command(all))?;
-    let data = require_success(response)?.unwrap_or(Value::Null);
+    let data = list_data(daemon, all)?;
     if json {
         print_json(&data);
         return Ok(());
@@ -221,16 +277,63 @@ fn run_sessions(client: &mut DaemonClient, args: &[String], json: bool) -> Resul
     Ok(())
 }
 
-/// Match a name/id/session-id selector against the live session list,
-/// with unambiguous hex-suffix fallback.
+/// Match a name/id/session-id selector against the old daemon's live
+/// session list, with unambiguous hex-suffix fallback.
 fn resolve_live_session_selector(client: &mut DaemonClient, selector: &str) -> Result<String> {
-    let response = client.request(list_command(false))?;
-    let data = require_success(response)?;
+    let data = require_success(client.request(list_command(false))?)?.unwrap_or(Value::Null);
     let sessions = data
-        .as_ref()
-        .and_then(|data| data.get("sessions"))
+        .get("sessions")
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow!("Daemon returned an invalid list response"))?;
+    match_live_session(&sessions.iter().collect::<Vec<_>>(), selector)?
+        .ok_or_else(|| anyhow!("Unknown active session: {selector}"))
+}
+
+/// The session `selector` names on the runtime daemon: an open one by the
+/// old daemon's live rules, then (`reach`) a saved one by exact id or name.
+fn resolve_runtime_session(
+    client: &mut RuntimeDaemonClient,
+    selector: &str,
+    reach: Reach,
+) -> Result<String> {
+    let data = client.query(
+        "sessions.list",
+        json!({ "open": matches!(reach, Reach::Open) }),
+    )?;
+    let rows = data
+        .get("sessions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("Daemon returned an invalid list response"))?;
+    let (open, saved): (Vec<&Value>, Vec<&Value>) = rows
+        .iter()
+        .partition(|row| row.get("open").and_then(Value::as_bool) == Some(true));
+    if let Some(id) = match_live_session(&open, selector)? {
+        return Ok(id);
+    }
+    let unknown = || anyhow!("Unknown active session: {selector}");
+    match reach {
+        Reach::Open => return Err(unknown()),
+        Reach::OpenOrSaved => {}
+    }
+    let named: Vec<&str> = saved
+        .iter()
+        .filter(|row| {
+            row.get("sessionId").and_then(Value::as_str) == Some(selector)
+                || row.get("sessionName").and_then(Value::as_str) == Some(selector)
+        })
+        .filter_map(|row| row.get("sessionId").and_then(Value::as_str))
+        .collect();
+    match named.as_slice() {
+        [id] => Ok((*id).to_string()),
+        [] => Err(unknown()),
+        _ => Err(anyhow!("Ambiguous active session \"{selector}\"")),
+    }
+}
+
+/// The active id of the one live session `selector` names: by active id,
+/// session id or name, else by an unambiguous hex suffix of either id;
+/// `None` when none matches.
+fn match_live_session(sessions: &[&Value], selector: &str) -> Result<Option<String>> {
     let mut exact: Vec<String> = Vec::new();
     let mut suffix: Vec<String> = Vec::new();
     for session in sessions {
@@ -253,21 +356,35 @@ fn resolve_live_session_selector(client: &mut DaemonClient, selector: &str) -> R
         }
     }
     let matches = if exact.is_empty() { suffix } else { exact };
-    match matches.len() {
-        1 => Ok(matches[0].clone()),
-        0 => Err(anyhow!("Unknown active session: {selector}")),
+    match matches.as_slice() {
+        [id] => Ok(Some(id.clone())),
+        [] => Ok(None),
         _ => Err(anyhow!("Ambiguous active session \"{selector}\"")),
     }
 }
 
-fn run_kill(client: &mut DaemonClient, args: &[String], json: bool) -> Result<()> {
+fn run_kill(daemon: &mut Daemon, args: &[String], json: bool) -> Result<()> {
     let active_session_id = require_active_session_id(args)?;
-    let response = client.request(DaemonCommand::Kill {
-        id: None,
-        active_session_id,
-        rest: serde_json::Map::new(),
-    })?;
-    print_response_data(&response, json)
+    match daemon {
+        Daemon::Old(client) => {
+            let response = client.request(DaemonCommand::Kill {
+                id: None,
+                active_session_id,
+                rest: serde_json::Map::new(),
+            })?;
+            print_response_data(&response, json)
+        }
+        Daemon::Runtime(client) => {
+            let id = resolve_runtime_session(client, &active_session_id, Reach::Open)?;
+            let result = client.call("session.stop", json!({ "session": id }))?;
+            if json {
+                print_json(&result);
+            } else {
+                println!("ok");
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Pretty-print the response data (the whole response as JSON when
@@ -304,12 +421,25 @@ fn response_value(response: &pa_types::daemon::DaemonResponse) -> Value {
     value
 }
 
-fn run_rename(client: &mut DaemonClient, args: &[String], json: bool) -> Result<()> {
+fn run_rename(daemon: &mut Daemon, args: &[String], json: bool) -> Result<()> {
     let active_session_id = require_active_session_id(args)?;
     let name = args[1..].join(" ").trim().to_string();
     if name.is_empty() {
         bail!("Usage: prime-agent rename <agent> <name>");
     }
+    let client = match daemon {
+        Daemon::Old(client) => client,
+        Daemon::Runtime(client) => {
+            let id = resolve_runtime_session(client, &active_session_id, Reach::Open)?;
+            let result = client.call("session.rename", json!({ "session": id, "name": name }))?;
+            if json {
+                print_json(&result);
+            } else {
+                println!("Renamed {id} to {name}");
+            }
+            return Ok(());
+        }
+    };
     let response = client.request(DaemonCommand::Rename {
         id: None,
         active_session_id,
@@ -339,9 +469,39 @@ fn run_rename(client: &mut DaemonClient, args: &[String], json: bool) -> Result<
     Ok(())
 }
 
-fn run_send(client: &mut DaemonClient, args: &[String], json: bool) -> Result<()> {
-    let response = client.request(parse_send_args(args)?)?;
-    let data = require_success(response)?.unwrap_or(Value::Null);
+fn run_send(daemon: &mut Daemon, args: &[String], json: bool) -> Result<()> {
+    let request = parse_send_args(args)?;
+    let data = match daemon {
+        Daemon::Old(client) => require_success(client.request(request)?)?.unwrap_or(Value::Null),
+        Daemon::Runtime(client) => {
+            let DaemonCommand::SendMessage {
+                target_active_session_id,
+                message,
+                from_active_session_id,
+                delivery_mode,
+                ..
+            } = request
+            else {
+                bail!("invalid send request");
+            };
+            let mut call = json!({
+                "session": resolve_runtime_session(
+                    client,
+                    &target_active_session_id,
+                    Reach::OpenOrSaved,
+                )?,
+                "message": message,
+                "client": client.client_name(),
+            });
+            if let Some(from) = from_active_session_id {
+                call["from"] = json!(resolve_runtime_session(client, &from, Reach::Open)?);
+            }
+            if let Some(delivery) = delivery_mode {
+                call["delivery"] = delivery;
+            }
+            client.call("session.send", call)?
+        }
+    };
     if json {
         print_json(&data);
         return Ok(());
@@ -451,33 +611,47 @@ fn parse_send_args(args: &[String]) -> Result<DaemonCommand> {
     })
 }
 
-fn run_cron(client: &mut DaemonClient, args: &[String], json: bool) -> Result<()> {
+fn run_cron(daemon: &mut Daemon, args: &[String], json: bool) -> Result<()> {
     let subcommand = args.first().map_or("list", String::as_str);
     match subcommand {
-        "list" => run_cron_list(client, args, json),
-        "add" | "schedule" => run_cron_add(client, args, json),
-        "cancel" | "delete" | "remove" => run_cron_cancel(client, args, json),
+        "list" => run_cron_list(daemon, args, json),
+        "add" | "schedule" => run_cron_add(daemon, args, json),
+        "cancel" | "delete" | "remove" => run_cron_cancel(daemon, args, json),
         other => bail!("Unknown schedule command: {other}"),
     }
 }
 
-fn run_cron_list(client: &mut DaemonClient, args: &[String], json: bool) -> Result<()> {
+fn run_cron_list(daemon: &mut Daemon, args: &[String], json: bool) -> Result<()> {
     let include_inactive = args.iter().skip(1).any(|arg| arg == "--all" || arg == "-a");
     let selector = args
         .iter()
         .skip(1)
         .find(|arg| !arg.starts_with('-') && arg.as_str() != "list");
-    let active_session_id = match selector {
-        Some(selector) => Some(resolve_live_session_selector(client, selector)?),
-        None => None,
+    let data = match daemon {
+        Daemon::Old(client) => {
+            let active_session_id = match selector {
+                Some(selector) => Some(resolve_live_session_selector(client, selector)?),
+                None => None,
+            };
+            let response = client.request(DaemonCommand::CronList {
+                id: None,
+                active_session_id,
+                include_inactive: Some(include_inactive),
+                rest: serde_json::Map::new(),
+            })?;
+            require_success(response)?.unwrap_or(Value::Null)
+        }
+        Daemon::Runtime(client) => {
+            let session = match selector {
+                Some(selector) => Some(resolve_runtime_session(client, selector, Reach::Open)?),
+                None => None,
+            };
+            client.query(
+                "schedules",
+                json!({ "session": session, "all": include_inactive }),
+            )?
+        }
     };
-    let response = client.request(DaemonCommand::CronList {
-        id: None,
-        active_session_id,
-        include_inactive: Some(include_inactive),
-        rest: serde_json::Map::new(),
-    })?;
-    let data = require_success(response)?.unwrap_or(Value::Null);
     if json {
         print_json(&data);
         return Ok(());
@@ -496,7 +670,7 @@ fn run_cron_list(client: &mut DaemonClient, args: &[String], json: bool) -> Resu
     Ok(())
 }
 
-fn run_cron_add(client: &mut DaemonClient, args: &[String], json: bool) -> Result<()> {
+fn run_cron_add(daemon: &mut Daemon, args: &[String], json: bool) -> Result<()> {
     let usage = "Usage: prime-agent schedule add <agent> <schedule> -- <message>";
     let separator = args
         .iter()
@@ -513,15 +687,26 @@ fn run_cron_add(client: &mut DaemonClient, args: &[String], json: bool) -> Resul
     if schedule.is_empty() || message.is_empty() {
         bail!("{usage}");
     }
-    let response = client.request(DaemonCommand::CronAdd {
-        id: None,
-        active_session_id: active_session_id.clone(),
-        schedule,
-        prompt: message,
-        promote_owned_session: None,
-        rest: serde_json::Map::new(),
-    })?;
-    let data = require_success(response)?.unwrap_or(Value::Null);
+    let data = match daemon {
+        Daemon::Old(client) => {
+            let response = client.request(DaemonCommand::CronAdd {
+                id: None,
+                active_session_id: active_session_id.clone(),
+                schedule,
+                prompt: message,
+                promote_owned_session: None,
+                rest: serde_json::Map::new(),
+            })?;
+            require_success(response)?.unwrap_or(Value::Null)
+        }
+        Daemon::Runtime(client) => {
+            let session = resolve_runtime_session(client, active_session_id, Reach::Open)?;
+            client.call(
+                "schedule.add",
+                json!({ "session": session, "schedule": schedule, "prompt": message }),
+            )?
+        }
+    };
     if json {
         print_json(&data);
         return Ok(());
@@ -533,17 +718,22 @@ fn run_cron_add(client: &mut DaemonClient, args: &[String], json: bool) -> Resul
     Ok(())
 }
 
-fn run_cron_cancel(client: &mut DaemonClient, args: &[String], json: bool) -> Result<()> {
+fn run_cron_cancel(daemon: &mut Daemon, args: &[String], json: bool) -> Result<()> {
     let Some(job_id) = args.get(1) else {
         bail!("Usage: prime-agent schedule cancel <job-id>");
     };
-    let response = client.request(DaemonCommand::CronCancel {
-        id: None,
-        active_session_id: None,
-        job_id: job_id.clone(),
-        rest: serde_json::Map::new(),
-    })?;
-    let data = require_success(response)?.unwrap_or(Value::Null);
+    let data = match daemon {
+        Daemon::Old(client) => {
+            let response = client.request(DaemonCommand::CronCancel {
+                id: None,
+                active_session_id: None,
+                job_id: job_id.clone(),
+                rest: serde_json::Map::new(),
+            })?;
+            require_success(response)?.unwrap_or(Value::Null)
+        }
+        Daemon::Runtime(client) => client.call("schedule.cancel", json!({ "job": job_id }))?,
+    };
     if json {
         print_json(&data);
         return Ok(());

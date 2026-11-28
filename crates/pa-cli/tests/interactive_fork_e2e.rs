@@ -240,6 +240,9 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, session_dir: &Path) -> Supe
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
+        // The supervisor (selected by name: the runtime daemon is the default), which this
+        // suite drives on the old wire.
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
         .arg(socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in the
@@ -259,7 +262,7 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, session_dir: &Path) -> Supe
         pa_daemon::worker::WORKER_SOCKET_ENV,
         pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
         pa_daemon::worker::WORKER_SCRIPT_ENV,
-        pa_daemon::lease::SESSION_LEASE_OWNER_ID_ENV,
+        pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
     ] {
         command.env_remove(var);
     }
@@ -517,6 +520,8 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
         .env("PRIME_AGENT_SESSION_DIR", &session_dir)
         .env("PI_OFFLINE", "1")
         .env("PRIME_AGENT_FAUX_SCRIPT", fork_script.display().to_string())
+        // The launch reaches the supervisor this test started (the runtime daemon is the default).
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
         .env_remove("TMUX")
         .env_remove("RLM_DEPTH")
         .stdin(slave.try_clone().expect("clone pty slave"))
@@ -531,12 +536,12 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
 
     // The daemon hosts the fork: a roster row naming a new session file —
     // never the source — under its own id.
-    let source_canonical = pa_daemon::lease::canonical_session_path(&source);
+    let source_canonical = pa_core::session::lease::canonical_session_path(&source);
     let deadline = Instant::now() + Duration::from_secs(45);
     let (fork_file, fork_id) = 'hosted: {
         loop {
             for (file, id) in daemon_roster(&socket).await {
-                if pa_daemon::lease::canonical_session_path(&file) != source_canonical {
+                if pa_core::session::lease::canonical_session_path(&file) != source_canonical {
                     break 'hosted (file, id);
                 }
             }
@@ -618,13 +623,13 @@ async fn interactive_fork_launch_copies_and_the_daemon_opens_the_fork() {
     let roster = daemon_roster(&socket).await;
     let canonical: Vec<_> = roster
         .iter()
-        .map(|(file, _)| pa_daemon::lease::canonical_session_path(file))
+        .map(|(file, _)| pa_core::session::lease::canonical_session_path(file))
         .collect();
     assert!(
         canonical.contains(&source_canonical),
         "the hosted source survives the fork"
     );
-    let fork_canonical = pa_daemon::lease::canonical_session_path(&fork_file);
+    let fork_canonical = pa_core::session::lease::canonical_session_path(&fork_file);
     assert!(
         canonical.contains(&fork_canonical),
         "the fork stays hosted after the client exits"

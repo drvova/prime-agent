@@ -26,6 +26,9 @@ use crate::direct_transport::{
 mod errors;
 #[cfg(all(test, unix))]
 mod tests;
+mod wire2;
+#[cfg(all(test, unix))]
+mod wire2_tests;
 
 use errors::{command_type_debug, response_data_or_error, DirectRequestError};
 pub use errors::{
@@ -345,34 +348,127 @@ impl Shared {
     }
 }
 
-/// A live connection to the daemon supervisor socket, optionally upgraded
-/// with a direct worker link (session-plane commands and events go straight
-/// to the session process; the supervisor stays the control plane).
+/// Which wire a daemon socket speaks: the supervisor's old wire (`daemon.sock`), or the runtime
+/// daemon's wire2 (`daemon2.sock`), whose commands and events the compat layer maps to the old
+/// ones ([`crate::wire2_compat`]). The views speak `DaemonCommand` and `DaemonClientEvent`
+/// either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Transport {
+    #[default]
+    OldWire,
+    Wire2,
+}
+
+/// The transport each socket was declared to speak ([`use_transport`]).
+fn transports() -> &'static Mutex<HashMap<PathBuf, Transport>> {
+    static TRANSPORTS: std::sync::OnceLock<Mutex<HashMap<PathBuf, Transport>>> =
+        std::sync::OnceLock::new();
+    TRANSPORTS.get_or_init(Mutex::default)
+}
+
+/// Declare the wire `socket_path` speaks: every [`DaemonClient::connect`] to it from now on uses
+/// `transport`. The composition root declares the socket it launched the UI against (the
+/// runtime daemon's unless the supervisor is selected); an undeclared socket speaks the old
+/// wire.
+pub fn use_transport(socket_path: &Path, transport: Transport) {
+    transports()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(socket_path.to_path_buf(), transport);
+}
+
+/// The wire `socket_path` was declared to speak; the old wire when undeclared.
+#[must_use]
+pub fn transport_for(socket_path: &Path) -> Transport {
+    transports()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(socket_path)
+        .copied()
+        .unwrap_or_default()
+}
+
+/// A live connection to the daemon: the supervisor's old wire, or the runtime daemon's wire2
+/// ([`Transport`]).
 #[derive(Clone)]
 pub struct DaemonClient {
     socket_path: PathBuf,
-    client_id: String,
     protocol: DaemonProtocolInfo,
-    /// Full `daemon_hello` frame (schema id, app version, capabilities).
+    /// Full `daemon_hello` frame (schema id, app version, capabilities); on wire2, the one the
+    /// runtime's identity makes.
     hello: Value,
     next_request_id: Arc<AtomicU64>,
+    /// The reader's death watch (see `reader_dead`).
+    reader_dead_rx: tokio::sync::watch::Receiver<bool>,
+    link: Link,
+}
+
+/// The connection a [`DaemonClient`] carries its commands on.
+#[derive(Clone)]
+enum Link {
+    OldWire(OldWire),
+    Wire2(Arc<wire2::Wire2Link>),
+}
+
+/// The old wire's connection to the supervisor socket, optionally upgraded with a direct worker
+/// link (session-plane commands and events go straight to the session process; the supervisor
+/// stays the control plane).
+#[derive(Clone)]
+struct OldWire {
+    client_id: String,
     shared: Arc<Shared>,
     writer: mpsc::UnboundedSender<String>,
     /// Direct-transport state (retained event sender + live worker link).
     direct: std::sync::Arc<crate::direct_transport::DirectState>,
-    /// The supervisor reader's death watch (see `reader_dead`).
-    reader_dead_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl DaemonClient {
-    /// Connect to `socket_path`, complete the hello handshake, and return the
-    /// client plus the event receiver (the receiver must be polled or the
-    /// reader task stalls once the channel's buffer fills).
+    /// Connect to `socket_path` on the wire it was declared to speak ([`use_transport`]),
+    /// complete the hello handshake, and return the client plus the event receiver (the receiver
+    /// must be polled or the reader task stalls once the channel's buffer fills).
     ///
     /// # Errors
     ///
     /// Returns `Err` on a connect or hello failure, timeout, or unknown protocol.
     pub async fn connect(
+        socket_path: &Path,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<DaemonClientEvent>)> {
+        match transport_for(socket_path) {
+            Transport::OldWire => Self::connect_old_wire(socket_path).await,
+            // Boxed: every future that awaits a connect would otherwise carry the handshake's.
+            Transport::Wire2 => Box::pin(Self::connect_wire2(socket_path)).await,
+        }
+    }
+
+    /// [`Self::connect`] on wire2: the runtime's welcome and identity are the hello.
+    async fn connect_wire2(
+        socket_path: &Path,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<DaemonClientEvent>)> {
+        let connected = wire2::Wire2Link::connect(
+            socket_path,
+            &format!("daemon-tui:{}", std::process::id()),
+            Duration::from_millis(CONNECT_TIMEOUT_MS),
+            Duration::from_millis(HELLO_TIMEOUT_MS),
+        )
+        .await?;
+        Ok((
+            DaemonClient {
+                socket_path: socket_path.to_path_buf(),
+                protocol: DaemonProtocolInfo {
+                    name: DAEMON_PROTOCOL_NAME.to_string(),
+                    version: DAEMON_PROTOCOL_VERSION,
+                },
+                hello: connected.hello,
+                next_request_id: Arc::new(AtomicU64::new(0)),
+                reader_dead_rx: connected.reader_dead,
+                link: Link::Wire2(connected.link),
+            },
+            connected.events,
+        ))
+    }
+
+    /// [`Self::connect`] on the old wire.
+    async fn connect_old_wire(
         socket_path: &Path,
     ) -> Result<(Self, mpsc::UnboundedReceiver<DaemonClientEvent>)> {
         let connect = tokio::time::timeout(
@@ -438,6 +534,8 @@ impl DaemonClient {
                     continue;
                 };
                 message_deltas.decode(&mut value);
+                #[cfg(debug_assertions)]
+                crate::inbound_recording::record(crate::inbound_recording::Via::Supervisor, &value);
                 let frame_type = value
                     .get("type")
                     .and_then(Value::as_str)
@@ -503,19 +601,21 @@ impl DaemonClient {
         Ok((
             DaemonClient {
                 socket_path: socket_path.to_path_buf(),
-                client_id: format!("daemon-tui:{}", std::process::id()),
                 protocol: DaemonProtocolInfo {
                     name: DAEMON_PROTOCOL_NAME.to_string(),
                     version,
                 },
                 hello,
                 next_request_id: Arc::new(AtomicU64::new(0)),
-                shared,
-                writer: line_tx,
-                direct: std::sync::Arc::new(crate::direct_transport::DirectState::new(
-                    retained_event_tx,
-                )),
                 reader_dead_rx,
+                link: Link::OldWire(OldWire {
+                    client_id: format!("daemon-tui:{}", std::process::id()),
+                    shared,
+                    writer: line_tx,
+                    direct: std::sync::Arc::new(crate::direct_transport::DirectState::new(
+                        retained_event_tx,
+                    )),
+                }),
             },
             event_rx,
         ))
@@ -614,17 +714,26 @@ impl DaemonClient {
         command: DaemonCommand,
         timeout_ms: u64,
     ) -> Result<DaemonResponse> {
-        if let Some(link) = self.direct_link_for(&command) {
+        let old = match &self.link {
+            Link::OldWire(old) => old,
+            Link::Wire2(_) => {
+                return Box::pin(self.request_supervisor(command, timeout_ms)).await;
+            }
+        };
+        if let Some(link) = Self::direct_link_for(old, &command) {
             let id = format!(
                 "direct_{}",
                 self.next_request_id.fetch_add(1, Ordering::SeqCst) + 1
             );
-            match self.request_direct(&link, &command, &id, timeout_ms).await {
+            match self
+                .request_direct(old, &link, &command, &id, timeout_ms)
+                .await
+            {
                 Ok(response) => return Ok(response),
                 Err(DirectRequestError::NotSent) => {
                     // The link was dead before the frame was queued, so
                     // supervisor routing is safe.
-                    self.direct.drop_link();
+                    old.direct.drop_link();
                 }
                 Err(DirectRequestError::Wait(error)) => return Err(error),
             }
@@ -672,10 +781,9 @@ impl DaemonClient {
         )
     }
 
-    /// One JSONL envelope on the supervisor connection, under the caller's
-    /// own envelope id (the streamed `session_list_item` frames carry
-    /// it). The id must start with `daemon_` — the socket-close failure
-    /// sweep filters by that prefix.
+    /// One JSONL envelope on the supervisor connection (on wire2, the command's frames), under
+    /// the caller's own envelope id (the streamed `session_list_item` frames carry it). The id
+    /// must start with `daemon_` — the socket-close failure sweep filters by that prefix.
     ///
     /// # Errors
     ///
@@ -691,6 +799,11 @@ impl DaemonClient {
         id: &str,
         timeout_ms: u64,
     ) -> Result<DaemonResponse> {
+        let old = match &self.link {
+            Link::OldWire(old) => old,
+            // Boxed: every future that awaits a request would otherwise carry the link's frames.
+            Link::Wire2(link) => return Box::pin(link.request(command, id, timeout_ms)).await,
+        };
         if *self.reader_dead_rx.borrow() {
             return Err(self.dead_reader_error());
         }
@@ -699,20 +812,20 @@ impl DaemonClient {
             frame_type: DaemonCommandFrameType::Command,
             id: id.clone(),
             protocol: self.protocol.clone(),
-            client_id: Some(self.client_id.clone()),
+            client_id: Some(old.client_id.clone()),
             command,
         };
         let line = serde_json::to_string(&envelope)?;
         let (tx, rx) = oneshot::channel::<Result<DaemonResponse>>();
-        self.shared.register_pending(id.clone(), tx, None);
+        old.shared.register_pending(id.clone(), tx, None);
         // The reader runs on another worker: it can die (and run its failure
         // sweep) between the entry check and this registration. Re-check after
         // inserting — a death it missed is caught here.
         if *self.reader_dead_rx.borrow() {
-            self.shared.pending.lock().unwrap().remove(&id);
+            old.shared.pending.lock().unwrap().remove(&id);
             return Err(self.dead_reader_error());
         }
-        self.writer
+        old.writer
             .send(line)
             .map_err(|_| anyhow!("the daemon connection is closed"))?;
         match tokio::time::timeout(Duration::from_millis(timeout_ms), rx).await {
@@ -724,7 +837,7 @@ impl DaemonClient {
                 self.socket_path.display()
             )),
             Err(_) => {
-                self.shared.pending.lock().unwrap().remove(&id);
+                old.shared.pending.lock().unwrap().remove(&id);
                 Err(anyhow!(
                     "Timed out after {timeout_ms}ms waiting for the Prime Agent daemon response. Socket: {}.",
                     self.socket_path.display()
@@ -747,8 +860,8 @@ impl DaemonClient {
 
     /// The live direct link that may serve `command` (TS `servesDirect`):
     /// the command must be session-plane and address the link's session.
-    fn direct_link_for(&self, command: &DaemonCommand) -> Option<DirectLink> {
-        let link = self.direct.live_link()?;
+    fn direct_link_for(old: &OldWire, command: &DaemonCommand) -> Option<DirectLink> {
+        let link = old.direct.live_link()?;
         let command_type = command_type_debug(command);
         if !is_session_plane_daemon_command(&command_type) {
             return None;
@@ -765,14 +878,14 @@ impl DaemonClient {
     /// One request over the direct worker link.
     async fn request_direct(
         &self,
+        old: &OldWire,
         link: &DirectLink,
         command: &DaemonCommand,
         id: &str,
         timeout_ms: u64,
     ) -> std::result::Result<DaemonResponse, DirectRequestError> {
-        let payload = self
-            .direct_command_payload(command)
-            .map_err(|_| DirectRequestError::NotSent)?;
+        let payload =
+            Self::direct_command_payload(old, command).map_err(|_| DirectRequestError::NotSent)?;
         let frame = pa_types::daemon::framing::encode_private_frame(
             &serde_json::json!({
                 "kind": "command",
@@ -784,10 +897,10 @@ impl DaemonClient {
         )
         .map_err(|_| DirectRequestError::NotSent)?;
         let (reply_tx, reply_rx) = oneshot::channel::<Result<DaemonResponse>>();
-        self.shared
+        old.shared
             .register_pending(id.to_string(), reply_tx, Some(Arc::clone(&link.owner)));
         if !link.send(frame) {
-            self.shared.pending.lock().unwrap().remove(id);
+            old.shared.pending.lock().unwrap().remove(id);
             return Err(DirectRequestError::NotSent);
         }
         match tokio::time::timeout(Duration::from_millis(timeout_ms), reply_rx).await {
@@ -799,7 +912,7 @@ impl DaemonClient {
                 link.socket_path
             ))),
             Err(_) => {
-                self.shared.pending.lock().unwrap().remove(id);
+                old.shared.pending.lock().unwrap().remove(id);
                 Err(DirectRequestError::Wait(anyhow!(
                     "Timed out after {timeout_ms}ms waiting for the session response. Socket: {}.",
                     link.socket_path
@@ -812,10 +925,10 @@ impl DaemonClient {
     /// stamped with this client's id (the supervisor stamps it on the routed
     /// path) and, for attach, the same slim-snapshot capability set, so both
     /// paths return identical attach results.
-    fn direct_command_payload(&self, command: &DaemonCommand) -> Result<Value> {
+    fn direct_command_payload(old: &OldWire, command: &DaemonCommand) -> Result<Value> {
         let mut payload = serde_json::to_value(command)?;
         if let Some(object) = payload.as_object_mut() {
-            object.insert("clientId".to_string(), serde_json::json!(self.client_id));
+            object.insert("clientId".to_string(), serde_json::json!(old.client_id));
             if matches!(command, DaemonCommand::Attach { .. }) {
                 object.insert(
                     "capabilities".to_string(),
@@ -829,12 +942,18 @@ impl DaemonClient {
     /// The active direct link's session, when this client upgraded.
     #[must_use]
     pub fn direct_session_id(&self) -> Option<String> {
-        self.direct.session_id()
+        match &self.link {
+            Link::OldWire(old) => old.direct.session_id(),
+            Link::Wire2(_) => None,
+        }
     }
 
     /// Drop the direct link and keep plain supervisor routing.
     pub fn drop_direct(&self) {
-        self.direct.drop_link();
+        match &self.link {
+            Link::OldWire(old) => old.direct.drop_link(),
+            Link::Wire2(_) => {}
+        }
     }
 
     /// Upgrade this connection with a direct worker link for
@@ -844,6 +963,9 @@ impl DaemonClient {
     ///
     /// Never returns `Err`: every failure path returns `Ok(false)`.
     pub async fn upgrade_direct(&self, active_session_id: &str) -> Result<bool> {
+        let Link::OldWire(old) = &self.link else {
+            return Ok(false);
+        };
         if !supervisor_supports_direct(&self.hello) {
             return Ok(false);
         }
@@ -873,12 +995,12 @@ impl DaemonClient {
         let Ok(ticket) = read_session_transport_ticket(&data, active_session_id) else {
             return Ok(false);
         };
-        let Some(event_tx) = self.direct.event_sender() else {
+        let Some(event_tx) = old.direct.event_sender() else {
             return Ok(false);
         };
-        match connect_direct(&ticket, Arc::clone(&self.shared), event_tx).await {
+        match connect_direct(&ticket, Arc::clone(&old.shared), event_tx).await {
             Ok(link) => {
-                self.direct.set_link(link);
+                old.direct.set_link(link);
                 Ok(true)
             }
             Err(_) => Ok(false),
@@ -887,19 +1009,29 @@ impl DaemonClient {
 
     /// Close the connection; pending requests fail with the closed error.
     pub fn close(&self) {
-        self.direct.take_event_sender();
-        self.drop_direct();
-        let _ = self.writer.send(String::new());
+        match &self.link {
+            Link::OldWire(old) => {
+                old.direct.take_event_sender();
+                old.direct.drop_link();
+                let _ = old.writer.send(String::new());
+            }
+            Link::Wire2(link) => link.close(),
+        }
     }
 
     /// Dispose the connection outright: like [`Self::close`], but the writer
     /// sender is DROPPED too — a half-attached client never survives the
     /// reconnect window.
     pub fn hard_close(&mut self) {
-        self.direct.take_event_sender();
-        self.drop_direct();
-        let (replacement, _) = mpsc::unbounded_channel::<String>();
-        let writer = std::mem::replace(&mut self.writer, replacement);
-        let _ = writer.send(String::new());
+        match &mut self.link {
+            Link::OldWire(old) => {
+                old.direct.take_event_sender();
+                old.direct.drop_link();
+                let (replacement, _) = mpsc::unbounded_channel::<String>();
+                let writer = std::mem::replace(&mut old.writer, replacement);
+                let _ = writer.send(String::new());
+            }
+            Link::Wire2(link) => link.close(),
+        }
     }
 }

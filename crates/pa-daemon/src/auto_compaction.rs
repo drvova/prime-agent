@@ -189,7 +189,10 @@ impl AgentSessionEngine {
                 // arms the compact-trigger review.
                 self.mark_compact_auto_refine_pending();
                 // The wire result is the TS `CompactionResult` shape (details included).
-                let result = crate::compaction::compaction_result_value(&run.result, &run.entry);
+                let result = pa_core::session_engine::compaction_exec::compaction_result_value(
+                    &run.result,
+                    &run.entry,
+                );
                 let entry = serde_json::to_value(&run.entry).unwrap_or(Value::Null);
                 let event =
                     crate::compaction::compaction_end_success("threshold", &result, false, None);

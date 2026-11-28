@@ -127,7 +127,7 @@ fn intent_record(update_id: &UpdateId, pid: u64, status_path: &Path) -> UpdateIn
     UpdateIntent {
         update_id: update_id.clone(),
         pid,
-        process_start_id: pa_daemon::lease::get_process_start_id(pid as u32),
+        process_start_id: pa_core::session::lease::get_process_start_id(pid as u32),
         heartbeat_at: crate::util_time::now_iso8601(),
         rest,
     }
@@ -139,7 +139,7 @@ fn read_intent(path: &Path) -> Option<UpdateIntent> {
 }
 
 fn is_intent_holder_alive(intent: &UpdateIntent) -> bool {
-    let Ok(alive) = pa_daemon::lease::is_process_alive(intent.pid as u32) else {
+    let Ok(alive) = pa_core::session::lease::is_process_alive(intent.pid as u32) else {
         return false;
     };
     if !alive {
@@ -149,7 +149,7 @@ fn is_intent_holder_alive(intent: &UpdateIntent) -> bool {
         None => true,
         Some(expected) => {
             matches!(
-                pa_daemon::lease::get_process_start_id(intent.pid as u32),
+                pa_core::session::lease::get_process_start_id(intent.pid as u32),
                 Some(observed) if &observed == expected
             )
         }
@@ -210,7 +210,7 @@ mod tests {
         let dead = UpdateIntent {
             update_id: UpdateId::from("dead".to_string()),
             pid: 4_000_000,
-            process_start_id: pa_daemon::lease::get_process_start_id(1),
+            process_start_id: pa_core::session::lease::get_process_start_id(1),
             heartbeat_at: "t".to_string(),
             rest: serde_json::Map::default(),
         };

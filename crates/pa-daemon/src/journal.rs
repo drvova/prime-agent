@@ -128,7 +128,7 @@ pub(crate) fn decode_journal_lines<'a>(bytes: &'a [u8], path: &Path) -> Result<V
 pub(crate) struct JournalWriteOwner {
     file: std::sync::Arc<File>,
     ownership_path: std::path::PathBuf,
-    /// The owner's id: see [`crate::session_host::session_pid`].
+    /// The owner's id: see [`pa_core::session::hosted::session_pid`].
     owner: u32,
     /// The journal's one writer at a time, and which ownership that is: a
     /// later lifetime's takeover changes it, and from then on this one's
@@ -223,7 +223,7 @@ pub(crate) fn journal_write_owner(path: &Path) -> Result<JournalWriteOwner> {
     let mut ownership_path = path.as_os_str().to_os_string();
     ownership_path.push(".writer-lock");
     let ownership_path = std::path::PathBuf::from(ownership_path);
-    let owner = crate::session_host::session_pid();
+    let owner = pa_core::session::hosted::session_pid();
     let mut held = held_ownerships()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -233,8 +233,8 @@ pub(crate) fn journal_write_owner(path: &Path) -> Result<JournalWriteOwner> {
     if let Some((file, gate)) = held
         .get(&ownership_path)
         .filter(|(holder, _, _)| {
-            crate::session_host::is_hosted_pid(*holder)
-                && !crate::session_host::hosted_alive(*holder)
+            pa_core::session::hosted::is_hosted_pid(*holder)
+                && !pa_core::session::hosted::hosted_alive(*holder)
         })
         .map(|(_, file, gate)| (std::sync::Arc::clone(file), std::sync::Arc::clone(gate)))
     {

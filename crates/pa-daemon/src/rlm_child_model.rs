@@ -1,18 +1,15 @@
-//! RLM child model resolution and the roster label: reference resolution against the
-//! credential-backed catalog, the spawn-time thinking-support check, and the one-line task
-//! label (the requested child cwd and the roster text caps are pa-core's, beside the notices).
+//! RLM child model resolution: reference resolution against the credential-backed catalog and
+//! the spawn-time thinking-support check (the requested child cwd, the one-line task label and
+//! the roster text caps are pa-core's, beside the notices).
 
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Result};
 use pa_ai::models::{get_supported_thinking_levels, thinking_level_from_str};
 use pa_core::kernel::rlm_runtime::{find_rlm_model_matches, RlmModelInfo};
-use pa_core::session_engine::rlm_notices::cap_text;
 
 /// Close matches listed in model-resolution errors.
 const MODEL_ERROR_SUGGESTION_LIMIT: usize = 3;
-/// Cap on the one-line task label shown in kernel rosters.
-pub const LABEL_MAX_CHARS: usize = 200;
 
 /// The model catalog the RLM surface resolves against: the same
 /// credential-backed list `rlm.find_models` searches (entitled `internal/*` models resolve).
@@ -46,10 +43,10 @@ pub fn resolve_child_model(
     reference: Option<&str>,
     parent_model: Option<&str>,
     target: &str,
-    allowlist: &crate::model_allowlist::DaemonAllowlist,
+    allowlist: &pa_core::models::ModelAllowlist,
 ) -> Result<String> {
     let model = resolve_child_model_unchecked(agent_dir, reference, parent_model, target)?;
-    crate::model_allowlist::assert_allowed(allowlist, &model)?;
+    pa_core::models::assert_model_allowed(allowlist, &model)?;
     Ok(model)
 }
 
@@ -190,23 +187,10 @@ fn model_unavailable_error(
     }
 }
 
-/// One-line task label: collapsed prompt, capped for roster rows.
-#[must_use]
-pub fn rlm_child_label(prompt: &str) -> String {
-    let collapsed: String = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
-    let collapsed = if collapsed.is_empty() {
-        "child agent".to_string()
-    } else {
-        collapsed
-    };
-    cap_text(&collapsed, LABEL_MAX_CHARS)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_allowlist::DaemonAllowlist;
-    use pa_core::session_engine::rlm_notices::{compact_rlm_text, ANSWER_PREVIEW_MAX_CHARS};
+    use pa_core::models::ModelAllowlist;
     use serde_json::json;
 
     /// A models.json custom provider, like the pa-core registry tests.
@@ -241,7 +225,7 @@ mod tests {
             None,
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
@@ -251,7 +235,7 @@ mod tests {
             Some("Test-Provider/GLM-5.3"),
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
@@ -260,7 +244,7 @@ mod tests {
             Some("test-provider/glm-5.3-turbo"),
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3-turbo");
@@ -269,7 +253,7 @@ mod tests {
             Some("glm-5.3-turbo"),
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3-turbo");
@@ -278,7 +262,7 @@ mod tests {
             None,
             None,
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap_err();
         assert_eq!(
@@ -291,8 +275,7 @@ mod tests {
     fn the_allowlist_refuses_resolved_models_loudly() {
         let dir = tempfile::TempDir::new().unwrap();
         write_catalog(dir.path());
-        let allow =
-            crate::model_allowlist::DaemonAllowlist::Allowed(vec!["prime-inference/*".to_string()]);
+        let allow = pa_core::models::ModelAllowlist::Allowed(vec!["prime-inference/*".to_string()]);
         // An explicit reference outside the allowlist fails with the typed refusal.
         let error = resolve_child_model(
             dir.path(),
@@ -333,7 +316,7 @@ mod tests {
             Some("test-provider/glm-5.3"),
             None,
             "subagent",
-            &crate::model_allowlist::DaemonAllowlist::Allowed(vec!["test-provider/*".to_string()]),
+            &pa_core::models::ModelAllowlist::Allowed(vec!["test-provider/*".to_string()]),
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
@@ -342,7 +325,7 @@ mod tests {
             Some("test-provider/glm-5.3"),
             None,
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
@@ -360,7 +343,7 @@ mod tests {
             Some("test-provi"),
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap_err();
         let message = error.to_string();
@@ -380,7 +363,7 @@ mod tests {
             Some("zzz"),
             Some("test-provider/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap_err();
         assert!(!error.to_string().contains("close matches:"), "{error}");
@@ -473,7 +456,7 @@ mod tests {
             Some("prime-inference/internal/glm-5.3-fast"),
             Some("prime-inference/z-ai/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "prime-inference/internal/glm-5.3-fast");
@@ -482,7 +465,7 @@ mod tests {
             Some("internal/glm-5.3-fast"),
             Some("prime-inference/z-ai/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, "prime-inference/internal/glm-5.3-fast");
@@ -569,7 +552,7 @@ mod tests {
             Some(&selector),
             Some("prime-inference/z-ai/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, selector);
@@ -578,7 +561,7 @@ mod tests {
             Some(PROBE_ID),
             Some("prime-inference/z-ai/glm-5.3"),
             "subagent",
-            &DaemonAllowlist::Unrestricted,
+            &ModelAllowlist::Unrestricted,
         )
         .unwrap();
         assert_eq!(resolved, selector);
@@ -590,21 +573,5 @@ mod tests {
             error.to_string().contains("not supported by model"),
             "{error}"
         );
-    }
-
-    #[test]
-    fn roster_text_is_collapsed_and_capped() {
-        let label = rlm_child_label("  ship   the\nlane  ");
-        assert_eq!(label, "ship the lane");
-        let long = "word ".repeat(100);
-        let label = rlm_child_label(&long);
-        assert!(label.chars().count() <= LABEL_MAX_CHARS);
-        assert!(label.ends_with("..."));
-        let preview = compact_rlm_text("  a\nshort   answer ");
-        assert_eq!(preview, "a short answer");
-        let long_answer = "x".repeat(ANSWER_PREVIEW_MAX_CHARS + 50);
-        let preview = compact_rlm_text(&long_answer);
-        assert_eq!(preview.chars().count(), ANSWER_PREVIEW_MAX_CHARS);
-        assert!(preview.ends_with("..."));
     }
 }

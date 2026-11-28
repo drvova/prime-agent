@@ -1,0 +1,97 @@
+//! The persisted scan-state sidecar: `<stem>.info-cache.json`, written
+//! beside the session file when the runtime lease is released and loaded
+//! on a process-cache miss, so a warm resume folds only the appended tail
+//! instead of rescanning the whole file. The catalog owns the sidecar:
+//! the scan state is its type, and it certifies differently from the
+//! window snapshot (an exact generation there, a grown-file
+//! resume with a prefix check here). Two writers: the lease holder at
+//! release, and the catalog scan for a file it had to fold. Both persist
+//! only certified states and every load re-validates the generation or
+//! prefix, so a lost race leaves an older valid prefix, never a wrong row.
+
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use super::info::{session_info_cache, SessionScanState};
+
+/// The sidecar format version: a sidecar serves only at exactly this
+/// version; any other version (an older or a newer build's) is a cold
+/// scan, the behavior without a sidecar. Bump when an OLD sidecar's state
+/// would be wrong for this build - a new field or changed fold semantics
+/// in [`SessionScanAccumulator`](super::info::SessionScanAccumulator) or
+/// [`UsageScan`](crate::session::usage_scan::UsageScan). Removing a field needs
+/// no bump: the plain `Deserialize` (no `deny_unknown_fields`) ignores the
+/// stale key, and the remaining state is exactly what this build's fold
+/// would have written, so the store stays warm.
+const INFO_SIDECAR_VERSION: u32 = 4;
+
+/// The on-disk envelope: the version gate plus the scan state.
+#[derive(Serialize, Deserialize)]
+struct InfoSidecar {
+    version: u32,
+    state: SessionScanState,
+}
+
+fn sidecar_path(path: &Path) -> PathBuf {
+    path.with_extension("info-cache.json")
+}
+
+/// Load the persisted scan state for `path`: `None` on any failure - a
+/// missing sidecar, an unparsable one, or a version this build does not
+/// serve - so the caller scans cold, exactly as it does without one.
+#[must_use]
+pub(super) fn load(path: &Path) -> Option<SessionScanState> {
+    let data = std::fs::read(sidecar_path(path)).ok()?;
+    let sidecar: InfoSidecar = serde_json::from_slice(&data).ok()?;
+    (sidecar.version == INFO_SIDECAR_VERSION).then_some(sidecar.state)
+}
+
+/// The sidecar write (lease release, catalog backfill): persist the cached
+/// scan state for `path` (the path form the writer read the file by - the scan
+/// cache's key, and the form the load derives the sidecar path from) so
+/// the next process that opens the file folds only what was appended
+/// since. A fresh temp file, then the rename - a torn write never
+/// replaces a loadable sidecar, and a reader that races the rename sees
+/// either the old or the new whole file. A miss writes nothing; a failed
+/// write costs the next open its warm resume, nothing more - the same
+/// error policy as the window sidecar's flush.
+pub(super) fn persist_info_sidecar(path: &Path) {
+    let Some(state) = session_info_cache()
+        .states
+        .get(path)
+        .map(SessionScanState::clone_for_resume)
+    else {
+        return;
+    };
+    let result = (|| -> io::Result<()> {
+        // The sidecar carries message text (the first message): it is
+        // owner-only like the session files (`persist.rs`'s writer).
+        let mut file = pa_types::platform::AtomicFile::create(
+            &sidecar_path(path),
+            pa_types::platform::ReplaceOptions {
+                durability: pa_types::platform::Durability::Unsynced,
+                mode: pa_types::platform::FileMode::Private,
+                symlinks: pa_types::platform::Symlinks::ReplaceLink,
+            },
+        )?;
+        // Buffered: the serialized state is megabytes of small map
+        // entries, and an unbuffered file writer would turn every
+        // serialized fragment into its own write syscall.
+        let mut writer = io::BufWriter::new(&mut file);
+        serde_json::to_writer(
+            &mut writer,
+            &InfoSidecar {
+                version: INFO_SIDECAR_VERSION,
+                state,
+            },
+        )?;
+        writer.flush()?;
+        drop(writer);
+        file.commit()
+    })();
+    // A failed write costs the next open its warm resume, nothing more (the
+    // error policy above); its temp file is already gone.
+    let _ = result;
+}

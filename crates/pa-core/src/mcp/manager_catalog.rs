@@ -68,6 +68,48 @@ impl McpManager {
         self.catalog_available = catalog_available;
     }
 
+    /// `/reload`'s MCP half (both daemons' `reload`): re-read the auth store and the settings, the
+    /// inputs another process (a `/mcp` key flow) can change under a running session, and
+    /// re-resolve the integrations. Request auth needs no rebind: a live session's stream
+    /// re-resolves it from the credential store on every provider call.
+    ///
+    /// # Errors
+    ///
+    /// The auth store's reload failing ([`McpManager::reload_auth_storage`]): the manager keeps
+    /// its previous credentials, and the reload is not reported as applied.
+    pub fn reload_live_inputs(&mut self) -> Result<(), String> {
+        let auth_reload = self.reload_auth_storage();
+        self.refresh();
+        auth_reload
+    }
+
+    /// The `/mcp` view's page (both daemons' `get_mcp_connections` answer): `connections` (the
+    /// roster: every configured connection, built-in catalog plus user-declared servers, with its
+    /// connected state and its record-held tool count), `services` (the service-catalog cards),
+    /// `credentials` (the stored api-key rows) and `catalogDiagnostics`, from one fresh local read:
+    /// the auth store is reloaded first (the interactive client stores its keys through its own
+    /// storage instance) and the integrations and catalog re-resolved, so a changed settings file,
+    /// a record another process wrote or a key just stored shows on the next open. A failed
+    /// reload serves the last-good credentials: the view reports what the manager has. Reads
+    /// through the auth store's blocking lock: never on an async runtime.
+    pub fn connections_view(&mut self) -> serde_json::Value {
+        let _auth_reload = self.reload_auth_storage();
+        self.refresh();
+        let connections: Vec<serde_json::Value> = self
+            .connection_roster()
+            .into_iter()
+            .map(|entry| serde_json::to_value(&entry).unwrap_or(serde_json::Value::Null))
+            .collect();
+        serde_json::json!({
+            "connections": connections,
+            "services": serde_json::to_value(self.service_catalog_views())
+                .unwrap_or(serde_json::Value::Array(Vec::new())),
+            "credentials": serde_json::to_value(self.api_key_credential_views())
+                .unwrap_or(serde_json::Value::Array(Vec::new())),
+            "catalogDiagnostics": self.service_catalog_diagnostics(),
+        })
+    }
+
     /// The resolved descriptors (host integration + view surfaces).
     pub fn service_descriptors(&self) -> &[McpServiceDescriptor] {
         &self.service_catalog.descriptors

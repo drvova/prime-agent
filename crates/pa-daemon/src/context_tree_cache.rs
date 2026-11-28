@@ -354,7 +354,8 @@ fn walk_children(
     // recursion level its own.
     let sessions_dir = agent_dir.join("sessions");
     let ledger = crate::context_tree_children::ContextLedger::read(
-        &crate::rlm_ledger::RlmSpawnLedger::new(agent_dir, &sessions_dir, |_| {}),
+        &pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(agent_dir, &sessions_dir, |_| {})
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage)),
     );
     let mut skip_ids: HashSet<String> = snapshots
         .iter()
@@ -669,15 +670,20 @@ mod tests {
         write_session(&live_file, "01a0live-0000", 0.25);
         let gone_file = children_dir.join("sub-gone/01a0gone-0000.jsonl");
         write_session(&gone_file, "01a0gone-0000", 0.125);
-        let tag = crate::rlm_ledger::RlmFactoryTag {
+        let tag = pa_core::session_engine::rlm_host::RlmFactoryTag {
             run_id: "0123456789ab".to_string(),
             spec_id: "sw".to_string(),
             state_id: "build".to_string(),
         };
-        let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+            &agent_dir,
+            &sessions_dir,
+            |_| {},
+        )
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         for (child_id, file) in [("sub-live", &live_file), ("sub-gone", &gone_file)] {
             ledger
-                .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+                .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                     child_id: child_id.to_string(),
                     parent: root_file.to_string_lossy().to_string(),
                     child: file.to_string_lossy().to_string(),
@@ -692,7 +698,7 @@ mod tests {
         // clears this run's tag nor inherits it.
         let twin = agent_dir.join("session-artifacts/01a0other-0000/sub-live/01a0twin-0000.jsonl");
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-live".to_string(),
                 parent: sessions_dir
                     .join("01a0other-0000.jsonl")
@@ -710,7 +716,7 @@ mod tests {
             .append_delete(
                 "sub-gone",
                 &gone,
-                crate::rlm_ledger::RlmLedgerDeleteReason::User,
+                pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
             )
             .unwrap();
         crate::stop_cleanup::append_deleted_child_usage_amendments(&ledger, &gone, "sub-gone")
@@ -762,11 +768,11 @@ mod tests {
         let context_total =
             root_own["cost"]["total"].as_f64().unwrap() + persisted.iter().map(cost).sum::<f64>();
         let row_cost = |file: &Path| {
-            crate::session_store::read_session_info(file)
+            pa_core::session::catalog::read_session_info(file)
                 .and_then(|info| info.usage)
                 .map_or(0.0, |usage| usage.cost)
         };
-        let root_key = crate::lease::canonical_session_path(&root_file)
+        let root_key = pa_core::session::lease::canonical_session_path(&root_file)
             .to_string_lossy()
             .to_string();
         let bucket = ledger.deleted_descendant_usage_by_parent().unwrap();
@@ -787,10 +793,14 @@ mod tests {
         let child = agent_dir.join("session-artifacts/parent/sub-old/child.jsonl");
         write_session(&parent, "parent", 0.5);
         write_session(&child, "child", 0.125);
-        let ledger =
-            crate::rlm_ledger::RlmSpawnLedger::new(agent_dir, &agent_dir.join("sessions"), |_| {});
+        let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+            agent_dir,
+            &agent_dir.join("sessions"),
+            |_| {},
+        )
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-old".into(),
                 parent: parent.to_string_lossy().into(),
                 child: child.to_string_lossy().into(),
@@ -803,7 +813,7 @@ mod tests {
             .append_delete(
                 "sub-old",
                 &child.to_string_lossy(),
-                crate::rlm_ledger::RlmLedgerDeleteReason::User,
+                pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
             )
             .unwrap();
         crate::stop_cleanup::append_deleted_child_usage_amendments(
@@ -864,13 +874,17 @@ mod tests {
         let agent_dir = root.path();
         let parent = agent_dir.join("sessions/parent.jsonl");
         write_session(&parent, "parent", 0.5);
-        let ledger =
-            crate::rlm_ledger::RlmSpawnLedger::new(agent_dir, &agent_dir.join("sessions"), |_| {});
+        let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+            agent_dir,
+            &agent_dir.join("sessions"),
+            |_| {},
+        )
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         for (id, cost) in [("first", 0.125), ("second", 0.25)] {
             let child = agent_dir.join(format!("session-artifacts/parent/{id}/{id}.jsonl"));
             write_session(&child, id, cost);
             ledger
-                .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+                .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                     child_id: "reused".into(),
                     parent: parent.to_string_lossy().into(),
                     child: child.to_string_lossy().into(),
@@ -883,7 +897,7 @@ mod tests {
                 .append_delete(
                     "reused",
                     &child.to_string_lossy(),
-                    crate::rlm_ledger::RlmLedgerDeleteReason::User,
+                    pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
                 )
                 .unwrap();
             crate::stop_cleanup::append_deleted_child_usage_amendments(

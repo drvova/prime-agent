@@ -49,6 +49,7 @@ pub(crate) fn run_session_command(
                 messages: vec![session_command_failure_row(command, &error)],
                 compaction: None,
                 compaction_skipped: None,
+                compaction_aborted: false,
                 continuation_message: None,
                 error: Some(error),
                 pending_refinement: None,
@@ -118,8 +119,10 @@ fn emit_compact_end(
         let entry = serde_json::to_value(&compaction.entry).unwrap_or(serde_json::Value::Null);
         // The client-facing result is the TS `CompactionResult` wire shape (details
         // included).
-        let result =
-            crate::compaction::compaction_result_value(&compaction.result, &compaction.entry);
+        let result = pa_core::session_engine::compaction_exec::compaction_result_value(
+            &compaction.result,
+            &compaction.entry,
+        );
         (
             entry,
             crate::compaction::compaction_end_success(

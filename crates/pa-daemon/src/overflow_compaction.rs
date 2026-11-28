@@ -328,7 +328,10 @@ impl AgentSessionEngine {
                 self.mark_compact_auto_refine_pending();
                 // The wire result is the `CompactionResult` shape; the
                 // end event carries `willRetry: true` (the turn re-issues).
-                let result = crate::compaction::compaction_result_value(&run.result, &run.entry);
+                let result = pa_core::session_engine::compaction_exec::compaction_result_value(
+                    &run.result,
+                    &run.entry,
+                );
                 let entry = serde_json::to_value(&run.entry).unwrap_or(Value::Null);
                 let event = crate::compaction::compaction_end_success(
                     "overflow",

@@ -4,6 +4,8 @@
 //! ([`Subagents::deliver_inbox`]) the way the daemon's receiving worker
 //! does:
 //!
+//! - refused while the receiver's agent messaging is paused (`Agent
+//!   messaging is paused`, the agents view's pause);
 //! - refused while the receiver holds
 //!   [`DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION`] undelivered rows;
 //! - a receiver in a turn takes it queued, and no wake is spent;
@@ -14,7 +16,8 @@
 //!   to retry.
 //!
 //! A delivered message is today's `agent_message` row, steered onto the
-//! receiver; a settled child is given its next task over it. The sender
+//! receiver; a settled child is given its next task over it, and a root in
+//! the runtime daemon is woken for it. The sender
 //! reads the outcome once its publish returns: the route has run by then.
 
 use std::collections::{HashMap, VecDeque};
@@ -22,30 +25,57 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use pa_core::session_engine::agent_messaging::{
-    assert_agent_message_queue_capacity, AgentMessageDeliveryStatus,
-    DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION, DEFAULT_AGENT_MESSAGE_WAKE_BUDGET,
-    DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS,
+    assert_agent_message_queue_capacity, create_agent_message_preview, AgentMessageArrival,
+    AgentMessageDeliveryStatus, AgentMessageKind, DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
+    DEFAULT_AGENT_MESSAGE_WAKE_BUDGET, DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS,
 };
-use pa_types::event_log::Event;
+use pa_types::agent_traffic::{sanitize_agent_traffic_preview, AgentTrafficEntry};
+use pa_types::event_log::{Event, NewEvent, Topic, Trust};
 use serde_json::{json, Value};
 
-use super::{deliver_row, lock, retask_if_settled, Subagents};
+use super::{deliver_row, lock, now_ms, wake_on_delivery, Delivery, Node, Subagents};
 
-/// What `agent/<to>/inbox` carries: `{id, from, row}`.
+/// The runtime daemon's agent traffic feed: one live-only event per
+/// accepted agent-message delivery, its payload the old `agent_traffic`
+/// frame's `entry` (pa-types `AgentTrafficEntry`), display only: nothing
+/// stores it, and it reaches no model's context.
+pub(crate) const TRAFFIC_TOPIC: &str = "runtime/traffic";
+
+/// What `agent/<to>/inbox` carries: `{id, from, row}`, with
+/// `"deliveryMode": "follow_up"` for a follow-up; a client's message
+/// (`session.send`) has no `from`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InboxMessage {
     /// The message's id (`agentmsg_…`): its receipt's.
     pub(crate) id: String,
-    /// The sending session's id: whose wake budget a wake spends.
-    pub(crate) from: String,
+    /// The sending session's id: whose wake budget a wake spends. `None`
+    /// for a client's message, which spends none (only sessions can answer
+    /// each other without end).
+    pub(crate) from: Option<String>,
     /// The `agent_message` row the receiver takes.
     pub(crate) row: Value,
+    /// A direct message, or one of a broadcast's (which ends no wait).
+    pub(crate) kind: AgentMessageKind,
+    /// Steered, or (`follow_up`) queued behind a receiver's running turn; an
+    /// idle receiver is woken for either.
+    pub(crate) delivery: Delivery,
 }
 
 impl InboxMessage {
     /// The event payload.
     pub(crate) fn payload(&self) -> Value {
-        json!({ "id": self.id, "from": self.from, "row": self.row })
+        let mut payload = json!({ "id": self.id, "row": self.row });
+        if let Some(from) = &self.from {
+            payload["from"] = json!(from);
+        }
+        if let Some(kind) = self.kind.to_wire() {
+            payload["messageKind"] = json!(kind);
+        }
+        match self.delivery {
+            Delivery::Steer => {}
+            Delivery::FollowUp => payload["deliveryMode"] = json!("follow_up"),
+        }
+        payload
     }
 
     /// The message a payload carries, when it carries one.
@@ -53,8 +83,14 @@ impl InboxMessage {
         let text = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_string);
         Some(InboxMessage {
             id: text("id")?,
-            from: text("from")?,
+            from: text("from"),
             row: payload.get("row")?.clone(),
+            kind: AgentMessageKind::from_wire(payload.get("messageKind").and_then(Value::as_str)),
+            delivery: if text("deliveryMode").as_deref() == Some("follow_up") {
+                Delivery::FollowUp
+            } else {
+                Delivery::Steer
+            },
         })
     }
 }
@@ -119,6 +155,8 @@ impl Subagents {
             let engine = receiver
                 .engine()
                 .ok_or_else(|| anyhow::anyhow!("the target session is not running"))?;
+            // The agents view's pause refuses every delivery.
+            receiver.agent_messages.admit()?;
             let agent = engine.session.agent();
             assert_agent_message_queue_capacity(
                 agent.steering_previews().len() + agent.follow_up_previews().len(),
@@ -128,12 +166,47 @@ impl Subagents {
             // sender's budget; one in a turn queues it unbudgeted.
             let queued = agent.state().await.is_streaming;
             if !queued {
-                if let Err(retry_after_ms) = receiver.wakes.admit(&message.from, Instant::now()) {
-                    return Ok(AgentMessageDeliveryStatus::WakeRefused { retry_after_ms });
+                if let Some(from) = &message.from {
+                    if let Err(retry_after_ms) = receiver.wakes.admit(from, Instant::now()) {
+                        return Ok(AgentMessageDeliveryStatus::WakeRefused { retry_after_ms });
+                    }
                 }
             }
-            deliver_row(&receiver, message.row)?;
-            retask_if_settled(&receiver, event.event.trust).await;
+            let details = &message.row["details"];
+            let arrival = AgentMessageArrival {
+                message_id: message.id.clone(),
+                sender_ids: message.from.iter().cloned().collect(),
+                sender_name: details["from"]["sessionName"]
+                    .as_str()
+                    .or(message.from.as_deref())
+                    .or_else(|| details["from"]["clientId"].as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                preview: create_agent_message_preview(
+                    details["message"].as_str().unwrap_or_default(),
+                ),
+                kind: message.kind,
+            };
+            // A follow-up waits behind a running turn; an idle receiver runs
+            // either at once.
+            let delivery = if queued {
+                message.delivery
+            } else {
+                Delivery::Steer
+            };
+            let traffic = self.traffic_entry(&receiver, &message, queued);
+            deliver_row(&receiver, message.row.clone(), delivery)?;
+            // The receiving side of the receiver's waits hears every
+            // delivery it took. A wait it ends withdraws its `waitingOn`
+            // and the change hook wakes the parent's collect; there is
+            // nothing more to publish, because this daemon's roster reads
+            // `waitingOn` live.
+            let _withdrawn = receiver.waits.deliver(arrival);
+            wake_on_delivery(&receiver, event.event.trust).await;
+            // Reported once it landed, never on the delivery's own path.
+            if let Some(entry) = traffic {
+                self.publish_traffic(&receiver, &entry);
+            }
             anyhow::Ok(if queued {
                 AgentMessageDeliveryStatus::Queued
             } else {
@@ -152,6 +225,79 @@ impl Subagents {
                 }
             }
         }
+    }
+}
+
+impl Subagents {
+    /// The traffic pane's entry for `message` landing on `receiver`
+    /// (`queued` behind its turn, else delivered), as the old daemon's
+    /// receiving worker reports it: the sender's and the receiver's names
+    /// and ids, the sender's relationship to the receiver, the kind, the
+    /// outcome, the body's length and its preview. Only the runtime daemon
+    /// reports traffic: `None` in a headless run.
+    fn traffic_entry(
+        &self,
+        receiver: &Node,
+        message: &InboxMessage,
+        queued: bool,
+    ) -> Option<AgentTrafficEntry> {
+        self.daemon()?;
+        let details = &message.row["details"];
+        let from = &details["from"];
+        let body = details["message"].as_str().unwrap_or_default();
+        // The old label precedence: name, durable id, live id, client.
+        let from_name = ["sessionName", "sessionId", "activeSessionId", "clientId"]
+            .iter()
+            .find_map(|key| from[*key].as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let relationship = details["fromRelationship"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| {
+                // Two sessions under one parent, or two roots, are siblings;
+                // a client is no relative.
+                let sender = self.node(message.from.as_deref()?)?;
+                let parent =
+                    |node: &Node| node.parent_node().map(|parent| parent.session_id.clone());
+                (parent(&sender) == parent(receiver)).then(|| "sibling".to_string())
+            });
+        Some(AgentTrafficEntry {
+            root_active_session_id: receiver.root_id(),
+            from: from_name,
+            from_active_session_id: message.from.clone(),
+            to: receiver
+                .session_name()
+                .unwrap_or_else(|| receiver.session_id.clone()),
+            to_active_session_id: receiver.session_id.clone(),
+            relationship,
+            kind: match message.kind {
+                AgentMessageKind::Direct => "direct",
+                AgentMessageKind::Broadcast => "broadcast",
+            }
+            .to_string(),
+            outcome: if queued { "queued" } else { "delivered" }.to_string(),
+            chars: u64::try_from(body.chars().count()).unwrap_or(u64::MAX),
+            preview: sanitize_agent_traffic_preview(body),
+            timestamp_ms: now_ms(),
+            rest: serde_json::Map::default(),
+        })
+    }
+
+    /// Publishes `entry` on [`TRAFFIC_TOPIC`], live only, fire and forget.
+    fn publish_traffic(&self, receiver: &Node, entry: &AgentTrafficEntry) {
+        let Ok(payload) = serde_json::to_value(entry) else {
+            return;
+        };
+        self.outbox.send(NewEvent {
+            topic: Topic::new(TRAFFIC_TOPIC).expect("a topic"),
+            source: receiver.session_id.clone(),
+            session: Some(receiver.session_id.clone()),
+            payload,
+            trust: Trust::Owner,
+            cause: None,
+            reply: None,
+        });
     }
 }
 

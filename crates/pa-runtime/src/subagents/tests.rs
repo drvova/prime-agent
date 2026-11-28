@@ -23,7 +23,9 @@ use pa_core::session_engine::messages::{
     create_async_bash_quiet_message, QuietJob, ASYNC_BASH_QUIET_PREVIEW_LABEL,
 };
 
-use super::{kernel_notice_sink, FamilyMessages, Node, SessionSubagents, Subagents};
+use super::{
+    kernel_notice_sink, Delivery, FamilyMessages, MessageSender, Node, SessionSubagents, Subagents,
+};
 use crate::bus::{Heard, Listener};
 use crate::runtime::{Runtime, RuntimeOptions};
 use crate::session::{
@@ -142,9 +144,11 @@ impl SessionBuilder for TreeBuilder {
             engine: Arc::new(engine),
             model,
             api_key: None,
+            provider_target: Arc::default(),
             agent_dir: self.agent_dir.clone(),
             events: DriverEvents::Stream,
             autonomous: None,
+            queue_modes: crate::session::QueueModes::Built,
         })
     }
 }
@@ -369,6 +373,42 @@ async fn a_spawned_childs_done_delivers_its_notice_to_the_parent() {
             "[child-exited: no-reply child:kid]\n\nLast assistant text: kid finished"
         )]
     );
+}
+
+/// Each status a child reaches is published once on its parent's stream as
+/// the old worker's `rlm_child_update`, its roster row as the child.
+#[tokio::test]
+async fn a_childs_status_changes_reach_the_parents_stream_once_each() {
+    let mut bed = bed(json!({
+        "responses": [spawn_kid("run the task"), { "text": "WAITING" }, { "text": "PARENT DONE" }],
+        "children": { "kid": [{ "text": "kid finished" }] },
+    }))
+    .await;
+    let input = bed.input("delegate").await;
+    bed.runtime
+        .settle(&bed.parent, SettleAfter::Task(input))
+        .await
+        .unwrap();
+    let stream = format!("agent/{}/stream", bed.parent);
+    let mut updates = Vec::new();
+    while updates.last().map(|(_, status)| status) != Some(&json!("done")) {
+        let event = heard(&mut bed.listener).await;
+        let payload = &event.event.payload;
+        if event.event.topic.as_str() == stream && payload["type"] == "rlm_child_update" {
+            updates.push((
+                payload["child"]["sessionName"].clone(),
+                payload["child"]["status"].clone(),
+            ));
+        }
+    }
+    assert_eq!(
+        updates,
+        [
+            (json!("kid"), json!("running")),
+            (json!("kid"), json!("done"))
+        ]
+    );
+    bed.close().await;
 }
 
 /// A session at its depth bound refuses a spawn with the shared error.
@@ -675,6 +715,55 @@ async fn a_busy_receiver_queues_a_message_without_spending_a_wake() {
     assert_eq!(
         (receipt.delivery_status, kid.wakes.spent(&bed.parent)),
         (AgentMessageDeliveryStatus::Queued, 0)
+    );
+    bed.hold.release.add_permits(8);
+    bed.close().await;
+}
+
+/// A client's follow-up (the CLI's `send --follow-up`) to a session in a
+/// turn waits on its agent's follow-up queue, not its steers, spends no
+/// sender's wake, and is answered as queued.
+#[tokio::test]
+async fn a_clients_follow_up_to_a_busy_session_queues_behind_its_turn() {
+    let mut bed = bed(json!({
+        "responses": [spawn_kid(HOLD_TASK), { "text": "WAITING" }, { "text": "PARENT DONE" }],
+        "children": { "kid": [{ "text": "kid finished" }, { "text": "kid heard" }] },
+    }))
+    .await;
+    bed.input("delegate").await;
+    bed.until_done().await;
+    bed.hold.entered.notified().await;
+    let kid = Arc::clone(&bed.kids().await["kid"]);
+    let receipt = bed
+        .runtime
+        .subagents()
+        .send_message(
+            &kid.session_id,
+            "ping",
+            MessageSender::Client("cli".to_string()),
+            Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
+    let engine = kid.engine().expect("the kid runs");
+    let agent = engine.session.agent();
+    assert_eq!(
+        (
+            receipt["deliveryStatus"].clone(),
+            receipt["deliveryMode"].clone(),
+            receipt["from"].clone(),
+            agent.steering_previews().len(),
+            agent.follow_up_previews().len(),
+            kid.wakes.spent("cli"),
+        ),
+        (
+            json!("queued"),
+            json!("follow_up"),
+            json!({ "clientId": "cli" }),
+            0,
+            1,
+            0
+        )
     );
     bed.hold.release.add_permits(8);
     bed.close().await;

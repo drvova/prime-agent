@@ -118,7 +118,7 @@ pub(crate) fn compute_own_and_total_usage(
                     add_usage(&mut total, usage);
                 }
             }
-        } else if let Some(row) = crate::session_usage::billed_store_row(entry) {
+        } else if let Some(row) = entry.billed_row() {
             add_usage(&mut total, &usage_value(&row.usage));
         }
     }
@@ -222,7 +222,7 @@ pub(crate) fn compute_own_usage_by_model(
                 }
             }
             _ => {
-                let Some(row) = crate::session_usage::billed_store_row(entry) else {
+                let Some(row) = entry.billed_row() else {
                     continue;
                 };
                 // A billed row's recorded serving model (TS #2411's auxiliary routing)
@@ -287,8 +287,8 @@ pub(crate) fn compute_own_usage_by_model(
 /// branched transcript).
 pub(crate) fn own_usage_by_model_of(
     path: &std::path::Path,
-    summary: &crate::session_usage::SessionUsageSummary,
-) -> Option<Vec<crate::session_usage::ModelUsageSummary>> {
+    summary: &pa_core::session::usage_summary::SessionUsageSummary,
+) -> Option<Vec<pa_core::session::usage_summary::ModelUsageSummary>> {
     let store = crate::session_store::SessionFile::open(path).ok()?;
     let branch = store.branch_bridged();
     let (own_usage, _) = compute_own_and_total_usage(&branch, store.entries());
@@ -299,11 +299,11 @@ pub(crate) fn own_usage_by_model_of(
         store.window_boundary_model().as_ref(),
     )?;
     let tokens = |usage: &Value, field: &str| usage[field].as_u64().unwrap_or_default();
-    let by_model: Vec<crate::session_usage::ModelUsageSummary> = buckets
+    let by_model: Vec<pa_core::session::usage_summary::ModelUsageSummary> = buckets
         .iter()
         .map(|bucket| {
             let usage = &bucket["ownUsage"];
-            crate::session_usage::ModelUsageSummary {
+            pa_core::session::usage_summary::ModelUsageSummary {
                 provider: bucket["provider"].as_str().unwrap_or_default().to_string(),
                 id: bucket["id"].as_str().unwrap_or_default().to_string(),
                 input: tokens(usage, "input"),

@@ -26,9 +26,9 @@ use pa_types::ai::Model;
 
 use crate::auto_compaction::AutoCompactionRun;
 use crate::engine::{
-    BranchSummaryOutcome, BranchSummaryRequest, BranchSummaryRun, CompactionOutcome,
-    CompactionRequest, CompactionRun, EngineEvent, EngineModelSelection, PromptRequest,
-    SessionEngine, SideQuestionOutcome, SideQuestionRequest,
+    BranchSummaryOutcome, BranchSummaryRequest, CompactionOutcome, CompactionRequest,
+    CompactionRun, EngineEvent, EngineModelSelection, PromptRequest, SessionEngine,
+    SideQuestionOutcome, SideQuestionRequest,
 };
 use crate::goal_continuation::GoalBoundary;
 use crate::image_route::ImageRoute;
@@ -71,7 +71,6 @@ pub(crate) use config::CreateSessionResources;
 pub use config::SupervisorLinkConfig;
 use config::{GoalRuntimeHandles, ProducerUsageSink, RestoredSessionModel, StartupScope};
 
-mod better;
 mod effort;
 mod reload;
 mod session_engine_impl;
@@ -242,7 +241,8 @@ pub struct AgentSessionEngine {
     >,
     own_summary: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
     /// The session's `agent_message.wait` side, shared with its message controller.
-    agent_message_waits: std::sync::Arc<crate::agent_message_wait::AgentMessageWaits>,
+    agent_message_waits:
+        std::sync::Arc<pa_core::session_engine::agent_messaging::AgentMessageWaits>,
     pub(crate) create_resources: std::sync::RwLock<CreateSessionResources>,
     pub(crate) autonomous:
         std::sync::Arc<tokio::sync::Mutex<pa_core::autonomous::AutonomousRuntimeState>>,

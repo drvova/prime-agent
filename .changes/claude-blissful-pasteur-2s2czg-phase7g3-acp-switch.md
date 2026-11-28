@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now runs a session's `!` commands (`session.bash`, `session.abort_bash`), streaming their output on the session and saving them to its transcript like the supervisor does.

@@ -23,14 +23,22 @@
 //!   matches it as the bus fans it out, with `seq` 0; it is never replayed.
 //! - **Publish.** Only on [`CLIENT_TOPICS`] (`agent/<id>/input`), stored with
 //!   `Trust::Owner`, the client's `hello` name as `source`, and `<id>` as the
-//!   session; the reply's result is `{"seq": n}`. Publishes are handled in
-//!   the order sent.
+//!   session; the reply's result is `{"seq": n}`, with `task` and
+//!   `admission` when the publish's routes announced its task on
+//!   `agent/<id>/accepted` (an `AgentAccepted`, as the runtime's input route
+//!   does): a client that publishes a prompt and waits for it waits for that
+//!   task's `agent/<id>/done`. Publishes are handled in the order sent, each
+//!   admitted first by the handlers (`Handlers::admit_publish`: the runtime
+//!   daemon's update gate refuses input while an update prepares).
+//! - **Attached.** While one of a connection's subscriptions matches a
+//!   session's `agent/<id>/done`, the connection is one of the session's
+//!   attached clients (`attached`), as the session list counts them.
 //! - **Query and call.** Parsed into [`Query`] / [`Call`] (an unknown name is
 //!   an error reply) and answered by [`Handlers`] on their own tasks, at most
 //!   [`IN_FLIGHT`] at once per connection.
 //! - Any frame that is not a wire2 client frame, or a second `hello`, ends
 //!   the connection with `closing`. So does an outbound frame larger than the
-//!   frame limits.
+//!   frame limits, and the runtime's own end (`system/closing`, see `feed`).
 
 use std::future::Future;
 use std::num::NonZeroUsize;
@@ -39,24 +47,27 @@ use std::sync::Arc;
 use pa_types::daemon::framing::{
     encode_private_frame, PrivateFrameLimits, PrivateFrameReader, DEFAULT_PRIVATE_FRAME_LIMITS,
 };
-use pa_types::event_log::{NewEvent, TopicFilter, Trust};
+use pa_types::event_log::{AgentAccepted, NewEvent, TopicFilter, Trust};
 use pa_types::wire2::{ClientFrame, Outcome, ServerFrame, WIRE2_VERSION};
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 
-use crate::bus::Bus;
+use crate::bus::{Bus, Published};
 use crate::routes::{ModelCaller, TaskSink};
 use crate::store::{EventStore, StateStore};
 use crate::subscriptions::SessionTree;
 
+mod attached;
 mod feed;
 mod handlers;
 
+pub(crate) use attached::Attached;
 pub use feed::MAX_TAIL;
 use feed::{last_seq, Control, Feed};
-pub use handlers::{Call, Handlers, Query, UnknownOperation};
+pub(crate) use handlers::ErrorWithInfo;
+pub use handlers::{Call, ConnectionId, Handlers, Query, UnknownOperation};
 
 /// The topics a client may publish on: `agent/<id>/input`, a session's
 /// input (a prompt, a steer, a follow-up).
@@ -91,6 +102,7 @@ pub struct WireServer<E, K, G, M, T, H> {
     handlers: Arc<H>,
     config: WireConfig,
     client_topics: Arc<Vec<TopicFilter>>,
+    attached: Arc<Attached>,
 }
 
 impl<E, K, G, M, T, H> Clone for WireServer<E, K, G, M, T, H> {
@@ -100,6 +112,7 @@ impl<E, K, G, M, T, H> Clone for WireServer<E, K, G, M, T, H> {
             handlers: Arc::clone(&self.handlers),
             config: self.config,
             client_topics: Arc::clone(&self.client_topics),
+            attached: Arc::clone(&self.attached),
         }
     }
 }
@@ -121,6 +134,17 @@ where
     /// A filter in [`CLIENT_TOPICS`] is not valid (a fixed list).
     #[must_use]
     pub fn new(bus: Bus<E, K, G, M, T>, handlers: H, config: WireConfig) -> Self {
+        Self::attached_to(bus, handlers, config, Arc::default())
+    }
+
+    /// [`Self::new`], recording which connections follow which sessions in
+    /// `attached`.
+    pub(crate) fn attached_to(
+        bus: Bus<E, K, G, M, T>,
+        handlers: H,
+        config: WireConfig,
+        attached: Arc<Attached>,
+    ) -> Self {
         WireServer {
             bus,
             handlers: Arc::new(handlers),
@@ -131,6 +155,7 @@ where
                     .map(|filter| TopicFilter::new(*filter).expect("client topics are valid"))
                     .collect(),
             ),
+            attached,
         }
     }
 
@@ -188,34 +213,45 @@ where
         let (out, outbound) = mpsc::channel(self.config.outbound_capacity.get());
         let (control, controls) = mpsc::channel(1);
         let feed = Feed::new(self.bus.events(), out.clone(), welcome_seq);
+        let connection = self.attached.connect(&client);
         let session = async {
             // Whichever ends first ends the other; ending drops their
             // senders, so the writer sends what is queued and ends.
             tokio::select! {
-                read = self.read(&mut frames, client, control, out) => read,
+                read = self.read(&mut frames, client, control, out, &connection) => read,
                 feeding = feed.run(listener, controls) => feeding,
             }
         };
         // Boxed: the reader's buffers would make `serve`'s own future large.
         let mut session = Box::pin(session);
         let mut write = Box::pin(write_queued(writer, outbound, limits));
-        tokio::select! {
+        let served = tokio::select! {
             ended = &mut session => {
                 let written = (&mut write).await;
                 ended.and(written)
             }
             // The client takes no more frames: stop reading it too.
             written = &mut write => written,
-        }
+        };
+        // Its calls still running are dropped with the reader: what they
+        // made it hold goes now.
+        drop(session);
+        self.handlers.disconnected(connection.id()).await;
+        served
     }
 
     /// Reads the client's frames after `hello` and handles each.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match over the client's frames, each handled where it is read"
+    )]
     async fn read<R: AsyncRead + Unpin + Send>(
         &self,
         frames: &mut PrivateFrameReader<R>,
         client: String,
         control: mpsc::Sender<Control>,
         out: mpsc::Sender<ServerFrame>,
+        connection: &attached::Connection,
     ) -> anyhow::Result<()> {
         let in_flight = Arc::new(Semaphore::new(IN_FLIGHT));
         // Dropped with the connection, which aborts what is still running.
@@ -251,44 +287,68 @@ where
                     sub_id,
                     filter,
                     since,
-                } => control
-                    .send(Control::Subscribe {
-                        sub_id,
-                        filter,
-                        since,
-                    })
-                    .await
-                    .map_err(|_| anyhow::anyhow!("the connection's feed ended"))?,
-                ClientFrame::Unsubscribe { sub_id } => control
-                    .send(Control::Unsubscribe { sub_id })
-                    .await
-                    .map_err(|_| anyhow::anyhow!("the connection's feed ended"))?,
+                } => {
+                    connection.subscribed(&sub_id, &filter);
+                    control
+                        .send(Control::Subscribe {
+                            sub_id,
+                            filter,
+                            since,
+                        })
+                        .await
+                        .map_err(|_| anyhow::anyhow!("the connection's feed ended"))?;
+                }
+                ClientFrame::Unsubscribe { sub_id } => {
+                    connection.unsubscribed(&sub_id);
+                    control
+                        .send(Control::Unsubscribe { sub_id })
+                        .await
+                        .map_err(|_| anyhow::anyhow!("the connection's feed ended"))?;
+                }
                 ClientFrame::Publish { id, topic, payload } => {
                     let session = topic.levels().nth(1).map(str::to_string);
-                    let outcome = if self.client_topics.iter().any(|f| f.matches(&topic)) {
+                    let outcome = if !self.client_topics.iter().any(|f| f.matches(&topic)) {
+                        Outcome::Error {
+                            message: format!(
+                                "clients may publish only on {}, not {topic}",
+                                CLIENT_TOPICS.join(", ")
+                            ),
+                            info: None,
+                        }
+                    } else if let Err(error) = self.handlers.admit_publish(&topic) {
+                        Outcome::Error {
+                            info: error
+                                .chain()
+                                .find_map(|cause| cause.downcast_ref::<ErrorWithInfo>())
+                                .map(|answer| answer.info.clone()),
+                            message: format!("{error:#}"),
+                        }
+                    } else {
                         let event = NewEvent {
                             topic,
                             source: client.clone(),
-                            session,
+                            session: session.clone(),
                             payload,
                             trust: Trust::Owner,
                             cause: None,
                             reply: None,
                         };
                         match self.bus.publish(event).await {
-                            Ok(published) => Outcome::Ok {
-                                result: json!({ "seq": published.event.seq }),
-                            },
+                            Ok(published) => {
+                                let mut result = json!({ "seq": published.event.seq });
+                                let accepted = session
+                                    .as_deref()
+                                    .and_then(|session| accepted(&published, session));
+                                if let Some(accepted) = accepted {
+                                    result["task"] = json!(accepted.task);
+                                    result["admission"] = json!(accepted.admission);
+                                }
+                                Outcome::Ok { result }
+                            }
                             Err(error) => Outcome::Error {
                                 message: format!("the event was not published: {error:#}"),
+                                info: None,
                             },
-                        }
-                    } else {
-                        Outcome::Error {
-                            message: format!(
-                                "clients may publish only on {}, not {topic}",
-                                CLIENT_TOPICS.join(", ")
-                            ),
                         }
                     };
                     out.send(ServerFrame::Reply { id, outcome })
@@ -304,7 +364,9 @@ where
                 ClientFrame::Call { id, method, args } => {
                     let permit = Arc::clone(&in_flight).acquire_owned().await?;
                     let handlers = Arc::clone(&self.handlers);
-                    let answer = async move { handlers.call(method.parse()?, args).await };
+                    let connection = connection.id();
+                    let answer =
+                        async move { handlers.call(method.parse()?, args, connection).await };
                     running.spawn(answering(id, answer, out.clone(), permit));
                 }
             }
@@ -312,23 +374,68 @@ where
     }
 }
 
+/// The task `published`'s routes announced for `session`'s input on
+/// `agent/<session>/accepted`, if any.
+pub(crate) fn accepted(published: &Published, session: &str) -> Option<AgentAccepted> {
+    let topic = format!("agent/{session}/accepted");
+    published
+        .caused
+        .iter()
+        .find(|caused| caused.event.topic.as_str() == topic)
+        .and_then(|caused| serde_json::from_value(caused.event.payload.clone()).ok())
+}
+
+/// What runs once a reply is queued ([`after_reply`]).
+type AfterReply = Box<dyn FnOnce() + Send>;
+
+tokio::task_local! {
+    /// What the query or call answered on this task asked to run once its
+    /// reply is queued.
+    static AFTER_REPLY: std::cell::RefCell<Vec<AfterReply>>;
+}
+
+/// Runs `hook` once the reply to the query or call being answered on this
+/// task is queued on its connection, so whatever `hook` causes reaches that
+/// client after the reply (the old daemon answered a `shutdown` before it
+/// said it was closing); at once when no reply is being answered here.
+pub(crate) fn after_reply(hook: impl FnOnce() + Send + 'static) {
+    let mut hook = Some(Box::new(hook) as AfterReply);
+    let _ = AFTER_REPLY.try_with(|hooks| hooks.borrow_mut().extend(hook.take()));
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Replies to request `id` with what `answer` comes to, holding `permit`
-/// until then.
+/// until then, then runs what the answer asked to run after its reply
+/// ([`after_reply`]).
 async fn answering(
     id: String,
     answer: impl Future<Output = anyhow::Result<serde_json::Value>>,
     out: mpsc::Sender<ServerFrame>,
     permit: OwnedSemaphorePermit,
 ) {
-    let outcome = match answer.await {
-        Ok(result) => Outcome::Ok { result },
-        Err(error) => Outcome::Error {
-            message: format!("{error:#}"),
-        },
-    };
+    let (outcome, hooks) = AFTER_REPLY
+        .scope(std::cell::RefCell::default(), async {
+            let outcome = match answer.await {
+                Ok(result) => Outcome::Ok { result },
+                Err(error) => Outcome::Error {
+                    info: error
+                        .chain()
+                        .find_map(|cause| cause.downcast_ref::<ErrorWithInfo>())
+                        .map(|answer| answer.info.clone()),
+                    message: format!("{error:#}"),
+                },
+            };
+            (outcome, AFTER_REPLY.with(std::cell::RefCell::take))
+        })
+        .await;
     drop(permit);
     // A client gone before its answer needs none.
     let _ = out.send(ServerFrame::Reply { id, outcome }).await;
+    for hook in hooks {
+        hook();
+    }
 }
 
 /// Writes `frame` straight to the transport, before the queue exists.

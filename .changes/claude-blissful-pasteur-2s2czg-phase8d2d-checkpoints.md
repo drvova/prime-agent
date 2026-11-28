@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now keeps workspace checkpoints: rewinding the conversation with `/tree` restores the files a turn changed, as the default daemon does.

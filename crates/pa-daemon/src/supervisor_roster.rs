@@ -11,10 +11,10 @@ use pa_types::daemon::DaemonOutbound;
 use serde_json::{json, Value};
 
 use crate::backpressure::RouteAdmission;
-use crate::lease::canonical_session_path;
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::registry::ResidentWorker;
 use crate::supervisor::{ClientRouting, Supervisor, ROUTE_TIMEOUT_MS};
+use pa_core::session::lease::canonical_session_path;
 
 /// `worker_roster_delta`'s parsed frame. `sequence` feeds the stale-delta
 /// gate (the per-worker watermark drops a delayed older snapshot);

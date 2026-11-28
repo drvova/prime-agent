@@ -19,6 +19,18 @@ use super::{
 };
 
 impl AgentSession {
+    /// Stops the automatic retry the running prompt waits on
+    /// ([`Self::prompt_with_auto_retry`]): its wait ends at once and the turn
+    /// settles with the failure it retried, its retry cancelled. The next
+    /// prompt starts with no retry stopped.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the retry abort slot's mutex is poisoned.
+    pub fn abort_retry(&self) {
+        self.retry_abort.lock().expect("retry abort lock").abort();
+    }
+
     /// Continue a run whose final reply was cut off at the output limit
     /// ([`TurnAttempt::ContinueAfterOutputLimit`]): the cut reply stays in
     /// the loop context, and the guiding row
@@ -71,6 +83,10 @@ impl AgentSession {
     /// The admission's or the continuation's error, the `emit` callback's
     /// error, or an error when the run settles with no assistant reply or
     /// `text` is a session command (which never reaches the model).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the retry abort slot's mutex is poisoned.
     pub async fn prompt_with_auto_retry<E, EF>(
         &self,
         text: &str,
@@ -85,10 +101,16 @@ impl AgentSession {
     {
         // The images ride the first attempt only; a retry continues the run.
         let mut admission = Some(images);
+        // Each prompt's retries answer `abort_retry` from its start.
+        let retry_abort = {
+            let mut slot = self.retry_abort.lock().expect("retry abort lock");
+            *slot = pa_agent::abort::AbortController::new();
+            slot.signal()
+        };
         let settled = run_turn_with_auto_retry(
             policy,
             context_window,
-            None,
+            Some(&retry_abort),
             |attempt| {
                 let admission = admission.take();
                 async move {
@@ -138,9 +160,14 @@ impl AgentSession {
                 }
             },
             emit,
-            |delay| async move {
-                tokio::time::sleep(delay).await;
-                true
+            |delay| {
+                let retry_abort = retry_abort.clone();
+                async move {
+                    tokio::select! {
+                        () = tokio::time::sleep(delay) => true,
+                        () = retry_abort.aborted() => false,
+                    }
+                }
             },
             None,
             None,

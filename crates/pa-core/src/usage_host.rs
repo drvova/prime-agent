@@ -83,8 +83,11 @@ fn subagent_spend(manager: &SessionManager) -> Usage {
     spend
 }
 
-/// The `usage.session` reply.
-fn session_usage_json(manager: &SessionManager) -> Value {
+/// The `usage.session` reply: the branch's spend (`cost.total`, `own`,
+/// `subagents`) and tokens, a windowed load's folded older path included.
+/// The runtime daemon's `session.usage` answers it too.
+#[must_use]
+pub fn session_usage_json(manager: &SessionManager) -> Value {
     let mut spend = branch_spend(manager);
     let mut total_cost = spend.cost.total.as_f64();
     // A windowed load's folded older path is spend on this branch too.

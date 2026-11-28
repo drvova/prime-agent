@@ -76,7 +76,8 @@ impl Pane {
 
 impl Drop for Pane {
     fn drop(&mut self) {
-        // The product's daemon outlives its client: stop it through the product's own command.
+        // The product's daemon outlives its client: stop it through the product's own command,
+        // which stops either daemon.
         let _ = Command::new("sh")
             .arg(&self.launcher)
             .args(["shutdown", "--force"])
@@ -151,13 +152,14 @@ fn start(dir: &Path) -> Pane {
         &launcher,
         format!(
             "cd {project}\nexec env -i PATH=/usr/bin:/bin HOME={home} TERM=xterm-256color \
-             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 PRIME_AGENT_QUOTA_BASE_URL=http://127.0.0.1:9 \
+             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1{daemon_env} PRIME_AGENT_QUOTA_BASE_URL=http://127.0.0.1:9 \
              PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
             project = quote(&project),
             home = quote(&home),
             script = quote(&script),
             socket = quote(&dir.join("daemon.sock")),
             binary = quote(Path::new(env!("CARGO_BIN_EXE_prime-agent"))),
+            daemon_env = support::daemon_env(),
         ),
     )
     .expect("launcher");
@@ -324,3 +326,5 @@ fn the_picker_filters_by_billing_favorites_and_switches_the_session() {
         json!(["anthropic/claude-e2e-plan-two"])
     );
 }
+
+support::on_the_supervisor!(the_picker_filters_by_billing_favorites_and_switches_the_session,);

@@ -284,6 +284,12 @@ pub struct BranchSummaryEntry {
     pub from_hook: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// The model that served the summary call (`provider`, `modelId`): the
+    /// per-model cost fold bills the row on the model that billed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
 }
 
 /// `type: "custom"`: opaque custom data with a `customType` tag.

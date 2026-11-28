@@ -20,12 +20,12 @@ pub mod agent;
 pub mod subscription;
 pub mod topic;
 
-pub use agent::{AgentDone, AgentInput, TaskFailure};
+pub use agent::{Admission, AgentAccepted, AgentDone, AgentInput, TaskFailure};
 
 pub use subscription::{
     AgentTarget, Predicate, Priority, Route, Scope, Subscription, Task, TaskState,
 };
-pub use topic::{Topic, TopicError, TopicFilter, TopicTrie};
+pub use topic::{Topic, TopicError, TopicFilter, TopicTrie, SYSTEM_CLOSING, SYSTEM_HISTORY_IMPORT};
 
 /// The longest chain of causes an event may end: the event caused by the
 /// eighth event of a chain is refused.

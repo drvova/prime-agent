@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now answers a session's heartbeat commands as the default daemon does (read, set, pause, resume, clear and manage, a paused or cleared heartbeat's waiting fire withdrawn), and its saved-session list shows subagents that only the spawn ledger keeps.

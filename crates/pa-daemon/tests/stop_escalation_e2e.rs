@@ -262,7 +262,7 @@ fn a_well_behaved_worker_keeps_the_clean_stop() {
     );
 
     assert!(
-        pa_daemon::session_host::is_hosted_pid(worker_pid),
+        pa_core::session::hosted::is_hosted_pid(worker_pid),
         "the session is hosted by the daemon, not a process: {worker_pid}"
     );
     // The stop retires the session once its host thread has let go.
@@ -281,7 +281,7 @@ fn a_well_behaved_worker_keeps_the_clean_stop() {
         !log.contains("survived the shutdown escalation"),
         "the clean stop must not log a survivor: {log}"
     );
-    let lease = pa_daemon::lease::acquire_runtime_session_lease(&session_file, &agent_dir)
+    let lease = pa_core::session::lease::acquire_runtime_session_lease(&session_file, &agent_dir)
         .expect("the stopped session's lease must be free");
     drop(lease);
     let reopened = client.request(

@@ -47,15 +47,13 @@ impl crate::mode::Runtime for PrintRuntime {
                     Ok(1)
                 }
             },
-            AppMode::Daemon => {
-                match crate::daemon_mode::run_daemon_mode(options.daemon_socket.as_deref()) {
-                    Ok(code) => Ok(code),
-                    Err(error) => {
-                        eprintln!("Error: {error:#}");
-                        Ok(1)
-                    }
+            AppMode::Daemon => match crate::daemon_mode::run_daemon_mode(options) {
+                Ok(code) => Ok(code),
+                Err(error) => {
+                    eprintln!("Error: {error:#}");
+                    Ok(1)
                 }
-            }
+            },
             // ACP mode: a thin JSON-RPC stdio transport over a daemon
             // session.
             AppMode::Acp => match run_acp_mode(options) {
@@ -100,16 +98,33 @@ async fn acp_mode_main(options: &RunOptions) -> Result<i32, String> {
     // would target the TypeScript default socket and treat the schema
     // mismatch as a stale daemon).
     let socket_path = crate::config::resolve_daemon_socket_path(options.daemon_socket.as_deref());
-    crate::interactive_mode::ensure_daemon_running(&socket_path, &options.config.cwd)
+    // ACP drives the selected daemon: the runtime daemon on wire2 unless the supervisor is
+    // selected (`"daemon": "supervisor"`, `PRIME_AGENT_RUNTIME_DAEMON=0`).
+    let selected = crate::daemon_mode::DaemonKind::selected(&options.config.agent_dir);
+    let (socket_path, daemon) = if selected == crate::daemon_mode::DaemonKind::Runtime {
+        let socket = crate::interactive_mode::ensure_runtime_daemon_running(
+            &socket_path,
+            &options.config.cwd,
+        )
         .await
         .map_err(|error| format!("{error:#}"))?;
+        (socket, pa_runtime::acp::daemon::AcpDaemon::Runtime)
+    } else {
+        crate::interactive_mode::ensure_daemon_running(&socket_path, &options.config.cwd)
+            .await
+            .map_err(|error| format!("{error:#}"))?;
+        (socket_path, pa_runtime::acp::daemon::AcpDaemon::Supervisor)
+    };
     let (actual_cwd, create) = daemon_acp_create(options)?;
-    pa_daemon::acp::daemon::run_daemon_attached_acp_mode(pa_daemon::acp::daemon::DaemonAcpOptions {
-        socket_path,
-        actual_cwd,
-        product_version: crate::config::version().to_string(),
-        create,
-    })
+    pa_runtime::acp::daemon::run_daemon_attached_acp_mode(
+        pa_runtime::acp::daemon::DaemonAcpOptions {
+            socket_path,
+            daemon,
+            actual_cwd,
+            product_version: crate::config::version().to_string(),
+            create,
+        },
+    )
     .await
     .map_err(|error| format!("{error:#}"))
 }
@@ -246,12 +261,11 @@ async fn rpc_mode_main(options: &RunOptions) -> Result<i32, String> {
             .map_err(|error| format!("{error:#}"))?;
     }
     let factory = rpc_engine_factory(options);
-    let mut engine_handle = pa_daemon::rpc::session::RpcEngineHandle::from(parts);
+    let mut engine_handle = pa_runtime::rpc::RpcEngineHandle::from(parts);
     engine_handle.session_lease = initial_lease;
-    let exit_code = pa_daemon::rpc::run_rpc_mode(pa_daemon::rpc::RpcOptions {
+    let exit_code = pa_runtime::rpc::run_rpc_mode(pa_runtime::rpc::RpcOptions {
         engine: engine_handle,
         engine_factory: Some(factory),
-        cwd: config.cwd.clone(),
         agent_dir: config.agent_dir.clone(),
         autonomous_config: options
             .config
@@ -266,7 +280,7 @@ async fn rpc_mode_main(options: &RunOptions) -> Result<i32, String> {
 
 /// The engine-replacement seam the RPC mode's `new_session`/`switch_session`/
 /// `fork` commands drive: pa-cli owns the assembly, the mode owns the swap.
-fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngineFactory {
+fn rpc_engine_factory(options: &RunOptions) -> pa_runtime::rpc::RpcEngineFactory {
     let options = options.clone();
     std::sync::Arc::new(move |request| {
         let mut options = options.clone();
@@ -277,7 +291,7 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
         options.session.fork = None;
         Box::pin(async move {
             let (manager, opened_lease) = match &request {
-                pa_daemon::rpc::session::RpcEngineRequest::New {
+                pa_runtime::rpc::RpcEngineRequest::New {
                     parent_session,
                     cwd,
                 } => {
@@ -302,16 +316,17 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
                         }
                     };
                     // The fresh session's file is leased BEFORE the replacement can write it.
-                    let lease = pa_daemon::lease::acquire_runtime_session_lease(
+                    let lease = pa_core::session::lease::acquire_runtime_session_lease(
                         manager
                             .get_session_file()
                             .expect("a fresh session knows its file"),
                         &options.config.agent_dir,
                     )
-                    .map_err(|error| format!("{error:#}"))?;
+                    .map_err(|error| format!("{error:#}"))?
+                    .with_info_sidecar(pa_core::session::catalog::write_info_sidecar);
                     (manager, Some(lease))
                 }
-                pa_daemon::rpc::session::RpcEngineRequest::Open {
+                pa_runtime::rpc::RpcEngineRequest::Open {
                     session_path,
                     reuse_lease,
                     ..
@@ -342,7 +357,7 @@ fn rpc_engine_factory(options: &RunOptions) -> pa_daemon::rpc::session::RpcEngin
                 &HeadlessEmbedding::Rpc,
             )
             .await?;
-            let mut handle = pa_daemon::rpc::session::RpcEngineHandle::from(engine);
+            let mut handle = pa_runtime::rpc::RpcEngineHandle::from(engine);
             handle.session_lease = opened_lease;
             Ok(handle)
         })
@@ -357,7 +372,7 @@ fn replacement_session_dir(options: &RunOptions) -> std::path::PathBuf {
         .unwrap_or_else(|| options.config.agent_dir.join("sessions"))
 }
 
-impl From<HeadlessEngine> for pa_daemon::rpc::session::RpcEngineHandle {
+impl From<HeadlessEngine> for pa_runtime::rpc::RpcEngineHandle {
     fn from(parts: HeadlessEngine) -> Self {
         Self {
             engine: std::sync::Arc::new(parts.engine),
@@ -381,13 +396,16 @@ fn run_print_mode(options: &RunOptions) -> Result<i32, String> {
 /// The print and json modes' run on the event-driven runtime.
 mod print_session;
 
+/// The runtime daemon's composition: its session builder and endpoint.
+pub(crate) mod daemon_session;
+
 /// Own the print lease through runtime shutdown, including errors and unwinding.
 /// The operation seam lets the regression exercise a writer pending at shutdown.
 fn with_print_runtime<Context>(
     context: &Context,
     run: impl for<'a> FnOnce(
         &'a Context,
-        &'a mut Option<pa_daemon::lease::SessionLease>,
+        &'a mut Option<pa_core::session::lease::SessionLease>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<i32, String>> + 'a>,
     >,
@@ -432,12 +450,13 @@ pub(crate) async fn build_engine(
 mod faux;
 
 pub(crate) use faux::{
-    build_faux_engine_with, faux_response_steps, faux_script_env, FauxChildQueue,
+    build_faux_engine_with, faux_response_steps, faux_script_env, script_env, FauxChildQueue,
 };
 
 /// The switchable provider target the session's stream reads per call
-/// (shared with the RPC mode, whose picker model switches swap it live).
-pub type ProviderTargetSlot = std::sync::Arc<std::sync::RwLock<Option<ProviderTarget>>>;
+/// (shared with the RPC mode and the runtime daemon, whose model and tier
+/// switches swap it live).
+pub(crate) use pa_core::session_engine::provider_adapter::ProviderTargetSlot;
 
 /// What one engine build varies by session: a print-runtime session (the
 /// print root, or a spawned subagent with its own model, auth and session),
@@ -451,6 +470,14 @@ pub(crate) enum HeadlessEmbedding {
         /// run's bus, its subagents, the late-receipt sink and the
         /// background-bash wake.
         seams: pa_runtime::SessionSeams,
+        /// A scripted session's own faux response queue, keyed by this id
+        /// (the runtime daemon's sessions, each answering its script from
+        /// the start as a supervisor worker does); `None` answers from the
+        /// process's shared `faux` queue (the print run's one session).
+        faux_lane: Option<String>,
+        /// How deep a daemon session created under a parent (a scoped child)
+        /// runs; `None` for a root.
+        rlm_depth: Option<u32>,
     },
     /// A spawned subagent: the runtime's seams, and its engine deltas.
     Child {
@@ -508,6 +535,13 @@ pub(crate) struct HeadlessEmbeddingFields {
     /// What the kernel asks before each call past it: a runtime session's
     /// trust gate; `None` for the RPC embedding.
     pub(crate) call_policy: Option<Arc<dyn pa_core::kernel::CallPolicy>>,
+    /// The scheduled jobs a runtime-daemon session's kernel binds to;
+    /// `None` for a print run (its `schedule.*` refuses) and RPC.
+    pub(crate) cron_store: Option<pa_core::session_engine::runtime_wiring::KernelCronWiring>,
+    /// A runtime-daemon session's todo/question hub, which reaches its
+    /// attached clients; `None` (headless: `ask` answers `no_user`) for a
+    /// print run and RPC.
+    pub(crate) interaction: Option<Arc<pa_core::interaction::InteractionHub>>,
 }
 
 /// The embedding-owned fields for one headless engine build: a print
@@ -515,7 +549,9 @@ pub(crate) struct HeadlessEmbeddingFields {
 /// drive's), the RPC mode's wake is the built handle's notify.
 pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> HeadlessEmbeddingFields {
     let seams = match embedding {
-        HeadlessEmbedding::Root { seams } | HeadlessEmbedding::Child { seams, .. } => Some(seams),
+        HeadlessEmbedding::Root { seams, .. } | HeadlessEmbedding::Child { seams, .. } => {
+            Some(seams)
+        }
         HeadlessEmbedding::Rpc => None,
     };
     let (bash_wake, rpc_bash_wake) = if let Some(seams) = seams {
@@ -534,7 +570,8 @@ pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> Headle
         extra_host_handlers: seams.map(|seams| seams.host_handlers.clone()),
         rlm_depth: match embedding {
             HeadlessEmbedding::Child { overrides, .. } => Some(overrides.depth),
-            HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => None,
+            HeadlessEmbedding::Root { rlm_depth, .. } => *rlm_depth,
+            HeadlessEmbedding::Rpc => None,
         },
         factory_child: matches!(
             embedding,
@@ -546,6 +583,8 @@ pub(crate) fn headless_embedding_fields(embedding: &HeadlessEmbedding) -> Headle
         on_late_sent_agent_message: seams
             .map(|seams| Arc::clone(&seams.on_late_sent_agent_message)),
         call_policy: seams.map(|seams| Arc::clone(&seams.call_policy)),
+        cron_store: seams.and_then(|seams| seams.scheduled_jobs.clone()),
+        interaction: seams.and_then(|seams| seams.interaction.clone()),
     }
 }
 
@@ -569,7 +608,7 @@ pub(crate) struct HeadlessEngine {
 async fn build_headless_engine_parts(
     options: &RunOptions,
     execution_mode: &str,
-    lease: &mut Option<pa_daemon::lease::SessionLease>,
+    lease: &mut Option<pa_core::session::lease::SessionLease>,
 ) -> Result<HeadlessEngine, String> {
     // Every headless mode discloses immediately (TS main: only the
     // interactive `deferTelemetryNoticeForOnboarding` holds the notice
@@ -595,7 +634,7 @@ fn select_session_manager_with_lease(
 ) -> Result<
     (
         Option<pa_core::session::manager::SessionManager>,
-        Option<pa_daemon::lease::SessionLease>,
+        Option<pa_core::session::lease::SessionLease>,
     ),
     String,
 > {
@@ -661,9 +700,35 @@ pub(crate) async fn build_headless_engine_with(
             let session = session_manager
                 .as_ref()
                 .map(pa_core::session::manager::SessionManager::active_context);
-            select_model(&mut registry, config, session.as_ref()).await?
+            match select_model(&mut registry, config, session.as_ref()).await {
+                Ok(model) => model,
+                // A daemon's session (the runtime daemon gives each a faux lane of its own) that
+                // names no model and finds none signed in starts on the catalog's first, as the
+                // old worker's does: it opens, and a prompt reports the missing sign-in. A print
+                // or RPC run fails here instead.
+                Err(error)
+                    if config.model.is_none()
+                        && matches!(
+                            embedding,
+                            HeadlessEmbedding::Root {
+                                faux_lane: Some(_),
+                                ..
+                            }
+                        ) =>
+                {
+                    registry.get_all().first().cloned().ok_or(error)?
+                }
+                Err(error) => return Err(error),
+            }
         }
     };
+    // `--api-key` serves the chosen model's provider, over its stored credentials (the old
+    // worker's selection key).
+    if let Some(key) = &config.api_key {
+        registry
+            .auth
+            .set_runtime_api_key(&model.provider, key.clone());
+    }
     // Resolve request auth once: the stored team / `PRIME_TEAM_ID` reach the wire through these
     // headers (children resolve against the same catalog the spawn used).
     let resolved = registry.get_api_key_and_headers(&model, model.headers.as_ref());
@@ -771,6 +836,8 @@ pub(crate) async fn build_headless_engine_with(
         kernel_notice_sink,
         on_late_sent_agent_message,
         call_policy,
+        cron_store,
+        interaction,
     } = headless_embedding_fields(embedding);
     let (semantic_edges, thinking_level) = match embedding {
         HeadlessEmbedding::Child { overrides, .. } => (
@@ -806,7 +873,7 @@ pub(crate) async fn build_headless_engine_with(
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {
             on_late_sent_agent_message,
-            cron_store: None,
+            cron_store,
             semantic_edges,
             telemetry,
             steering_mode,
@@ -839,7 +906,7 @@ pub(crate) async fn build_headless_engine_with(
             rlm_subagent_host,
             rlm_usage_store: None,
             progress_note_emit: None,
-            interaction: None,
+            interaction,
             rlm_depth,
             factory_child,
             daemonless: true,
@@ -1272,7 +1339,7 @@ fn build_session_manager_with_lease(
 ) -> Result<
     (
         pa_core::session::manager::SessionManager,
-        Option<pa_daemon::lease::SessionLease>,
+        Option<pa_core::session::lease::SessionLease>,
     ),
     String,
 > {
@@ -1307,7 +1374,7 @@ fn fresh_session_with_lease(
     session_dir: &std::path::Path,
 ) -> (
     pa_core::session::manager::SessionManager,
-    Option<pa_daemon::lease::SessionLease>,
+    Option<pa_core::session::lease::SessionLease>,
 ) {
     let manager = pa_core::session::manager::SessionManager::persisted(cwd, session_dir);
     lease_fresh_manager(manager)
@@ -1319,15 +1386,17 @@ fn lease_fresh_manager(
     manager: pa_core::session::manager::SessionManager,
 ) -> (
     pa_core::session::manager::SessionManager,
-    Option<pa_daemon::lease::SessionLease>,
+    Option<pa_core::session::lease::SessionLease>,
 ) {
     let lease = match manager.get_session_file() {
         Some(path) => {
-            match pa_daemon::lease::acquire_runtime_session_lease(
+            match pa_core::session::lease::acquire_runtime_session_lease(
                 path,
                 &crate::config::get_agent_dir(),
             ) {
-                Ok(lease) => Some(lease),
+                Ok(lease) => {
+                    Some(lease.with_info_sidecar(pa_core::session::catalog::write_info_sidecar))
+                }
                 Err(error) => {
                     eprintln!("prime-agent: could not lease the fresh session file: {error:#}");
                     None
@@ -1344,7 +1413,7 @@ fn lease_fresh_manager(
 fn session_open_guard(
     socket_path: Option<&str>,
     session_path: &std::path::Path,
-) -> Result<pa_daemon::lease::SessionLease, String> {
+) -> Result<pa_core::session::lease::SessionLease, String> {
     let socket = crate::interactive_mode::resolve_socket_path(socket_path);
     if let Ok(mut client) = crate::daemon_client::DaemonClient::connect(&socket) {
         let list = client
@@ -1358,7 +1427,7 @@ fn session_open_guard(
             })
             .map_err(|error| format!("Could not check active sessions: {error:#}"))?;
         if list.success {
-            let target = pa_daemon::lease::canonical_session_path(session_path);
+            let target = pa_core::session::lease::canonical_session_path(session_path);
             for row in list
                 .data
                 .and_then(|data| data.get("sessions").cloned())
@@ -1368,7 +1437,9 @@ fn session_open_guard(
                 let Some(file) = row.get("sessionFile").and_then(serde_json::Value::as_str) else {
                     continue;
                 };
-                if pa_daemon::lease::canonical_session_path(std::path::Path::new(file)) != target {
+                if pa_core::session::lease::canonical_session_path(std::path::Path::new(file))
+                    != target
+                {
                     continue;
                 }
                 let active_session_id = row
@@ -1399,10 +1470,11 @@ fn session_open_guard(
     let agent_dir = crate::config::get_agent_dir();
     // Acquire, not observe: a probe leaves a window where another process acquires
     // between the check and this open — two writers on one file.
-    match pa_daemon::lease::acquire_runtime_session_lease(session_path, &agent_dir) {
-        Ok(lease) => Ok(lease),
+    match pa_core::session::lease::acquire_runtime_session_lease(session_path, &agent_dir) {
+        Ok(lease) => Ok(lease.with_info_sidecar(pa_core::session::catalog::write_info_sidecar)),
         Err(error) => {
-            let Some(active) = error.downcast_ref::<pa_daemon::lease::SessionAlreadyActiveError>()
+            let Some(active) =
+                error.downcast_ref::<pa_core::session::lease::SessionAlreadyActiveError>()
             else {
                 // The lease table itself failed (io, permissions): never silently proceed over an
                 // undeterminable ownership record.
@@ -1516,7 +1588,7 @@ mod tests {
                 super::with_print_runtime(&fixture, |fixture, lease| {
                     Box::pin(async move {
                         *lease = Some(
-                            pa_daemon::lease::acquire_runtime_session_lease(
+                            pa_core::session::lease::acquire_runtime_session_lease(
                                 &fixture.session_path,
                                 &fixture.agent_dir,
                             )
@@ -1537,8 +1609,11 @@ mod tests {
                             let _ = writer_ready_tx.send(());
                             cancel_rx.recv().unwrap();
                             writer_observation.store(
-                                pa_daemon::lease::live_lease_owner(&agent_dir, &session_path)
-                                    .is_some(),
+                                pa_core::session::lease::live_lease_owner(
+                                    &agent_dir,
+                                    &session_path,
+                                )
+                                .is_some(),
                                 std::sync::atomic::Ordering::SeqCst,
                             );
                             std::fs::write(&session_path, "writer settled\n").unwrap();
@@ -1565,10 +1640,11 @@ mod tests {
                 std::fs::read_to_string(&fixture.session_path).unwrap(),
                 "writer settled\n"
             );
-            assert!(
-                pa_daemon::lease::live_lease_owner(&fixture.agent_dir, &fixture.session_path)
-                    .is_none()
-            );
+            assert!(pa_core::session::lease::live_lease_owner(
+                &fixture.agent_dir,
+                &fixture.session_path
+            )
+            .is_none());
         }
     }
 

@@ -1,11 +1,14 @@
 //! The lifecycle concern: the constructors, the open/fork/new/materialize/
 //! adopt arm, and the fork's branch-copy helpers.
 
+use pa_types::session::LabelEntry;
+
 use super::{
-    capture_git_context, create_session_id, format_iso_now, get_session_file_path,
+    capture_git_context, create_session_id, format_iso_now, generate_id, get_session_file_path,
     is_valid_rlm_depth, load_entries_from_file, migrate_to_current_version,
-    resolve_session_rlm_depth, root_rlm_depth_from_env, AgentMessage, FileEntry, HashMap,
-    NewSessionOptions, Path, PathBuf, SessionHeader, SessionManager, CURRENT_SESSION_VERSION,
+    resolve_session_rlm_depth, root_rlm_depth_from_env, AgentMessage, EntryBase, FileEntry,
+    HashMap, NewSessionOptions, Path, PathBuf, SessionHeader, SessionManager,
+    CURRENT_SESSION_VERSION,
 };
 
 /// The fork's branch copy: drop the source header and its `git_state` rows,
@@ -229,6 +232,7 @@ impl SessionManager {
             id: None,
             parent_session: Some(source_path.display().to_string()),
             rlm_depth: Some(rlm_depth),
+            ..NewSessionOptions::default()
         });
         let branch = forked_branch_entries(entries);
         // The copied rows' assistant entries keep the append path durable
@@ -237,6 +241,131 @@ impl SessionManager {
         forked.adopt_entries(branch);
         forked.flush_now().map_err(|error| error.to_string())?;
         Ok(forked)
+    }
+
+    /// `createBranchedSession`: write a fresh session file in `session_dir`
+    /// holding the source's root-to-`leaf_id` path (a `None` leaf writes the
+    /// header alone: the fork at the root), and return its path. The new
+    /// header carries the source's cwd and RLM depth and names the source as
+    /// `parentSession`; a branched fork records the cwd's git context. The
+    /// source's labels are left off the path and recorded again after it,
+    /// each on the path entry it named, keeping its timestamp. The source is
+    /// read, never written, and no lease is taken: the caller opens the fork.
+    ///
+    /// # Errors
+    ///
+    /// The source is empty or has no header, `leaf_id` is not one of its
+    /// entries, or the fork cannot be written.
+    pub fn create_branched_file(
+        source_path: &Path,
+        leaf_id: Option<&str>,
+        session_dir: &Path,
+    ) -> Result<PathBuf, String> {
+        let entries = load_entries_from_file(source_path, false);
+        let source_header = entries
+            .iter()
+            .find_map(|entry| match entry {
+                FileEntry::Header { header } => Some(header.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| format!("missing session header in {}", source_path.display()))?;
+        let mut branch = Vec::new();
+        if let Some(leaf_id) = leaf_id {
+            let by_id: HashMap<&str, &FileEntry> = entries
+                .iter()
+                .filter_map(|entry| entry.id().map(|id| (id, entry)))
+                .collect();
+            let mut path = Vec::new();
+            let mut visited = std::collections::HashSet::new();
+            let mut current = Some(
+                *by_id
+                    .get(leaf_id)
+                    .ok_or_else(|| format!("Entry {leaf_id} not found"))?,
+            );
+            while let Some(entry) = current {
+                if !visited.insert(entry.id().unwrap_or_default()) {
+                    break;
+                }
+                path.push(entry);
+                current = entry
+                    .parent_id()
+                    .and_then(|parent| by_id.get(parent).copied());
+            }
+            path.reverse();
+            // The active label per target, the last in file order winning
+            // (a null label clears it), with the label's own timestamp.
+            let mut labels: HashMap<&str, (&str, Option<&str>)> = HashMap::new();
+            for entry in &entries {
+                if let FileEntry::Label { payload, base } = entry {
+                    match payload.label.as_deref() {
+                        Some(label) => {
+                            labels.insert(
+                                payload.target_id.as_str(),
+                                (label, base.timestamp.as_deref()),
+                            );
+                        }
+                        None => {
+                            labels.remove(payload.target_id.as_str());
+                        }
+                    }
+                }
+            }
+            branch = path
+                .into_iter()
+                .filter(|entry| !matches!(entry, FileEntry::Label { .. }))
+                .cloned()
+                .collect();
+            let mut ids: HashMap<String, usize> = branch
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| entry.id().map(|id| (id.to_string(), index)))
+                .collect();
+            let mut parent = branch.last().and_then(FileEntry::id).map(str::to_string);
+            let path_ids: Vec<String> = branch
+                .iter()
+                .filter_map(|entry| entry.id().map(str::to_string))
+                .collect();
+            for target in path_ids {
+                let Some((label, timestamp)) = labels.get(target.as_str()) else {
+                    continue;
+                };
+                let id = generate_id(&ids);
+                ids.insert(id.clone(), ids.len());
+                branch.push(FileEntry::Label {
+                    payload: LabelEntry {
+                        target_id: target,
+                        label: Some((*label).to_string()),
+                    },
+                    base: EntryBase {
+                        id: Some(id.clone()),
+                        parent_id: parent.replace(id),
+                        timestamp: Some(timestamp.map_or_else(format_iso_now, str::to_string)),
+                        rest: pa_types::JsonMap::new(),
+                    },
+                });
+            }
+        }
+        let cwd = PathBuf::from(&source_header.cwd);
+        let mut forked = Self::persisted(&cwd, session_dir);
+        forked.new_session(&NewSessionOptions {
+            id: None,
+            parent_session: source_path.to_str().map(str::to_string),
+            rlm_depth: Some(source_header.rlm_depth.unwrap_or(0)),
+            ..NewSessionOptions::default()
+        });
+        if leaf_id.is_none() {
+            // The fork at the root records no git context.
+            if let Some(FileEntry::Header { header }) = forked.file_entries.first_mut() {
+                header.git = None;
+            }
+        }
+        forked.refresh_has_assistant_entry(&branch);
+        forked.adopt_entries(branch);
+        forked.flush_now().map_err(|error| error.to_string())?;
+        forked
+            .session_file
+            .clone()
+            .ok_or_else(|| "Failed to create forked session".to_string())
     }
 
     /// Open only the compacted active window off the async executor; use
@@ -400,19 +529,23 @@ impl SessionManager {
                 .map(|_| 0)
                 .or(Some(root_rlm_depth_from_env())),
         };
-        let header = FileEntry::Header {
-            header: SessionHeader {
-                id: self.session_id.clone(),
-                version: Some(CURRENT_SESSION_VERSION),
-                timestamp,
-                cwd: self.cwd.display().to_string(),
-                parent_session: options.parent_session.clone(),
-                rlm_depth,
-                git,
-                rest: pa_types::JsonMap::new(),
-            },
+        let mut header = SessionHeader {
+            id: self.session_id.clone(),
+            version: Some(CURRENT_SESSION_VERSION),
+            timestamp,
+            cwd: self.cwd.display().to_string(),
+            parent_session: options.parent_session.clone(),
+            rlm_depth,
+            git,
+            rest: pa_types::JsonMap::new(),
         };
-        self.file_entries = vec![header];
+        if let Some(pin) = &options.credential_pin {
+            header.set_credential_pin(pin);
+        }
+        if let Some(profile) = &options.profile {
+            header.set_profile(profile);
+        }
+        self.file_entries = vec![FileEntry::Header { header }];
         self.admitted_user_rows.clear();
         self.window = None;
         self.has_assistant_entry = false;

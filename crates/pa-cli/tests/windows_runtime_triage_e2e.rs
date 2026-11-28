@@ -136,6 +136,9 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
+        // The supervisor (selected by name: the runtime daemon is the default), which this
+        // suite drives on the old wire.
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
         .arg(&socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
         // The daemon's startup catalog refresh must never reach the network
@@ -194,7 +197,7 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
 fn drain_session_lease(agent_dir: &Path, session_path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(45);
     while Instant::now() < deadline {
-        if pa_daemon::lease::live_lease_owner(agent_dir, session_path).is_none() {
+        if pa_core::session::lease::live_lease_owner(agent_dir, session_path).is_none() {
             return;
         }
         std::thread::sleep(Duration::from_millis(250));

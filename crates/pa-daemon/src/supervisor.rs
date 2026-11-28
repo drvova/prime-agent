@@ -5,9 +5,9 @@
 
 mod accept_loop;
 mod adoption;
+mod boot_import;
 mod clients;
 mod crash;
-pub(crate) use crash::SESSION_CRASH_LOG;
 mod launch_budget;
 mod notes;
 mod options;
@@ -42,13 +42,16 @@ mod tests;
     unused_imports,
     reason = "only this facade's in-file tests read them; the lib build sees the import unused"
 )]
-use supervision::{MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS};
+use pa_core::session::crash::{MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS};
 
 #[allow(
     unused_imports,
     reason = "only this facade's in-file test modules call them; the lib build sees the import unused"
 )]
-use sessions::{saved_session_row, saved_session_summary};
+use sessions::saved_session_summary;
+// The saved-row tests in this facade's test modules read the catalog's row.
+#[cfg(test)]
+use pa_core::session::catalog::saved_session_row;
 
 pub(crate) use options::ClientRouting;
 pub use options::SupervisorOptions;
@@ -75,9 +78,9 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use futures::future::join_all;
 use pa_types::daemon::{
-    DaemonCommand, DaemonErrorInfo, DaemonOutbound, DaemonSessionLifecycle, DaemonWorkerDescriptor,
+    DaemonCommand, DaemonOutbound, DaemonSessionLifecycle, DaemonWorkerDescriptor,
     DaemonWorkerLifecycle, DurableDaemonCreateCommand, SnapshotPurpose, UpdateId,
-    UpdatePreparedMarker, UpdateTimeoutBudget,
+    UpdateTimeoutBudget,
 };
 use pa_types::platform::transport::{bind_transport, connect_transport, TransportStream};
 use serde_json::{json, Map, Value};
@@ -105,20 +108,11 @@ use crate::registry::{
     WorkerTransition,
 };
 use crate::saved_session_commands::{name_unavailable_error, reservation_key, NameScope};
-use crate::session_store::list_sessions;
 use crate::snapshot_stream::{attach_client_capabilities, stream_attach, wants_chunked};
-use crate::update_prepare::{
-    marker_expires_at_iso, update_gate_refuses, write_prepared_artifacts, AbortOutcome,
-    BeginOutcome, MutationDrainLatch, PrepareCoordinator, PrepareOp, UPDATE_PREPARING_MESSAGE,
-};
-// The drain-state machine that names it is the unix signal path.
-#[cfg(unix)]
-use crate::update_prepare::PrepareState;
-use crate::update_roster::{
-    build_update_roster, supervisor_identity, UpdateRosterInputs, WorkerSnapshot,
-};
+use crate::update_roster::{build_update_roster, WorkerSnapshot};
 use crate::update_stop::{stop_workers_gracefully, WorkerStopVerdict, WORKER_REQUEST_TIMEOUT_MS};
 use crate::{socket, util};
+use pa_core::session::catalog::list_sessions;
 
 pub struct Supervisor {
     pub(crate) options: SupervisorOptions,
@@ -204,18 +198,17 @@ pub struct Supervisor {
     log: paths::RotatingLog,
     /// Memoized ledger over the default sessions dir (ledgers are per
     /// sessions-dir families; another dir gets a fresh instance).
-    rlm_ledger: tokio::sync::Mutex<Option<std::sync::Arc<crate::rlm_ledger::RlmSpawnLedger>>>,
-    /// The update-prepare transaction: at most one per supervisor;
-    /// empty = `Serving`.
-    update_prepare: PrepareCoordinator,
-    /// In-flight mutating-command counter feeding the prepare transaction's `Draining` wait.
-    mutation_drain: MutationDrainLatch,
-    /// Timeout budget of the update flow (`PRIME_AGENT_UPDATE_*_MS`
+    rlm_ledger: tokio::sync::Mutex<
+        Option<std::sync::Arc<pa_core::session_engine::rlm_ledger::RlmSpawnLedger>>,
+    >,
+    /// The update transaction (pa-core's, shared with the runtime daemon): at
+    /// most one prepare per supervisor, empty = `Serving`; its admission gate
+    /// and mutation drain, and the update budget (`PRIME_AGENT_UPDATE_*_MS`
     /// overridable for CI).
-    update_budget: UpdateTimeoutBudget,
+    update: pa_core::update::restart::UpdateRestart,
     /// The boot-time restore pass (spec §6): sweep + roster restore + scheduled-work
     /// re-arm; read by the hello resume contract and the `update_restore_status` RPC.
-    pub(crate) restore: crate::update_restore::RestoreProgress,
+    pub(crate) restore: pa_core::update::restart::restore::RestoreProgress,
     /// The session input-pause leases: pause id -> lease, the bookkeeping
     /// behind `acquire`/`release_session_input_pause`.
     pub(crate) input_pauses: crate::input_pause_lease::SupervisorPauseTable,
@@ -253,9 +246,9 @@ pub struct Supervisor {
     /// for: each is relaunched when its earliest active job is due (see
     /// `supervisor/scheduled_wake.rs`), so the boot's dormant-jobs report leaves them out.
     pub(crate) scheduled_wakes: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// The running history import's started frame (`None` while none runs):
-    /// a client that connects mid-import hears it after its hello.
-    pub(crate) history_import: std::sync::Mutex<Option<Arc<Value>>>,
+    /// The boot's imports: a client that connects mid-import hears the
+    /// history import's started frame after its hello.
+    pub(crate) history_import: Arc<pa_core::session::boot_import::BootImport>,
     /// The daemon-wide provider request budget every worker takes permits from.
     pub(crate) admission: Arc<crate::provider_admission::AdmissionService>,
 }
@@ -297,6 +290,20 @@ impl Supervisor {
             descriptor_dir.join(crate::event_bus::EVENT_BUS_FILE_NAME),
             &log,
         );
+        let update = pa_core::update::restart::UpdateRestart::new(
+            options.agent_dir.clone(),
+            options.socket_path.clone(),
+            UpdateTimeoutBudget::from_env(),
+            {
+                let log = paths::RotatingLog::new(paths::daemon_log_path(
+                    &options.socket_path,
+                    &options.agent_dir,
+                ));
+                Box::new(move |line: &str| {
+                    log.append(&format!("[{}] {line}", util::now_iso()));
+                })
+            },
+        );
         Ok(Supervisor {
             admission,
             options,
@@ -324,10 +331,8 @@ impl Supervisor {
             shutdown_notify: tokio::sync::Notify::new(),
             log,
             rlm_ledger: tokio::sync::Mutex::new(None),
-            update_prepare: PrepareCoordinator::new(),
-            mutation_drain: MutationDrainLatch::new(),
-            update_budget: UpdateTimeoutBudget::from_env(),
-            restore: crate::update_restore::RestoreProgress::new(),
+            update,
+            restore: pa_core::update::restart::restore::RestoreProgress::new(),
             input_pauses: crate::input_pause_lease::SupervisorPauseTable::default(),
             passive_catalog: std::sync::Mutex::new(None),
             passive_scan_gate: tokio::sync::Mutex::new(()),
@@ -337,7 +342,7 @@ impl Supervisor {
             boot_reaped: tokio::sync::watch::channel(true).0,
             boot_revived: tokio::sync::watch::channel(true).0,
             scheduled_wakes: std::sync::Mutex::new(std::collections::HashSet::new()),
-            history_import: std::sync::Mutex::new(None),
+            history_import: Arc::default(),
         })
     }
 
@@ -356,9 +361,9 @@ impl Supervisor {
         // Sessions run inside this process: a panic in one is attributed to
         // it and contained there, and the first session to start takes an
         // engine that is already built.
-        crate::session_host::install_panic_hook(
+        pa_core::session::crash::install_panic_hook(
             self.descriptor_dir
-                .join(crate::supervisor::crash::SESSION_CRASH_LOG),
+                .join(pa_core::session::crash::SESSION_CRASH_LOG),
         );
         // No hosted session may block on whatever this process was given as
         // standard input.
@@ -472,7 +477,7 @@ impl Supervisor {
         // Update boot (spec §6): consume the roster from the spawn env BEFORE the sweep deletes
         // the file it points at, then run the restore + re-arm pass concurrently with serving —
         // reconnecting clients must see the resume contract (§10.3), which the hello carries.
-        let roster = crate::update_restore::consume_roster_env();
+        let roster = pa_core::update::restart::restore::consume_roster_env();
         self.restore.begin(roster.as_ref());
 
         // The boot reap (the operator's same-socket predecessor rule): leftover workers of a
@@ -491,7 +496,7 @@ impl Supervisor {
                 let socket_path = supervisor.options.socket_path.clone();
                 drop(
                     tokio::task::spawn_blocking(move || {
-                        crate::update_restore::boot_sweep(&agent_dir, &socket_path);
+                        pa_core::update::restart::restore::boot_sweep(&agent_dir, &socket_path);
                     })
                     .await,
                 );
@@ -583,7 +588,7 @@ impl Supervisor {
             tokio::spawn(async move {
                 supervisor.wait_for_boot_reap().await;
                 drop(tokio::task::spawn_blocking(move || {
-                let leases = crate::lease::reclaim_dead_owner_leases(&supervisor.options.agent_dir);
+                let leases = pa_core::session::lease::reclaim_dead_owner_leases(&supervisor.options.agent_dir);
                 let logs = crate::worker_stderr::prune_socket_logs(
                     &supervisor.options.agent_dir,
                     &supervisor.options.socket_path,
@@ -610,7 +615,7 @@ impl Supervisor {
         {
             let supervisor = Arc::clone(&self);
             tokio::spawn(async move {
-                supervisor.update_prepare_watchdog().await;
+                supervisor.update.watchdog().await;
             });
         }
 

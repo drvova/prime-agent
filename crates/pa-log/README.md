@@ -80,6 +80,9 @@ in it. `pa-runtime` keeps its events, task lanes and state in it (`pa_runtime::L
   its first and last save. `unfinished_tasks(session)` returns one session's `queued` and
   `running` tasks in that order, which is what `pa-runtime`'s `TaskQueue::restore` replays when
   that session opens (another process may be running the database's other sessions).
+  `task_saved_at(id)` is a task's last save, in milliseconds: for a task still running after its
+  process died, when its run started (what the runtime daemon's revival reads the transcript
+  from).
 
 ## Non-goals
 
@@ -106,7 +109,7 @@ in it. `pa-runtime` keeps its events, task lanes and state in it (`pa_runtime::L
 - Partitions: `partition`, `partitions`, `sources`, `replace_sources`, `value`, `put_value`,
   `crashes`, `append_crashes`; `Partition`, `Origin`, `SourceSet`, `SourceRow`, `SourceKind`,
   `SubscriptionRow`, `CrashRow`.
-- Tasks: `save_task`, `unfinished_tasks`.
+- Tasks: `save_task`, `unfinished_tasks`, `task_saved_at`.
 - `Receipt`: `wait` and `wait_blocking` (which parks the thread, and so may run on a runtime's
   thread, as a blocking file write would).
 

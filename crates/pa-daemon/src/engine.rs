@@ -3,26 +3,24 @@
 //! The worker owns the session store, the queue, event sequencing, and wire
 //! framing; the engine owns turn behavior.
 
-use std::sync::Arc;
-
 use anyhow::Result;
 use pa_agent::abort::AbortSignal;
-use pa_core::session_engine::provider_adapter::json_round_trip;
 use pa_core::session_engine::provider_retry::{ProviderRetryPolicy, UNBOUNDED_BACKOFF_MS};
-use pa_core::session_engine::side_question::{SideQuestionSink, SideQuestionTurn};
+use pa_core::session_engine::side_question::SideQuestionSink;
 use serde_json::{json, Value};
 
 mod wire;
+pub(crate) use pa_core::session_engine::branch_summarization::{
+    BranchSummaryOutcome, BranchSummaryRequest, BranchSummaryRun,
+};
+pub(crate) use pa_core::session_engine::side_runs::{SideQuestionOutcome, SideQuestionRequest};
+pub(crate) use pa_core::session_engine::wire_events::{session_wire_value, AssistantSnapshot};
 pub use scripted::ScriptedEngine;
-pub(crate) use wire::session_wire_value;
 pub use wire::{
-    empty_resource_snapshot, side_question_event_value, AssistantSnapshot, BackgroundJobConsumed,
-    BackgroundJobConsumedSink, BranchSummaryOutcome, BranchSummaryRequest, BranchSummaryRun,
-    CompactionOutcome, CompactionRequest, CompactionRun, EngineEvent, EngineModelSelection,
-    GoalAdmissionSink, GoalContinuation, GoalTurnEndWork, KernelNotice, KernelNoticeSink,
-    PromptBatchRow, PromptRequest, RlmSessionIdentity, SavedSessionContext, SemanticSpawnOrigin,
-    SessionInputProbe, SideQuestionOutcome, SideQuestionRequest, SIDE_QUESTION_STATUS_CANCELLED,
-    SIDE_QUESTION_STATUS_COMPLETE, SIDE_QUESTION_STATUS_ERROR, SIDE_QUESTION_STATUS_RUNNING,
+    empty_resource_snapshot, BackgroundJobConsumed, BackgroundJobConsumedSink, CompactionOutcome,
+    CompactionRequest, CompactionRun, EngineEvent, EngineModelSelection, GoalAdmissionSink,
+    GoalContinuation, GoalTurnEndWork, KernelNotice, KernelNoticeSink, PromptBatchRow,
+    PromptRequest, RlmSessionIdentity, SavedSessionContext, SemanticSpawnOrigin, SessionInputProbe,
 };
 
 mod scripted;
@@ -427,7 +425,7 @@ pub trait SessionEngine: Send + Sync {
     /// Engines without a kernel report `None`.
     fn agent_message_waits(
         &self,
-    ) -> Option<std::sync::Arc<crate::agent_message_wait::AgentMessageWaits>> {
+    ) -> Option<std::sync::Arc<pa_core::session_engine::agent_messaging::AgentMessageWaits>> {
         None
     }
 
@@ -542,9 +540,11 @@ pub trait SessionEngine: Send + Sync {
     /// # Errors
     ///
     /// Never errors: the global write failure rides `globalError` instead.
-    fn set_rlm_max_depth(&self, max_depth: u64, global: bool) -> Result<Value> {
-        let _ = global;
-        Ok(json!({ "maxDepth": max_depth, "source": "chat", "globalSaved": false }))
+    fn set_rlm_max_depth(
+        &self,
+        set: pa_core::session_engine::agent_controls::SetRlmMaxDepth,
+    ) -> Result<Value> {
+        Ok(set.reply(None))
     }
 }
 

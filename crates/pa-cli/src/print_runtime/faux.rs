@@ -16,11 +16,22 @@ use crate::print_runtime::{
 /// seam; never set by the product): `None` on a live run, an error when
 /// the script does not parse.
 pub(crate) fn faux_script_env() -> Result<Option<serde_json::Value>, String> {
-    match std::env::var("PRIME_AGENT_FAUX_SCRIPT") {
-        Ok(script) => serde_json::from_str(&script)
+    script_env("PRIME_AGENT_FAUX_SCRIPT")
+}
+
+/// The script in the environment variable `name`: the JSON itself, or (as
+/// the interactive and ACP harnesses give it to the supervisor) the path of
+/// a file holding it, read as the supervisor's worker reads it. `None` when
+/// it is unset, an error when it does not parse.
+pub(crate) fn script_env(name: &str) -> Result<Option<serde_json::Value>, String> {
+    let Some(script) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    match serde_json::from_str(&script.to_string_lossy()) {
+        Ok(script) => Ok(Some(script)),
+        Err(error) => pa_daemon::worker::read_script_file(std::path::Path::new(&script))
             .map(Some)
-            .map_err(|error| format!("invalid PRIME_AGENT_FAUX_SCRIPT: {error}")),
-        Err(_) => Ok(None),
+            .ok_or_else(|| format!("invalid {name}: {error}")),
     }
 }
 
@@ -54,6 +65,8 @@ pub(crate) async fn build_faux_engine_with(
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| "PRIME_AGENT_FAUX_SCRIPT requires a responses array".to_string())?,
     )?;
+    #[cfg(debug_assertions)]
+    let response_steps = panic_on(script, response_steps);
     // A `reasoning` model makes the harness script thinking-capable turns so
     // thinking-level resolution can be verified without the network.
     let reasoning = script
@@ -69,21 +82,22 @@ pub(crate) async fn build_faux_engine_with(
     // The stable faux identity (`api: "faux"`, `provider: "faux"`): fixtures can declare
     // faux-provider models in models.json. A spawned child gets its own api
     // lane so its queue never interleaves with its parent's.
-    let (api, child_queue) = match embedding {
+    let (api, child_queue, session_lane) = match embedding {
         HeadlessEmbedding::Child { overrides, .. } => match &overrides.lane {
-            ChildLane::Faux(queue) => (format!("faux-{}", queue.child_id), Some(queue)),
+            ChildLane::Faux(queue) => (format!("faux-{}", queue.child_id), Some(queue), None),
             ChildLane::Real(_) => {
                 return Err("a real-provider child builds through the headless builder".to_string());
             }
         },
-        HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => ("faux".to_string(), None),
+        HeadlessEmbedding::Root { faux_lane, .. } => ("faux".to_string(), None, faux_lane.as_ref()),
+        HeadlessEmbedding::Rpc => ("faux".to_string(), None, None),
     };
-    let registration =
+    let register = |api: String, (provider, id): (&str, &str)| {
         pa_ai::faux::register_faux_provider(pa_ai::faux::RegisterFauxProviderOptions {
             api: Some(api),
-            provider: Some("faux".to_string()),
+            provider: Some(provider.to_string()),
             models: Some(vec![pa_ai::faux::FauxModelDefinition {
-                id: "faux-1".to_string(),
+                id: id.to_string(),
                 name: Some("Faux Model".to_string()),
                 reasoning: Some(reasoning),
                 input: Some(vec![pa_types::ai::ModelInput::Text]),
@@ -91,20 +105,51 @@ pub(crate) async fn build_faux_engine_with(
                 context_window: Some(context_window),
                 max_tokens: Some(4_096),
             }]),
+            // A paced script (`tokensPerSecond`) keeps a turn running long
+            // enough for a harness to act on it mid-stream.
+            tokens_per_second: script
+                .get("tokensPerSecond")
+                .and_then(serde_json::Value::as_f64),
             ..Default::default()
-        });
-    if let Some(queue) = child_queue {
-        registration.set_responses(queue.steps.clone());
-        registration.set_repeat_last_response(queue.repeat_last);
-    } else {
-        registration.set_responses(response_steps);
+        })
+    };
+    let script_queue = |registration: &pa_ai::faux::FauxProviderRegistration| {
+        registration.set_responses(response_steps.clone());
         registration.set_repeat_last_response(
             script
                 .get("repeatLastResponse")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
         );
+    };
+    let registration = register(api, ("faux", "faux-1"));
+    if let Some(queue) = child_queue {
+        registration.set_responses(queue.steps.clone());
+        registration.set_repeat_last_response(queue.repeat_last);
+    } else {
+        script_queue(&registration);
     }
+    // A runtime daemon session answers from a queue of its own, as each
+    // session of the supervisor does from its own worker's: the shared
+    // `faux` lane above stays for a model a `models.json` names on it.
+    let registration = match session_lane {
+        Some(session) => {
+            // It presents the model the script names (`provider`, `modelId`), as each
+            // supervisor worker's scripted model does.
+            let text = |key: &str, default: &'static str| {
+                script
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(default)
+                    .to_string()
+            };
+            let identity = (text("provider", "faux"), text("modelId", "faux-1"));
+            let own = register(format!("faux-{session}"), (&identity.0, &identity.1));
+            script_queue(&own);
+            own
+        }
+        None => registration,
+    };
     let model = registration.get_model();
     let thinking_level = match embedding {
         HeadlessEmbedding::Child { overrides, .. } => {
@@ -136,11 +181,13 @@ pub(crate) async fn build_faux_engine_with(
         kernel_notice_sink,
         on_late_sent_agent_message,
         call_policy,
+        cron_store,
+        interaction,
     } = super::headless_embedding_fields(embedding);
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {
             on_late_sent_agent_message,
-            cron_store: None,
+            cron_store,
             // Faux verification harness: no product telemetry.
             semantic_edges: None,
             steering_mode: None,
@@ -160,13 +207,24 @@ pub(crate) async fn build_faux_engine_with(
             session_manager,
             extra_host_handlers,
             conversation_log_path: None,
-            additional_skill_paths: vec![],
-            additional_prompt_paths: vec![],
+            // The resources the launch names, as on the real path (the
+            // runtime daemon's ACP sessions forward `--skill` and
+            // `--prompt-template`).
+            additional_skill_paths: config
+                .skills
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            additional_prompt_paths: config
+                .prompt_templates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
             extra_builtin_skill_overrides: vec![],
             rlm_subagent_host,
             rlm_usage_store: None,
             progress_note_emit: None,
-            interaction: None,
+            interaction,
             rlm_depth,
             factory_child,
             daemonless: true,
@@ -242,6 +300,63 @@ pub(crate) fn faux_response_steps(
                     pa_ai::faux::FauxAssistantMessageOptions::default(),
                 ),
             )),
+        })
+        .collect()
+}
+
+/// The faux script's `panicOn` seam (debug builds only, as on the old
+/// daemon's scripted engine): with `{"panicOn": {"message": "crash now",
+/// "panic": "boom"}}`, the model request whose last user message is
+/// `message` panics with `panic` where the provider answers it (a task on
+/// the session's runtime), so the crash tests can crash a session's turn.
+/// Every other request is answered by its step's message (a delayed step's
+/// without its delay).
+#[cfg(debug_assertions)]
+fn panic_on(
+    script: &serde_json::Value,
+    steps: Vec<pa_ai::faux::FauxResponseStep>,
+) -> Vec<pa_ai::faux::FauxResponseStep> {
+    use pa_ai::faux::FauxResponseStep;
+    let Some(fault) = script.get("panicOn") else {
+        return steps;
+    };
+    let message = fault["message"].as_str().unwrap_or_default().to_string();
+    let panic = fault["panic"]
+        .as_str()
+        .unwrap_or("scripted panic")
+        .to_string();
+    steps
+        .into_iter()
+        .map(|step| {
+            let (message, panic) = (message.clone(), panic.clone());
+            FauxResponseStep::Factory(std::sync::Arc::new(move |context, options, call, model| {
+                let last_user = context.messages.iter().rev().find_map(|turn| {
+                    let turn = serde_json::to_value(turn).ok()?;
+                    (turn["role"] == "user").then(|| match &turn["content"] {
+                        serde_json::Value::String(text) => text.clone(),
+                        blocks => blocks
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|block| block["text"].as_str())
+                            .collect::<String>(),
+                    })
+                });
+                #[expect(
+                    clippy::manual_assert,
+                    reason = "the seam panics with the script's text alone, which an assertion would wrap"
+                )]
+                if last_user.as_deref() == Some(message.as_str()) {
+                    panic!("{panic}");
+                }
+                match &step {
+                    FauxResponseStep::Message(answer)
+                    | FauxResponseStep::Delayed {
+                        message: answer, ..
+                    } => Ok(answer.clone()),
+                    FauxResponseStep::Factory(factory) => factory(context, options, call, model),
+                }
+            }))
         })
         .collect()
 }

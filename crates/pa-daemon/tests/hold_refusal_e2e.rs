@@ -209,12 +209,12 @@ fn a_foreign_lease_holder_rejects_the_create_with_the_hold_refusal() {
 
     // The foreign holder: THIS test process takes the runtime lease, naming a known
     // active session — the same record the TypeScript product's holder writes.
-    std::env::set_var(pa_daemon::lease::SESSION_LEASES_ENABLED_ENV, "1");
+    std::env::set_var(pa_core::session::lease::SESSION_LEASES_ENABLED_ENV, "1");
     std::env::set_var(
-        pa_daemon::lease::SESSION_LEASE_OWNER_ID_ENV,
+        pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
         "foreign01ab3c",
     );
-    let holder = pa_daemon::lease::acquire_session_lease(
+    let holder = pa_core::session::lease::acquire_session_lease(
         Some(std::path::Path::new(&session_file)),
         &agent_dir,
     )
@@ -283,7 +283,8 @@ fn a_foreign_lease_holder_rejects_the_create_with_the_hold_refusal() {
     let info_path = rejected["errorInfo"]["sessionPath"]
         .as_str()
         .expect("sessionPath in errorInfo");
-    let canonical = pa_daemon::lease::canonical_session_path(std::path::Path::new(&session_file));
+    let canonical =
+        pa_core::session::lease::canonical_session_path(std::path::Path::new(&session_file));
     assert_eq!(
         std::path::Path::new(info_path),
         canonical.as_path(),
@@ -330,6 +331,6 @@ fn a_foreign_lease_holder_rejects_the_create_with_the_hold_refusal() {
     );
 
     holder.release();
-    std::env::remove_var(pa_daemon::lease::SESSION_LEASE_OWNER_ID_ENV);
-    std::env::remove_var(pa_daemon::lease::SESSION_LEASES_ENABLED_ENV);
+    std::env::remove_var(pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV);
+    std::env::remove_var(pa_core::session::lease::SESSION_LEASES_ENABLED_ENV);
 }

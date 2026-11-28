@@ -8,7 +8,7 @@
 
 use anyhow::{Context, Result};
 use pa_types::event_log::{EventId, Task, TaskState};
-use rusqlite::{params, Row};
+use rusqlite::{params, OptionalExtension as _, Row};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -113,6 +113,23 @@ impl Log {
                 .collect::<rusqlite::Result<Vec<_>>>()?
                 .into_iter()
                 .collect()
+        })
+    }
+
+    /// When task `id` was last saved, in milliseconds since the epoch: for a
+    /// task still Running after its process died, when its run started.
+    ///
+    /// # Errors
+    ///
+    /// The database could not be read.
+    pub fn task_saved_at(&self, id: &str) -> Result<Option<u64>> {
+        let id = id.to_string();
+        self.read(move |connection| {
+            let updated: Option<i64> = connection
+                .prepare_cached("SELECT updated FROM tasks WHERE id = ?1")?
+                .query_row(params![id], |row| row.get(0))
+                .optional()?;
+            Ok(updated.map(u64::try_from).transpose()?)
         })
     }
 }

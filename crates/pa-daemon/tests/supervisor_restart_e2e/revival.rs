@@ -130,7 +130,8 @@ fn plain_boot_parks_stale_busy_evidence() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
-    let busy_at = pa_daemon::util::iso_from_unix_ms(pa_daemon::util::now_ms() - 5 * 60 * 60 * 1000);
+    let busy_at =
+        pa_core::session::manager::iso_from_unix_ms(pa_daemon::util::now_ms() - 5 * 60 * 60 * 1000);
     let fixture =
         write_revival_fixture(dir.path(), &agent_dir, &socket, "active", "ready", &busy_at);
 

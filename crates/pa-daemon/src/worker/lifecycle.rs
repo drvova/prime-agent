@@ -3,7 +3,7 @@
 use super::{
     json, queue_lanes, queued_background_completion_notices, response_failure, response_success,
     session_snapshot, AgentSessionEngine, DaemonResponse, QueueCheckpoint, QueuePriority,
-    QueuedItem, SessionFile, TurnPolicy, Value, Worker, SIDE_QUESTION_SETTLE_TIMEOUT,
+    QueuedItem, SessionFile, TurnPolicy, Value, Worker,
 };
 
 /// How long the shutdown waits for the connections' fan-outs to flush.
@@ -76,7 +76,7 @@ impl Worker {
         // Abort the side questions before anything else closes: otherwise the
         // reattached client's pane wedges on a turn no event will ever settle.
         self.side_questions
-            .abort_all_and_settle(SIDE_QUESTION_SETTLE_TIMEOUT)
+            .abort_all_and_settle(pa_core::session_engine::side_runs::SIDE_RUN_SETTLE_TIMEOUT)
             .await;
         // A kernel question still waiting for a reply settles as cancelled:
         // no client will answer a closing session.
@@ -117,7 +117,8 @@ impl Worker {
                 core.steering.push_front(QueuedItem {
                     priority: QueuePriority::Human,
                     preview: None,
-                    message: crate::update_restore::UPDATE_RESTART_CONTINUATION_PROMPT.to_string(),
+                    message: pa_core::session::revival::UPDATE_RESTART_CONTINUATION_PROMPT
+                        .to_string(),
                     custom_message: None,
                     agent_message: None,
                     queue_key: None,
@@ -150,12 +151,6 @@ impl Worker {
         }
         self.engine.end_telemetry().await;
         self.release_session_lease();
-        // The worker's quit (TS `session_shutdown` reason `quit`): the
-        // pane reporter releases its pane as the last write on the wire
-        // — awaited here so the release lands before this reply unlocks
-        // the process exit, and no late report reclaims the pane.
-        let reporter = self.herdr.lock().unwrap().clone();
-        reporter.release().await;
         // The verdict is durable BEFORE the reply: the supervisor may escalate
         // the stop as soon as the reply lands. Parked (suspended) lanes are not
         // busy: they wait for an explicit resume.

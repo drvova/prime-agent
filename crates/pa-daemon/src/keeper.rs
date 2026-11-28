@@ -18,7 +18,10 @@
 //!   on a `shutdown`, on a signal drain and on an update handoff; those all
 //!   end the keeper too. A stop that escalates to a kill (a forced shutdown,
 //!   the installer) leaves a stop intent first ([`record_stop_intent`]),
-//!   which the keeper reads the same way.
+//!   which the keeper reads the same way. An intent belongs to the lifetime
+//!   it was recorded in, judged by its own time against the daemon's start,
+//!   never by when the keeper looked: one recorded before the daemon started
+//!   was for a daemon that is gone.
 //! - **One keeper per socket.** A keeper records itself as the socket's
 //!   owner when it starts. A keeper that finds another recorded owner never
 //!   restarts anything: a client that launched a fresh daemon while this one
@@ -27,6 +30,14 @@
 //!   back off (doubling) and stop at a limit; every death is appended to
 //!   [`DAEMON_DEATH_LOG`] and handed to the next daemon, whose
 //!   `daemon_hello` shows it to every client.
+//!
+//! - **Either daemon.** A kept launch keeps whichever daemon its command line
+//!   starts ([`KeptDaemon`]): the supervisor, or the runtime daemon when that
+//!   is selected. The runtime daemon's keeper keeps its records under the
+//!   runtime daemon's own socket (`daemon2.sock`), so the two daemons' keepers
+//!   on one agent dir never take each other's socket over or read each other's
+//!   deaths; the runtime daemon records its keeper in its lock file, so the
+//!   supervisor's boot reap spares both.
 //!
 //! A kept launch is the ordinary daemon command line plus [`KEEPER_ENV`]. The
 //! launched process splits in two first thing in `main` ([`enter`]): the copy
@@ -85,9 +96,10 @@ struct HostEnv {
 
 static HOST_ENV: OnceLock<HostEnv> = OnceLock::new();
 
-/// The daemon process the keeper split off at its own start (see [`enter`]).
+/// The daemon process the keeper split off at its own start (see [`enter`]),
+/// and when (epoch milliseconds): that lifetime's start.
 #[cfg(unix)]
-static SPLIT_DAEMON: OnceLock<u32> = OnceLock::new();
+static SPLIT_DAEMON: OnceLock<(u32, u64)> = OnceLock::new();
 
 /// The death this daemon reports in its hello, resolved once.
 static BOOT_DEATH: OnceLock<Option<DaemonDeathRecord>> = OnceLock::new();
@@ -114,6 +126,7 @@ pub fn enter(
     #[cfg(unix)]
     if daemon_launch && std::env::var_os(KEEPER_ENV).is_some() {
         use pa_core::platform::process::{parent_pid, split_process, Split};
+        let split_at = crate::util::now_ms();
         match split_process() {
             Ok(Split::Child) => {
                 std::env::remove_var(KEEPER_ENV);
@@ -124,7 +137,7 @@ pub fn enter(
                 });
             }
             Ok(Split::Parent { child }) => {
-                SPLIT_DAEMON.get_or_init(|| child);
+                SPLIT_DAEMON.get_or_init(|| (child, split_at));
             }
             // No second process could be made: this one stays the keeper and
             // starts its first daemon the way it starts every later one.
@@ -202,6 +215,17 @@ pub fn record_stop_intent(agent_dir: &Path, socket_path: &Path) -> anyhow::Resul
     )
 }
 
+/// Whether the stop intent at `intent_path` was recorded for the lifetime that started at
+/// `born` (epoch milliseconds): recorded then or later. An intent recorded before is a
+/// leftover of a daemon that is gone (its keeper was killed, or it was never kept). An intent
+/// whose time cannot be read is taken at its word.
+#[cfg(any(unix, test))]
+fn stop_intended(intent_path: &Path, born: u64) -> bool {
+    std::fs::read_to_string(intent_path).is_ok_and(|recorded| {
+        pa_core::session::manager::iso_to_unix_ms(recorded.trim()).is_none_or(|at| at >= born)
+    })
+}
+
 /// How the keeper paces restarts and when it stops.
 #[cfg(any(unix, test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,14 +278,30 @@ impl RestartPolicy {
     }
 }
 
+/// Which daemon a keeper keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeptDaemon {
+    /// The supervisor: its sessions are counted from its worker descriptors
+    /// when it dies.
+    Supervisor,
+    /// The runtime daemon (`pa_runtime::daemon`): its sessions are held in
+    /// its database, which the keeper does not open, so a death record
+    /// leaves them uncounted.
+    Runtime,
+}
+
 /// What a keeper is started with: the daemon it keeps.
 pub struct KeeperOptions {
     /// The daemon executable (this one).
     pub exe: PathBuf,
     /// The daemon's arguments (this process's own).
     pub args: Vec<std::ffi::OsString>,
+    /// The socket the kept daemon serves: the keeper's records (owner, stop
+    /// intent, death log) are kept per socket, so the runtime daemon's
+    /// keeper, keyed by `daemon2.sock`, never meets the supervisor's.
     pub socket_path: PathBuf,
     pub agent_dir: PathBuf,
+    pub daemon: KeptDaemon,
 }
 
 /// Run as the keeper of the daemon `options` describes until that daemon
@@ -321,10 +361,14 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
     loop {
         let started = tokio::time::Instant::now();
         let mut stopping = false;
-        // The lifetime to wait on: the daemon split off at start, or a daemon started here.
-        let (pid, ended): (u32, Result<Ended, String>) = if let Some(pid) = split_daemon.take() {
+        // The lifetime to wait on, and when it started: the daemon split off at start, or a
+        // daemon started here.
+        let (pid, born, ended): (u32, u64, Result<Ended, String>) = if let Some((pid, born)) =
+            split_daemon.take()
+        {
             (
                 pid,
+                born,
                 Ok(Box::pin(async move {
                     tokio::task::spawn_blocking(move || pa_core::platform::process::wait_child(pid))
                         .await
@@ -334,6 +378,7 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
             )
         } else {
             {
+                let born = crate::util::now_ms();
                 let mut command = tokio::process::Command::new(&options.exe);
                 command
                     .args(&options.args)
@@ -353,6 +398,7 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
                 match command.spawn() {
                     Ok(mut child) => (
                         child.id().unwrap_or(0),
+                        born,
                         Ok(Box::pin(async move {
                             let status = child
                                 .wait()
@@ -366,6 +412,7 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
                     ),
                     Err(error) => (
                         0,
+                        born,
                         Err(format!(
                             "start the daemon {}: {error}",
                             options.exe.display()
@@ -376,17 +423,13 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
         };
         // The keeper's own records are written once the first daemon is already starting: a
         // launch waits on that daemon's socket, and nothing below is on its way. They are
-        // read only when a daemon ends. An intent nobody consumed belongs to a daemon that is
-        // gone. A keeper that cannot record itself as the owner restarts nothing (the owner
-        // check below fails), which the log says here.
+        // read only when a daemon ends. Nothing here clears a stop intent: under load this
+        // runs after the first daemon is serving, and so after a stop of it was recorded. A
+        // keeper that cannot record itself as the owner restarts nothing (the owner check
+        // below fails), which the log says here.
         if first_start {
             let recorded = crate::paths::ensure_dir(&dir)
-                .and_then(|()| crate::descriptor::write_file_atomic_unsynced(&owner_path, &owner))
-                .and_then(|()| match std::fs::remove_file(&intent_path) {
-                    Ok(()) => Ok(()),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    Err(error) => Err(error.into()),
-                });
+                .and_then(|()| crate::descriptor::write_file_atomic_unsynced(&owner_path, &owner));
             if let Err(error) = recorded {
                 log.append(&format!(
                     "{} restart owner {}: could not record itself ({error:#}); this daemon will not be restarted if it dies",
@@ -426,10 +469,11 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
             ));
             return Ok(0);
         }
-        let deliberate = stopping || exit == Ok(ChildExit::Code(0)) || intent_path.exists();
+        let deliberate =
+            stopping || exit == Ok(ChildExit::Code(0)) || stop_intended(&intent_path, born);
         if deliberate {
-            // Best effort: a leftover owner or intent record is replaced or
-            // cleared by the next keeper's start.
+            // Best effort: a leftover owner record is replaced by the next
+            // keeper's start, and a leftover intent predates every later lifetime.
             let _ = std::fs::remove_file(&intent_path);
             let _ = std::fs::remove_file(&owner_path);
             return Ok(0);
@@ -438,28 +482,31 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
         let verdict = POLICY.judge(consecutive, uptime);
         // Reads of the dead daemon's own records, kept off this thread so a
         // fault in them cannot end the keeper.
-        let counted = {
-            let dir = dir.clone();
-            let socket_path = options.socket_path.clone();
-            tokio::task::spawn_blocking(move || {
-                let hosted: Vec<_> = crate::descriptor::load_descriptors(&dir, &socket_path)
-                    .into_iter()
-                    .filter(|(_, descriptor)| {
-                        descriptor.lifecycle != pa_types::daemon::DaemonWorkerLifecycle::Failed
-                    })
-                    .collect();
-                let busy = hosted
-                    .iter()
-                    .filter(|(_, descriptor)| {
-                        crate::journal::WorkerRecoveryJournal::read_interrupted(Path::new(
-                            &descriptor.recovery_journal_path,
-                        ))
-                    })
-                    .count();
-                (hosted.len() as u64, busy as u64)
-            })
-            .await
-            .ok()
+        let counted = match options.daemon {
+            KeptDaemon::Runtime => None,
+            KeptDaemon::Supervisor => {
+                let dir = dir.clone();
+                let socket_path = options.socket_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    let hosted: Vec<_> = crate::descriptor::load_descriptors(&dir, &socket_path)
+                        .into_iter()
+                        .filter(|(_, descriptor)| {
+                            descriptor.lifecycle != pa_types::daemon::DaemonWorkerLifecycle::Failed
+                        })
+                        .collect();
+                    let busy = hosted
+                        .iter()
+                        .filter(|(_, descriptor)| {
+                            crate::journal::WorkerRecoveryJournal::read_interrupted(Path::new(
+                                &descriptor.recovery_journal_path,
+                            ))
+                        })
+                        .count();
+                    (hosted.len() as u64, busy as u64)
+                })
+                .await
+                .ok()
+            }
         };
         let record = DaemonDeathRecord {
             at: crate::util::now_iso(),
@@ -553,6 +600,28 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_intent_counts_for_the_lifetime_it_was_recorded_in_whenever_the_keeper_reads_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (agent_dir, socket) = (dir.path().join("agent"), dir.path().join("daemon.sock"));
+        let intent = crate::descriptor::descriptor_dir(&agent_dir, &socket).join(STOP_INTENT_FILE);
+        crate::paths::ensure_dir(intent.parent().unwrap()).unwrap();
+        let before = crate::util::now_ms();
+        let unrecorded = stop_intended(&intent, before);
+        // The stop is recorded once the daemon is serving, before its keeper first looks; a
+        // lifetime that starts after it was recorded is not the one it stops.
+        record_stop_intent(&agent_dir, &socket).unwrap();
+        let after = crate::util::now_ms() + 1;
+        assert_eq!(
+            (
+                unrecorded,
+                stop_intended(&intent, before),
+                stop_intended(&intent, after)
+            ),
+            (false, true, false)
+        );
+    }
 
     #[test]
     fn deaths_in_a_row_back_off_then_give_up_and_a_stable_lifetime_starts_the_row_again() {

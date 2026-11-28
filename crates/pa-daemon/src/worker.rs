@@ -6,6 +6,7 @@ mod config;
 mod env;
 mod session_core;
 
+pub use config::read_script_file;
 pub(crate) use config::WorkerConfig;
 use env::KillCloseReason;
 mod input;
@@ -28,7 +29,7 @@ pub(crate) use queue::{
     queued_background_completion_notices, restore_queue_snapshot, restored_turn_policy,
     withdraw_background_completion_notice, QueueCheckpoint, QueueLanes, QueuedItem, TurnPolicy,
     TurnSettle, ABORTED_TURN_SETTLE_ERROR, PROMPT_ABORTED_BEFORE_DELIVERY, QUEUED_INPUT_SUSPENDED,
-    QUEUED_PROMPT_DELETED, SIDE_QUESTION_SETTLE_TIMEOUT,
+    QUEUED_PROMPT_DELETED,
 };
 
 mod create;
@@ -64,7 +65,6 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use pa_core::session_engine::agent_messaging::{
@@ -157,7 +157,7 @@ pub struct Worker {
     pub(crate) events: Arc<EventPump>,
     /// The `/model` catalog background-refresh coalescing gate: at most
     /// one refresh plus one queued re-arm per burst.
-    pub(crate) model_catalog_refresh_gate: std::sync::Arc<crate::model_catalog::RefreshGate>,
+    pub(crate) model_catalog_refresh_gate: std::sync::Arc<pa_core::models::CatalogRefresh>,
     recovery: Arc<Mutex<Option<WorkerRecoveryJournal>>>,
     side_questions: crate::side_question::SideQuestionManager,
     /// The session's todo list and kernel questions (the hub the engine
@@ -176,7 +176,7 @@ pub struct Worker {
     acp_mcp: std::sync::Arc<std::sync::Mutex<pa_core::mcp::McpManager>>,
     /// The user-bash slot (`execute_bash` / `execute_bash_and_wait` /
     /// `abort_bash`): one command runs at a time, killed on abort.
-    pub(crate) user_bash: std::sync::Arc<crate::user_bash::UserBash>,
+    pub(crate) user_bash: std::sync::Arc<pa_core::user_bash::UserBash>,
     /// The coalescing roster push queue shared with the turn runner: the
     /// awaited bash handler enqueues the run-settle flush.
     pub(crate) roster_pushes: crate::roster_activity::RosterPushQueue,
@@ -193,17 +193,6 @@ pub struct Worker {
     /// The scheduling surface: the session's cron/heartbeat store plus the
     /// scheduler firing due jobs into the queue (jobs rebind on replacement).
     pub(crate) scheduled: std::sync::Arc<crate::scheduled_jobs::ScheduledJobs>,
-    /// The session's Herdr reporter (the built-in connector): starts
-    /// disabled and is (re)bound at `create` from the create payload's
-    /// client env — the session's own pane identity, never this
-    /// process's boot context. Replacing it silences the old task
-    /// exactly like the TS session-shutdown arm (no release; a successor
-    /// re-reports), because the task ends when its last handle drops.
-    pub(crate) herdr: std::sync::Arc<std::sync::Mutex<crate::herdr::HerdrReporter>>,
-    /// The reporter epoch (bumped on every (re)bind): a replaced
-    /// reporter's task drops its queued boundary events instead of
-    /// flushing them over the successor's pane state.
-    pub(crate) herdr_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Session creation is one serialized critical section (TS
     /// `openingSessions`: a concurrent open for the same session JOINS
     /// the in-flight one instead of racing it). Commands run on spawned
@@ -367,21 +356,12 @@ impl Worker {
         let worker_token = pa_types::session_scope::var(WORKER_TOKEN_ENV).unwrap_or_default();
         let roster_delta_sequence = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let input_pauses = crate::session_input_pause::InputPauseTable::new();
-        // The shared pane-reporter slot: the worker binds it at create and
-        // the turn runner reads it at every boundary (a slot, not a
-        // snapshot, so a create-time rebind reaches the runner too).
-        let herdr_slot =
-            std::sync::Arc::new(std::sync::Mutex::new(crate::herdr::HerdrReporter::default()));
-        // The reporter epoch shared with every reporter the worker
-        // starts: a rebind bumps it so the replaced task drops its
-        // queued boundary events instead of flushing them.
-        let herdr_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         // The worker's prompt-admission registry: shared with the turn
         // runner (the commit happens at turn start).
         let prompt_admissions = crate::prompt_admission::WorkerAdmissions::new();
         // Created before the session engine: `rlm_heartbeat.*` requests
         // write the shared cron store.
-        let user_bash = std::sync::Arc::new(crate::user_bash::UserBash::new());
+        let user_bash = std::sync::Arc::new(pa_core::user_bash::UserBash::new());
         let scheduled = std::sync::Arc::new(crate::scheduled_jobs::ScheduledJobs::new(
             Arc::clone(&core),
             Arc::clone(&work_notify),
@@ -792,7 +772,6 @@ impl Worker {
                     link: Arc::clone(&roster_link),
                     worker_token,
                 },
-                herdr: std::sync::Arc::clone(&herdr_slot),
                 checkpoints: Arc::clone(&checkpoints),
             };
             tokio::spawn(async move {
@@ -857,9 +836,7 @@ impl Worker {
             released_attach_tokens: std::sync::Mutex::new(std::collections::HashSet::new()),
             connection_sinks: std::sync::Mutex::new(Vec::new()),
             events,
-            model_catalog_refresh_gate: std::sync::Arc::new(
-                crate::model_catalog::RefreshGate::default(),
-            ),
+            model_catalog_refresh_gate: std::sync::Arc::default(),
             recovery,
             side_questions,
             interaction,
@@ -876,24 +853,9 @@ impl Worker {
             navigation,
             prompt_admissions,
             scheduled,
-            herdr: std::sync::Arc::clone(&herdr_slot),
-            herdr_generation: std::sync::Arc::clone(&herdr_generation),
             create_gate: tokio::sync::Mutex::new(()),
             replacement_gate: tokio::sync::Mutex::new(()),
         }
-    }
-
-    /// The Herdr session reference the reports carry (TS
-    /// `agent_session_path` / `agent_session_id`): the session file when
-    /// the session has one, otherwise the session id.
-    pub(crate) fn herdr_session_ref(core: &SessionCore) -> crate::herdr::HerdrSessionRef {
-        let store = core.store.as_ref();
-        crate::herdr::HerdrSessionRef::new(
-            store
-                .filter(|store| !store.path.as_os_str().is_empty())
-                .map(|store| store.path.to_string_lossy().to_string()),
-            store.map(|store| store.session_id().to_string()),
-        )
     }
 
     /// Close the bound listener, then clean up the socket path: the TS

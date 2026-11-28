@@ -4,10 +4,10 @@
 
 use super::{
     artifact_reference, json, map_thinking_level, now_millis, AgentSessionEngine, Arc,
-    BranchSummaryOutcome, BranchSummaryRequest, BranchSummaryRun, CompactionOutcome,
-    CompactionRequest, CompactionRun, EngineEvent, EngineModelSelection, ParentIdentity,
-    PromptContextBoundary, PromptRequest, ProviderTarget, SessionEngine, SideQuestionOutcome,
-    SideQuestionRequest, StartupScope, TurnPrompt, Value, DEFAULT_RLM_MAX_DEPTH,
+    BranchSummaryOutcome, BranchSummaryRequest, CompactionOutcome, CompactionRequest,
+    CompactionRun, EngineEvent, EngineModelSelection, ParentIdentity, PromptContextBoundary,
+    PromptRequest, ProviderTarget, SessionEngine, SideQuestionOutcome, SideQuestionRequest,
+    StartupScope, TurnPrompt, Value, DEFAULT_RLM_MAX_DEPTH,
 };
 
 impl SessionEngine for AgentSessionEngine {
@@ -447,8 +447,9 @@ impl SessionEngine for AgentSessionEngine {
             (selection.provider.as_deref(), selection.model.as_deref())
         {
             let selector = format!("{provider}/{model}");
-            let allowlist = crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir);
-            if crate::model_allowlist::assert_allowed(&allowlist, &selector).is_err() {
+            let allowlist =
+                pa_core::models::load_model_allowlist(&self.cwd(), &self.config.agent_dir);
+            if pa_core::models::assert_model_allowed(&allowlist, &selector).is_err() {
                 return false;
             }
         }
@@ -563,7 +564,7 @@ impl SessionEngine for AgentSessionEngine {
             self.ensure_core_session_async(&model).await.ok()?;
             let session = self.session.try_lock().ok()?;
             let state = session.as_deref()?.session.agent().state().await;
-            let renderer = crate::session_export::ExportToolRenderer {
+            let renderer = pa_core::export_html::RegistryToolRenderer {
                 tools: &state.tools,
             };
             pa_core::export_html::pre_render_custom_tools(&entries, &renderer)
@@ -713,7 +714,10 @@ impl SessionEngine for AgentSessionEngine {
                     run: Box::new(CompactionRun {
                         // The wire result is the TS `CompactionResult` shape;
                         // usage and the digest snapshot live on the entry.
-                        result: crate::compaction::compaction_result_value(&run.result, &run.entry),
+                        result: pa_core::session_engine::compaction_exec::compaction_result_value(
+                            &run.result,
+                            &run.entry,
+                        ),
                         usage: run
                             .result
                             .usage
@@ -743,72 +747,15 @@ impl SessionEngine for AgentSessionEngine {
             }
         };
         let (model, api_key) = self.resolve_request_target(model);
-        let settings =
-            pa_core::settings::SettingsManager::create(self.cwd(), &self.config.agent_dir);
-        let reserve_tokens = settings
-            .settings()
-            .branch_summary
-            .as_ref()
-            .and_then(|branch_summary| branch_summary.reserve_tokens)
-            .unwrap_or(
-                pa_core::session_engine::branch_summarization::DEFAULT_BRANCH_RESERVE_TOKENS,
-            );
-        let entries = request.entries;
-        let custom_instructions = request.custom_instructions;
-        let replace_instructions = request.replace_instructions;
-        let session_id = request.session_id;
-        // TS #2411: the branch summary resolves its model through the
-        // `auxiliaryModel` setting, keeping its one-off prompt off the
-        // prompt-cache prefix.
-        let auxiliary = pa_core::session_engine::auxiliary_model::AuxiliaryModelContext {
-            cwd: self.cwd(),
-            agent_dir: self.config.agent_dir.clone(),
-        };
-        let run = async {
-            pa_core::session_engine::branch_summarization::generate_branch_summary(
-                &entries,
-                pa_core::session_engine::branch_summarization::GenerateBranchSummaryOptions {
-                    model: &model,
-                    api_key,
-                    custom_instructions: custom_instructions.as_deref(),
-                    replace_instructions,
-                    reserve_tokens,
-                    auxiliary: Some(&auxiliary),
-                    session_id: Some(&session_id),
-                },
-            )
-            .await
-        };
-        match self
-            .runtime
-            .block_on(pa_agent::abort::race_with_abort(run, signal))
-        {
-            Ok(result) => {
-                if result.aborted {
-                    return BranchSummaryOutcome::Aborted;
-                }
-                if let Some(error) = result.error {
-                    return BranchSummaryOutcome::Failed { error };
-                }
-                let summary = result
-                    .summary
-                    .unwrap_or_else(|| "No summary generated".to_string());
-                BranchSummaryOutcome::Complete {
-                    run: BranchSummaryRun {
-                        summary,
-                        usage: result
-                            .usage
-                            .and_then(|usage| serde_json::to_value(usage).ok()),
-                        details: Some(json!({
-                            "readFiles": result.read_files,
-                            "modifiedFiles": result.modified_files,
-                        })),
-                        model: result.model,
-                    },
-                }
-            }
-            Err(_) => BranchSummaryOutcome::Aborted,
-        }
+        self.runtime.block_on(
+            pa_core::session_engine::branch_summarization::run_branch_summary(
+                request,
+                &model,
+                api_key,
+                (self.cwd(), self.config.agent_dir.clone()),
+                signal,
+            ),
+        )
     }
 
     fn rebuild_session_context(
@@ -972,7 +919,7 @@ impl SessionEngine for AgentSessionEngine {
     /// registry records it so the child's no-reply notice is withheld.
     fn agent_message_waits(
         &self,
-    ) -> Option<std::sync::Arc<crate::agent_message_wait::AgentMessageWaits>> {
+    ) -> Option<std::sync::Arc<pa_core::session_engine::agent_messaging::AgentMessageWaits>> {
         Some(std::sync::Arc::clone(&self.agent_message_waits))
     }
 
@@ -1027,81 +974,32 @@ impl SessionEngine for AgentSessionEngine {
         signal: &pa_agent::abort::AbortSignal,
         sink: &pa_core::session_engine::side_question::SideQuestionSink,
     ) -> SideQuestionOutcome {
-        if request.kind == pa_types::better::SideRunKind::Better {
-            return self.run_better(&request.question, signal, sink);
-        }
-        let model = match self.session_model() {
-            Ok(model) => model,
-            Err(error) => {
-                return SideQuestionOutcome::Failed {
-                    answer: String::new(),
-                    error: error.to_string(),
-                }
-            }
+        let failed = |error: String| SideQuestionOutcome::Failed {
+            answer: String::new(),
+            error,
         };
-        let agent = match self.session_agent(&model) {
-            Ok(agent) => agent,
-            Err(error) => {
-                return SideQuestionOutcome::Failed {
-                    answer: String::new(),
-                    error: error.to_string(),
-                }
-            }
-        };
-        let question = request.question.clone();
-        let previous_turns = request.previous_turns;
-        let retry_policy = pa_core::session_engine::provider_retry::DEFAULT_PROVIDER_RETRY_POLICY;
-        // TS `unwrapSemanticEdgeStreamFn`: the side call runs on the
-        // session's pre-semantic stream fn, so it carries no request id
-        // and the ledger records nothing. The engine build always wires
-        // it; no fallback to the agent's own fn, which would leak the
-        // id-carrying wrapper into the side call.
-        // The run bills the engine it started on: a replace during the run must
-        // not move the bill to the replacement.
-        let built = self.session.blocking_lock().clone();
-        let side_stream_fn = built
-            .as_deref()
-            .and_then(|engine| engine.session.side_question_stream_fn());
-        let (Some(built), Some(side_stream_fn)) = (built, side_stream_fn) else {
-            return SideQuestionOutcome::Failed {
-                answer: String::new(),
-                error: "Select a model before asking a side question".to_string(),
+        // A `/better` rewrite runs on the session as built; a question builds it first.
+        let select = if request.kind == pa_types::better::SideRunKind::Better {
+            "Select a model before using /better"
+        } else {
+            let model = match self.session_model() {
+                Ok(model) => model,
+                Err(error) => return failed(error.to_string()),
             };
+            if let Err(error) = self.session_agent(&model) {
+                return failed(error.to_string());
+            }
+            "Select a model before asking a side question"
         };
-        let result =
-            self.runtime
-                .block_on(pa_core::session_engine::side_question::run_side_question(
-                    &agent,
-                    side_stream_fn,
-                    &question,
-                    &previous_turns,
-                    &retry_policy,
-                    signal,
-                    sink,
-                ));
-        // The answer never enters the history, but the run's model calls bill the session.
+        // The run bills the engine it started on: a replace during the run must not move the
+        // bill to the replacement.
+        let Some(built) = self.session.blocking_lock().clone() else {
+            return failed(select.to_string());
+        };
         self.runtime
-            .block_on(built.session.record_model_usage(result.usage.clone()));
-        match result.status {
-            pa_core::session_engine::side_question::SideQuestionStatus::Complete => {
-                SideQuestionOutcome::Complete {
-                    answer: result.answer,
-                }
-            }
-            pa_core::session_engine::side_question::SideQuestionStatus::Cancelled => {
-                SideQuestionOutcome::Aborted {
-                    answer: result.answer,
-                }
-            }
-            pa_core::session_engine::side_question::SideQuestionStatus::Error => {
-                SideQuestionOutcome::Failed {
-                    answer: result.answer,
-                    error: result
-                        .error_message
-                        .unwrap_or_else(|| "Side question failed".to_string()),
-                }
-            }
-        }
+            .block_on(pa_core::session_engine::side_runs::run_side_run(
+                &built, request, signal, sink,
+            ))
     }
 
     fn note_better_outcome(&self, outcome: pa_types::better::ComposerOutcome) {
@@ -1142,34 +1040,7 @@ impl SessionEngine for AgentSessionEngine {
             let Some(engine) = guard.as_deref() else {
                 return Vec::new();
             };
-            // Order: prompt templates, then skills.
-            let mut commands = Vec::new();
-            for template in &engine.resource_reload.prompt_templates() {
-                let mut entry = json!({
-                    "name": template.name,
-                    "source": "prompt",
-                    "sourceInfo": template.source_info,
-                });
-                if let Some(hint) = &template.argument_hint {
-                    entry["argumentHint"] = json!(hint);
-                }
-                if !template.description.is_empty() {
-                    entry["description"] = json!(template.description);
-                }
-                commands.push(entry);
-            }
-            for skill in &engine.resource_reload.skills() {
-                let mut entry = json!({
-                    "name": format!("skill:{}", skill.name),
-                    "source": "skill",
-                    "sourceInfo": skill.source_info,
-                });
-                if !skill.description.is_empty() {
-                    entry["description"] = json!(skill.description);
-                }
-                commands.push(entry);
-            }
-            commands
+            engine.resource_reload.connection_commands()
         })
     }
 
@@ -1379,30 +1250,21 @@ impl SessionEngine for AgentSessionEngine {
         })
     }
 
-    fn set_rlm_max_depth(&self, max_depth: u64, global: bool) -> anyhow::Result<Value> {
+    fn set_rlm_max_depth(
+        &self,
+        set: pa_core::session_engine::agent_controls::SetRlmMaxDepth,
+    ) -> anyhow::Result<Value> {
         if let Some(children) = &self.children {
-            children.set_rlm_max_depth(max_depth.min(u64::from(u32::MAX)) as u32);
+            children.set_rlm_max_depth(set.bound());
         }
         *self.rlm_max_depth_source.lock().expect("depth source lock") = "chat";
         // The durable `rlm_max_depth_state` entry: a resumed session
         // re-seeds from it; an unbuilt session parks it (the
         // `pending_branch` pattern).
-        self.persist_max_depth_state(max_depth);
+        self.persist_max_depth_state(set.max_depth);
         // The global settings write: errors join the `globalError` field,
         // they do not fail the command.
-        let mut result = json!({
-            "maxDepth": max_depth,
-            "source": "chat",
-            "globalSaved": false,
-        });
-        if global {
-            if let Some(error) = self.write_global_rlm_max_depth(max_depth) {
-                result["globalError"] = json!(error);
-            } else {
-                result["globalSaved"] = json!(true);
-            }
-        }
-        Ok(result)
+        Ok(set.reply(set.write_global(&self.cwd(), &self.config.agent_dir)))
     }
 
     fn run_prompt(

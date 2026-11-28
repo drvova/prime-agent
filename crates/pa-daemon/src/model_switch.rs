@@ -65,9 +65,11 @@ impl Worker {
             let core = self.core.lock().unwrap();
             core.cwd.clone()
         };
-        let allowlist =
-            crate::model_allowlist::load(std::path::Path::new(&cwd), &self.config.agent_dir);
-        if let Err(refusal) = crate::model_allowlist::assert_allowed(&allowlist, &selector) {
+        let allowlist = pa_core::models::load_model_allowlist(
+            std::path::Path::new(&cwd),
+            &self.config.agent_dir,
+        );
+        if let Err(refusal) = pa_core::models::assert_model_allowed(&allowlist, &selector) {
             // The event rides the typed refusal only (the other seams'
             // rule): a fail-closed unreadable-allowlist error is a
             // settings problem, not an allowlist refusal.

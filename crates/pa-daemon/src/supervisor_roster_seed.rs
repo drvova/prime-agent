@@ -10,11 +10,11 @@ use std::sync::Arc;
 use pa_types::daemon::agent_roster::{roster_agent_id_for_summary, AgentRosterEntry};
 use serde_json::{json, Value};
 
-use crate::lease::canonical_session_path;
-use crate::rlm_ledger::RlmLedgerEdge;
-use crate::session_store::read_session_info;
-use crate::session_usage::SessionUsageSummary;
 use crate::supervisor::Supervisor;
+use pa_core::session::catalog::read_session_info;
+use pa_core::session::lease::canonical_session_path;
+use pa_core::session::usage_summary::SessionUsageSummary;
+use pa_core::session_engine::rlm_ledger::RlmLedgerEdge;
 
 impl Supervisor {
     /// Seed passivated ledger-descended children into the live roster, once per boot after adoption
@@ -459,8 +459,8 @@ pub(crate) fn family_descends_from(
 pub(crate) mod tests {
     use super::*;
     use crate::registry::ResidentWorker;
-    use crate::rlm_ledger::RlmLedgerEdge;
     use crate::supervisor::ClientRouting;
+    use pa_core::session_engine::rlm_ledger::RlmLedgerEdge;
     use pa_types::daemon::agent_roster::AgentRosterStatus;
     use serde_json::Map;
 
@@ -648,9 +648,14 @@ pub(crate) mod tests {
         parent: &Path,
         child: &Path,
     ) {
-        let ledger = crate::rlm_ledger::RlmSpawnLedger::new(agent_dir, sessions_dir, |_| {});
+        let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+            agent_dir,
+            sessions_dir,
+            |_| {},
+        )
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: child_id.to_string(),
                 parent: parent.to_string_lossy().to_string(),
                 child: child.to_string_lossy().to_string(),
@@ -952,7 +957,7 @@ pub(crate) mod tests {
         let stale = {
             let mut roster = supervisor.roster.lock().unwrap();
             let candidate = crate::supervisor_roster_seed::SeededRosterEntry::edge_only(
-                &crate::rlm_ledger::RlmLedgerEdge {
+                &pa_core::session_engine::rlm_ledger::RlmLedgerEdge {
                     child_id: "sub-9".to_string(),
                     parent: root_file.to_string_lossy().to_string(),
                     child: child_file.to_string_lossy().to_string(),
@@ -1104,9 +1109,14 @@ pub(crate) mod tests {
             .join("sub-gone.jsonl");
         std::fs::create_dir_all(gone_child.parent().expect("gone child dir")).unwrap();
         write_display_file(&gone_child, "/the/gone/cwd");
-        let ledger = crate::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {});
+        let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+            &agent_dir,
+            &sessions_dir,
+            |_| {},
+        )
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
-            .append_spawn(&crate::rlm_ledger::RlmSpawnInput {
+            .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-gone".to_string(),
                 parent: root_file.to_string_lossy().to_string(),
                 child: gone_child.to_string_lossy().to_string(),
@@ -1119,8 +1129,8 @@ pub(crate) mod tests {
             .append_delete_with_usage(
                 "sub-gone",
                 &gone_child.to_string_lossy(),
-                crate::rlm_ledger::RlmLedgerDeleteReason::User,
-                &crate::session_usage::SessionUsageSummary {
+                pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
+                &pa_core::session::usage_summary::SessionUsageSummary {
                     input_tokens: 11,
                     output_tokens: 7,
                     cost: 0.5,

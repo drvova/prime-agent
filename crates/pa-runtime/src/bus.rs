@@ -18,7 +18,7 @@
 //! its place too. A route that fails publishes `system/route_failed`.
 //!
 //! A live-only event (`Topic::is_live_only`: a turn's stream and tool
-//! deltas) is fanned out without being stored: it gets no sequence number
+//! deltas, the agents view's roster and traffic feeds) is fanned out without being stored: it gets no sequence number
 //! (`seq` 0), an id unique among this bus's live events (`live-<n>`), and
 //! runs no route. It does not wait for a store's append in progress, so a
 //! stream is never held up behind a commit; one publisher's events still
@@ -210,6 +210,12 @@ where
         lock(&self.inner.registry).remove(id)
     }
 
+    /// The subscriptions on the bus, in id order.
+    #[must_use]
+    pub fn subscriptions(&self) -> Vec<Subscription> {
+        lock(&self.inner.registry).subscriptions()
+    }
+
     /// The bus's subscriptions, for the kernel's event bus to add and remove
     /// its own on any thread.
     pub(crate) fn registry(&self) -> Arc<Mutex<Registry>> {
@@ -389,7 +395,13 @@ where
                     event: Arc::clone(event),
                     trust,
                 };
-                self.inner.tasks.queue(request).await.err()
+                match self.inner.tasks.queue(request).await {
+                    Ok(Some(announced)) => {
+                        return caused(subscription, event, &announced.topic, announced.payload);
+                    }
+                    Ok(None) => None,
+                    Err(error) => Some(error),
+                }
             }
         };
         failed.and_then(|error| {

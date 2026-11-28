@@ -159,6 +159,42 @@ impl ResourceReload {
         self.current().prompt_templates.clone()
     }
 
+    /// The session's slash-command catalog (TS `createAgentConnectionCommands`, the old daemon's
+    /// and the runtime daemon's `get_commands`): its prompt templates, then its skills
+    /// (`skill:<name>`), each with its source, its source info and its description (a template's
+    /// argument hint too) when it has one.
+    #[must_use]
+    pub fn connection_commands(&self) -> Vec<Value> {
+        let current = self.current();
+        let mut commands = Vec::new();
+        for template in &current.prompt_templates {
+            let mut entry = json!({
+                "name": template.name,
+                "source": "prompt",
+                "sourceInfo": template.source_info,
+            });
+            if let Some(hint) = &template.argument_hint {
+                entry["argumentHint"] = json!(hint);
+            }
+            if !template.description.is_empty() {
+                entry["description"] = json!(template.description);
+            }
+            commands.push(entry);
+        }
+        for skill in &current.skills {
+            let mut entry = json!({
+                "name": format!("skill:{}", skill.name),
+                "source": "skill",
+                "sourceInfo": skill.source_info,
+            });
+            if !skill.description.is_empty() {
+                entry["description"] = json!(skill.description);
+            }
+            commands.push(entry);
+        }
+        commands
+    }
+
     /// The assembled system prompt before the image-input line follows the model.
     #[must_use]
     pub fn base_prompt(&self) -> String {

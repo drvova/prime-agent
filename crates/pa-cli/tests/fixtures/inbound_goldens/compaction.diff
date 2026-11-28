@@ -1,0 +1,31 @@
+meta: golden numbers rising true, from 2, ids like H:2 | runtime numbers rising true, from 1, ids like live-N
+~ message_start assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ message_update assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ message_end assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ turn_end assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ agent_end: .event.messages[2].api: golden "T" | runtime "faux-H"
+~ message_start assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ message_update assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ message_end assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ turn_end assistant: .event.message.api: golden "T" | runtime "faux-H"
+~ agent_end: .event.messages[1].api: golden "T" | runtime "faux-H"
+~ session_action_update: .event.actions.active: golden {"kind":"turn","phase":"running","label":"and again"} | runtime null
+~ session_action_update: .event.actions.queuedCount: golden 1 | runtime 0
+~ session_action_update: .event.actions.steering: golden ["/compact"] | runtime []
+~ roster kept: [0].summary.model.api: golden "T" | runtime "faux-H"
+~ roster kept: [0].summary.rosterDeltaSequence: golden 17 | runtime 0
+~ roster kept: [0].summary.workerInstanceId: golden "H" | runtime null
+~ reply attach: .data.lastEventCursor.sequence: golden 1 | runtime 0
+~ reply attach: .data.lastEventSequence: golden 1 | runtime 0
+~ reply attach: .data.replay.toCursor.sequence: golden 1 | runtime 0
+~ reply attach: .data.replay.toSequence: golden 1 | runtime 0
+~ reply attach: .data.snapshot.lastEventCursor.sequence: golden 1 | runtime 0
+~ reply attach: .data.snapshot.lastEventSequence: golden 1 | runtime 0
+~ reply attach: .data.snapshot.state.model.api: golden "T" | runtime "faux-H"
+~ reply attach: .data.snapshot.summary.model.api: golden "T" | runtime "faux-H"
+~ reply attach: .data.snapshot.summary.workerInstanceId: golden "H" | runtime null
+~ reply roster_subscribe: .data.roster[0].summary.attachedClients: golden 0 | runtime 1
+~ reply roster_subscribe: .data.roster[0].summary.model.api: golden "T" | runtime "faux-H"
+~ reply roster_subscribe: .data.roster[0].summary.workerInstanceId: golden "H" | runtime null
+~ reply get_state: .data.model.api: golden "T" | runtime "faux-H"
+~ reply get_state: .data.workerInstanceId: golden "H" | runtime null

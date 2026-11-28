@@ -94,6 +94,11 @@ pub struct ProviderTarget {
     pub admission_credential: Option<String>,
 }
 
+/// The shared slot a live session's stream reads its [`ProviderTarget`] from on every request:
+/// the host that holds it retargets the session's next request by writing it (a model or
+/// service-tier switch, the image-model route).
+pub type ProviderTargetSlot = Arc<std::sync::RwLock<Option<ProviderTarget>>>;
+
 /// A real pa-ai stream adapter reading its target from a shared slot the host can swap live
 /// (`set_model`, the image-model route); `None` only before the host sets the build-time target.
 ///
@@ -101,7 +106,7 @@ pub struct ProviderTarget {
 ///
 /// Panics at stream time if the provider target lock is poisoned, or if the
 /// target slot was never set before the first stream.
-pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>>>) -> StreamFn {
+pub fn switchable_stream_fn(target: ProviderTargetSlot) -> StreamFn {
     Arc::new(
         move |_requested: AgentModel, context: LlmContext, options: StreamRequestOptions| {
             let target = target

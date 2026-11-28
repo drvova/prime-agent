@@ -31,7 +31,7 @@ async fn resolve_child_model_allowlisted(
     let load_cwd = cwd.clone();
     let agent_dir = this.agent_dir.clone();
     let allowlist = tokio::task::spawn_blocking(move || {
-        crate::model_allowlist::load(Path::new(&load_cwd), &agent_dir)
+        pa_core::models::load_model_allowlist(Path::new(&load_cwd), &agent_dir)
     })
     .await
     .context("the allowlist load task join failed")?;

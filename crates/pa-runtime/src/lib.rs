@@ -37,14 +37,25 @@
 //!   `pa-sources`) defined on the runtime and kept in its database, each
 //!   running while a subscription hears it.
 //!
+//! - [`rpc`]: the RPC mode (`prime-agent --mode rpc`), a headless mode:
+//!   JSON commands on stdin drive one in-process session engine the
+//!   composition root assembles, and its responses and events go to stdout.
+//!
+//! - [`daemon`]: the runtime daemon, serving wire2 to the clients of its
+//!   socket over a [`Runtime`] of the agent dir, beside the old daemon:
+//!   the default daemon, the old one selected only by name.
+//!
 //! The `Memory*` implementations are for tests and headless use.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+pub mod acp;
 mod bus;
+pub mod daemon;
 mod events;
 mod log_stores;
 mod routes;
+pub mod rpc;
 mod runtime;
 mod session;
 mod sources;
@@ -58,21 +69,22 @@ mod wire;
 
 pub use bus::{Bus, BusClosed, BusParts, Heard, Intake, Listener, Published};
 pub use log_stores::{LogEventStore, LogStateStore, LogTaskStore};
-pub use routes::{ModelCall, ModelCaller, TaskRequest, TaskSink};
+pub use routes::{Announced, ModelCall, ModelCaller, TaskRequest, TaskSink};
 pub use runtime::{Runtime, RuntimeOptions};
 pub use session::{
-    BuiltSession, DriverEvents, Finished, SessionBuilder, SessionSeams, SessionSpec, SettleAfter,
-    Settled, SubagentSpec,
+    BuiltSession, DriverEvents, Finished, QueueModes, SessionBuilder, SessionGoal, SessionOptions,
+    SessionSeams, SessionSpec, SettleAfter, Settled, SubagentSpec,
 };
 pub use sources::{SourceDefinition, SourceLifetime};
 pub use store::{EventStore, MemoryEventStore, MemoryStateStore, StateKey, StateStore, StateWrite};
 pub use subscriptions::{DuplicateSubscription, MemorySessionTree, SessionTree};
 pub use tasks::{
-    MemoryTaskStore, Steered, TaskOutcome, TaskQueue, TaskRunner, TaskStore, INTERRUPTED_BY_RESTART,
+    LaneState, MemoryTaskStore, Steered, TaskOutcome, TaskQueue, TaskRunner, TaskStore,
+    INTERRUPTED_BY_RESTART,
 };
 pub use wire::{
-    Call, Handlers, Query, UnknownOperation, WireConfig, WireServer, CLIENT_TOPICS, IN_FLIGHT,
-    MAX_TAIL,
+    Call, ConnectionId, Handlers, Query, UnknownOperation, WireConfig, WireServer, CLIENT_TOPICS,
+    IN_FLIGHT, MAX_TAIL,
 };
 
 /// Locks `mutex`, taking the value even when a panicking holder poisoned it:

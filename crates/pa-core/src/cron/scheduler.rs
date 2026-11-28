@@ -14,6 +14,11 @@ use super::store::{AgentCronDispatch, AgentCronJobStore, DispatchResultOptions};
 
 const MAX_TIMEOUT_MS: u64 = 2_147_483_647;
 
+/// How long a fire waits for its turn to settle before answering the
+/// scheduler with a skip (a stuck turn must not pin the dispatch lane
+/// forever); both daemons' hooks wait this long.
+pub const FIRE_SETTLE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
+
 const FAILURE_BACKOFF_BASE_MS: u64 = 120_000;
 
 /// The backoff ceiling: a failing job still gets one fire per hour, so a

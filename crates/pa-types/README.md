@@ -9,6 +9,7 @@ used by settings deserialization, persistence, runtime policy, and the TUI.
 Wire and domain types + serde only: AI messages/content blocks/tool calls/usage/stream events, session JSONL entry schema, daemon wire protocol messages, worker frames.
 
 Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui/pa-cli) live here because pa-tui depends on pa-types alone:
+- `daemon::replay_info`: the attach's replay verdict for a resume cursor (TS `createDaemonReplayInfo`), shared by the supervisor's worker and the runtime daemon's attach snapshot.
 - `daemon::framing`: the private-frame codec of the worker socket (direct-attach clients speak it too).
 - `daemon::message_delta`: the `message_update_delta` attach capability's codec — the
   per-connection encoder the serving side (supervisor client writer, worker direct link) runs
@@ -30,18 +31,28 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   replaces `events`): `Event`/`NewEvent` with `Trust` (owner or untrusted, only ever lowered
   along a chain of causes) and a cause chain bounded by `MAX_HOPS`; `Topic` and `TopicFilter`
   (MQTT `+`/`#` wildcards) and `TopicTrie`, which matches a topic against every filter in time
-  proportional to its depth; `Topic::is_live_only` (`agent/<id>/stream` and `agent/<id>/tool`):
-  events the runtime fans out but never stores, with `seq` 0; `Subscription` (scope, filter, `when` predicate by JSON Pointer,
+  proportional to its depth; `Topic::is_live_only` (`agent/<id>/stream`, `agent/<id>/tool`, a session's side runs on
+  `agent/<id>/side_question`, and the
+  agents view's feeds `runtime/roster` and `runtime/traffic`, and a saved-session list request's
+  rows on `runtime/session_list/<request>`): events the runtime fans out but
+  never stores, with `seq` 0; `Subscription` (scope, filter, `when` predicate by JSON Pointer,
   throttle and debounce, `Route`: set, publish, call, agent) and the `Task` an agent route queues
   in its session's lane, ordered by `Priority`; an agent route's `AgentTarget` is a named session,
   the event's own session (`Origin`), or a new one (`Spawn`). The payloads of a session's stored
   topics: `AgentInput` (`agent/<id>/input`: the text a turn starts from, the images it carries
-  and, optionally, its lane priority; an agent route with an empty prompt starts from it) and
+  and, optionally, its lane priority; an agent route with an empty prompt starts from it),
+  `AgentAccepted` (`agent/<id>/accepted`: the task an input became, its priority and its
+  `Admission`: `queued`, `steered` into the running turn, or `parked` in a suspended lane) and
   `AgentDone` (`agent/<id>/done`: task id, outcome, error, and for a failed task its
   `TaskFailure`: a failed reply, command or turn).
 - `wire2`: the event wire between clients and the runtime: `ClientFrame` (hello, subscribe with
   a replay start, unsubscribe, publish, query, call) and `ServerFrame` (welcome, event,
-  backfilled, reply, closing), versioned by `WIRE2_VERSION`.
+  backfilled, reply, closing), versioned by `WIRE2_VERSION`. A reply's `Outcome` is `ok` with
+  its result or `error` with its message and, when the error carries it, its `info` (the old
+  daemon's `errorInfo`). `SessionCreate` is the `session.create` call's arguments (the session
+  by id or path, its cwd, `ephemeral`, `sessionDir`, the client's `launchEnv`, and its build
+  `options`), `SessionParent` a scoped child's `options.parent`, and `ApiKey` a key a client gives
+  a session (its JSON form is the key; its debug form, and `SessionCreate`'s, shows no secret).
 - `daemon::plane`: the session/control command-plane table (worker-side peer gating and client-side socket routing both read it).
 - `daemon::{DaemonPeerTransportTicket, DaemonWorkerPeerGrant, DaemonPeerCommand}`: the direct-transport ticket and grant wire shapes.
 - `goal`: the thread-goal wire state (`GoalState`/`GoalStatus`) shared by the

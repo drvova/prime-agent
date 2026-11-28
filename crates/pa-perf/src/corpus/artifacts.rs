@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use pa_core::refinement::{
     HarnessEntry, HarnessRefinementEvent, HarnessScope, HarnessState, RefinementKind,
 };
-use pa_daemon::rlm_ledger::{RlmSpawnInput, RlmSpawnLedger};
+use pa_core::session_engine::rlm_ledger::{RlmSpawnInput, RlmSpawnLedger};
 use serde_json::json;
 
 use crate::corpus::rows::SessionSpec;

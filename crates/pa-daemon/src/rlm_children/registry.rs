@@ -537,8 +537,12 @@ fn ledger_child_records(
     .and_then(|config| config.default_session_dir) else {
         return Vec::new();
     };
-    let ledger =
-        crate::rlm_ledger::RlmSpawnLedger::new(agent_dir, Path::new(&sessions_dir), |_| {});
+    let ledger = pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
+        agent_dir,
+        Path::new(&sessions_dir),
+        |_| {},
+    )
+    .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
     let edges = ledger
         .live_edges_of_parent(parent_file)
         .unwrap_or_else(|error| {
@@ -553,7 +557,7 @@ fn ledger_child_records(
             .map(|stem| stem.to_string_lossy().into_owned());
         let display = child
             .parent()
-            .and_then(crate::rlm_ledger::read_rlm_subagent_display)
+            .and_then(pa_core::session_engine::rlm_ledger::read_rlm_subagent_display)
             .filter(|display| display.child_id == edge.child_id);
         records.push(ChildRecord {
             rlm_child_id: edge.child_id,

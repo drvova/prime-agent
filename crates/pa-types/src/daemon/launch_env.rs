@@ -9,10 +9,9 @@
 //! port-parity gap): PATH changes, direnv, proxies, and certificate
 //! paths from the terminal that opened the session would be lost.
 //!
-//! The trust model mirrors the Herdr client-env contract: any client
-//! that can reach the user-scoped daemon socket can already run
-//! commands through it, so the forwarded env crosses no privilege
-//! boundary — but the daemon re-applies the same filter on receipt
+//! The trust model: any client that can reach the user-scoped daemon
+//! socket can already run commands through it, so the forwarded env
+//! crosses no privilege boundary — but the daemon re-applies the same filter on receipt
 //! (the socket peer is untrusted), and the daemon-internal
 //! `PRIME_AGENT_INTERNAL_*` vars never ride the wire: a worker's
 //! identity is stamped by the supervisor at spawn, never inherited

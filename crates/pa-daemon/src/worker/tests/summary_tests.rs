@@ -216,7 +216,7 @@ fn live_summary_usage_is_the_catalog_fold() {
     let core = SessionCore::test_core(Some(store), "/tmp".to_string());
     let summary = session_summary(&core, inputs());
     // The live row equals the saved row, whole-object.
-    let catalog = crate::session_store::read_session_info(&path)
+    let catalog = pa_core::session::catalog::read_session_info(&path)
         .unwrap()
         .usage
         .expect("the catalog fold bills the whole file");

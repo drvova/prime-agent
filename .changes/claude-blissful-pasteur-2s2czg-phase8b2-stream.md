@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now streams each session's events in the shapes the interactive TUI renders today, numbered in order, with crashes and recoveries shown on the session's stream as the current daemon shows them.

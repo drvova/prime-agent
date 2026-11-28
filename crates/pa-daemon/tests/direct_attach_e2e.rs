@@ -357,8 +357,9 @@ fn direct_attach_ends_with_a_killed_daemon_and_reattaches_to_the_revived_session
         ticket["socketPath"].as_str().expect("socket path"),
         identity.socket_path.to_string_lossy().to_string()
     );
-    let expires = pa_daemon::util::iso_to_unix_ms(ticket["expiresAt"].as_str().expect("expiry"))
-        .expect("expiry is ISO");
+    let expires =
+        pa_core::session::manager::iso_to_unix_ms(ticket["expiresAt"].as_str().expect("expiry"))
+            .expect("expiry is ISO");
     let now = pa_daemon::util::now_ms();
     assert!(
         expires > now && expires <= now + 10_000,
@@ -663,8 +664,9 @@ fn unused_ticket_expires() {
     let _ = &daemon; // kept alive until the end; reaped by the Drop guard
 
     let ticket = get_ticket(&mut client, &session_id);
-    let expires = pa_daemon::util::iso_to_unix_ms(ticket["expiresAt"].as_str().expect("expiry"))
-        .expect("expiry");
+    let expires =
+        pa_core::session::manager::iso_to_unix_ms(ticket["expiresAt"].as_str().expect("expiry"))
+            .expect("expiry");
     let wait = expires.saturating_sub(pa_daemon::util::now_ms()) + 500;
     std::thread::sleep(Duration::from_millis(wait));
 

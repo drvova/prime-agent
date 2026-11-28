@@ -1,6 +1,8 @@
 //! The process panic hook's accounting, in this process.
 
 use super::*;
+use pa_core::session::crash::{daemon_crashes, install_panic_hook};
+use pa_core::session::hosted::HOSTED_PID_BASE;
 
 /// The crash each of `messages` left in `crashes`, without its time.
 fn found(crashes: &[SessionCrash], message: &str) -> Option<(String, String, bool)> {
@@ -52,6 +54,7 @@ fn a_panic_is_the_sessions_or_the_daemons_and_a_caught_one_is_neither() {
         BTreeSet::new(),
     );
     scope.set_slot(Arc::clone(&control));
+    scope.set_slot(Arc::new(HostControl::panic_sink(&control)));
     let (message, handled) = (session.clone(), caught.clone());
     std::thread::spawn(move || {
         let _scope = session_scope::enter(Some(scope));
@@ -114,7 +117,8 @@ fn lifetime(pid: u32) -> Arc<SessionScope> {
     live()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(pid, (format!("hosted:test:{pid}"), Arc::clone(&control)));
+        .insert(pid, Arc::clone(&control));
+    hosted::register(pid, format!("hosted:test:{pid}"));
     let scope = SessionScope::new(
         format!("lifetime-{pid}"),
         std::env::temp_dir(),
@@ -122,6 +126,7 @@ fn lifetime(pid: u32) -> Arc<SessionScope> {
         BTreeSet::new(),
     );
     scope.set_slot(control);
+    scope.set_slot(Arc::new(hosted::HostedId(pid)));
     scope
 }
 
@@ -165,6 +170,7 @@ fn a_thread_of_an_ended_lifetime_cannot_write_the_journal_its_successor_took_ove
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .remove(&old_pid);
+    hosted::unregister(old_pid);
     let journal_path = path.clone();
     on(
         &lifetime(new_pid),
@@ -199,6 +205,7 @@ fn a_thread_of_an_ended_lifetime_cannot_write_the_journal_its_successor_took_ove
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .remove(&new_pid);
+    hosted::unregister(new_pid);
     let operations: Vec<String> = pa_core::session::store::read_to_string(&path)
         .unwrap()
         .lines()

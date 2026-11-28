@@ -14,26 +14,7 @@ pub fn message_text(message: &Value) -> String {
     let Some(content) = message.get("content") else {
         return String::new();
     };
-    content_to_text(content)
-}
-
-#[must_use]
-pub fn content_to_text(content: &Value) -> String {
-    match content {
-        Value::String(s) => s.clone(),
-        Value::Array(blocks) => blocks
-            .iter()
-            .filter_map(|block| {
-                if block.get("type").and_then(Value::as_str) == Some("text") {
-                    block.get("text").and_then(Value::as_str)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
-        _ => String::new(),
-    }
+    pa_core::session::catalog::content_to_text(content)
 }
 
 pub fn message_role(message: &Value) -> Option<&str> {
