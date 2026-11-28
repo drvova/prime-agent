@@ -268,6 +268,11 @@ pub(crate) fn run_runtime_daemon(
                 update: pa_runtime::daemon::UpdateBoot {
                     roster: pa_core::update::restart::restore::consume_roster_env(),
                     keeper_pid: pa_runtime::daemon::keeper::keeper_pid(),
+                    // Kept per socket: the runtime daemon's keeper records its deaths
+                    // under `daemon2.sock`.
+                    daemon_death: pa_runtime::daemon::keeper::boot_death(
+                        &pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket),
+                    ),
                     app_version: crate::config::version().to_string(),
                 },
                 session_dir: super::replacement_session_dir(options),

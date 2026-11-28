@@ -1,7 +1,8 @@
 //! An attached interactive window lives through the daemon's death.
 //!
-//! The daemon is launched the way a window launches it (under its restart
-//! owner), a turn is started, and the session-hosting process is killed (SIGKILL).
+//! The runtime daemon is launched the way a window launches it (under its
+//! restart owner, on `daemon2.sock` beside the daemon socket), a turn is
+//! started, and the session-hosting process is killed (SIGKILL).
 //! The window does nothing but wait: the restart owner brings the daemon
 //! back, the window reattaches by itself, shows what happened (the daemon's
 //! recorded death and what it did to this session's turn), and the session
@@ -20,53 +21,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use pa_tui::interactive::HeadlessStep;
-use serde_json::Value;
 
 /// Stops the daemon (and with it its restart owner) when the test ends.
 struct LaunchedDaemon {
-    socket: PathBuf,
+    agent_dir: PathBuf,
 }
 
 impl Drop for LaunchedDaemon {
     fn drop(&mut self) {
-        use std::io::{BufRead, BufReader, Write};
-        // Best effort by design: this runs inside `Drop`.
-        let Ok(stream) = std::os::unix::net::UnixStream::connect(&self.socket) else {
-            return;
-        };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-        let Ok(mut writer) = stream.try_clone() else {
-            return;
-        };
-        let mut reader = BufReader::new(stream);
-        let mut hello = String::new();
-        let _ = reader.read_line(&mut hello);
-        let pids: Vec<i32> = serde_json::from_str::<Value>(hello.trim())
-            .ok()
-            .map_or_default(|hello| {
-                ["keeperPid", "supervisorPid"]
-                    .iter()
-                    .filter_map(|key| hello[*key].as_u64())
-                    .filter_map(|pid| i32::try_from(pid).ok())
-                    .collect()
-            });
-        let _ = writer.write_all(
-            b"{\"type\":\"command\",\"id\":\"stop\",\"protocol\":{\"name\":\"prime-agent.daemon\",\"version\":7},\"command\":{\"type\":\"shutdown\"}}\n",
-        );
-        let mut response = String::new();
-        let _ = reader.read_line(&mut response);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let alive =
-            |pid: &i32| nix::sys::signal::kill(nix::unistd::Pid::from_raw(*pid), None).is_ok();
-        while pids.iter().any(alive) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        for pid in pids.iter().filter(|pid| alive(pid)) {
-            let _ = nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(*pid),
-                nix::sys::signal::Signal::SIGKILL,
-            );
-        }
+        support::stop_runtime_daemon(&self.agent_dir);
     }
 }
 
@@ -119,25 +82,35 @@ async fn a_window_reattaches_by_itself_after_the_daemon_is_killed_and_reports_wh
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let socket = dir.path().join("kept.sock");
+    let daemon_socket = dir.path().join("kept.sock");
     std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir);
     std::env::set_var("DO_NOT_TRACK", "1");
+    for key in support::runtime_daemon::SCRUB_ENV {
+        std::env::remove_var(key);
+    }
     support::scrub_ambient_provider_credentials();
     let script_path = dir.path().join("script.json");
     std::fs::write(
         &script_path,
-        serde_json::json!({ "responses": [{ "text": "slow answer", "delayMs": 4000 }] })
-            .to_string(),
+        serde_json::json!({ "responses": [
+            { "text": "slow answer", "delayMs": 4000 },
+            { "text": "the next answer" },
+        ] })
+        .to_string(),
     )
     .expect("write script");
+    // The runtime daemon reads its faux script as it starts; its restart owner starts every
+    // later lifetime with the same environment.
+    std::env::set_var("PRIME_AGENT_FAUX_SCRIPT", &script_path);
 
     let _guard = LaunchedDaemon {
-        socket: socket.clone(),
+        agent_dir: agent_dir.clone(),
     };
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
-    pa_cli::ensure_daemon_running_with(&exe, &socket, dir.path())
+    let socket = pa_cli::ensure_runtime_daemon_running_with(&exe, &daemon_socket, dir.path())
         .await
-        .expect("launch the daemon under its restart owner");
+        .expect("launch the runtime daemon under its restart owner");
+    pa_tui::daemon_client::use_transport(&socket, pa_tui::daemon_client::Transport::Wire2);
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
@@ -226,7 +199,8 @@ async fn a_window_reattaches_by_itself_after_the_daemon_is_killed_and_reports_wh
             hello["daemonDeath"]["outcome"].as_str(),
             // The interrupted turn ran to its end in the revived session...
             rendered.contains("slow answer"),
-            // ...and the session then took the next prompt (the script is spent: it echoes).
+            // ...and the session then took the next prompt (each daemon lifetime reads the
+            // script whole, so the revived turn takes its first answer and this one the next).
             outcome.last_assistant_text.as_deref(),
         ),
         (
@@ -235,7 +209,7 @@ async fn a_window_reattaches_by_itself_after_the_daemon_is_killed_and_reports_wh
             Some(9),
             Some("restarted"),
             true,
-            Some("echo: again"),
+            Some("the next answer"),
         ),
         "hello: {hello}\ndaemon log:\n{daemon_log}\nframes:\n{rendered}"
     );
