@@ -1,1 +1,1 @@
-- The opt-in runtime daemon now stops as the default daemon does when a client asks it to shut down or restart: it answers, tells every connected window it is closing, cuts each running turn off and continues it in the next daemon, and exits cleanly so its restart owner does not start it again.
+- The runtime daemon now stops as the old daemon does when a client asks it to shut down or restart: it answers, tells every connected window it is closing, cuts each running turn off and continues it in the next daemon, and exits cleanly so its restart owner does not start it again.

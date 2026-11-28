@@ -1,1 +1,1 @@
-- The opt-in runtime daemon now accepts a client's session launch options, switches a running session's model within `allowedModels`, takes a client's MCP servers per session, announces scheduled-job changes, and answers the models, settings, sources and subscriptions queries.
+- The runtime daemon now accepts a client's session launch options, switches a running session's model within `allowedModels`, takes a client's MCP servers per session, announces scheduled-job changes, and answers the models, settings, sources and subscriptions queries.

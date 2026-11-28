@@ -1,1 +1,1 @@
-- The opt-in runtime daemon is restarted by its own restart owner when it dies, and a wedged runtime daemon still holding the agent dir's lock no longer keeps the next one from starting.
+- The runtime daemon is restarted by its own restart owner when it dies, and a wedged runtime daemon still holding the agent dir's lock no longer keeps the next one from starting.

@@ -1,1 +1,1 @@
-- The opt-in runtime daemon records its sessions' subagents in the same spawn ledger as the classic daemon and reopens them after a restart, supports `agent-message-wait` with cycle detection and `agent-observe-*`, and keeps kernel timer and watch event sources across restarts.
+- The runtime daemon records its sessions' subagents in the same spawn ledger as the old daemon and reopens them after a restart, supports `agent-message-wait` with cycle detection and `agent-observe-*`, and keeps kernel timer and watch event sources across restarts.

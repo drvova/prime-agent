@@ -3362,7 +3362,6 @@ dependencies = [
  "pa-agent",
  "pa-ai",
  "pa-core",
- "pa-daemon",
  "pa-runtime",
  "pa-telemetry",
  "pa-tui",
@@ -3432,35 +3431,6 @@ dependencies = [
  "url",
  "uuid",
  "yaml_serde",
-]
-
-[[package]]
-name = "pa-daemon"
-version = "0.10.3"
-dependencies = [
- "anyhow",
- "filetime",
- "futures",
- "globset",
- "nix 0.29.0",
- "pa-agent",
- "pa-ai",
- "pa-core",
- "pa-models",
- "pa-runtime",
- "pa-telemetry",
- "pa-types",
- "proptest",
- "serde",
- "serde_json",
- "sha2",
- "socket2",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "url",
- "uuid",
 ]
 
 [[package]]

@@ -1,1 +1,1 @@
-- With the opt-in runtime daemon selected, `prime-agent --mode acp` now runs on it: the ACP client starts or reuses the runtime daemon and drives its sessions over its own protocol, and `--no-session` keeps nothing on disk and ends with the client, as before.
+- On the runtime daemon, `prime-agent --mode acp` now runs on it: the ACP client starts or reuses the runtime daemon and drives its sessions over its own protocol, and `--no-session` keeps nothing on disk and ends with the client, as before.

@@ -8,12 +8,12 @@ The single shared vocabulary crate. Nothing else is shared between crates.
 used by settings deserialization, persistence, runtime policy, and the TUI.
 Wire and domain types + serde only: AI messages/content blocks/tool calls/usage/stream events, session JSONL entry schema, daemon wire protocol messages, worker frames.
 
-Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui/pa-cli) live here because pa-tui depends on pa-types alone:
-- `daemon::replay_info`: the attach's replay verdict for a resume cursor (TS `createDaemonReplayInfo`), shared by the supervisor's worker and the runtime daemon's attach snapshot.
-- `daemon::DaemonCommand::type_name`: a command's wire `type` tag without serializing it (the supervisor's responses and pa-cli's wait messages; moved from pa-daemon's `protocol::command_type_name`).
+Daemon wire mechanics shared by the serving side (pa-runtime's daemon and its legacy greeter) and clients (pa-tui/pa-cli) live here because pa-tui depends on pa-types alone:
+- `daemon::replay_info`: the attach's replay verdict for a resume cursor (TS `createDaemonReplayInfo`), read by the runtime daemon's attach snapshot (the old supervisor's worker shared it).
+- `daemon::DaemonCommand::type_name`: a command's wire `type` tag without serializing it (the old-wire responses and pa-cli's wait messages).
 - `daemon::framing`: the private-frame codec of the worker socket (direct-attach clients speak it too).
 - `daemon::message_delta`: the `message_update_delta` attach capability's codec — the
-  per-connection encoder the serving side (supervisor client writer, worker direct link) runs
+  per-connection encoder the serving side (the old supervisor's client writer and worker direct link) ran
   over every written `session_event`, and the client decoder that restores each delta
   `message_update` to its full message before anything else reads it.
 - `daemon::{DaemonOutbound::HistoryImport, HistoryImportPhase}`: the Rust-only `history_import` broadcast (a distribution build's background chat import started/finished) the daemon sends and the TUI reads; older clients ignore it like any unknown broadcast, so the schema id is unchanged.
@@ -28,8 +28,8 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   (`EventSourceKind`: bus, timer, watch, webhook), a timer's or watch's spec (`TimerSpec`,
   `WatchSpec`), and a webhook's as its definer gives it (`WebhookSpec`, whose `Debug` hides its
   secrets) and as the bus records it (`WebhookRecord`: its URL and which secrets authenticate
-  it, never one). pa-core's kernel functions build the requests and pa-daemon's supervisor (or a
-  headless run's pa-runtime) answers them.
+  it, never one). pa-core's kernel functions build the requests and pa-runtime (the runtime
+  daemon, or a headless run) answers them.
 - `event_log`: the vocabulary of the event-driven core (being built beside the daemon; it
   replaces `events`): `Event`/`NewEvent` with `Trust` (owner or untrusted, only ever lowered
   along a chain of causes) and a cause chain bounded by `MAX_HOPS`; `Topic` and `TopicFilter`
@@ -68,7 +68,7 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   unclassified) and the per-mode spend split (`BillingSplit`) the daemon's session summaries carry.
 - `agent_traffic`: the display-only agent traffic entry (`AgentTrafficEntry`: from, to,
   relationship, kind, outcome, chars, a sanitized preview of at most 240 chars) the receiving
-  worker reports, the supervisor rings per root tree, and the TUI's Traffic pane renders;
+  session reports, the runtime daemon rings per root tree, and the TUI's Traffic pane renders;
   never model context, never a transcript.
 - `slash_commands`: the builtin slash-command table every surface shares
   (the TUI dispatch + autocomplete, the session engine's command admission,
@@ -105,7 +105,7 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   durable session ids, heartbeat re-arm fields only), the timeout-budget
   table with `PRIME_AGENT_UPDATE_*_MS` overrides, and the artifact path
   layout under `<agent-dir>/update-restarts/`. Pure serde + pure data
-  helpers; the FSM drivers and watchdogs are owned by pa-daemon/pa-cli. The
+  helpers; the FSM drivers and watchdogs are owned by pa-core/pa-cli. The
   prepare/commit wire commands (`prepare_update_restart`/`
   commit_update_restart`) and the TS mutation classification
   (`is_daemon_mutating_command`, `is_update_drain_command` — the

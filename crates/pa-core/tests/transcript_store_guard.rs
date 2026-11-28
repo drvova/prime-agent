@@ -2,14 +2,14 @@
 //! through `pa_core::session::store` (the `TranscriptStore` boundary), so a
 //! second store implementation sees every transcript operation.
 //!
-//! The scan covers the production sources of pa-core, pa-daemon and pa-cli
+//! The scan covers the production sources of pa-core, pa-runtime and pa-cli
 //! (test files and inline test modules are skipped; tests build fixtures with
 //! raw files on purpose) and fails on two kinds of raw file I/O outside the
 //! store module:
 //!
 //! - any raw I/O in a module whose subject is transcripts (the session
-//!   modules and the daemon's session store), except the lines allowed below
-//!   and the session leases' own ownership records;
+//!   modules), except the lines allowed below and the session leases' own
+//!   ownership records;
 //! - raw I/O anywhere whose argument names a transcript (a `session_file`,
 //!   `session_path`, `transcript`, `.jsonl` path, ...).
 //!
@@ -65,22 +65,6 @@ const TRANSCRIPT_WORDS: &[&str] = &[
 const TRANSCRIPT_MODULES: &[&str] = &[
     "pa-core/src/session/",
     "pa-core/src/session_engine/session_search.rs",
-    "pa-daemon/src/session_store.rs",
-    "pa-daemon/src/session_store/",
-    "pa-daemon/src/session_scan.rs",
-    "pa-daemon/src/session_catalog.rs",
-    "pa-daemon/src/saved_session_commands.rs",
-    "pa-daemon/src/session_navigation.rs",
-    "pa-daemon/src/session_tree.rs",
-    "pa-daemon/src/branch_navigation.rs",
-    "pa-daemon/src/stop_cleanup.rs",
-    "pa-daemon/src/revived_turn.rs",
-    "pa-daemon/src/session_usage.rs",
-    "pa-daemon/src/hold_refusal.rs",
-    "pa-daemon/src/goal_state_persist.rs",
-    "pa-daemon/src/context_tree_children.rs",
-    "pa-daemon/src/usage_report/history.rs",
-    "pa-daemon/src/rlm_children/lifecycle.rs",
 ];
 
 /// The store itself.
@@ -133,12 +117,6 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "pa-core/src/session/branch_export.rs",
         "pa_types::platform::replace_file(",
         "the `/export` output file the user named, replaced whole",
-    ),
-    (
-        "pa-daemon/src/context_tree_children.rs",
-        "let Ok(entries) = std::fs::read_dir(dir) else {",
-        "`child_session_dirs` lists the `sub-*` child-session directories by their own mtimes \
-         (directories, not transcripts; their transcripts are listed through the store)",
     ),
 ];
 
@@ -219,7 +197,7 @@ fn transcripts_are_read_and_written_only_through_the_store() {
     let crates = crates_dir();
     let mut violations = Vec::new();
     let mut allowed_used = vec![false; ALLOWED.len()];
-    for krate in ["pa-core", "pa-daemon", "pa-cli"] {
+    for krate in ["pa-core", "pa-runtime", "pa-cli"] {
         let mut files = Vec::new();
         rust_files(&crates.join(krate).join("src"), &mut files);
         files.sort();

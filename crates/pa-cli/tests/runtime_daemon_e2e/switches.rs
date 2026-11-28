@@ -15,7 +15,6 @@ use pa_types::wire2::{ClientFrame, ServerFrame, Since};
 use serde_json::{json, Value};
 
 use super::old_reference::OldReference;
-use super::saved_list::old_list;
 use super::{ok, Bed, Client};
 
 /// Two signed-in providers: `battery` (a model that does not think and keeps
@@ -110,42 +109,13 @@ fn take_settings(agent_dir: &Path) -> Value {
     settings
 }
 
-/// The old daemon's responses to the switches on a session it creates on
-/// `battery/mock-1`, and the session's id.
-fn old_answers(bed: &Bed) -> (Vec<Value>, String) {
-    let _daemon = bed.old_daemon();
-    let socket = bed.old_socket();
-    let created = old_list(
-        &socket,
-        "create",
-        &json!({ "type": "create", "config": {
-            "cwd": bed.dir.path(), "sessionDir": bed.agent_dir().join("sessions"),
-            "provider": "battery", "model": "mock-1",
-        } }),
-    );
-    let created = created.last().unwrap();
-    assert_eq!(created["success"], true, "{created}");
-    let active = created["data"]["id"].as_str().unwrap().to_string();
-    let saved = created["data"]["sessionId"].as_str().unwrap().to_string();
-    let answers = switches()
-        .into_iter()
-        .enumerate()
-        .map(|(index, mut command)| {
-            command["activeSessionId"] = json!(active);
-            let frames = old_list(&socket, &format!("w{index}"), &command);
-            read_as_the_tui_does(frames.last().unwrap())
-        })
-        .collect();
-    (answers, saved)
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn the_setting_switches_answer_and_write_as_the_old_daemons_do() {
     let bed = Bed::new();
     models(&bed.agent_dir());
-    let mut reference = OldReference::open("setting_switches", &bed);
-    let (old, old_id): (Vec<Value>, String) = reference.take("answers", || old_answers(&bed));
-    let old_settings = reference.take("settings", || take_settings(&bed.agent_dir()));
+    let reference = OldReference::open("setting_switches", &bed);
+    let (old, _): (Vec<Value>, String) = reference.take("answers");
+    let old_settings: Value = reference.take("settings");
 
     let _daemon = bed.runtime_daemon(&json!({ "responses": ["hi"] }));
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
@@ -205,9 +175,7 @@ async fn the_setting_switches_answer_and_write_as_the_old_daemons_do() {
     // the one the old daemon's started on. From there the rows are the old
     // daemon's.
     let rows = switch_rows(&mut client, &id).await;
-    let old_rows: Vec<Value> = reference
-        .take_async("rows", Box::pin(switch_rows(&mut client, &old_id)))
-        .await;
+    let old_rows: Vec<Value> = reference.take("rows");
     let faux = json!({ "type": "model_change", "provider": "faux", "modelId": "faux-1" });
     assert_eq!(
         (&rows[..4], &rows[4..]),

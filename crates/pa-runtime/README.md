@@ -444,7 +444,7 @@ SQLite implementations over `pa-log`.
   holds it in memory (`OpenSessions::keep_api_key`, which a model switch's request auth reads
   too), the stored options keep only `apiKeyGiven`, and a later daemon's build of such a session
   fails rather than run on another key. `models` (else the settings' `enabledModels`) is the
-  session's scope, resolved at every open as the old worker resolves it (`daemon/model_scope.rs`):
+  session's scope, resolved at every open as the old worker resolved it (`daemon/model_scope.rs`):
   the list `session.cycle_model` steps through, and a new session that chose no model starts on
   the old worker's startup chain (`pa_core::models::startup_chain_model`: the scope's pick, else
   the saved default, the featured default, the first available model). A session that does not
@@ -543,7 +543,7 @@ SQLite implementations over `pa-log`.
   `pa_core::models::CatalogRefresh`, whose background refresh is coalesced across the daemon's
   sessions; a refresh that changes the snapshot publishes `{}` on the live-only `runtime/models`,
   the old `model_catalog_changed` broadcast), `usage` (`{section, forceRefresh?}`, no session: the
-  supervisor's `get_usage`, the quota cards with this process's request pacing or the spend
+  old supervisor's `get_usage`, the quota cards with this process's request pacing or the spend
   history of the daemon's sessions dir, `pa_core::usage_report`), `session.reload` (`reload`: the
   MCP manager reads its auth store and settings again, a failed auth reload failing the call, then
   the skills, prompt templates and context files) and `session.mark_anthropic_warning_shown`
@@ -681,7 +681,7 @@ SQLite implementations over `pa-log`.
   (`{job}`) list, add and cancel the jobs of the sessions it holds on pa-core's job store
   (`daemon/handlers/jobs.rs`, `Schedules::{jobs, add, cancel}`), the old daemon's `cron_*`. **Families**
   (`subagents/family.rs`): each spawn, settle (done), rename and delete is recorded in the
-  supervisor's RLM spawn ledger and the child's `rlm-subagent.json`
+  old supervisor's RLM spawn ledger and the child's `rlm-subagent.json`
   (`pa_core::session_engine::rlm_ledger`), the spawn's edge before the child is given its task
   (a spawn it cannot record is refused); a root session opened (created, revived, woken)
   reopens, off the open, the live children the ledger records under its transcript as settled
@@ -695,7 +695,7 @@ SQLite implementations over `pa-log`.
   webhook sources are kept (`Runtime::keep_kernel_sources`), so they run again after a restart. `settings`, `models`, `sources` and `subscriptions` answer that
   they are not yet in the runtime daemon. At start it
   closes standard input, raises the open-file limit, keeps the model catalog's caches warm as
-  the supervisor does and, once the startup refresh settles, sends the `daemon event`
+  the old supervisor did and, once the startup refresh settles, sends the `daemon event`
   `catalog_refresh` with `daemon_kind: runtime`, all off the accept path.
   **Reliability** (`session/faults.rs`, `daemon/held.rs`): the daemon's sessions are supervised.
   It installs `pa_core::session::crash::install_panic_hook` and each lifetime's scope carries a
@@ -712,7 +712,7 @@ SQLite implementations over `pa-log`.
   off once as of unknown outcome (`pa_core::session::revival::interrupted_call_results`), builds
   a fresh engine (which tells the model once that its kernel definitions are gone) and stores
   `agent/<id>/recovered`. Each fault is also mirrored onto the session's stream, unnumbered, as
-  the supervisor sends it: `session_crashed`, then for a run the crash cut off (its
+  the old supervisor sent it: `session_crashed`, then for a run the crash cut off (its
   `agent_start` went out, its `agent_end` never will) a `turn_end` with the crash's reason and an
   `agent_end`, then `session_recovered` or `session_failed`. After the sixth crash in a row it stores `agent/<id>/failed`, the work
   sent fails with the give-up's reason, and the daemon closes the session (its lease goes). The
@@ -738,7 +738,7 @@ SQLite implementations over `pa-log`.
   `closing` and ends), every open session's lane is held and its running turn aborted with
   `UPDATE_RESTART_CONTINUATION_PROMPT` queued as a steer for the next daemon (none for an
   ephemeral one), every subagent below them is held and cut off the same way without a
-  continuation (the old worker closes its children at a daemon-wide stop; the close would
+  continuation (the old worker closed its children at a daemon-wide stop; the close would
   otherwise wait for a child's turn to end on its own), the connections get 5 s to send what they hold, then the sessions close and the
   process exits 0. The held sessions stay in the database, so the next daemon revives a session
   with that queued continuation as one the daemon died between turns of (no crash recorded).
@@ -764,7 +764,7 @@ SQLite implementations over `pa-log`.
   opens it. A row mid-turn gets the continuation prompt, unless the revival opened its session
   for unfinished tasks (the runtime predecessor's stop queued it). A TS roster's replay runs on
   the session: the input pause is a lane hold, the update-complete notice an appended row, the
-  next-turn rows steered to its agent, the queued actions checked as the old worker checks them
+  next-turn rows steered to its agent, the queued actions checked as the old worker checked them
   (`validate_actions`) and published (`next_turn_boundary` a steer, else a follow-up; one
   carrying a custom message is refused), the continuation a steer. `daemon.update_restore_status`
   answers the old `update_restore_status` body; `session.create` and `session.attach` of a
@@ -781,7 +781,7 @@ SQLite implementations over `pa-log`.
   `type`, go out in order on the live-only `system/history_import` (started before the first
   file is copied, finished after the marker); `system.history_import` answers the running one's
   started frame (`null` while none runs) for a client that connects mid-import, as the old
-  supervisor sends it after the hello. The drain aborts an import still running; it resumes on
+  supervisor sent it after the hello. The drain aborts an import still running; it resumes on
   the next boot.
   **Scheduled jobs** (`daemon/schedules.rs`): a daemon session's kernel serves `schedule.*` and
   `rlm_heartbeat.*` on pa-core's job store (the session's `session-artifacts/<id>` partition,

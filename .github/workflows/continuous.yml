@@ -179,8 +179,8 @@ jobs:
           # baseline changes (same protocol as the image digest below).
           key: ${{ matrix.target }}-glibc235
       # Only the shipped binary links here: the job packages `prime-agent`
-      # alone, so pa-daemon's [[bin]] would be a second thin-LTO link with
-      # no consumer (~26% of the build step, measured).
+      # alone, so any other workspace [[bin]] would be a second thin-LTO link
+      # with no consumer (~26% of the build step, measured).
       - name: Build (release, locked)
         run: cargo build --release --locked --target ${{ matrix.target }} -j 4 -p pa-cli --bin prime-agent
       - name: Split the shipped binary + split-debug decoder (Option C posture)
@@ -300,8 +300,8 @@ jobs:
         with:
           key: ${{ matrix.target }}
       # Only the shipped binary links here: the job packages `prime-agent`
-      # alone, so pa-daemon's [[bin]] would be a second thin-LTO link with
-      # no consumer (~26% of the build step, measured).
+      # alone, so any other workspace [[bin]] would be a second thin-LTO link
+      # with no consumer (~26% of the build step, measured).
       - name: Build (release, locked)
         run: cargo build --release --locked --target ${{ matrix.target }} -j 4 -p pa-cli --bin prime-agent
       # The live catalog from prime-agent-catalog (public; no token needed)

@@ -95,13 +95,13 @@ class TheMappingTestCase(unittest.TestCase):
 
     def test_a_crate_only_pr_narrows_to_those_crates(self):
         rc, out, outputs = run_mapper([
-            "crates/pa-daemon/src/main.rs",
-            "crates/pa-daemon/src/roster.rs",
+            "crates/pa-runtime/src/lib.rs",
+            "crates/pa-runtime/src/daemon/mod.rs",
             "crates/pa-tui/src/view/runs.rs",
         ])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(outputs["crates"], "pa-cli,pa-daemon,pa-tui")
-        self.assertIn("crates (3: pa-cli, pa-daemon, pa-tui)", outputs["scope"])
+        self.assertEqual(outputs["crates"], "pa-cli,pa-runtime,pa-tui")
+        self.assertIn("crates (3: pa-cli, pa-runtime, pa-tui)", outputs["scope"])
 
     def test_any_non_crate_path_fails_safe_to_the_full_selection(self):
         rc, out, outputs = run_mapper([
@@ -120,11 +120,11 @@ class TheMappingTestCase(unittest.TestCase):
         # so the crate's own wave - units + reverse deps, NOT the union -
         # still runs.
         rc, out, outputs = run_mapper([
-            "crates/pa-daemon/src/main.rs",
+            "crates/pa-runtime/src/lib.rs",
             ".changes/daemon-fix.md",
         ])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(outputs["crates"], "pa-cli,pa-daemon")
+        self.assertEqual(outputs["crates"], "pa-cli,pa-runtime")
         self.assertIn("guaranteed-metadata path .changes/daemon-fix.md", out)
 
     def test_a_fragment_only_pr_keeps_the_full_selection(self):
@@ -210,13 +210,13 @@ class TheMappingTestCase(unittest.TestCase):
         rc, out, outputs = run_mapper(["crates/pa-telemetry/src/lib.rs"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(outputs["crates"],
-                         "pa-cli,pa-core,pa-daemon,pa-perf,pa-runtime,pa-telemetry,pa-tui")
+                         "pa-cli,pa-core,pa-perf,pa-runtime,pa-telemetry,pa-tui")
 
     def test_pa_sources_only_runs_pa_core_and_its_dependents(self):
         rc, out, outputs = run_mapper(["crates/pa-sources/src/lib.rs"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(outputs["crates"],
-                         "pa-cli,pa-core,pa-daemon,pa-perf,pa-runtime,pa-sources,pa-tui")
+                         "pa-cli,pa-core,pa-perf,pa-runtime,pa-sources,pa-tui")
 
     def test_an_unknown_crate_fails_safe(self):
         rc, out, outputs = run_mapper(["crates/pa-future/src/lib.rs"])
@@ -231,7 +231,7 @@ class TheMappingTestCase(unittest.TestCase):
         # the run fails safe to the full selection instead.
         rc, out, outputs = run_mapper([
             "\tcrates/pa-core/src/lib.rs",
-            "crates/pa-daemon/src/lib.rs",
+            "crates/pa-runtime/src/lib.rs",
         ])
         self.assertEqual(rc, 0, out)
         self.assertEqual(outputs["crates"], "")

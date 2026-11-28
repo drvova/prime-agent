@@ -12,8 +12,7 @@
 //! - `restart` while a session's turn runs in a kernel cell: the turn is cut
 //!   off, the daemon exits 0, and the next daemon revives the session and
 //!   continues the turn with the old daemon's continuation prompt, once (the
-//!   old daemon's expectations, replayed on the runtime daemon only: the old
-//!   daemon's own run of it is `supervisor_restart_e2e`).
+//!   old daemon's expectations, replayed on the runtime daemon only).
 //!
 //! Each daemon runs on a bed of its own.
 //!
@@ -21,7 +20,7 @@
 //! ([`super::old_reference`]).
 
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use nix::sys::signal::{kill, Signal};
@@ -33,12 +32,11 @@ use pa_types::wire2::{ClientFrame, ServerFrame, Since};
 use serde_json::{json, Value};
 
 use super::old_reference::OldReference;
-use super::side_questions::OldClient;
 use super::switches::read_as_the_tui_does;
 use super::turns::{cell, Attached};
 use super::{turn_rows, Bed, Client, Daemon, FRAME_WAIT};
 
-/// Both daemons run offline.
+/// The runtime daemon runs offline, as the old daemon did for its golden.
 const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
 
 /// How a daemon is stopped.
@@ -86,68 +84,6 @@ fn terminate(daemon: &Daemon) {
 /// Whether `transcript` can be leased now (no daemon holds it).
 fn lease_free(transcript: &Path, agent_dir: &Path) -> bool {
     pa_core::session::lease::acquire_runtime_session_lease(transcript, agent_dir).is_ok()
-}
-
-/// The old frames a client sees as the daemon stops: responses and closings.
-fn stop_frames(frames: &[Value]) -> Vec<Value> {
-    frames
-        .iter()
-        .filter(|frame| matches!(frame["type"].as_str(), Some("response" | "daemon_closing")))
-        .map(read_as_the_tui_does)
-        .collect()
-}
-
-/// The old daemon's scripted session in the bed's dir: its id and
-/// transcript.
-pub(super) fn old_session(bed: &Bed, responses: &Value) -> (String, PathBuf) {
-    let script = bed.dir.path().join("old-script.json");
-    std::fs::write(
-        &script,
-        json!({ "engine": "faux", "modelId": "faux-1", "modelName": "Faux Model",
-                "reasoning": false, "contextWindow": 128_000, "responses": responses })
-        .to_string(),
-    )
-    .unwrap();
-    let created = super::saved_list::old_list(
-        &bed.old_socket(),
-        "create",
-        &json!({ "type": "create", "config": {
-            "cwd": bed.dir.path(), "sessionDir": bed.agent_dir().join("sessions"),
-            "script": script,
-        } }),
-    );
-    let created = created.last().unwrap();
-    assert_eq!(created["success"], true, "{created}");
-    (
-        created["data"]["id"].as_str().unwrap().to_string(),
-        PathBuf::from(created["data"]["sessionFile"].as_str().unwrap()),
-    )
-}
-
-fn old_stop(bed: &Bed, stop: Stop) -> Stopped {
-    let mut daemon = bed.old_daemon_with(OFFLINE);
-    let (_, transcript) = old_session(bed, &json!(["unused"]));
-    let mut watcher = OldClient::connect(&bed.old_socket());
-    watcher.until(|seen| seen.iter().any(|frame| frame["type"] == "daemon_hello"));
-    let mut stopper = OldClient::connect(&bed.old_socket());
-    stopper.until(|seen| seen.iter().any(|frame| frame["type"] == "daemon_hello"));
-    match stop {
-        Stop::Shutdown => {
-            stopper.send("stop", &json!({ "type": "shutdown" }));
-        }
-        Stop::Signal => terminate(&daemon),
-    }
-    let closed = |seen: &[Value]| seen.iter().any(|frame| frame["type"] == "daemon_closing");
-    stopper.until(closed);
-    watcher.until(closed);
-    let exit = exit_code(&mut daemon);
-    Stopped {
-        stopper: stop_frames(stopper.seen()),
-        watcher: stop_frames(watcher.seen()),
-        exit,
-        socket_left: bed.old_socket().exists(),
-        lease_free: lease_free(&transcript, &bed.agent_dir()),
-    }
 }
 
 /// A compat client of the runtime daemon: it follows `system/closing` for
@@ -239,10 +175,9 @@ async fn runtime_stop(bed: &Bed, stop: Stop) -> Stopped {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_answers_tells_every_client_and_exits_as_on_the_old_daemon() {
     let mut seen = Vec::new();
-    let old_bed = Bed::new();
-    let mut reference = OldReference::open("daemon_stop", &old_bed);
+    let reference = OldReference::open("daemon_stop", &Bed::new());
     for stop in [Stop::Shutdown, Stop::Signal] {
-        let old: Stopped = reference.take(&format!("{stop:?}"), || old_stop(&Bed::new(), stop));
+        let old: Stopped = reference.take(&format!("{stop:?}"));
         let runtime = runtime_stop(&Bed::new(), stop).await;
         seen.push((stop, old, runtime));
     }

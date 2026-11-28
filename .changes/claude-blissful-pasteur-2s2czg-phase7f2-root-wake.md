@@ -1,1 +1,1 @@
-- The opt-in runtime daemon wakes an idle session for a delivered row (a subagent's settle, an agent message, a background command's notice) instead of leaving it for the next prompt, and `session.wait_idle` waits for that turn.
+- The runtime daemon wakes an idle session for a delivered row (a subagent's settle, an agent message, a background command's notice) instead of leaving it for the next prompt, and `session.wait_idle` waits for that turn.

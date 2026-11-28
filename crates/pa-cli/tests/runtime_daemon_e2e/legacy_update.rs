@@ -7,14 +7,13 @@
 //! The TS daemon is gone already (its checkpoint's process is dead), so the
 //! coordinator takes the recovery path: it boots the runtime daemon with the
 //! checkpoint as its roster, waits for its greeting, polls its restore
-//! status, and writes the TS status record. Both daemons replay the row the
-//! same way: the update-complete notice for the session the update was
+//! status, and writes the TS status record. The runtime daemon replays the
+//! row as the old daemon did: the update-complete notice for the session the update was
 //! started from, the queued follow-up, the continuation of the cut-off turn
 //! first, then the follow-up.
 //!
 //! The old daemon's side is frozen: its answers are read from a golden
-//! ([`super::old_reference`]); this release no longer starts the supervisor,
-//! so that golden cannot be blessed again.
+//! ([`super::old_reference`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,7 +23,6 @@ use pa_core::session::revival::UPDATE_RESTART_CONTINUATION_PROMPT;
 use serde_json::{json, Value};
 
 use super::old_reference::OldReference;
-use super::side_questions::OldClient;
 use super::turns::Attached;
 use super::update::{compat_request, message_texts};
 use super::{Bed, Client, FRAME_WAIT};
@@ -108,14 +106,14 @@ fn status_view(status: &Value) -> Value {
     })
 }
 
-/// What one daemon restored: the status record and the session's texts.
+/// What a daemon restored: the status record and the session's texts.
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Restored {
     status: Value,
     texts: Vec<String>,
 }
 
-async fn legacy_restore(bed: &Bed, runtime: bool) -> Restored {
+async fn legacy_restore(bed: &Bed) -> Restored {
     let (id, transcript) = saved_session(bed).await;
     let script = bed.dir.path().join("successor-script.json");
     std::fs::write(
@@ -169,8 +167,8 @@ async fn legacy_restore(bed: &Bed, runtime: bool) -> Restored {
         "the coordinator failed: {status}\n{}",
         std::fs::read_to_string(bed.dir.path().join("coordinator.log")).unwrap_or_default()
     );
-    let texts = restored_texts(bed, runtime, &id).await;
-    stop_successor(bed, runtime).await;
+    let texts = restored_texts(bed, &id).await;
+    stop_successor(bed).await;
     Restored {
         status: status_view(&status),
         texts,
@@ -178,15 +176,13 @@ async fn legacy_restore(bed: &Bed, runtime: bool) -> Restored {
 }
 
 /// The restored session's texts once its follow-up was answered.
-async fn restored_texts(bed: &Bed, runtime: bool, id: &str) -> Vec<String> {
+async fn restored_texts(bed: &Bed, id: &str) -> Vec<String> {
     let deadline = Instant::now() + FRAME_WAIT;
     loop {
         let messages = json!({ "type": "get_messages", "activeSessionId": id });
-        let response = if runtime {
+        let response = {
             let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
             compat_request(&mut client, "get_messages", messages).await
-        } else {
-            OldClient::connect(&bed.old_socket()).send("messages", &messages)
         };
         let texts = message_texts(&response["data"]);
         if texts.last().map(String::as_str) == Some(FOLLOWED) {
@@ -202,15 +198,10 @@ async fn restored_texts(bed: &Bed, runtime: bool, id: &str) -> Vec<String> {
 
 /// Stops the successor (and with it its restart owner) and waits until its
 /// socket is gone.
-async fn stop_successor(bed: &Bed, runtime: bool) {
-    let socket = if runtime {
-        let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
-        let _ = client.call("daemon.shutdown", json!({})).await;
-        bed.runtime_socket()
-    } else {
-        let _ = OldClient::connect(&bed.old_socket()).send("stop", &json!({ "type": "shutdown" }));
-        bed.old_socket()
-    };
+async fn stop_successor(bed: &Bed) {
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let _ = client.call("daemon.shutdown", json!({})).await;
+    let socket = bed.runtime_socket();
     let deadline = Instant::now() + FRAME_WAIT;
     while std::os::unix::net::UnixStream::connect(&socket).is_ok() {
         assert!(Instant::now() < deadline, "the successor did not stop");
@@ -222,12 +213,8 @@ async fn stop_successor(bed: &Bed, runtime: bool) {
 /// daemon: the same status record and the same restored turns.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_ts_checkpoint_restores_on_the_runtime_daemon_as_on_the_old_daemon() {
-    let old_bed = Bed::new();
-    let mut reference = OldReference::open("ts_checkpoint_restore", &old_bed);
-    let old: Restored = reference
-        .take_async("restore", Box::pin(legacy_restore(&old_bed, false)))
-        .await;
-    let runtime = legacy_restore(&Bed::new(), true).await;
+    let old: Restored = OldReference::open("ts_checkpoint_restore", &Bed::new()).take("restore");
+    let runtime = legacy_restore(&Bed::new()).await;
     assert_eq!(
         old,
         Restored {

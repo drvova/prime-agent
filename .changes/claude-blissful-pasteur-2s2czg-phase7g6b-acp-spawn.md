@@ -1,1 +1,1 @@
-- On the opt-in runtime daemon, an ACP `--no-session` session now leaves nothing in the agent's database (no event, task or state), as on the default daemon, and ACP clients see subagent status updates (`rlm_child_update`) as they do there.
+- On the runtime daemon, an ACP `--no-session` session now leaves nothing in the agent's database (no event, task or state), as on the old daemon, and ACP clients see subagent status updates (`rlm_child_update`) as they do there.

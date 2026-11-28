@@ -14,10 +14,8 @@
 //! daemon) compares by its form. The old daemon's frames are frozen
 //! ([`super::old_reference`]).
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use pa_types::daemon::{DaemonCommand, DaemonOutbound};
 use pa_types::wire2::{ClientFrame, ServerFrame};
@@ -173,49 +171,6 @@ pub(super) fn read_as_the_tui_does(frame: &Value) -> Value {
     frame
 }
 
-/// The old daemon's frames for `command` (request `id`), as it sent them:
-/// its streamed rows and progress, then its response.
-pub(super) fn old_list(socket: &Path, id: &str, command: &Value) -> Vec<Value> {
-    let stream = UnixStream::connect(socket).expect("connect to the old daemon");
-    stream
-        .set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
-    let mut writer = stream.try_clone().unwrap();
-    let mut reader = BufReader::new(stream);
-    let envelope = json!({
-        "type": "command",
-        "id": id,
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": command,
-    });
-    writer
-        .write_all(format!("{envelope}\n").as_bytes())
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_mins(1);
-    let mut frames = Vec::new();
-    let mut line = String::new();
-    loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => panic!("the old daemon closed the connection"),
-            Ok(_) => {
-                let Ok(frame) = serde_json::from_str::<Value>(line.trim()) else {
-                    continue;
-                };
-                if frame["id"] != id {
-                    continue;
-                }
-                let response = frame["type"] == "response";
-                frames.push(frame);
-                if response {
-                    return frames;
-                }
-            }
-            Err(_) => assert!(Instant::now() < deadline, "the old daemon never replied"),
-        }
-    }
-}
-
 /// The frames a client of the compat layer receives for `command` (request
 /// `id`) from the runtime daemon: the subscription, then the query once it
 /// is backfilled; the `streamed` frames the old daemon sent before its
@@ -281,19 +236,7 @@ async fn the_saved_session_list_streams_the_old_daemons_rows() {
     };
     let scoped = json!({ "type": "list_saved_sessions", "cwd": "/work/a", "scope": "current" });
     let no_cwd = json!({ "type": "list_saved_sessions" });
-    let mut reference = OldReference::open("saved_session_list", &bed);
-    let old: [Vec<Value>; 4] = reference.take("lists", || {
-        let _daemon = bed.old_daemon();
-        let socket = bed.old_socket();
-        let first = old_list(&socket, "l1", &page(None));
-        let second = old_list(&socket, "l2", &page(Some(&cursor(&first))));
-        [
-            first,
-            second,
-            old_list(&socket, "l3", &scoped),
-            old_list(&socket, "l4", &no_cwd),
-        ]
-    });
+    let old: [Vec<Value>; 4] = OldReference::open("saved_session_list", &bed).take("lists");
     let _daemon = bed.runtime_daemon(&json!([]));
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
     let streamed = |frames: &[Value]| frames.len() - 1;
@@ -392,15 +335,7 @@ async fn passive_subagents_join_the_saved_catalog_as_on_the_old_daemon() {
     passive_family(&bed.agent_dir());
     let all = json!({ "type": "list_saved_sessions", "cwd": "/work/a" });
     let scoped = json!({ "type": "list_saved_sessions", "cwd": "/work/a", "scope": "current" });
-    let mut reference = OldReference::open("passive_subagents", &bed);
-    let old: [Vec<Value>; 2] = reference.take("lists", || {
-        let _daemon = bed.old_daemon();
-        let socket = bed.old_socket();
-        [
-            old_list(&socket, "l1", &all),
-            old_list(&socket, "l2", &scoped),
-        ]
-    });
+    let old: [Vec<Value>; 2] = OldReference::open("passive_subagents", &bed).take("lists");
     let _daemon = bed.runtime_daemon(&json!([]));
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
     let streamed = |frames: &[Value]| frames.len() - 1;

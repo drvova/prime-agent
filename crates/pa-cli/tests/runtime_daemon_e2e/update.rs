@@ -28,14 +28,13 @@ use serde_json::{json, Value};
 
 use pa_core::session::revival::UPDATE_RESTART_CONTINUATION_PROMPT;
 
-use super::lifecycle::{await_started, closing_follower, cut_off_turn, exit_code, old_session};
+use super::lifecycle::{await_started, closing_follower, cut_off_turn, exit_code};
 use super::old_reference::OldReference;
-use super::side_questions::OldClient;
 use super::switches::read_as_the_tui_does;
 use super::turns::Attached;
 use super::{Bed, Client, FRAME_WAIT};
 
-/// Both daemons run offline.
+/// The runtime daemon runs offline, as the old daemon did for its golden.
 const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
 
 /// The update both coordinators drive, and the version they say they update to.
@@ -239,82 +238,6 @@ fn successor_env(roster: &Path) -> Vec<(&'static str, String)> {
     ]
 }
 
-async fn old_update(bed: &Bed) -> Updated {
-    let mut daemon = bed.old_daemon_with(OFFLINE);
-    let (id, transcript) = old_session(bed, &cut_off_turn());
-    let mut session = OldClient::connect(&bed.old_socket());
-    let started = session.send(
-        "go",
-        &json!({ "type": "prompt", "activeSessionId": id, "message": "go" }),
-    );
-    assert_eq!(started["success"], true, "{started}");
-    await_started(bed);
-    let mut watcher = OldClient::connect(&bed.old_socket());
-    watcher.until(|seen| seen.iter().any(|frame| frame["type"] == "daemon_hello"));
-    let mut coordinator = OldClient::connect(&bed.old_socket());
-    let responses = coordinator_commands(&id)
-        .into_iter()
-        .enumerate()
-        .map(|(index, (_, command))| {
-            let response = coordinator.send(&format!("c{index}"), &command);
-            normalized(read_as_the_tui_does(&response), &transcript)
-        })
-        .collect();
-    let closed = |seen: &[Value]| seen.iter().any(|frame| frame["type"] == "daemon_closing");
-    watcher.until(closed);
-    let watcher = watcher
-        .seen()
-        .iter()
-        .filter(|frame| frame["type"] == "daemon_closing")
-        .map(|frame| normalized(read_as_the_tui_does(frame), &transcript))
-        .collect();
-    let exit = exit_code(&mut daemon);
-    let roster = roster_view(bed, &bed.old_socket(), &transcript);
-    let env = successor_env(&roster_file(bed, &bed.old_socket()));
-    let env: Vec<(&str, &str)> = env
-        .iter()
-        .map(|(key, value)| (*key, value.as_str()))
-        .collect();
-    let _next = bed.old_daemon_with(&env);
-    let stem = transcript
-        .file_stem()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    let socket = bed.old_socket();
-    let (status, messages) = {
-        let status = until_answered(
-            || {
-                std::future::ready(
-                    OldClient::connect(&socket)
-                        .send("status", &json!({ "type": "update_restore_status" })),
-                )
-            },
-            restore_complete,
-        )
-        .await;
-        let messages = until_answered(
-            || {
-                std::future::ready(OldClient::connect(&socket).send(
-                    "messages",
-                    &json!({ "type": "get_messages", "activeSessionId": stem }),
-                ))
-            },
-            ends_with(UPDATE_RESTART_CONTINUATION_PROMPT),
-        )
-        .await;
-        (status, messages)
-    };
-    Updated {
-        responses,
-        watcher,
-        exit,
-        roster,
-        restore_status: read_as_the_tui_does(&status),
-        texts: message_texts(&messages["data"]),
-    }
-}
-
 /// `client`'s request for old `command` through the compat layer, and its
 /// response as the TUI reads it.
 pub(super) async fn compat_request(client: &mut Client, kind: &str, command: Value) -> Value {
@@ -433,11 +356,7 @@ async fn runtime_update(bed: &Bed) -> Updated {
 /// status and continued turn.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_prepare_commit_and_restore_answer_and_continue_as_on_the_old_daemon() {
-    let old_bed = Bed::new();
-    let mut reference = OldReference::open("update_restart", &old_bed);
-    let old: Updated = reference
-        .take_async("update", Box::pin(old_update(&old_bed)))
-        .await;
+    let old: Updated = OldReference::open("update_restart", &Bed::new()).take("update");
     let runtime = runtime_update(&Bed::new()).await;
     let response = |command: &str, data: Value| json!({ "type": "response", "command": command, "success": true, "data": data });
     let prepared = json!({ "updateId": UPDATE, "state": "prepared", "acceptedAt": "<time>",

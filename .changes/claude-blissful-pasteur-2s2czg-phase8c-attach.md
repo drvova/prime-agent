@@ -1,1 +1,1 @@
-- The opt-in runtime daemon now answers a TUI's attach, state read and transcript paging with the same session snapshot and pages the interactive TUI reads today, so a long session opens on its newest messages and scrolls back to its start.
+- The runtime daemon now answers a TUI's attach, state read and transcript paging with the same session snapshot and pages the interactive TUI reads today, so a long session opens on its newest messages and scrolls back to its start.

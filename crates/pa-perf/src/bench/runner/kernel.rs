@@ -3,12 +3,11 @@
 //! agent loop over a scripted provider) issues real `eval` tool calls, so
 //! the measured path is the product's own (worker spawn, session create,
 //! the in-process Scheme kernel) plus the tool round-trip: the provider is
-//! the only fake part. The supervisor is driven on the old wire (the script
-//! rides the create), the runtime daemon on wire2 (the script is the
-//! daemon's own, from its environment); the measured spans are the same.
+//! the only fake part. The runtime daemon is driven on wire2 (the script is
+//! the daemon's own, from its environment).
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read as _, Write};
+use std::io::{Read as _, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -21,116 +20,10 @@ use pa_types::wire2::{ClientFrame, Outcome, ServerFrame, Since, WIRE2_VERSION};
 use serde_json::{json, Value};
 
 use super::{millis, Measured, RunCtx};
-use crate::bench::{Daemon, Scenario};
-
-/// The daemon wire protocol the e2es and the shutdown path speak.
-const PROTOCOL: &str = "prime-agent.daemon";
-const PROTOCOL_VERSION: u64 = 7;
+use crate::bench::Scenario;
 
 /// The spawned child's sibling-unique name.
 const CHILD_NAME: &str = "perf-child";
-
-/// One wire client over the run's daemon socket: command envelopes out,
-/// responses and `session_event` lines in (events read while waiting for
-/// a response are kept in order for the next event wait).
-struct Client {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
-    pending: VecDeque<Value>,
-    deadline: Instant,
-    next_id: u64,
-}
-
-impl Client {
-    fn connect(socket: &Path, deadline: Instant) -> anyhow::Result<Self> {
-        let stream =
-            UnixStream::connect(socket).with_context(|| format!("connect {}", socket.display()))?;
-        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
-        let writer = stream.try_clone()?;
-        let mut client = Self {
-            reader: BufReader::new(stream),
-            writer,
-            pending: VecDeque::new(),
-            deadline,
-            next_id: 0,
-        };
-        let hello = client.read_line("the daemon hello")?;
-        anyhow::ensure!(
-            hello["type"] == "daemon_hello",
-            "unexpected first line: {hello}"
-        );
-        Ok(client)
-    }
-
-    fn read_line(&mut self, what: &str) -> anyhow::Result<Value> {
-        let mut line = String::new();
-        loop {
-            match self.reader.read_line(&mut line) {
-                Ok(0) => anyhow::bail!("the daemon closed the connection while awaiting {what}"),
-                Ok(_) if line.trim().is_empty() => line.clear(),
-                Ok(_) => {
-                    return serde_json::from_str(line.trim())
-                        .with_context(|| format!("parse daemon line {line:?}"));
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    anyhow::ensure!(Instant::now() < self.deadline, "timed out awaiting {what}");
-                }
-                Err(error) => return Err(error).with_context(|| format!("read {what}")),
-            }
-        }
-    }
-
-    /// Send one command and return its successful response's `data`.
-    fn command(&mut self, command: &Value) -> anyhow::Result<Value> {
-        self.next_id += 1;
-        let id = format!("perf-{}", self.next_id);
-        let mut line = serde_json::to_string(&json!({
-            "type": "command",
-            "id": id,
-            "protocol": { "name": PROTOCOL, "version": PROTOCOL_VERSION },
-            "command": command,
-        }))?;
-        line.push('\n');
-        self.writer.write_all(line.as_bytes())?;
-        self.writer.flush()?;
-        loop {
-            let line = self.read_line(&format!("the {} response", command["type"]))?;
-            if line["id"].as_str() == Some(id.as_str()) {
-                anyhow::ensure!(
-                    line["success"] == true,
-                    "{} failed: {line}",
-                    command["type"]
-                );
-                return Ok(line["data"].clone());
-            }
-            self.pending.push_back(line);
-        }
-    }
-
-    /// The next session event matching `wanted` (earlier events are
-    /// dropped), with the instant this client read it.
-    fn event(
-        &mut self,
-        what: &str,
-        wanted: impl Fn(&Value) -> bool,
-    ) -> anyhow::Result<(Value, Instant)> {
-        loop {
-            let line = match self.pending.pop_front() {
-                Some(line) => line,
-                None => self.read_line(what)?,
-            };
-            let at = Instant::now();
-            if line["type"] == "session_event" && wanted(&line["event"]) {
-                return Ok((line["event"].clone(), at));
-            }
-        }
-    }
-}
 
 /// An `eval` tool call record for a faux script.
 fn cell(code: &str) -> Value {
@@ -154,7 +47,6 @@ pub(super) struct Scripts {
     parent: Value,
     child: Option<Value>,
     stamps: Option<(PathBuf, PathBuf)>,
-    dir: PathBuf,
 }
 
 impl Scripts {
@@ -193,7 +85,6 @@ pub(super) fn scripts(socket: &Path, scenario: Scenario, run: usize) -> anyhow::
             parent: first_eval(),
             child: None,
             stamps: None,
-            dir,
         }),
         Scenario::SubagentFirstEval => {
             let spawned = dir.join(format!("spawned-{run}.txt"));
@@ -226,7 +117,6 @@ pub(super) fn scripts(socket: &Path, scenario: Scenario, run: usize) -> anyhow::
                 parent: script(&[cell(&parent_cell), json!({ "text": "done" })]),
                 child: Some(child),
                 stamps: Some((spawned, receipt)),
-                dir,
             })
         }
         Scenario::ColdStart
@@ -244,93 +134,53 @@ pub(super) fn scripts(socket: &Path, scenario: Scenario, run: usize) -> anyhow::
     }
 }
 
-/// A connection to the run's daemon on its own wire.
-enum Wire {
-    Supervisor(Client),
-    Runtime(Wire2Client),
-}
+/// A connection to the run's runtime daemon.
+struct Wire(Wire2Client);
 
 impl Wire {
-    fn connect(ctx: &RunCtx, socket: &Path, deadline: Instant) -> anyhow::Result<Self> {
-        Ok(match ctx.daemon {
-            Daemon::Supervisor => Wire::Supervisor(Client::connect(socket, deadline)?),
-            Daemon::Runtime => {
-                Wire::Runtime(Wire2Client::connect(&ctx.listen_socket(socket), deadline)?)
-            }
-        })
+    fn connect(socket: &Path, deadline: Instant) -> anyhow::Result<Self> {
+        Ok(Wire(Wire2Client::connect(
+            &super::listen_socket(socket),
+            deadline,
+        )?))
     }
 
     fn deadline(&self) -> Instant {
-        match self {
-            Wire::Supervisor(client) => client.deadline,
-            Wire::Runtime(client) => client.deadline,
-        }
+        self.0.deadline
     }
 
-    /// How many built engines wait for the next sessions (the `list`
+    /// How many built engines wait for the next sessions (the `sessions.list`
     /// answer's `spareKernels`).
     fn spare_kernels(&mut self) -> anyhow::Result<u64> {
-        let list = match self {
-            Wire::Supervisor(client) => client.command(&json!({ "type": "list" }))?,
-            Wire::Runtime(client) => client.request("sessions.list", |id| ClientFrame::Query {
-                id,
-                name: "sessions.list".to_string(),
-                args: json!({ "open": true }),
-            })?,
-        };
+        let list = self.0.request("sessions.list", |id| ClientFrame::Query {
+            id,
+            name: "sessions.list".to_string(),
+            args: json!({ "open": true }),
+        })?;
         Ok(list["spareKernels"].as_u64().unwrap_or(0))
     }
 
-    /// Creates a scripted session in the corpus project and sends the one
-    /// prompt that starts its scripted turn.
-    fn start_session(&mut self, ctx: &RunCtx, scripts: &Scripts) -> anyhow::Result<()> {
-        match self {
-            Wire::Supervisor(client) => {
-                let write = |name: &str, script: &Value| {
-                    let path = scripts.dir.join(name);
-                    std::fs::write(&path, script.to_string())
-                        .with_context(|| format!("write {}", path.display()))?;
-                    anyhow::Ok(path.display().to_string())
-                };
-                let mut config = json!({
-                    "cwd": ctx.project_dir.display().to_string(),
-                    "script": write("session.json", &scripts.parent)?,
-                });
-                if let Some(child) = &scripts.child {
-                    config["childScript"] = Value::from(write("child.json", child)?);
-                }
-                let created = client.command(&json!({ "type": "create", "config": config }))?;
-                let session = created["id"]
-                    .as_str()
-                    .with_context(|| format!("no session id in the create response: {created}"))?
-                    .to_string();
-                client.command(&json!({ "type": "attach", "activeSessionId": session }))?;
-                client.command(&json!({
-                    "type": "prompt",
-                    "activeSessionId": session,
-                    "message": "run the perf cell",
-                }))?;
-            }
-            Wire::Runtime(client) => {
-                let cwd = ctx.project_dir.display().to_string();
-                let created = client.request("session.create", |id| ClientFrame::Call {
-                    id,
-                    method: "session.create".to_string(),
-                    args: json!({ "cwd": cwd }),
-                })?;
-                let session = created["session"]
-                    .as_str()
-                    .with_context(|| format!("no session id in the create reply: {created}"))?
-                    .to_string();
-                client.subscribe(&format!("agent/{session}/stream"))?;
-                client.request("the prompt", |id| ClientFrame::Publish {
-                    id,
-                    topic: pa_types::event_log::Topic::new(format!("agent/{session}/input"))
-                        .expect("a session's input topic"),
-                    payload: json!({ "text": "run the perf cell" }),
-                })?;
-            }
-        }
+    /// Creates a session in the corpus project and sends the one prompt that
+    /// starts its scripted turn.
+    fn start_session(&mut self, ctx: &RunCtx) -> anyhow::Result<()> {
+        let client = &mut self.0;
+        let cwd = ctx.project_dir.display().to_string();
+        let created = client.request("session.create", |id| ClientFrame::Call {
+            id,
+            method: "session.create".to_string(),
+            args: json!({ "cwd": cwd }),
+        })?;
+        let session = created["session"]
+            .as_str()
+            .with_context(|| format!("no session id in the create reply: {created}"))?
+            .to_string();
+        client.subscribe(&format!("agent/{session}/stream"))?;
+        client.request("the prompt", |id| ClientFrame::Publish {
+            id,
+            topic: pa_types::event_log::Topic::new(format!("agent/{session}/input"))
+                .expect("a session's input topic"),
+            payload: json!({ "text": "run the perf cell" }),
+        })?;
         Ok(())
     }
 
@@ -338,10 +188,7 @@ impl Wire {
     /// event carries only the call id, so the start's id pairs them). A
     /// failed cell fails the run: a measured error path is not the metric.
     fn kernel_cell(&mut self, what: &str) -> anyhow::Result<Instant> {
-        let mut event = |what: &str, wanted: &dyn Fn(&Value) -> bool| match self {
-            Wire::Supervisor(client) => client.event(what, wanted),
-            Wire::Runtime(client) => client.event(what, wanted),
-        };
+        let mut event = |what: &str, wanted: &dyn Fn(&Value) -> bool| self.0.event(what, wanted);
         let (start, _) = event(&format!("{what} start"), &|event| {
             event["type"] == "tool_execution_start" && event["toolName"] == "eval"
         })?;
@@ -537,14 +384,14 @@ pub(super) fn measure(
     scenario: Scenario,
     scripts: &Scripts,
 ) -> anyhow::Result<Measured> {
-    let mut wire = Wire::connect(ctx, socket, Instant::now() + ctx.liveness)?;
+    let mut wire = Wire::connect(socket, Instant::now() + ctx.liveness)?;
     match scenario {
         Scenario::FirstEval => {
             // The create command -> the first `eval` result: what a new
             // session's first Scheme cell waits on (worker spawn, session
             // create, the scripted call, and the engine taken from the spare).
             let started = Instant::now();
-            wire.start_session(ctx, scripts)?;
+            wire.start_session(ctx)?;
             let ended = wire.kernel_cell("the first eval")?;
             Ok(Measured {
                 settled: vec![millis(ended - started)],
@@ -564,7 +411,7 @@ pub(super) fn measure(
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             let started = Instant::now();
-            wire.start_session(ctx, scripts)?;
+            wire.start_session(ctx)?;
             let ended = wire.kernel_cell("the first eval on a warm daemon")?;
             Ok(Measured {
                 settled: vec![millis(ended - started)],
@@ -602,7 +449,7 @@ fn subagent_first_eval(
         .stamps
         .as_ref()
         .context("subagent-first-eval's scripts name its stamps")?;
-    wire.start_session(ctx, scripts)?;
+    wire.start_session(ctx)?;
     wire.kernel_cell("the parent's spawn cell")?;
     let spawned_at = read_stamp(spawned)
         .with_context(|| format!("the spawn cell wrote no {}", spawned.display()))?;
@@ -627,30 +474,18 @@ fn subagent_first_eval(
 mod tests {
     use super::*;
 
-    /// A client over one end of a socket pair, the other end scripted (a
-    /// writer thread, so a small socket buffer never blocks the test).
-    fn scripted(lines: Vec<Value>) -> Client {
-        let (ours, mut theirs) = UnixStream::pair().expect("socket pair");
-        std::thread::spawn(move || {
-            for line in lines {
-                if writeln!(theirs, "{line}").is_err() {
-                    return;
-                }
-            }
-        });
-        ours.set_read_timeout(Some(Duration::from_millis(100)))
-            .expect("read timeout");
-        Client {
-            reader: BufReader::new(ours.try_clone().expect("clone")),
-            writer: ours,
-            pending: VecDeque::new(),
+    /// A connection whose daemon already sent `payloads` (its socket's
+    /// other end sends nothing more).
+    fn scripted(payloads: Vec<Value>) -> Wire {
+        let (ours, _theirs) = UnixStream::pair().expect("socket pair");
+        Wire(Wire2Client {
+            stream: ours,
+            decoder: PrivateFrameDecoder::new(DEFAULT_PRIVATE_FRAME_LIMITS),
+            frames: VecDeque::new(),
+            pending: payloads.into(),
             deadline: Instant::now() + Duration::from_secs(5),
             next_id: 0,
-        }
-    }
-
-    fn event(event: &Value) -> Value {
-        json!({ "type": "session_event", "event": event })
+        })
     }
 
     /// The wire's end event names no tool: the start's call id pairs it
@@ -658,25 +493,23 @@ mod tests {
     /// `details.status` error — fails the run.
     #[test]
     fn cells_pair_by_call_id_and_a_raised_cell_fails_the_run() {
-        let start = |id: &str, tool: &str| {
-            event(&json!({ "type": "tool_execution_start", "toolCallId": id, "toolName": tool }))
-        };
+        let start = |id: &str, tool: &str| json!({ "type": "tool_execution_start", "toolCallId": id, "toolName": tool });
         let end = |id: &str, status: &str| {
-            event(&json!({
+            json!({
                 "type": "tool_execution_end",
                 "toolCallId": id,
                 "isError": false,
                 "result": { "details": { "status": status } },
-            }))
+            })
         };
-        let mut client = Wire::Supervisor(scripted(vec![
+        let mut client = scripted(vec![
             start("bash-1", "bash"),
             start("cell-1", "eval"),
             end("bash-1", "error"),
             end("cell-1", "ok"),
             start("cell-2", "eval"),
             end("cell-2", "error"),
-        ]));
+        ]);
         client.kernel_cell("the first cell").expect("the ok cell");
         let raised = client
             .kernel_cell("the second cell")

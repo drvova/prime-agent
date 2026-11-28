@@ -12,22 +12,18 @@
 //! The old daemon's side is frozen: its answers are read from a golden
 //! ([`super::old_reference`]).
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use pa_types::daemon::DaemonCommand;
 use serde_json::{json, Value};
 
 use super::old_reference::OldReference;
-use super::saved_list::old_list;
 use super::switches::read_as_the_tui_does;
 use super::turns::Attached;
-use super::{Bed, FRAME_WAIT};
+use super::Bed;
 
-/// Both daemons run offline.
+/// The runtime daemon runs offline, as the old daemon did for its golden.
 const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
 
 /// How long the `/better` learning may take to reach the disk.
@@ -157,149 +153,6 @@ struct Recorded {
     learning: Value,
 }
 
-/// An old-wire connection that keeps every frame it reads.
-pub(super) struct OldClient {
-    writer: UnixStream,
-    frames: mpsc::Receiver<Value>,
-    seen: Vec<Value>,
-}
-
-impl OldClient {
-    pub(super) fn connect(socket: &Path) -> Self {
-        let writer = UnixStream::connect(socket).expect("connect to the old daemon");
-        let reader = BufReader::new(writer.try_clone().unwrap());
-        let (sender, frames) = mpsc::channel();
-        std::thread::spawn(move || {
-            for line in reader.lines() {
-                let Ok(line) = line else { break };
-                if let Ok(frame) = serde_json::from_str::<Value>(&line) {
-                    if sender.send(frame).is_err() {
-                        break;
-                    }
-                }
-            }
-        });
-        OldClient {
-            writer,
-            frames,
-            seen: Vec::new(),
-        }
-    }
-
-    /// Reads frames until `done` holds for what has arrived.
-    pub(super) fn until(&mut self, done: impl Fn(&[Value]) -> bool) {
-        while !done(&self.seen) {
-            let frame = self
-                .frames
-                .recv_timeout(FRAME_WAIT)
-                .expect("a frame from the old daemon");
-            self.seen.push(frame);
-        }
-    }
-
-    /// Every frame read so far, in arrival order.
-    pub(super) fn seen(&self) -> &[Value] {
-        &self.seen
-    }
-
-    /// Sends `command` as request `id`; its response.
-    pub(super) fn send(&mut self, id: &str, command: &Value) -> Value {
-        let envelope = json!({
-            "type": "command",
-            "id": id,
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "command": command,
-        });
-        self.writer
-            .write_all(format!("{envelope}\n").as_bytes())
-            .unwrap();
-        let answered = |frame: &Value| frame["type"] == "response" && frame["id"] == id;
-        self.until(|seen| seen.iter().any(answered));
-        self.seen
-            .iter()
-            .find(|frame| answered(frame))
-            .unwrap()
-            .clone()
-    }
-
-    /// The side-question events so far, for session `active`.
-    fn side_events(&self, active: &str) -> Vec<Value> {
-        self.seen
-            .iter()
-            .filter(|frame| frame["type"] == "side_question_event")
-            .map(|frame| {
-                assert_eq!(frame["activeSessionId"], active, "{frame}");
-                frame["event"].clone()
-            })
-            .collect()
-    }
-}
-
-/// The old daemon's run of [`steps`] after one turn.
-fn old_record(bed: &Bed) -> Recorded {
-    let script = bed.dir.path().join("old-script.json");
-    std::fs::write(
-        &script,
-        json!({ "engine": "faux", "modelId": "faux-1", "modelName": "Faux Model",
-                "reasoning": false, "contextWindow": 128_000, "responses": responses() })
-        .to_string(),
-    )
-    .unwrap();
-    let _daemon = bed.old_daemon_with(OFFLINE);
-    let socket = bed.old_socket();
-    let created = old_list(
-        &socket,
-        "create",
-        &json!({ "type": "create", "config": {
-            "cwd": bed.dir.path(), "sessionDir": bed.agent_dir().join("sessions"),
-            "script": script,
-        } }),
-    );
-    let created = created.last().unwrap();
-    assert_eq!(created["success"], true, "{created}");
-    let active = created["data"]["id"].as_str().unwrap().to_string();
-    let mut client = OldClient::connect(&socket);
-    let with_session = |mut command: Value| {
-        command["activeSessionId"] = json!(active);
-        command
-    };
-    let attached = client.send("attach", &with_session(json!({ "type": "attach" })));
-    assert_eq!(attached["success"], true, "{attached}");
-    let ran = client.send(
-        "turn",
-        &with_session(json!({ "type": "prompt_and_wait", "message": "hello" })),
-    );
-    assert_eq!(ran["success"], true, "{ran}");
-    let mut responses = Vec::new();
-    for (index, step) in steps().into_iter().enumerate() {
-        match step {
-            Step::Send(command) => {
-                let response = client.send(&format!("s{index}"), &with_session(command));
-                responses.push(read_as_the_tui_does(&response));
-            }
-            Step::Ended(id, count) => {
-                let active = active.clone();
-                client.until(|seen| {
-                    let events: Vec<Value> = seen
-                        .iter()
-                        .filter(|frame| {
-                            frame["type"] == "side_question_event"
-                                && frame["activeSessionId"] == active.as_str()
-                        })
-                        .map(|frame| frame["event"].clone())
-                        .collect();
-                    ended(&events, id) >= count
-                });
-            }
-        }
-    }
-    Recorded {
-        responses,
-        runs: runs(&client.side_events(&active)),
-        learning: learning(&bed.agent_dir()),
-    }
-}
-
 /// The side-question events session `session` has received so far, as the
 /// compat layer hands them to the TUI.
 fn runtime_side_events(session: &Attached) -> Vec<Value> {
@@ -360,8 +213,7 @@ async fn runtime_record(bed: &Bed) -> Recorded {
 #[tokio::test(flavor = "multi_thread")]
 async fn side_runs_answer_and_stream_as_the_old_daemons_do() {
     let old_bed = Bed::new();
-    let mut reference = OldReference::open("side_runs", &old_bed);
-    let old: Recorded = reference.take("record", || old_record(&old_bed));
+    let old: Recorded = OldReference::open("side_runs", &old_bed).take("record");
     let runtime = runtime_record(&Bed::new()).await;
 
     let answered =

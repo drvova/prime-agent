@@ -11,7 +11,6 @@ members = [
     "crates/pa-runtime",
     "crates/pa-sources",
     "crates/pa-core",
-    "crates/pa-daemon",
     "crates/pa-tui",
     "crates/pa-cli",
     "crates/pa-perf",
@@ -65,9 +64,9 @@ serde = { version = "1", features = ["derive"] }
 # model the TS daemon and session files byte-emit. Without it the Map is a
 # BTreeMap and every Value-built frame re-sorts its keys alphabetically,
 # diverging from the TS byte stream (e.g. compaction `details` order).
-# raw_value: pa-daemon needs it, so release builds already have it. Listing
-# it here gives every crate the same serde_json features, so
-# `cargo test -p pa-core` and `cargo test -p pa-daemon` share one build.
+# raw_value: pa-core's session catalog and factory library read raw JSON
+# values. Listing it here gives every crate the same serde_json features, so
+# `cargo test -p pa-core` and `cargo test -p pa-cli` share one build.
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }

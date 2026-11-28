@@ -5,8 +5,8 @@
 //! answer as the old daemon (the `pa-daemon` supervisor) answers the same
 //! commands on a session over the same agent dir; a reload reads a prompt
 //! template written after the session opened on both, and the warning's
-//! marker row is written once on both. The old daemon's answers, its
-//! transcript and its rows are frozen ([`super::old_reference`]).
+//! marker row is written once on both. The old daemon's answers and its
+//! rows are frozen ([`super::old_reference`]).
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,6 @@ use pa_types::wire2::{ClientFrame, Since};
 use serde_json::{json, Value};
 
 use super::old_reference::OldReference;
-use super::saved_list::old_list;
 use super::switches::{models, read_as_the_tui_does};
 use super::{ok, Bed, Client};
 
@@ -100,39 +99,6 @@ fn late_template(agent_dir: &Path) -> std::path::PathBuf {
     path
 }
 
-/// The old daemon's responses on a session it creates on `battery/mock-1`,
-/// the session's id and its transcript.
-fn old_answers(bed: &Bed) -> (Vec<Value>, String, PathBuf) {
-    let _daemon = bed.old_daemon_with(OFFLINE);
-    let socket = bed.old_socket();
-    let created = old_list(
-        &socket,
-        "create",
-        &json!({ "type": "create", "config": {
-            "cwd": bed.dir.path(), "sessionDir": bed.agent_dir().join("sessions"),
-            "provider": "battery", "model": "mock-1",
-        } }),
-    );
-    let created = created.last().unwrap();
-    assert_eq!(created["success"], true, "{created}");
-    let active = created["data"]["id"].as_str().unwrap().to_string();
-    let saved = created["data"]["sessionId"].as_str().unwrap().to_string();
-    let transcript = PathBuf::from(created["data"]["sessionFile"].as_str().unwrap());
-    let mut answers = Vec::new();
-    let send = |commands: Vec<Value>, answers: &mut Vec<Value>| {
-        for (index, mut command) in commands.into_iter().enumerate() {
-            command["activeSessionId"] = json!(active);
-            let frames = old_list(&socket, &format!("i{}-{index}", answers.len()), &command);
-            answers.push(read_as_the_tui_does(frames.last().unwrap()));
-        }
-    };
-    send(before_reload(), &mut answers);
-    let late = late_template(&bed.agent_dir());
-    send(after_reload(), &mut answers);
-    std::fs::remove_file(late).unwrap();
-    (answers, saved, transcript)
-}
-
 /// The runtime daemon's responses to `commands` on session `id`, through
 /// the compat layer.
 pub(super) async fn runtime_answers(
@@ -187,9 +153,8 @@ async fn the_session_info_reads_answer_as_the_old_daemons_do() {
     let bed = Bed::new();
     models(&bed.agent_dir());
     resources(&bed.agent_dir(), bed.dir.path());
-    let mut reference = OldReference::open("session_info", &bed);
-    let (old, old_id, old_transcript): (Vec<Value>, String, PathBuf) =
-        reference.take("answers", || old_answers(&bed));
+    let reference = OldReference::open("session_info", &bed);
+    let (old, _, _): (Vec<Value>, String, PathBuf) = reference.take("answers");
 
     let _daemon = bed.runtime_daemon_with(&json!({ "responses": ["hi"] }), OFFLINE);
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
@@ -213,10 +178,7 @@ async fn the_session_info_reads_answer_as_the_old_daemons_do() {
     );
     assert_eq!(answers, old);
     // The marker row is in the stored transcript, as it is in the old
-    // daemon's. Its transcript comes back only now: the spend history above
-    // counts the saved sessions, and each daemon's own (written at its create)
-    // is one of them.
-    reference.restore_transcript("transcript", &bed.agent_dir(), &old_transcript);
+    // daemon's.
     client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
     super::run_turn(&mut client, &id, "hello").await;
     let marker = json!({ "type": "custom",
@@ -225,9 +187,7 @@ async fn the_session_info_reads_answer_as_the_old_daemons_do() {
     assert_eq!(
         (
             marker_rows(&mut client, &id).await,
-            reference
-                .take_async("marker_rows", Box::pin(marker_rows(&mut client, &old_id)))
-                .await
+            reference.take::<Vec<Value>>("marker_rows"),
         ),
         (vec![marker.clone()], vec![marker])
     );
