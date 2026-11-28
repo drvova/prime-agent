@@ -2309,8 +2309,13 @@ struct Wire2Probe {
 
 impl Wire2Probe {
     fn connect(socket: &std::path::Path) -> Wire2Probe {
-        let stream =
-            pa_types::platform::transport::connect_blocking(socket).expect("runtime daemon socket");
+        Wire2Probe::try_connect(socket).expect("runtime daemon socket")
+    }
+
+    /// A connection that has said hello, or `None` when nothing listens on
+    /// `socket` (a sandbox whose daemon is already gone).
+    fn try_connect(socket: &std::path::Path) -> Option<Wire2Probe> {
+        let stream = pa_types::platform::transport::connect_blocking(socket).ok()?;
         let mut probe = Wire2Probe {
             stream,
             decoder: pa_types::daemon::framing::PrivateFrameDecoder::new(
@@ -2325,7 +2330,7 @@ impl Wire2Probe {
         }));
         let welcome = probe.frame();
         assert_eq!(welcome["type"], "welcome", "{welcome}");
-        probe
+        Some(probe)
     }
 
     fn send(&mut self, frame: &Value) {
