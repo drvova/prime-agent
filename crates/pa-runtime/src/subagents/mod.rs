@@ -97,6 +97,11 @@ pub(crate) trait SessionControl: Send + Sync {
 
     /// Closes `session`.
     fn close(&self, session: &str) -> pa_agent::BoxFut<'_, ()>;
+
+    /// Arms the scheduled jobs of the subagent `spec` opens as `id` while it
+    /// is passive (opened again with no engine yet), so a job of its that
+    /// comes due builds it; blocking (it reads the job store).
+    fn arm_passive(&self, id: &str, spec: &SessionSpec);
 }
 
 /// The family tree of the runtime's sessions.
@@ -305,7 +310,8 @@ impl Subagents {
         }
     }
 
-    /// The node of open session `id` once its engine is built.
+    /// The node of open session `id` once its engine is built (a passive
+    /// child's build started first).
     ///
     /// # Errors
     ///
@@ -314,6 +320,8 @@ impl Subagents {
         let node = self
             .node(id)
             .ok_or_else(|| anyhow::anyhow!("session {id} is not open"))?;
+        // A passive child is built on its first use.
+        self.open_passive(id);
         let mut built = node.built.subscribe();
         match built.wait_for(Option::is_some).await {
             Ok(outcome) => {
@@ -324,6 +332,31 @@ impl Subagents {
             Err(_) => anyhow::bail!("session {id} ended before its engine was built"),
         }
         Ok(node)
+    }
+
+    /// Opens subagent `id` in the runtime when its family opened it again
+    /// passive ([`Subagents::reopen_children`]): its session starts on its
+    /// own host thread, which builds its engine (a failed open is its build's
+    /// outcome). Returns at once; whether this call started the open. A
+    /// disposed child is not opened.
+    pub(crate) fn open_passive(&self, id: &str) -> bool {
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        // Under the delivery gate its disposal takes: a child is either
+        // disposed before this reads it, or opened before its disposal
+        // closes its session.
+        let _delivery_guard = lock(&node.delivery_gate);
+        if node.is_disposed() {
+            return false;
+        }
+        let Some(spec) = lock(&node.passive).take() else {
+            return false;
+        };
+        if let Err(error) = self.control().and_then(|control| control.open(spec)) {
+            node.built(Err(format!("{error:#}")));
+        }
+        true
     }
 
     /// The node of the session `spec` opens as `id`: the one a spawn made for
@@ -676,6 +709,10 @@ pub(crate) struct Node {
     /// The session's `agent_message.wait`s: the receiving side every
     /// message delivered to it reports to.
     waits: Arc<AgentMessageWaits>,
+    /// A child opened again from the ledger and not yet opened in the
+    /// runtime: the spec its session opens with on first use
+    /// ([`Subagents::open_passive`]). It has no engine until then.
+    passive: Mutex<Option<SessionSpec>>,
 }
 
 /// What a node learns from its session's built engine.
@@ -757,6 +794,7 @@ impl Node {
             deleted_children: Mutex::new(HashSet::new()),
             built: watch::Sender::new(None),
             waits: Arc::new(AgentMessageWaits::default()),
+            passive: Mutex::new(None),
         }
     }
 
@@ -1445,6 +1483,11 @@ async fn dispose_child(child: &Arc<Child>) {
             let _delivery_guard = lock(&node.delivery_gate);
             node.disposed.store(true, Ordering::SeqCst);
         }
+        // A passive child is never built now: whoever waits for its build
+        // hears so.
+        node.built(Err(
+            "the subagent was disposed before it was built".to_string()
+        ));
         node.activity.notify_waiters();
         let tree = node.tree.upgrade();
         let control = tree.as_ref().and_then(|tree| tree.control().ok());
