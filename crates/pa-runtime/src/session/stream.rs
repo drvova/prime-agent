@@ -83,6 +83,9 @@ struct StreamState {
     sequence: u64,
     /// The open run's coalescer, from its `agent_start` to its `agent_end`.
     run: Option<Arc<UpdateCoalescer>>,
+    /// Whether the open run settled a reply: a user row after one is a
+    /// steer the turn took, which the stream frames as a run of its own.
+    replied: bool,
     /// The session's latest context reading.
     context: Option<ContextUsage>,
     /// The lifetime's billing stamp, which settled assistant rows carry.
@@ -370,8 +373,14 @@ impl SessionStream {
     /// lifetime renders afresh, goes out with its run's `agent_end` only).
     /// A conversation row's `message_end` carries the session's context
     /// reading after it.
+    ///
+    /// A user row the running turn took after it settled a reply (a steer)
+    /// opens a run of its own, as the old worker delivered a steer at the
+    /// next boundary: the run so far ends (`agent_end`) and the steer's
+    /// starts (`agent_start`) before the row, so a client's run summary
+    /// covers each part apart.
     async fn settled(
-        &self,
+        self: &Arc<Self>,
         message: &AgentMessage,
         billing: Option<&SessionBilling>,
         agent: &Weak<Agent>,
@@ -408,6 +417,18 @@ impl SessionStream {
         };
         let mut end = json!({ "type": "message_end", "message": value });
         let mut state = lock(&self.state);
+        match message {
+            AgentMessage::Standard(Message::User(_)) if state.replied && state.run.is_some() => {
+                self.direct(&mut state, vec![json!({ "type": "agent_end" })], trust);
+                drop(state);
+                self.open_run();
+                state = lock(&self.state);
+                self.direct(&mut state, vec![json!({ "type": "agent_start" })], trust);
+            }
+            AgentMessage::Standard(Message::Assistant(_)) => state.replied = true,
+            AgentMessage::Standard(Message::User(_) | Message::ToolResult(_))
+            | AgentMessage::Custom(_) => {}
+        }
         if let Some(context) = context {
             if let Some(reading) = &context {
                 end["contextUsage"] = json!(reading);
@@ -441,6 +462,7 @@ impl SessionStream {
         {
             let mut state = lock(&self.state);
             run.set_context(state.context);
+            state.replied = false;
             if let Some(previous) = state.run.replace(Arc::clone(&run)) {
                 previous.close();
             }
