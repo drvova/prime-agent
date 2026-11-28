@@ -4114,7 +4114,10 @@ async fn tui_two_back_to_back_submits_reach_the_daemon_in_order() {
                     .filter_map(|block| block["text"].as_str())
                     .collect(),
             };
-            (message["role"].as_str().unwrap_or_default().to_string(), text)
+            (
+                message["role"].as_str().unwrap_or_default().to_string(),
+                text,
+            )
         })
         .collect();
     let position = |text: &str| {

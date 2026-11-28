@@ -57,7 +57,9 @@ pub(super) enum Control {
     },
     /// Sends `frame` once every event the connection has heard so far is
     /// delivered: a reply never overtakes the events published before it.
-    Reply { frame: ServerFrame },
+    Reply {
+        frame: ServerFrame,
+    },
 }
 
 /// Whether a reply's drain met the runtime's end.
@@ -170,7 +172,11 @@ impl<'a, E: EventStore> Feed<'a, E> {
     /// Delivers the events `listener` has heard already, then sends `frame`;
     /// the runtime's end among them is delivered and closes the connection
     /// after the reply, as the feed's own loop closes it.
-    async fn reply(&mut self, listener: &mut Listener, frame: ServerFrame) -> anyhow::Result<Drained> {
+    async fn reply(
+        &mut self,
+        listener: &mut Listener,
+        frame: ServerFrame,
+    ) -> anyhow::Result<Drained> {
         while let Some(heard) = listener.try_recv() {
             match heard {
                 Heard::Event(event) if event.event.topic.as_str() == SYSTEM_CLOSING => {

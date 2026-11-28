@@ -222,7 +222,10 @@ async fn a_steer_the_running_turn_takes_is_listed_until_its_row_settles() {
         .collect();
     assert_eq!(
         (
-            views.iter().map(|(view, _)| view.clone()).collect::<Vec<_>>(),
+            views
+                .iter()
+                .map(|(view, _)| view.clone())
+                .collect::<Vec<_>>(),
             views.last().map(|(_, after)| after.clone()),
         ),
         (
