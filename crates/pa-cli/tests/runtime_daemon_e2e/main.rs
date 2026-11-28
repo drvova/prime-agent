@@ -586,8 +586,8 @@ async fn the_old_and_the_runtime_daemon_never_hold_one_session() {
             .await,
     );
     assert!(
-        refusal.contains("already active"),
-        "the lease refuses the runtime daemon: {refusal}"
+        refusal.contains("currently open in another"),
+        "the lease refuses the runtime daemon with the hold refusal: {refusal}"
     );
 
     // The runtime daemon holds a session: the old daemon cannot open it.
