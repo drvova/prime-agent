@@ -24,7 +24,13 @@ impl Bed {
         self.old_daemon_with(&[])
     }
 
-    /// The old daemon with `env` over the bed's, listening.
+    /// The old daemon with `env` over the bed's, listening and past its boot reap.
+    ///
+    /// The old daemon greets at once but reaps its socket's predecessors on a task of its own:
+    /// any product process whose command line names `daemon.sock` and that no runtime-daemon
+    /// lock records yet is a wedged supervisor to it. A runtime daemon started on that socket
+    /// before the reap ended would be stopped (SIGTERM) before it took its lock, so this waits
+    /// for the reply to a first command, which the old daemon sends only once the reap is done.
     pub(crate) fn old_daemon_with(&self, env: &[(&str, &str)]) -> Daemon {
         let binary = Path::new(env!("CARGO_BIN_EXE_prime-agent"))
             .parent()
@@ -46,6 +52,11 @@ impl Bed {
             .envs(env.iter().copied());
         let mut child = command.spawn().expect("spawn the old daemon");
         support::await_listening(&self.old_socket(), &mut child);
+        let listed = old_wire::request(&self.old_socket(), "reaped", &json!({ "type": "list" }));
+        assert_eq!(
+            listed["success"], true,
+            "the old daemon's first list: {listed}"
+        );
         Daemon(child)
     }
 }
@@ -118,7 +129,7 @@ async fn the_old_and_the_runtime_daemon_never_hold_one_session() {
     );
 }
 
-/// The old daemon's line protocol, enough to create a session.
+/// The old daemon's line protocol, enough to list and create sessions.
 mod old_wire {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
@@ -137,12 +148,6 @@ mod old_wire {
         script: &Path,
         session_path: Option<&Path>,
     ) -> Result<PathBuf, String> {
-        let stream = UnixStream::connect(socket).expect("connect to the old daemon");
-        stream
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
-        let mut writer = stream.try_clone().unwrap();
-        let mut reader = BufReader::new(stream);
         let config = json!({
             "cwd": cwd,
             "sessionDir": session_dir,
@@ -152,9 +157,28 @@ mod old_wire {
         if let Some(path) = session_path {
             command["sessionPath"] = json!(path);
         }
+        let frame = request(socket, "create", &command);
+        if frame["success"] != true {
+            return Err(frame.to_string());
+        }
+        let file = frame["data"]["sessionFile"]
+            .as_str()
+            .or_else(|| frame["data"]["session"]["sessionFile"].as_str())
+            .unwrap_or_else(|| panic!("no session file in {frame}"));
+        Ok(PathBuf::from(file))
+    }
+
+    /// Sends `command` as request `id` on a connection of its own; the response frame.
+    pub(super) fn request(socket: &Path, id: &str, command: &Value) -> Value {
+        let stream = UnixStream::connect(socket).expect("connect to the old daemon");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
         let envelope = json!({
             "type": "command",
-            "id": "create",
+            "id": id,
             "protocol": { "name": "prime-agent.daemon", "version": 7 },
             "command": command,
         });
@@ -171,17 +195,9 @@ mod old_wire {
                     let Ok(frame) = serde_json::from_str::<Value>(line.trim()) else {
                         continue;
                     };
-                    if frame["id"] != "create" {
-                        continue;
+                    if frame["id"] == id {
+                        return frame;
                     }
-                    if frame["success"] != true {
-                        return Err(frame.to_string());
-                    }
-                    let file = frame["data"]["sessionFile"]
-                        .as_str()
-                        .or_else(|| frame["data"]["session"]["sessionFile"].as_str())
-                        .unwrap_or_else(|| panic!("no session file in {frame}"));
-                    return Ok(PathBuf::from(file));
                 }
                 Err(_) => assert!(Instant::now() < deadline, "the old daemon never replied"),
             }
