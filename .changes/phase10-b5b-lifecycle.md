@@ -1,0 +1,1 @@
+- Sessions created on the runtime daemon now start as top-level sessions (depth 0) even when the daemon was started from inside an agent's command, which sets `RLM_DEPTH`. Before, they took that depth and could reach the subagent depth limit early.

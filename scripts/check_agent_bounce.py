@@ -105,39 +105,6 @@ class Client:
         self.sock.close()
 
 
-class RawReader:
-    def __init__(self, reader, received):
-        self.reader, self.received = reader, received
-
-    def readline(self):
-        line = self.reader.readline()
-        self.received.append(line.hex())
-        return line
-
-    def close(self):
-        self.reader.close()
-
-
-class RawSocket:
-    def __init__(self, sock, sent):
-        self.sock, self.sent = sock, sent
-
-    def sendall(self, data):
-        self.sent.append(data.hex())
-        self.sock.sendall(data)
-
-    def close(self):
-        self.sock.close()
-
-
-class RecordingClient(Client):
-    """The old wire's client, keeping every line after the hello as its bytes."""
-    def __init__(self, path, process):
-        super().__init__(path, process)
-        self.received, self.sent = [], []
-        self.reader = RawReader(self.reader, self.received)
-        self.sock = RawSocket(self.sock, self.sent)
-
 def run_case(binary, root, long_name, observed):
     env = env_for(root)
     provider = Provider()

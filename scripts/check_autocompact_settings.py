@@ -11,16 +11,14 @@ import re
 from pathlib import Path
 import tempfile
 
-from lifecycle_lib import Supervisor, Terminal, actual_hello, digest, supervisor_env_for
+from lifecycle_lib import FixtureDaemon, Terminal, actual_hello, digest, env_for
 
 
 def observe(binary, root):
     root.mkdir()
-    # On the supervisor's wire: the TUI is driven against a fixture of the
-    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     hello = actual_hello(binary, root, env)
-    server = Supervisor(root / 'ui.sock', hello, 'settings', root)
+    server = FixtureDaemon(root / 'ui.sock', hello, 'settings', root)
     terminal = None
     result = {'binary_sha256': digest(binary), 'executed': False}
     try:
@@ -66,7 +64,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--receipt', type=Path, required=True)
     args = parser.parse_args()
-    receipt = {'scope': 'Real client binary against an isolated synthetic daemon; model compaction execution is covered by Rust tests.'}
+    receipt = {'scope': 'Real client binary against an isolated synthetic wire2 daemon; model compaction execution is covered by Rust tests.'}
     with tempfile.TemporaryDirectory(prefix='autocompact-check-') as directory:
         receipt['result'] = result = observe(Path(os.environ['PA_RUST_BINARY']).resolve(), Path(directory) / 'rust')
     receipt['passed'] = bool(result.get('executed') and not result['fixture_errors']

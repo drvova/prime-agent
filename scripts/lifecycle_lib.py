@@ -1,7 +1,8 @@
 """Shared real-binary lifecycle check infrastructure: owned daemons, PTY terminals,
-protocol fixture supervisors, terminal screen capture and owned-process cleanup."""
+wire2 protocol fixture daemons, terminal screen capture and owned-process cleanup."""
 import codecs
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -65,37 +66,30 @@ def env_for(root):
     return env
 
 
-def supervisor_env_for(root):
-    """`env_for(root)` with the old supervisor selected by name: for the checks
-    that still drive the old wire (`daemon.sock`), a fixture `Supervisor` or
-    `check_agent_bounce.Client`, each saying why at its call."""
-    return dict(env_for(root), PRIME_AGENT_RUNTIME_DAEMON="0")
-
-
 def actual_hello(binary, root, env):
-    path = root / "hello.sock"
-    with open(root / "hello-daemon.log", "wb") as log:
+    """The identity the actual runtime daemon answers `daemon.identity` with
+    (the old hello a TUI's wire2 link makes of it): a daemon of its own in
+    `root/hello`, stopped with `daemon.shutdown` once it answered."""
+    directory = root / "hello"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "daemon.sock"
+    client = None
+    with open(directory / "daemon.log", "wb") as log:
         process = subprocess.Popen([str(binary), "--mode", "daemon", "--daemon-socket", str(path)],
             cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            deadline = time.monotonic() + LIMIT
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    raise RuntimeError("hello-discovery daemon exited before greeting")
-                try:
-                    with socket.socket(socket.AF_UNIX) as sock:
-                        sock.settimeout(2)
-                        sock.connect(str(path))
-                        with sock.makefile("rb") as stream:
-                            hello = json.loads(stream.readline())
-                        if hello.get("type") != "daemon_hello" or not hello.get("schemaId"):
-                            raise RuntimeError(f"invalid actual hello: {hello}")
-                        return hello
-                except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
-                    # Poll actual socket readiness, bounded by the discovery deadline.
-                    threading.Event().wait(0.05)
-            raise TimeoutError("hello-discovery socket readiness")
+            client = Wire2Client(path, process)
+            hello = client.query("daemon.identity")
+            if not hello.get("schemaId"):
+                raise RuntimeError(f"invalid actual identity: {hello}")
+            client.invoke("daemon.shutdown", force=True)
+            process.wait(timeout=15)
+            if process.returncode != 0:
+                raise RuntimeError(f"hello-discovery daemon exited {process.returncode}")
+            return hello
         finally:
+            if client is not None:
+                client.close()
             stop(process)
 
 
@@ -618,18 +612,112 @@ def fixture_state(root, active):
             "scopedModels": [], "activeToolNames": []}
 
 
-class Supervisor:
+EVENT_IDS = itertools.count(1)
+
+
+def topic_matches(pattern, topic):
+    """Whether wire2 topic filter `pattern` (`+` one level, a final `#` the
+    rest) matches `topic` (`pa_types::event_log::TopicFilter`)."""
+    wanted, levels = pattern.split('/'), topic.split('/')
+    for index, level in enumerate(wanted):
+        if level == '#':
+            return True
+        if index >= len(levels) or (level != '+' and level != levels[index]):
+            return False
+    return len(wanted) == len(levels)
+
+
+def live_only(topic):
+    """Whether the runtime keeps no event of `topic` (`Topic::is_live_only`):
+    a session's stream and side runs, the feeds, the closing and the import."""
+    levels = topic.split('/')
+    return (levels[0] == 'agent' and len(levels) == 3 and levels[2] in ('stream', 'side_question')
+            or levels[0] == 'runtime' or levels[:2] in (['system', 'closing'], ['system', 'history_import']))
+
+
+# The old command each request of the TUI's wire2 link stands for (`pa-tui`
+# `wire2_compat.rs`, the inverse of `outgoing`): a fixture keeps answering in
+# the old commands' terms, which the runtime answers verbatim.
+FIXTURE_CALLS = {**{method: kind for kind, method in WIRE2_SESSION_CALLS.items()}, **{
+    'session.create': 'create', 'session.attach': 'attach', 'session.detach': 'detach',
+    'session.stop': 'kill', 'session.rename': 'rename', 'session.set_model': 'set_model',
+    'session.set_effort': 'set_thinking_level', 'session.abort': 'abort',
+    'session.abort_and_send_queued': 'abort_and_send_queued', 'session.cancel_child': 'cancel_rlm_child',
+    'session.start_side_question': 'start_side_question', 'daemon.shutdown': 'shutdown'}}
+FIXTURE_QUERIES = {**{name: kind for kind, name in WIRE2_SESSION_QUERIES.items()}, **{
+    'runtime.roster': 'roster_subscribe', 'runtime.traffic': 'agent_traffic_subscribe',
+    'schedules': 'heartbeats_list', 'models': 'get_available_models', 'usage': 'get_usage',
+    'agent_messages': 'agent_messages_status', 'persistent_shells': 'list_persistent_shells'}}
+FIXTURE_INPUT_PRIORITY = {None: 'prompt', 'steer': 'steer', 'follow_up': 'follow_up'}
+
+
+def fixture_command(frame):
+    """The old command (with its `type` and `activeSessionId`) a wire2 request
+    `frame` stands for, or `None` for one this fixture does not know."""
+    kind = frame['type']
+    if kind == 'publish':
+        levels = frame['topic'].split('/')
+        if len(levels) != 3 or levels[0] != 'agent' or levels[2] != 'input':
+            return None
+        payload = dict(frame['payload'])
+        command = {'type': FIXTURE_INPUT_PRIORITY[payload.pop('priority', None)],
+                   'activeSessionId': levels[1], 'message': payload.pop('text')}
+        if payload.get('images'):
+            command['images'] = payload.pop('images')
+        return command
+    args = dict(frame.get('args') or {})
+    session = args.pop('session', None)
+    name = frame.get('name') if kind == 'query' else frame.get('method')
+    if kind == 'query' and name == 'session.snapshot':
+        old = {'state': 'get_state', 'connection': 'get_connection_state'}.get(args.pop('shape', None))
+    elif kind == 'query' and name == 'transcript.page' and args.pop('shape', None) == 'messages':
+        old = 'get_messages'
+    elif kind == 'query' and name == 'sessions.list':
+        old = 'list_saved_sessions' if args.get('shape') == 'saved' else 'list'
+    else:
+        old = (FIXTURE_QUERIES if kind == 'query' else FIXTURE_CALLS).get(name)
+    if old is None:
+        return None
+    command = {'type': old}
+    if session is not None:
+        command['activeSessionId'] = session
+    command.update(args)
+    return command
+
+
+class FixtureDaemon:
+    """A protocol fixture of the runtime daemon for a real TUI: wire2 on
+    `daemon2.sock` beside `path` (the TUI's `--daemon-socket`), answering the
+    requests the TUI's wire2 link sends (`pa-tui` `daemon_client/wire2.rs`).
+
+    It answers in the old commands' terms, as the runtime does: each request
+    becomes the old command it stands for (`fixture_command`, kept in
+    `commands`), and each old frame a handler sends (`send`) becomes the wire2
+    frame the link maps back to it (`wire2_frames`): a response the request's
+    reply, `daemon_hello` the reply to `daemon.identity`, a `session_event`
+    an event on `agent/<id>/stream`, `session_closed` one on `agent/<id>/closed`,
+    `roster_update` one on `runtime/roster`, `daemon_closing` one on
+    `system/closing`, each sent to the connection's subscriptions it matches.
+    A subclass changes what it answers by overriding `extra_command` (a
+    command the base does not answer) or `send` (the old frame, before it is
+    translated)."""
+    WRITE = threading.Lock()
+
     def __init__(self, path, hello, scenario, root):
-        self.path, self.hello, self.scenario, self.root = path, hello, scenario, root
+        self.path, self.hello, self.scenario, self.root = Path(path), hello, scenario, root
+        self.socket_path = wire2_socket(path)
         self.listener = socket.socket(socket.AF_UNIX)
-        self.listener.bind(str(path)); self.listener.listen(); self.listener.settimeout(0.2)
+        self.listener.bind(str(self.socket_path)); self.listener.listen(); self.listener.settimeout(0.2)
         self.done = threading.Event()
         self.lock = threading.Lock()
         self.sockets, self.threads, self.errors = [], [], []
-        self.commands, self.prompts, self.prompt_envelopes = [], [], []
-        self.accepted_prompts, self.result_acks = [], []
-        self.journal, self.settled = {}, set()
+        self.connections = {}
+        self.commands, self.prompts = [], []
+        self.settled = set()
         self.messages = []
+        # The stored events (`agent/<id>/closed`): a subscription after a
+        # sequence number replays those after it.
+        self.stored, self.seq = [], 0
         self.attaches = 0
         self.closed = False
         self.post_close_attached = False
@@ -640,12 +728,51 @@ class Supervisor:
         """Subclass-owned protocol additions, handled before unknown-command errors."""
         return False
 
+    def wire2_frames(self, sock, data):
+        """The wire2 frames old frame `data` becomes on connection `sock`."""
+        kind = data.get('type')
+        if kind == 'daemon_hello':
+            return [{'type': 'reply', 'id': data.get('id'), 'status': 'ok', 'result': {
+                key: value for key, value in data.items() if key not in ('type', 'id')}}]
+        if kind == 'response':
+            if data.get('success', True):
+                return [{'type': 'reply', 'id': data.get('id'), 'status': 'ok',
+                         'result': data.get('data')}]
+            return [{'type': 'reply', 'id': data.get('id'), 'status': 'error',
+                     'message': data.get('error') or 'refused'}]
+        if kind == 'session_event':
+            topic, payload = 'agent/%s/stream' % data['activeSessionId'], data['event']
+        elif kind == 'session_closed':
+            topic, payload = 'agent/%s/closed' % data['activeSessionId'], {'reason': data['reason']}
+        elif kind == 'roster_update':
+            topic, payload = 'runtime/roster', {key: data[key] for key in ('changed', 'removed', 'resync')}
+        elif kind == 'daemon_closing':
+            topic, payload = 'system/closing', {key: value for key, value in data.items() if key != 'type'}
+        else:
+            raise RuntimeError('no wire2 form of fixture frame: %s' % kind)
+        with self.lock:
+            stored = not live_only(topic)
+            if stored:
+                self.seq += 1
+            event = {'id': 'fixture-%d' % next(EVENT_IDS), 'seq': self.seq if stored else 0,
+                     'ts': int(time.time() * 1000), 'topic': topic, 'source': 'runtime',
+                     'payload': payload, 'trust': 'owner'}
+            if stored:
+                self.stored.append(event)
+            subscriptions = dict(getattr(self, 'connections', {}).get(sock, {}))
+        return [{'type': 'event', 'subId': sub_id, 'event': event}
+                for sub_id, pattern in subscriptions.items() if topic_matches(pattern, topic)]
+
+    def write(self, sock, frame):
+        with self.WRITE:
+            sock.sendall(wire2_frame(frame))
+
     def send(self, sock, data):
-        sock.sendall((json.dumps(data) + "\n").encode())
+        for frame in self.wire2_frames(sock, data):
+            self.write(sock, frame)
 
     def settle(self, sock, active, key, index, emit=True):
-        # Each admitted synthetic turn finishes once; cached result replay
-        # does not execute another turn. No real provider is called.
+        # Each admitted synthetic turn finishes once. No real provider is called.
         marker = f"Fixture settled {index}"
         message = {"role": "assistant", "stopReason": "stop",
                    "api": "openai-completions", "provider": "parity-local", "model": "parity-1",
@@ -674,153 +801,154 @@ class Supervisor:
             except socket.timeout: continue
             except OSError: return
             sock.settimeout(0.2)
-            self.sockets.append(sock)
+            with self.lock:
+                self.sockets.append(sock)
+                self.connections[sock] = {}
             thread = threading.Thread(target=self.serve, args=(sock,), daemon=True)
             self.threads.append(thread); thread.start()
 
     def serve(self, sock):
-        # The protocol requires this for prompt dispatch. Advertise only
-        # the admission path implemented here; leave direct-peer routing disabled.
-        hello = dict(self.hello, serverCapabilities=["session_input_admission"], clientId="draft-fixture")
         buffer = b""
         try:
-            self.send(sock, hello)
             while not self.done.is_set():
                 try: data = sock.recv(65536)
                 except socket.timeout: continue
                 if not data: return
                 buffer += data
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    if not line.strip(): continue
-                    envelope = json.loads(line)
-                    command = envelope.get("command", envelope)
-                    name = command.get("type")
-                    request_id = envelope.get("id")
-                    client_id = envelope.get("clientId")
-                    key = (client_id, request_id)
-                    with self.lock:
-                        self.commands.append(command)
-                    active = "s1"
-                    response = {"type": "response", "id": request_id, "command": name,
-                                "success": True, "data": {}}
-                    if name == "ack_result":
-                        # The supervisor acknowledges its journal and returns nothing;
-                        # this one-way command must not receive a synthetic response.
-                        with self.lock:
-                            ack_key = (client_id, command.get("commandId"))
-                            self.result_acks.append({"clientId": client_id, "commandId": command.get("commandId")})
-                            self.journal.pop(ack_key, None)
-                        continue
-                    if name == "create":
-                        response["data"] = {"activeSessionId": active, "id": active,
-                            "sessionId": "fixture-durable", "sessionFile": str(self.root / "agent/sessions/fixture.jsonl")}
-                    elif name == "attach":
-                        state = fixture_state(self.root, active)
-                        with self.lock:
-                            messages = list(self.messages)
-                        state["messageCount"] = len(messages)
-                        response["data"] = {"protocol": hello["protocol"], "activeSessionId": active,
-                            "snapshot": {"activeSessionId": active, "summary": {"id": active, "cwd": str(self.root)},
-                                         "state": state, "messages": messages, "lastEventSequence": 0, "lastEventCursor": None},
-                            "client": {"id": "draft-fixture", "capabilities": []},
-                            "lastEventSequence": 0, "lastEventCursor": None}
-                        with self.lock:
-                            self.attaches += 1
-                            if self.closed: self.post_close_attached = True
-                    elif name == "prompt":
-                        # daemon-mode's accepted prompt success has no data payload.
-                        response.pop("data", None)
-                        if not client_id or not request_id:
-                            raise RuntimeError("prompt envelope lacks clientId/id for recovery identity")
-                        with self.lock:
-                            self.prompt_envelopes.append({"id": request_id, "clientId": client_id, "command": command})
-                            cached = self.journal.get(key)
-                        if cached is not None:
-                            # Supervisor semantics: (clientId, commandId) completion
-                            # returns the cached result without dispatching the prompt again.
-                            cached_response, index = cached
-                            self.send(sock, cached_response)
-                            if cached_response["success"]:
-                                self.settle(sock, active, key, index)
-                            continue
-                        with self.lock:
-                            self.prompts.append(command)
-                            index = len(self.prompts)
-                            self.journal[key] = (dict(response), index)
-                            if response["success"]:
-                                self.accepted_prompts.append({"id": request_id, "clientId": client_id,
-                                                              "command": command})
-                    elif name == "list": response["data"] = {"sessions": []}
-                    elif name == "heartbeats_list": response["data"] = {"heartbeats": []}
-                    elif name == "roster_subscribe": response["data"] = {"changed": [], "removed": [], "resync": True}
-                    elif name == "get_available_models": response["data"] = {"models": []}
-                    elif name == "get_resource_snapshot":
-                        # AgentConnectionResourceSnapshot wire shape.
-                        response["data"] = {"contextFiles": [], "skills": [], "prompts": [],
-                                            "extensions": [], "themes": [], "diagnostics": {
-                                            "skills": [], "prompts": [], "extensions": [], "themes": []}}
-                    elif name == "get_session_stats":
-                        # AgentSession.getSessionStats's empty-session return shape.
-                        response["data"] = {"sessionId": "fixture-durable", "userMessages": 0,
-                                            "assistantMessages": 0, "toolCalls": 0, "toolResults": 0,
-                                            "totalMessages": 0, "cost": 0, "tokens": {
-                                            "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}
-                        with self.lock:
-                            response["data"].update(userMessages=len(self.messages) // 2,
-                                                    assistantMessages=len(self.messages) // 2,
-                                                    totalMessages=len(self.messages))
-                    elif name == "get_context_tree":
-                        # AgentSession.getContextTree / ContextTreeNode and
-                        # usage.emptyUsage: an empty session is a single active root.
-                        usage = {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
-                                 "totalTokens": 0, "cost": {"input": 0, "output": 0,
-                                 "cacheRead": 0, "cacheWrite": 0, "total": 0}}
-                        response["data"] = {"id": "root", "label": "Draft fixture", "status": "active",
-                                            "ownUsage": usage, "totalUsage": usage, "children": []}
-                    elif name == "get_model_catalog": response["data"] = {"models": [], "configuredProviders": []}
-                    elif name == "get_commands": response["data"] = {"commands": []}
-                    elif name == "list_kernel_bash": response["data"] = {"commands": []}
-                    elif name == "factory_activity": response["data"] = {"activity": [], "jobs": []}
-                    elif name in ("get_state", "get_connection_state"):
-                        response["data"] = fixture_state(self.root, active)
-                        with self.lock:
-                            response["data"]["messageCount"] = len(self.messages)
-                    elif name == "get_messages":
-                        # pa-daemon worker::commands::handle_get_messages returns
-                        # the actual transcript.
-                        # Fixture turns only append; no branches/pagination are used.
-                        with self.lock:
-                            response["data"] = {"messages": list(self.messages)}
-                    elif name == "get_session_context":
-                        # pa-daemon state_getters::handle_get_session_context's
-                        # context envelope. This fixture has no compaction or
-                        # model/thinking/tier change rows: build_session_context
-                        # preserves its turns and uses off/None/None defaults.
-                        with self.lock:
-                            response["data"] = {"context": {
-                                "messages": list(self.messages), "thinkingLevel": "off",
-                                "serviceTier": None, "model": None}}
-                    elif name == "get_mcp_connections": response["data"] = {"connections": []}
-                    elif name == "detach": response["data"] = {}
-                    elif name == "set_auto_compaction":
-                        if not isinstance(command.get("enabled"), bool):
-                            raise RuntimeError("set_auto_compaction requires a boolean")
-                        response.pop("data", None)
-                    elif self.extra_command(command, response):
-                        pass
-                    else:
-                        self.errors.append(f"unexpected command: {name}")
-                        response.update(success=False, error=f"Unsupported fixture command: {name}")
-                    self.send(sock, response)
-                    if name == "prompt" and response["success"]:
-                        self.settle(sock, active, key, index)
+                while len(buffer) >= 8:
+                    header, payload = struct.unpack('>II', buffer[:8])
+                    if len(buffer) < 8 + header + payload:
+                        break
+                    frame = json.loads(buffer[8:8 + header])
+                    buffer = buffer[8 + header + payload:]
+                    self.receive(sock, frame)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as error:
             if not self.done.is_set(): self.errors.append(f"{type(error).__name__}: {error}")
         finally:
             sock.close()
+
+    def receive(self, sock, frame):
+        kind = frame.get('type')
+        if kind == 'hello':
+            self.write(sock, {'type': 'welcome', 'version': WIRE2_VERSION,
+                              'runtimeVersion': str(self.hello.get('appVersion', '')), 'lastSeq': self.seq})
+            return
+        if kind == 'subscribe':
+            since = frame.get('since') or {'from': 'now'}
+            with self.lock:
+                self.connections[sock][frame['subId']] = frame['filter']
+                replay = [event for event in self.stored if since.get('from') == 'after'
+                          and event['seq'] > since['seq'] and topic_matches(frame['filter'], event['topic'])]
+                through = self.seq
+            for event in replay:
+                self.write(sock, {'type': 'event', 'subId': frame['subId'], 'event': event})
+            self.write(sock, {'type': 'backfilled', 'subId': frame['subId'], 'throughSeq': through})
+            return
+        if kind == 'unsubscribe':
+            with self.lock:
+                self.connections[sock].pop(frame['subId'], None)
+            return
+        request_id = frame.get('id')
+        if kind == 'query' and frame.get('name') == 'daemon.identity':
+            # The old hello the TUI's link makes of it: only what this fixture serves.
+            self.send(sock, dict(self.hello, type='daemon_hello', id=request_id, serverCapabilities=[]))
+            return
+        if kind == 'query' and frame.get('name') == 'system.history_import':
+            self.write(sock, {'type': 'reply', 'id': request_id, 'status': 'ok', 'result': None})
+            return
+        command = fixture_command(frame)
+        if command is None:
+            label = frame.get('name') or frame.get('method') or frame.get('topic')
+            self.errors.append(f"unexpected request: {kind} {label}")
+            self.write(sock, {'type': 'reply', 'id': request_id, 'status': 'error',
+                              'message': f"Unsupported fixture request: {label}"})
+            return
+        self.handle(sock, request_id, command)
+
+    def handle(self, sock, request_id, command):
+        """Answers old `command` (request `request_id`) on `sock`."""
+        name = command.get("type")
+        with self.lock:
+            self.commands.append(command)
+        active = "s1"
+        response = {"type": "response", "id": request_id, "command": name,
+                    "success": True, "data": {}}
+        index = None
+        if name == "create":
+            # `session.create`'s `{session, path, cwd}`.
+            response["data"] = {"session": active, "path": str(self.root / "agent/sessions/fixture.jsonl"),
+                                "cwd": str(self.root)}
+        elif name == "attach":
+            state = fixture_state(self.root, active)
+            with self.lock:
+                messages = list(self.messages)
+            state["messageCount"] = len(messages)
+            response["data"] = {"protocol": {"name": "prime-agent.daemon", "version": 7},
+                "activeSessionId": active,
+                "snapshot": {"activeSessionId": active, "summary": {"id": active, "cwd": str(self.root)},
+                             "state": state, "messages": messages, "lastEventSequence": 0, "lastEventCursor": None},
+                "client": {"id": command.get("clientId") or "draft-fixture", "capabilities": []},
+                "lastEventSequence": 0, "lastEventCursor": None}
+            with self.lock:
+                self.attaches += 1
+                if self.closed: self.post_close_attached = True
+        elif name in ("prompt", "steer", "follow_up"):
+            with self.lock:
+                self.prompts.append(command)
+                index = len(self.prompts)
+            # The input's publish: its event and the task the lane queued.
+            response["data"] = {"seq": 0, "task": f"fixture-task-{index}", "admission": "queued"}
+        elif name == "list": response["data"] = {"sessions": []}
+        elif name == "heartbeats_list": response["data"] = {"jobs": []}
+        elif name == "roster_subscribe": response["data"] = {"roster": []}
+        elif name == "get_available_models": response["data"] = {"models": []}
+        elif name == "get_session_stats":
+            # AgentSession.getSessionStats's empty-session return shape.
+            response["data"] = {"sessionId": "fixture-durable", "userMessages": 0,
+                                "assistantMessages": 0, "toolCalls": 0, "toolResults": 0,
+                                "totalMessages": 0, "cost": 0, "tokens": {
+                                "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}
+            with self.lock:
+                response["data"].update(userMessages=len(self.messages) // 2,
+                                        assistantMessages=len(self.messages) // 2,
+                                        totalMessages=len(self.messages))
+        elif name == "get_context_tree":
+            # AgentSession.getContextTree / ContextTreeNode and
+            # usage.emptyUsage: an empty session is a single active root.
+            usage = {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+                     "totalTokens": 0, "cost": {"input": 0, "output": 0,
+                     "cacheRead": 0, "cacheWrite": 0, "total": 0}}
+            response["data"] = {"id": "root", "label": "Draft fixture", "status": "active",
+                                "ownUsage": usage, "totalUsage": usage, "children": []}
+        elif name == "get_model_catalog": response["data"] = {"models": [], "configuredProviders": []}
+        elif name == "get_commands": response["data"] = {"commands": []}
+        elif name == "list_kernel_bash": response["data"] = {"activities": []}
+        elif name == "factory_activity": response["data"] = {"activity": [], "jobs": []}
+        elif name in ("get_state", "get_connection_state"):
+            response["data"] = fixture_state(self.root, active)
+            with self.lock:
+                response["data"]["messageCount"] = len(self.messages)
+        elif name == "get_messages":
+            # The transcript's display rows (`transcript.page {shape: "messages"}`).
+            # Fixture turns only append; no branches/pagination are used.
+            with self.lock:
+                response["data"] = {"messages": list(self.messages)}
+        elif name == "get_mcp_connections": response["data"] = {"connections": []}
+        elif name == "detach": response["data"] = None
+        elif name == "set_auto_compaction":
+            if not isinstance(command.get("enabled"), bool):
+                raise RuntimeError("set_auto_compaction requires a boolean")
+            response["data"] = None
+        elif self.extra_command(command, response):
+            pass
+        else:
+            self.errors.append(f"unexpected command: {name}")
+            response.update(success=False, error=f"Unsupported fixture command: {name}")
+        self.send(sock, response)
+        if index is not None and response["success"]:
+            self.settle(sock, active, (id(sock), request_id), index)
 
     def close(self):
         self.done.set(); self.listener.close()
@@ -830,7 +958,7 @@ class Supervisor:
         self.thread.join(timeout=2)
         for thread in self.threads: thread.join(timeout=2)
         if self.thread.is_alive() or any(thread.is_alive() for thread in self.threads):
-            raise RuntimeError("owned supervisor threads did not terminate")
+            raise RuntimeError("owned fixture daemon threads did not terminate")
 
 
 class Terminal:
@@ -856,7 +984,7 @@ class Terminal:
         deadline = time.monotonic() + LIMIT
         while time.monotonic() < deadline:
             self.pump()
-            if server.errors: raise RuntimeError(f"supervisor fixture error: {server.errors}")
+            if server.errors: raise RuntimeError(f"fixture daemon error: {server.errors}")
             if self.process.poll() is not None: raise RuntimeError(f"UI exited during {label}: {self.process.returncode}")
             if predicate(): return
         raise TimeoutError(label)
@@ -877,12 +1005,6 @@ def process_identity(pid):
     return 'proc:' + fields[19], fields[0]
 
 
-# A session is hosted inside the daemon process: its descriptor's `pid` is an id
-# from this range (never a process id) and its `processStartId` names the hosting
-# daemon and one lifetime, `hosted:<daemon pid>:<lifetime>`.
-HOSTED_PID_BASE = 0x40000000
-
-
 def session_serving(socket_path):
     """Whether something accepts connections on a session's socket."""
     # Through the directory's descriptor: a session socket's full path can
@@ -900,24 +1022,6 @@ def session_serving(socket_path):
     finally:
         probe.close()
         os.close(directory)
-
-
-def verify_session(row, active, binary, socket_path, daemon_pid):
-    """Prove a descriptor names a live session hosted by the fixture's own daemon.
-
-    Returns the session's socket and its lifetime's generation: a rebuilt
-    session keeps the socket and gets a new generation.
-    """
-    assert row.get('rootActiveSessionId') == active, 'wrong descriptor identity'
-    assert row.get('supervisorSocketPath') == str(socket_path), 'wrong supervisor descriptor'
-    command = Path('/proc/%d/cmdline' % daemon_pid).read_bytes().split(b'\0')
-    assert command[0] == str(binary).encode(), 'session host argv0 is not fixture binary'
-    pid = row.get('pid')
-    assert isinstance(pid, int) and pid >= HOSTED_PID_BASE, 'session is not hosted in the daemon'
-    generation = row.get('processStartId') or ''
-    assert generation.startswith('hosted:%d:' % daemon_pid), 'session hosted by another daemon'
-    assert session_serving(row['socketPath']), 'hosted session is not serving its socket'
-    return row['socketPath'], generation
 
 
 def verify_runtime_session(client, active, binary, daemon_pid):

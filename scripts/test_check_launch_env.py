@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Reject stale result success and crashing a session the fixture does not own."""
-import json
 from pathlib import Path
 import unittest
 import tempfile
 from unittest.mock import patch, MagicMock
-from check_launch_env import current_probe, restart, worker_descriptor, finish_daemon, MARKER
+from check_launch_env import current_probe, durable_files_with, restart, finish_daemon, MARKER
 
 
 def requests(content=None):
@@ -32,23 +31,23 @@ class VerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'current probe'):
             current_probe(requests(content), 'new')
 
-    def test_descriptor_with_wrong_identity_never_crashes_a_session(self):
+    def test_a_session_the_daemon_does_not_hold_is_never_crashed(self):
         client = MagicMock()
-        with patch('check_launch_env.worker_descriptor', return_value=(Path('/fixture'),
-                {'pid': 0x40000001, 'rootActiveSessionId': 'someone-else'})):
-            with self.assertRaisesRegex(AssertionError, 'descriptor identity'):
-                restart(client, MagicMock(), 'crash', 'fixture', Path('/fixture'), Path('/fixture/binary'), {}, False, {}, set(), {})
+        with patch('check_launch_env.verify_runtime_session',
+                   side_effect=AssertionError('session is not open in the fixture daemon')):
+            with self.assertRaisesRegex(AssertionError, 'not open in the fixture daemon'):
+                restart(client, MagicMock(), 'crash', 'fixture', Path('/fixture/agent'),
+                        Path('/fixture/binary'), MagicMock(), {})
         client.call.assert_not_called()
 
-    def test_descriptor_filename_need_not_equal_active_id(self):
+    def test_the_secret_is_found_in_any_durable_file(self):
         with tempfile.TemporaryDirectory() as folder:
             agent = Path(folder)
-            descriptors = agent / 'daemon-workers' / 'fixture'
-            descriptors.mkdir(parents=True)
-            row = {'pid': 123, 'rootActiveSessionId': 'active-id', 'supervisorSocketPath': '/fixture.sock'}
-            path = descriptors / 'different-worker-id.json'
-            path.write_text(json.dumps(row))
-            self.assertEqual(worker_descriptor(agent, 'active-id', Path('/fixture.sock')), (path, row))
+            (agent / 'nested').mkdir()
+            (agent / 'agent.db-wal').write_bytes(b'\0\0fixture-launch-secret\0')
+            (agent / 'nested' / 'clean.json').write_text('{}')
+            self.assertEqual(durable_files_with(agent, 'fixture-launch-secret'),
+                             [str(agent / 'agent.db-wal')])
 
     def test_shutdown_ack_then_close_then_process_exit(self):
         events = []

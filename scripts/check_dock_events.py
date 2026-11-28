@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Hosted actual TUI dock reactions, styled frames and raw ANSI.
 
-The ordinary client receives controlled protocol-7 roster/goal events after
-observable attach. No headless flags, provider or live sessions are used.
+The ordinary client receives controlled wire2 roster/goal events from a fixture
+daemon after observable attach. No headless flags, provider or live sessions are used.
 Behavioral assertions cover event-driven refresh of the one-line dock, which
 expands into per-group rows on focus, and the live title cost.
 """
@@ -16,7 +16,7 @@ import tempfile
 import threading
 
 from lifecycle_lib import DockScreen
-from lifecycle_lib import Supervisor, Terminal, actual_hello, digest, supervisor_env_for
+from lifecycle_lib import FixtureDaemon, Terminal, actual_hello, digest, env_for
 
 
 def parent():
@@ -40,7 +40,7 @@ def usage(cost):
             'cost': {'input': 0, 'output': cost, 'cacheRead': 0, 'cacheWrite': 0, 'total': cost}}
 
 
-class DockSupervisor(Supervisor):
+class DockDaemon(FixtureDaemon):
     def __init__(self, path, hello, root):
         assert 'agent_roster' in hello.get('serverCapabilities', []), 'actual binary does not advertise roster protocol'
         self.roster = [parent(), child('c1', 'running', 0.42)]
@@ -51,9 +51,9 @@ class DockSupervisor(Supervisor):
 
     def send(self, sock, data):
         if data.get('type') == 'daemon_hello':
-            # The base fixture advertises only prompt admission. This fixture
-            # also implements roster snapshot/deltas, gated on agent_roster.
-            data = dict(data, serverCapabilities=['session_input_admission', 'agent_roster'])
+            # The base fixture advertises nothing. This fixture implements
+            # roster snapshot/deltas, gated on agent_roster.
+            data = dict(data, serverCapabilities=['agent_roster'])
         elif data.get('type') == 'response' and data.get('command') == 'roster_subscribe':
             data = dict(data, data={'roster': self.roster})
         elif data.get('type') == 'response' and data.get('command') == 'attach':
@@ -133,11 +133,9 @@ def capture(terminal, root, offset):
 
 def run_case(binary, root, observed):
     root.mkdir()
-    # On the supervisor's wire: the TUI is driven against a fixture of the
-    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     hello = actual_hello(binary, root, env)
-    server = DockSupervisor(root / 'fixture.sock', hello, root)
+    server = DockDaemon(root / 'fixture.sock', hello, root)
     terminal = None
     observed['frames'] = {}
     offset = 0

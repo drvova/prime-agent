@@ -82,9 +82,13 @@ def prepare(binary, root, scenario):
                     'reasoning': True, 'input': ['text'],
                     'contextWindow': 128000, 'maxTokens': 8192}]}}}))
     env = {name: os.environ[name] for name in ('PATH', 'LANG', 'LC_ALL', 'TZ') if name in os.environ}
-    # Stays on the supervisor's wire (`check_agent_bounce.Client`): it finds
+    # Stays on the supervisor's wire (`check_agent_bounce.Client`) until the
+    # runtime daemon reports a session's default-model fallback: its attach
+    # summary carries no `modelFallbackMessage` (pa-cli's
+    # `tests/fixtures/inbound_goldens/attach_paging.diff` pins the difference),
+    # so the TUI on it never shows the `unavailable` case's warning. It finds
     # the TUI's session by its worker descriptor, and runs only on hosted CI
-    # (it needs `ip` and GITHUB_ACTIONS), where its port is still to be proven.
+    # (it needs `ip` and GITHUB_ACTIONS).
     env['PRIME_AGENT_RUNTIME_DAEMON'] = '0'
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'),
                XDG_CONFIG_HOME=str(root / 'xdg'), XDG_CACHE_HOME=str(root / 'xdg'),

@@ -18,7 +18,7 @@ import tempfile
 import threading
 import uuid
 
-from lifecycle_lib import Supervisor, Terminal, actual_hello, digest, supervisor_env_for, fixture_state
+from lifecycle_lib import FixtureDaemon, Terminal, actual_hello, digest, env_for, fixture_state
 
 
 def runtime_version(binary, root, env):
@@ -31,7 +31,7 @@ def runtime_version(binary, root, env):
     return matches[0]
 
 
-class RestartSupervisor(Supervisor):
+class RestartDaemon(FixtureDaemon):
     def __init__(self, *args):
         self.release_catalog = threading.Event()
         self.catalog_held = threading.Event()
@@ -69,9 +69,12 @@ class RestartSupervisor(Supervisor):
             self.closed = True
         for connection in connections:
             try:
+                # The runtime's stop: the live-only closing, the session's
+                # close, then the wire's own `closing` ends the connection.
                 self.send(connection, {'type': 'daemon_closing', 'reason': 'shutdown'})
                 self.send(connection, {'type': 'session_closed', 'activeSessionId': 's1',
                                        'reason': 'shutdown'})
+                self.write(connection, {'type': 'closing', 'reason': 'shutdown'})
                 connection.shutdown(socket.SHUT_RDWR)
             except OSError as error:
                 if error.errno not in (errno.EBADF, errno.EPIPE, errno.ECONNRESET, errno.ENOTCONN):
@@ -80,9 +83,7 @@ class RestartSupervisor(Supervisor):
 
 def run_case(binary, root, hello, client, name, observed=None):
     root.mkdir()
-    # On the supervisor's wire: the TUI is driven against a fixture of the
-    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     base = client.split('+')[0].split('-')[0]
     parts = [int(x) for x in base.split('.')]
     newer = f'{parts[0] + 1}.0.0'
@@ -93,7 +94,7 @@ def run_case(binary, root, hello, client, name, observed=None):
     observed.update(daemon_version=daemon, client_version=client, executed=False)
     path = root / 'fixture.sock'
     fixture_hello = dict(hello, socketPath=str(path), supervisorSocketPath=str(path))
-    server = RestartSupervisor(path, fixture_hello, 'restart', root)
+    server = RestartDaemon(path, fixture_hello, 'restart', root)
     terminal = None
     try:
         terminal = Terminal([str(binary), '--daemon-socket', str(server.path)], root, env)
@@ -159,9 +160,7 @@ def main():
             binary = Path(os.environ['PA_RUST_BINARY']).resolve()
             root = Path(temp) / 'rust'
             root.mkdir()
-            # On the supervisor's wire: the TUI is driven against a fixture of the
-            # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
-            env = supervisor_env_for(root)
+            env = env_for(root)
             client = runtime_version(binary, root, env)
             # Fixture expects a current stable binary; prerelease algorithm edges
             # are separately covered by red-first exact production-module tests.
