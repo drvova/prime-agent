@@ -254,7 +254,7 @@ struct WorkerIdentity {
 }
 
 fn load_worker_identity(agent_dir: &Path, socket: &Path, worker_id: &str) -> WorkerIdentity {
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket);
     let content = std::fs::read_to_string(descriptor_dir.join(format!("{worker_id}.json")))
         .expect("descriptor file");
     let value: Value = serde_json::from_str(&content).expect("descriptor json");

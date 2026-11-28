@@ -1,4 +1,4 @@
-//! The daemon's restart owner (`pa_daemon::keeper`): every session lives in
+//! The daemon's restart owner (`pa_runtime::daemon::keeper`): every session lives in
 //! one daemon process, so something must bring that process back when a
 //! fault no panic hook can contain ends it.
 //!
@@ -58,7 +58,7 @@ fn spawn_keeper(socket: &Path, agent_dir: &Path) -> Keeper {
         .arg(socket)
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env(pa_daemon::keeper::KEEPER_ENV, "1")
+        .env(pa_runtime::daemon::keeper::KEEPER_ENV, "1")
         // Session sockets land under TMPDIR: keep them in the test's own dir.
         .env("TMPDIR", agent_dir.parent().expect("test dir"))
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
@@ -237,8 +237,8 @@ fn sigkill(pid: u32) {
 /// The restart owner's death log for `socket`.
 fn death_log(agent_dir: &Path, socket: &Path) -> Vec<Value> {
     std::fs::read_to_string(
-        pa_daemon::descriptor::descriptor_dir(agent_dir, socket)
-            .join(pa_daemon::keeper::DAEMON_DEATH_LOG),
+        pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket)
+            .join(pa_runtime::daemon::keeper::DAEMON_DEATH_LOG),
     )
     .unwrap_or_default()
     .lines()
@@ -434,7 +434,8 @@ fn a_deliberate_shutdown_is_not_restarted_even_when_it_ends_in_a_kill() {
     let killed_socket = dir.path().join("killed.sock");
     let mut killed = spawn_keeper(&killed_socket, &agent_dir);
     let client = Client::connect_when(&killed_socket, "the daemon", |_| true);
-    pa_daemon::keeper::record_stop_intent(&agent_dir, &killed_socket).expect("stop intent");
+    pa_runtime::daemon::keeper::record_stop_intent(&agent_dir, &killed_socket)
+        .expect("stop intent");
     sigkill(hello_pid(&client.hello));
     let killed_exit = wait_exit(&mut killed);
 

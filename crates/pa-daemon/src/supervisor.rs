@@ -195,7 +195,7 @@ pub struct Supervisor {
     /// Wakes the accept loop when [`Supervisor::begin_shutdown`] sets [`Self::accept_exit`]:
     /// a socket blocking in `accept` must be interrupted by the completed shutdown.
     shutdown_notify: tokio::sync::Notify,
-    log: paths::RotatingLog,
+    log: pa_core::platform::daemon_endpoint::RotatingLog,
     /// Memoized ledger over the default sessions dir (ledgers are per
     /// sessions-dir families; another dir gets a fresh instance).
     rlm_ledger: tokio::sync::Mutex<
@@ -265,8 +265,10 @@ impl Supervisor {
     ///
     /// Returns an error when the descriptor dir, sessions dir, or config cannot be opened.
     pub fn new(options: SupervisorOptions) -> Result<Self> {
-        let descriptor_dir =
-            crate::descriptor::descriptor_dir(&options.agent_dir, &options.socket_path);
+        let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(
+            &options.agent_dir,
+            &options.socket_path,
+        );
         paths::ensure_dir(&descriptor_dir)?;
         persist_supervisor_config(
             &descriptor_dir.join(SUPERVISOR_CONFIG_FILE_NAME),
@@ -281,10 +283,12 @@ impl Supervisor {
             },
         )?;
         let (events, _) = broadcast::channel(crate::backpressure::EVENT_RING_CAPACITY);
-        let log = paths::RotatingLog::new(pa_core::platform::daemon_endpoint::daemon_log_path(
-            &options.socket_path,
-            &options.agent_dir,
-        ));
+        let log = pa_core::platform::daemon_endpoint::RotatingLog::new(
+            pa_core::platform::daemon_endpoint::daemon_log_path(
+                &options.socket_path,
+                &options.agent_dir,
+            ),
+        );
         let admission = crate::provider_admission::AdmissionService::new(&options.agent_dir);
         let event_bus = crate::event_bus::EventBus::load(
             descriptor_dir.join(crate::event_bus::EVENT_BUS_FILE_NAME),
@@ -295,11 +299,12 @@ impl Supervisor {
             options.socket_path.clone(),
             UpdateTimeoutBudget::from_env(),
             {
-                let log =
-                    paths::RotatingLog::new(pa_core::platform::daemon_endpoint::daemon_log_path(
+                let log = pa_core::platform::daemon_endpoint::RotatingLog::new(
+                    pa_core::platform::daemon_endpoint::daemon_log_path(
                         &options.socket_path,
                         &options.agent_dir,
-                    ));
+                    ),
+                );
                 Box::new(move |line: &str| {
                     log.append(&format!("[{}] {line}", util::now_iso()));
                 })

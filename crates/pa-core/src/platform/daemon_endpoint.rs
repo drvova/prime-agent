@@ -116,6 +116,60 @@ pub fn daemon_log_path(socket_path: &Path, agent_dir: &Path) -> PathBuf {
         .join(format!("{base}.{}.log", hash_key(&normalized, 8)))
 }
 
+/// The per-socket state directory, `<agent-dir>/daemon-workers/<socket key>`:
+/// the supervisor's worker descriptors and journals, and the restart owner's
+/// records (owner, stop intent, death log) for either daemon's socket.
+#[must_use]
+pub fn daemon_state_dir(agent_dir: &Path, socket_path: &Path) -> PathBuf {
+    agent_dir
+        .join("daemon-workers")
+        .join(hash_key(&socket_path.to_string_lossy(), 12))
+}
+
+/// The daemon log's appender (a daemon's own log is at [`daemon_log_path`]):
+/// keeps the file bounded with one generation of rotation (TS `appendRotatingLog`).
+pub struct RotatingLog {
+    path: PathBuf,
+    max_bytes: u64,
+}
+
+impl RotatingLog {
+    #[must_use]
+    pub fn new(path: PathBuf) -> Self {
+        RotatingLog {
+            path,
+            max_bytes: 5 * 1024 * 1024,
+        }
+    }
+
+    pub fn append(&self, line: &str) {
+        // The log lives in `<agent-dir>/logs`; create it if this is the first
+        // write (a fresh agent dir has no logs directory yet).
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        crate::platform::perms::set_private_mode(&mut options);
+        let Ok(mut file) = options.open(&self.path) else {
+            return;
+        };
+        let payload = format!("{line}\n");
+        if let Ok(metadata) = file.metadata() {
+            if metadata.len() + payload.len() as u64 > self.max_bytes {
+                drop(file);
+                let rotated = self.path.with_extension("log.1");
+                let _ = std::fs::rename(&self.path, &rotated);
+                match options.open(&self.path) {
+                    Ok(reopened) => file = reopened,
+                    Err(_) => return,
+                }
+            }
+        }
+        let _ = std::io::Write::write_all(&mut file, payload.as_bytes());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

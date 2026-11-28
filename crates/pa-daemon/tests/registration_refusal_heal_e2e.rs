@@ -373,7 +373,7 @@ fn a_descriptorless_session_of_a_dead_daemon_resumes() {
     drop(daemon);
     let stranded_leases = held_leases(&agent_dir).len();
     std::fs::remove_file(
-        pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+        pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket)
             .join(format!("{worker_id}.json")),
     )
     .expect("destroy the descriptor");
@@ -487,7 +487,7 @@ fn an_owned_stop_ends_a_wedged_session_and_its_file_resumes() {
     // descriptor carries its stop tombstone while the stop is still ending the session — a
     // daemon that died mid-stop would finish the stop at its next boot, never re-adopt a
     // stopped session as healthy.
-    let descriptor_path = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+    let descriptor_path = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket)
         .join(format!("{worker_id}.json"));
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

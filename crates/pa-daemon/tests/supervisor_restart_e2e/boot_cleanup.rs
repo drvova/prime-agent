@@ -7,7 +7,7 @@ fn boot_cleanup_preserves_unverifiable_journals_and_waiting_callers_status() {
     let dir = tempfile::tempdir().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let socket = dir.path().join("daemon.sock");
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket);
     std::fs::create_dir_all(&descriptor_dir).expect("descriptors");
     let mut preserved = Vec::new();
     for worker_id in ["unowned", "malformed", "unsupported", "unreadable", "owned"] {

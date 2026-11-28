@@ -144,7 +144,7 @@ fn a_lost_shutdown_verdict_never_archives_the_session() {
     let (mut daemon, mut client, session, session_file) =
         boot_with_prompted_session(dir.path(), &busy_script());
     wait_for_busy_journal_evidence(&agent_dir, &socket, &session);
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket);
     let descriptor_path = descriptor_dir.join(format!("{session}.json"));
     let tombstone = || {
         std::fs::read_to_string(&descriptor_path)

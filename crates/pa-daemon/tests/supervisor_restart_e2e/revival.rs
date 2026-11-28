@@ -50,7 +50,7 @@ fn write_revival_fixture(
     )
     .expect("write script");
 
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket);
     std::fs::create_dir_all(&descriptor_dir).expect("descriptor dir");
     let journal_path = descriptor_dir.join(format!("{worker_id}.recovery.jsonl"));
     std::fs::write(

@@ -996,8 +996,10 @@ mod tests {
             socket_path: dir.join("supervisor.sock"),
             agent_dir: dir.join("agent"),
         };
-        let descriptor_dir =
-            crate::descriptor::descriptor_dir(&options.agent_dir, &options.socket_path);
+        let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(
+            &options.agent_dir,
+            &options.socket_path,
+        );
         std::fs::create_dir_all(&descriptor_dir).unwrap();
         let path = descriptor_dir.join("compaction-supervision.jsonl");
         let first = TerminalCompactionRecord {

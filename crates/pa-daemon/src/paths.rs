@@ -83,52 +83,6 @@ pub fn ensure_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Rotating log appender: keep the file bounded with one generation
-/// rotation (TS `appendRotatingLog`).
-pub struct RotatingLog {
-    path: PathBuf,
-    max_bytes: u64,
-}
-
-impl RotatingLog {
-    #[must_use]
-    pub fn new(path: PathBuf) -> Self {
-        RotatingLog {
-            path,
-            max_bytes: 5 * 1024 * 1024,
-        }
-    }
-
-    pub fn append(&self, line: &str) {
-        // The log lives in `<agent-dir>/logs`; create it if this is the first
-        // write (a fresh agent dir has no logs directory yet).
-        if let Some(parent) = self.path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.create(true).append(true);
-        pa_core::platform::perms::set_private_mode(&mut options);
-        let Ok(mut file) = options.open(&self.path) else {
-            return;
-        };
-        let payload = format!("{line}\n");
-        if let Ok(metadata) = file.metadata() {
-            if metadata.len() + payload.len() as u64 > self.max_bytes {
-                drop(file);
-                let rotated = self.path.with_extension("log.1");
-                let _ = std::fs::rename(&self.path, &rotated);
-                match options.open(&self.path) {
-                    Ok(reopened) => file = reopened,
-                    Err(_) => return,
-                }
-            }
-        }
-        let _ = file.write_all(payload.as_bytes());
-    }
-}
-
-use std::io::Write as _;
-
 /// Age of a file's mtime, for stale-lease detection.
 #[must_use]
 pub fn mtime_age(path: &Path) -> Option<Duration> {

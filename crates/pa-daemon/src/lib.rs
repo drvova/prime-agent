@@ -74,7 +74,6 @@ pub(crate) mod image_route;
 pub mod input_pause_lease;
 mod interrupted_calls;
 pub mod journal;
-pub mod keeper;
 pub mod mcp_connections;
 pub mod mcp_login;
 pub(crate) mod messaging;

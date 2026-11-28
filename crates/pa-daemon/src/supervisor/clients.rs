@@ -134,8 +134,8 @@ impl Supervisor {
             supervisor_process_start_id: crate::protocol::process_start_id(std::process::id()),
             supervisor_socket_path: Some(self.options.socket_path.to_string_lossy().to_string()),
             update_resume: Some(self.restore.hello_resume()),
-            daemon_death: crate::keeper::boot_death(&self.descriptor_dir),
-            keeper_pid: crate::keeper::keeper_pid().map(u64::from),
+            daemon_death: pa_runtime::daemon::keeper::boot_death(&self.descriptor_dir),
+            keeper_pid: pa_runtime::daemon::keeper::keeper_pid().map(u64::from),
             transcript_store_fallback: pa_core::session::store::fallback_reason()
                 .map(str::to_string),
             client_id: connection_id.clone(),

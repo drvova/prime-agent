@@ -251,7 +251,7 @@ pub(crate) fn run_runtime_daemon(
             )
         };
         let lock =
-            pa_runtime::daemon::take_lock(&agent_dir, &socket, pa_daemon::keeper::keeper_pid())
+            pa_runtime::daemon::take_lock(&agent_dir, &socket, pa_runtime::daemon::keeper::keeper_pid())
                 .await?;
         pa_core::platform::daemon_socket::prepare_socket_path(&socket).await?;
         let listener = pa_types::platform::transport::bind_transport(&socket)
@@ -267,7 +267,7 @@ pub(crate) fn run_runtime_daemon(
                 // with, read before its boot sweep deletes the file.
                 update: pa_runtime::daemon::UpdateBoot {
                     roster: pa_core::update::restart::restore::consume_roster_env(),
-                    keeper_pid: pa_daemon::keeper::keeper_pid(),
+                    keeper_pid: pa_runtime::daemon::keeper::keeper_pid(),
                     app_version: crate::config::version().to_string(),
                 },
                 session_dir: super::replacement_session_dir(options),
@@ -286,11 +286,11 @@ pub(crate) fn run_runtime_daemon(
                 stopping: {
                     let (agent_dir, socket) = (agent_dir.clone(), socket.clone());
                     Box::new(move || {
-                        if pa_daemon::keeper::keeper_pid().is_none() {
+                        if pa_runtime::daemon::keeper::keeper_pid().is_none() {
                             return;
                         }
                         if let Err(error) =
-                            pa_daemon::keeper::record_stop_intent(&agent_dir, &socket)
+                            pa_runtime::daemon::keeper::record_stop_intent(&agent_dir, &socket)
                         {
                             eprintln!(
                                 "prime-agent: the stop intent for the restart owner could not be recorded: {error:#}"

@@ -308,7 +308,7 @@ fn spawn_daemon_detached(
     // signals and reads the daemon's terminating signal, neither of which exists on Windows,
     // where the daemon is started unkept as before.
     #[cfg(unix)]
-    command.env(pa_daemon::keeper::KEEPER_ENV, "1");
+    command.env(pa_runtime::daemon::keeper::KEEPER_ENV, "1");
     // The binary entry strips any inherited worker handshake env, so the
     // spawned supervisor never starts in worker mode. A daemon must also not
     // share the launching TUI's terminal session: a session-wide terminal

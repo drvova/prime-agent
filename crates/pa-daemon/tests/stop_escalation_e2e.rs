@@ -202,7 +202,7 @@ fn session_file_of(client: &mut Client, active_id: &str) -> PathBuf {
 /// The descriptor's path and the worker pid it names (the retirement
 /// removes the file when the stop proves the process gone).
 fn worker_descriptor_of(agent_dir: &Path, socket: &Path, session_id: &str) -> (PathBuf, u32) {
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket);
     let found = std::fs::read_dir(&descriptor_dir)
         .expect("descriptor dir readable")
         .flatten()

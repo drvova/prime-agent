@@ -3447,6 +3447,7 @@ dependencies = [
  "pa-ai",
  "pa-core",
  "pa-models",
+ "pa-runtime",
  "pa-telemetry",
  "pa-types",
  "proptest",

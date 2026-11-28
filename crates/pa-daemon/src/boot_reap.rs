@@ -357,7 +357,7 @@ fn same_socket_supervisor_targets(
     for pid in numeric_proc_entries() {
         // This daemon's restart owner runs the same command line; it is not a predecessor.
         if pid == std::process::id()
-            || Some(pid) == crate::keeper::keeper_pid()
+            || Some(pid) == pa_runtime::daemon::keeper::keeper_pid()
             || runtime_daemon.contains(&pid)
         {
             continue;

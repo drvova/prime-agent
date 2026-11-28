@@ -12,6 +12,9 @@ pa-core = { path = "../pa-core" }
 pa-agent = { path = "../pa-agent" }
 pa-ai = { path = "../pa-ai" }
 pa-telemetry = { path = "../pa-telemetry" }
+# The restart owner (`pa_runtime::daemon::keeper`) both daemons share: the supervisor reads its
+# keeper's pid and boot death and records its stop intent there. Goes with this crate (phase 10).
+pa-runtime = { path = "../pa-runtime" }
 anyhow = { workspace = true }
 futures = { workspace = true }
 globset = "0.4"
