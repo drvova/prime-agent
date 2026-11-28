@@ -115,7 +115,7 @@ WIRE2_SESSION_CALLS = {
     'import_jsonl': 'session.import_jsonl', 'mutate_queued_message': 'session.mutate_queued_message',
     'abort_compaction': 'session.abort_compaction', 'abort_retry': 'session.abort_retry',
     'answer_question': 'session.answer_question', 'kill_kernel_bash': 'session.kill_kernel_bash',
-    'factory_activity': 'session.factory_activity', 'agent_messages_clear': 'agent_messages.clear',
+    'factory_activity': 'session.factory_activity', 'agent_messages_clear': 'agent_messages.clear', 'clear_queue': 'session.clear_queue',
     'set_rlm_max_depth': 'session.set_rlm_max_depth', 'heartbeat_set': 'session.set_heartbeat',
     'heartbeat_update': 'session.update_heartbeat', 'heartbeat_manage': 'session.manage_heartbeat',
 }
@@ -472,7 +472,9 @@ class Wire2Client:
         if kind in ('rename', 'set_session_name'):
             return self.invoke('session.rename', timeout, session=session, name=payload['name'])
         if kind == 'kill':
-            return self.invoke('session.stop', timeout, session=session)
+            # A subagent's delete (`rlmLedgerDelete`, `rlmChildId`) rides the stop.
+            marks = {key: payload[key] for key in ('rlmLedgerDelete', 'rlmChildId') if key in payload}
+            return self.invoke('session.stop', timeout, session=session, **marks)
         if kind == 'abort':
             return self.invoke('session.abort', timeout, session=session)
         if kind == 'abort_and_send_queued':

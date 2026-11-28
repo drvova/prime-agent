@@ -89,8 +89,11 @@ impl LinkAgentObserveController {
     /// The family member `target` names: the one resolution and permission check
     /// every read of another session goes through.
     async fn family_target(&self, target: &str) -> anyhow::Result<AgentObserveSummary> {
-        find_target(self.family_summaries().await?, target)?
-            .ok_or_else(|| anyhow::anyhow!("agent {target} is not reachable"))
+        pa_core::session_engine::agent_messaging::find_observe_target(
+            self.family_summaries().await?,
+            target,
+        )?
+        .ok_or_else(|| anyhow::anyhow!("agent {target} is not reachable"))
     }
 
     /// One `get_session_messages` read of `agent`'s transcript: its worker answers when one
@@ -135,52 +138,6 @@ impl LinkAgentObserveController {
     }
 }
 
-/// Resolve within the nuclear family using the registry's normalized id-suffix
-/// and exact-name contract, or the exact RLM child id. Exact active ids retain
-/// direct-lookup precedence.
-fn find_target(
-    mut summaries: Vec<AgentObserveSummary>,
-    target: &str,
-) -> anyhow::Result<Option<AgentObserveSummary>> {
-    if let Some(at) = summaries
-        .iter()
-        .position(|summary| summary.active_session_id.as_deref() == Some(target))
-    {
-        return Ok(Some(summaries.remove(at)));
-    }
-    let mut matches: Vec<_> = summaries
-        .into_iter()
-        .filter(|summary| {
-            summary
-                .active_session_id
-                .as_deref()
-                .is_some_and(|id| crate::registry::selector_matches(id, target))
-                || crate::registry::selector_matches(&summary.session_id, target)
-                || summary.session_name.as_deref() == Some(target)
-                || summary.rlm_child_id.as_deref() == Some(target)
-        })
-        .collect();
-    if matches.len() > 1 {
-        let rendered = matches
-            .iter()
-            .map(|summary| {
-                let id = summary
-                    .active_session_id
-                    .as_deref()
-                    .unwrap_or(&summary.session_id);
-                summary
-                    .session_name
-                    .as_deref()
-                    .filter(|name| !name.is_empty())
-                    .map_or_else(|| id.to_string(), |name| format!("{id} ({name})"))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        anyhow::bail!("Ambiguous active session \"{target}\": matches {rendered}");
-    }
-    Ok(matches.pop())
-}
-
 impl AgentObserveController for LinkAgentObserveController {
     async fn list_agents(&self) -> anyhow::Result<AgentObserveListResult> {
         let mut summaries = self.family_summaries().await?;
@@ -211,7 +168,10 @@ impl AgentObserveController for LinkAgentObserveController {
     }
 
     async fn get_agent(&self, target: &str) -> anyhow::Result<Option<AgentObserveSummary>> {
-        find_target(self.family_summaries().await?, target)
+        pa_core::session_engine::agent_messaging::find_observe_target(
+            self.family_summaries().await?,
+            target,
+        )
     }
 
     async fn recent_messages(

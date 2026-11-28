@@ -1,0 +1,1 @@
+- Fixed the runtime daemon's kernel `agent-roster` and `agent_observe` reads: a root session now sees the other root sessions as its siblings, finds a member by an id suffix, and shows the name a rename gave (a subagent's rename from a client now works too).

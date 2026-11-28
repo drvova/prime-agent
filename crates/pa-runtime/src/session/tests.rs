@@ -539,6 +539,50 @@ async fn a_steer_during_a_turn_is_read_at_its_next_step() {
     bed.runtime.shutdown().await;
 }
 
+/// A client's steer goes ahead of a custom row already waiting on the
+/// running turn (an agent message, a notice), as the old daemon's steering
+/// lane ranks a user row above a custom one.
+#[tokio::test]
+async fn a_steer_goes_ahead_of_a_waiting_custom_row() {
+    let mut bed = bed(json!([
+        { "text": "first reply" },
+        { "text": "steered reply" },
+        { "text": "noted reply" },
+    ]))
+    .await;
+    bed.input(HOLD_PROMPT, None).await;
+    bed.hold.entered.notified().await;
+    let engine = bed.runtime.session_engine(&bed.session).expect("built");
+    engine
+        .engine
+        .session
+        .agent()
+        .steer(pa_agent::types::AgentMessage::Custom(
+            pa_agent::types::CustomAgentMessage {
+                role: "custom".to_string(),
+                payload: json!({ "customType": "note", "content": "waiting note",
+                                 "display": true, "timestamp": 0 }),
+            },
+        ));
+    bed.input("change course", Some(Priority::Steer)).await;
+    let steering = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let (_, actions) = bed.runtime.stream_view(&bed.session).expect("open");
+            if actions["steering"].as_array().map_or(0, Vec::len) == 2 {
+                break actions["steering"].clone();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both rows wait on the turn");
+    assert_eq!(steering, json!(["change course", "waiting note"]));
+    bed.hold.release.add_permits(3);
+    bed.until_done().await;
+    bed.runtime.idle(&bed.session).await;
+    bed.runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn cancelling_a_running_task_aborts_its_turn() {
     // Held far past the test: only the abort ends the turn.

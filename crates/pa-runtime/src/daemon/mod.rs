@@ -196,6 +196,10 @@ pub struct UpdateBoot {
     pub roster: Option<pa_types::daemon::UpdateRoster>,
     /// The restart owner keeping the daemon, if any.
     pub keeper_pid: Option<u32>,
+    /// The death the restart owner started this daemon after
+    /// ([`keeper::boot_death`]), which `daemon.identity` shows every client
+    /// as the old `daemon_hello`'s `daemonDeath`.
+    pub daemon_death: Option<pa_types::daemon::DaemonDeathRecord>,
     /// The release the daemon runs, as `daemon.identity` and the roster name it.
     pub app_version: String,
 }

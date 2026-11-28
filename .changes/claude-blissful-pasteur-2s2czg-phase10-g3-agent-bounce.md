@@ -1,0 +1,1 @@
+- Fixed the runtime daemon dropping the agent messages waiting on a session silently when an ACP client cancels: the clear now takes them with the queued prompts and tells each sender its message was not delivered, as on the supervisor.

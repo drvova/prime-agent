@@ -13,6 +13,8 @@
 //!   cursor that resumes the walk ([`SessionPage`]).
 //! - [`saved_session_row`]: a row's wire form, the old `session_list_item`'s
 //!   `session` (`DaemonSavedSessionInfo`).
+//! - [`resolve_saved_session`]: a selector's saved session, an archived one
+//!   restored first, for a command that wakes it.
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
@@ -25,11 +27,13 @@ mod info;
 mod info_sidecar;
 #[cfg(test)]
 mod info_tests;
+mod resolve;
 mod scan;
 
 pub use info::{
     find_most_recent_session_for_cwd, legacy_ledger_usage, read_session_info, SessionInfo,
 };
+pub use resolve::resolve_saved_session;
 pub use scan::{list_sessions, list_sessions_with, SessionPage};
 
 /// The bounded first-line read cap for header-only judgments: a session

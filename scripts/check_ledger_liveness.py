@@ -19,8 +19,7 @@ import tempfile
 import threading
 import time
 
-from check_agent_bounce import Client, LIMIT
-from lifecycle_lib import digest, supervisor_env_for, stop
+from lifecycle_lib import LIMIT, Wire2Client, digest, env_for, stop
 from check_restore_notice import texts
 
 PARENT = 'Create the ledger liveness fixture child.'
@@ -279,10 +278,7 @@ def cache_boundaries(client, config, root, created, child, ledger_path, provider
 
 
 def run_case(binary, root, observed):
-    # On the supervisor's wire (`check_agent_bounce.Client`):
-    # the runtime daemon's `sessions.list` lists no subagent (no row with
-    # `rlmChildId` and `parentActiveSessionId`).
-    env = supervisor_env_for(root)
+    env = env_for(root)
     provider = Provider()
     thread = threading.Thread(target=provider.serve_forever, daemon=True)
     thread.start()
@@ -306,7 +302,7 @@ def run_case(binary, root, observed):
             path = root / 'd.sock'
             process = subprocess.Popen([str(binary), '--mode', 'daemon', '--daemon-socket', str(path)],
                 cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-            client = Client(path, process)
+            client = Wire2Client(path, process)
             config = {'cwd': str(root), 'agentDir': str(root / 'agent'), 'provider': 'parity-local',
                       'model': 'parity-1', 'noExtensions': True, 'noContextFiles': True,
                       'telemetryDisabled': True}
@@ -354,7 +350,7 @@ def run_case(binary, root, observed):
                 observed['wire'] = client.wire
                 client.close()
                 process.wait(timeout=15)
-                observed['shutdown'] = 'owned supervisor and workers stopped'
+                observed['shutdown'] = 'owned runtime daemon stopped'
             except Exception as error:
                 observed['shutdown_error'] = str(error)
         if process:

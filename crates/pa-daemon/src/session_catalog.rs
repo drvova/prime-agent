@@ -1,73 +1,15 @@
-//! Saved-session catalog resolve (TS catalog `resolve`): the selector-to-session-file
-//! lookup the supervisor uses when a client command addresses a session that is not
-//! resident. Local (cwd-scoped) matches win over global ones; an ambiguous selector fails
-//! with the TS error so callers can tell it apart from an unknown-target miss.
+//! Saved-session catalog resolve: pa-core's `resolve_saved_session`, which
+//! both daemons share; the supervisor uses it when a client command addresses
+//! a session that is not resident. Its tests stay here, beside the session
+//! file fixtures they write.
 
-use std::path::Path;
-
-use anyhow::{anyhow, Context, Result};
-
-use crate::session_store::session_file_name;
-use pa_core::session::catalog::{list_sessions, SessionInfo};
-
-/// One selector match against saved sessions: the session id is addressable
-/// by prefix, the name only exactly; more than one match is ambiguous.
-fn catalog_session_match<'a>(
-    sessions: impl IntoIterator<Item = &'a SessionInfo>,
-    selector: &str,
-) -> Result<Option<&'a SessionInfo>> {
-    let matches: Vec<&SessionInfo> = sessions
-        .into_iter()
-        .filter(|info| info.id.starts_with(selector) || info.name.as_deref() == Some(selector))
-        .collect();
-    match matches.len() {
-        0 => Ok(None),
-        1 => Ok(Some(matches[0])),
-        _ => Err(anyhow!("Ambiguous session selector \"{selector}\"")),
-    }
-}
-
-/// Resolve one selector to a saved session: cwd-scoped sessions first, the
-/// whole live catalog second. A live miss lazily restores a match from
-/// `sessions-archive/` (written by older Rust releases) before waking its worker. Misses are `None` (the caller
-/// answers its unknown-target error, not a catalog one).
-pub(crate) fn resolve_saved_session(
-    sessions_dir: &Path,
-    archive_dir: &Path,
-    selector: &str,
-    cwd: &str,
-) -> Result<Option<SessionInfo>> {
-    let all = list_sessions(sessions_dir);
-    let local = catalog_session_match(all.iter().filter(|info| info.cwd == cwd), selector)?;
-    if let Some(info) = local {
-        return Ok(Some(info.clone()));
-    }
-    if let Some(info) = catalog_session_match(all.iter(), selector)? {
-        return Ok(Some(info.clone()));
-    }
-    let archived = list_sessions(archive_dir);
-    let local = catalog_session_match(archived.iter().filter(|info| info.cwd == cwd), selector)?;
-    let matched = match local {
-        Some(info) => Some(info),
-        None => catalog_session_match(archived.iter(), selector)?,
-    };
-    let Some(info) = matched else {
-        return Ok(None);
-    };
-    let destination = sessions_dir.join(session_file_name(&info.id));
-    pa_core::session::store::store()
-        .restore(&info.path, &destination)
-        .with_context(|| format!("restore archived session {}", info.id))?;
-    let mut restored = info.clone();
-    restored.path = destination;
-    Ok(Some(restored))
-}
+pub(crate) use pa_core::session::catalog::resolve_saved_session;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session_store::{session_file_name, SessionFile};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn temp_dir() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().unwrap();

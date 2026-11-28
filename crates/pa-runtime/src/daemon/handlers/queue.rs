@@ -13,13 +13,20 @@
 //!   next, delivered together as one turn, then the rest in order.
 //! - **Wait.** `session.wait_idle` answers once the session is at rest (or,
 //!   with `"subagents": false`, once its own lane is idle), with its
-//!   autonomous accounting and its live background jobs.
+//!   autonomous accounting and its live background jobs. A subagent's
+//!   session is waited on too, as the old daemon's `wait_for_idle` waited on
+//!   a child's.
 //! - **Withdraw and restore.** `session.withdraw` takes every queued task out
 //!   of the lane (each ends `Cancelled`) and answers them in the order they
 //!   would have run, for a client to put back in its editor; the running one
 //!   runs on. `session.restore` puts messages back as steers at the front of
 //!   the lane: delivered together as the session's next turn (or read by
 //!   the running turn at its next step).
+//! - **Clear.** `session.clear_queue` is the old daemon's `clear_queue`: the
+//!   queued tasks withdrawn and the agent messages waiting on the agent
+//!   taken, each bounced to its sender; it answers `{steering, followUp}`,
+//!   each lane's tasks' prompts then its agent messages'. The running turn
+//!   runs on.
 //! - **Abort a compaction or a retry.** `session.abort_compaction` aborts the
 //!   compaction the session runs, `/compact` or automatic (the summary
 //!   request in flight is dropped, nothing commits, and its `compaction_end`
@@ -38,7 +45,7 @@ use pa_types::event_log::{
 };
 use serde_json::{json, Value};
 
-use super::{optional_string_arg, RuntimeHandlers};
+use super::{optional_string_arg, string_arg, RuntimeHandlers};
 use crate::bus::Heard;
 use crate::runtime::AfterAbort;
 use crate::session::SessionBuilder;
@@ -76,7 +83,11 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
     /// `DaemonAutonomousStatus`) and the kernel's live background jobs
     /// (`outstandingBackgroundJobs`), read once the wait is over.
     pub(super) async fn wait_idle(&self, args: &Value) -> anyhow::Result<Value> {
-        let id = self.open_session(args)?;
+        let id = string_arg(args, "session")?;
+        anyhow::ensure!(
+            self.open.contains(&id) || self.runtime.subagents().lineage(&id).is_some(),
+            "session {id} is not open in the runtime daemon"
+        );
         match args.get("subagents") {
             None | Some(Value::Null | Value::Bool(true)) => self.runtime.at_rest(&id).await,
             Some(Value::Bool(false)) => self.runtime.idle(&id).await,
@@ -124,6 +135,30 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         Ok(json!({
             "session": id,
             "withdrawn": withdrawn.iter().map(task_json).collect::<Vec<_>>(),
+        }))
+    }
+
+    pub(super) async fn clear_queue(&self, args: &Value) -> anyhow::Result<Value> {
+        let id = self.open_session(args)?;
+        let withdrawn = self.runtime.withdraw(&id).await?;
+        let (agent_steering, agent_follow_up) = self
+            .runtime
+            .subagents()
+            .clear_and_bounce_agent_messages(&id)
+            .await?;
+        let (steering, follow_up): (Vec<Task>, Vec<Task>) = withdrawn
+            .into_iter()
+            .partition(|task| task.priority == Priority::Steer);
+        let prompts = |tasks: Vec<Task>, agent: Vec<String>| {
+            tasks
+                .into_iter()
+                .map(|task| task.prompt)
+                .chain(agent)
+                .collect::<Vec<_>>()
+        };
+        Ok(json!({
+            "steering": prompts(steering, agent_steering),
+            "followUp": prompts(follow_up, agent_follow_up),
         }))
     }
 

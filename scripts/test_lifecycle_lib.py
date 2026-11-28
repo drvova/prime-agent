@@ -255,6 +255,12 @@ class Wire2ClientTests(unittest.TestCase):
         self.assertEqual((reply['message'], reply['info'], [frame.get('method') for frame in sent]),
                          ('no such session', {'kind': 'x'}, ['session.stop']))
 
+    def test_a_subagent_delete_rides_the_stop(self):
+        _, sent = self.run_client(lambda frame: [ok(frame, None)], lambda client: client.call(
+            'kill', activeSessionId='c1', rlmLedgerDelete='user', rlmChildId='h1'))
+        self.assertEqual([(frame['method'], frame['args']) for frame in sent],
+                         [('session.stop', {'session': 'c1', 'rlmLedgerDelete': 'user', 'rlmChildId': 'h1'})])
+
     def test_a_call_waits_for_its_own_request_budget(self):
         client = lifecycle.Wire2Client.__new__(lifecycle.Wire2Client)
         client.lock, client.counter, client.replies, client.sent, client.raw_sent = threading.Condition(), 0, {}, [], []

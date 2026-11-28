@@ -16,9 +16,8 @@ import tempfile
 import threading
 import time
 
-from check_agent_bounce import Client
 from lifecycle_lib import digest
-from lifecycle_lib import OwnedProcesses, TAG, finish, verify_session
+from lifecycle_lib import OwnedProcesses, TAG, Wire2Client, finish, verify_runtime_session
 from check_restore_notice import texts
 
 MARKER = 'OBSERVE_SELECTORS_PARITY='
@@ -28,35 +27,10 @@ FOREIGN_CHILD_TASKS = {'observe-foreign-child': 'OBSERVE_TASK_FOREIGN'}
 ALL_TASKS = set(MAIN_CHILD_TASKS.values()) | set(FOREIGN_CHILD_TASKS.values())
 
 
-class ObserveClient(Client):
+class ObserveClient(Wire2Client):
+    """The runtime daemon's wire2 client, with a call's default wait at `LIMIT`."""
     def call(self, kind, timeout_seconds=LIMIT, **payload):
-        self.counter += 1
-        ident = str(self.counter)
-        envelope = {'type': 'command', 'id': ident,
-            'protocol': {'name': 'prime-agent.daemon', 'version': 7},
-            'command': {'type': kind, **payload}}
-        self.sent.append(envelope)
-        deadline = time.monotonic() + timeout_seconds
-        previous_timeout = self.sock.gettimeout()
-        try:
-            self.sock.settimeout(timeout_seconds)
-            self.sock.sendall((json.dumps(envelope) + '\n').encode())
-            while time.monotonic() < deadline:
-                self.sock.settimeout(max(0.001, deadline - time.monotonic()))
-                line = self.reader.readline()
-                assert line, 'daemon closed connection'
-                response = json.loads(line)
-                self.wire.append(response)
-                if response.get('type') == 'response' and response.get('id') == ident:
-                    assert response.get('success'), response
-                    return response.get('data')
-            raise TimeoutError('command never answered: ' + kind)
-        finally:
-            self.sock.settimeout(previous_timeout)
-
-    def __init__(self, path, process):
-        super().__init__(path, process)
-        self.sent = []
+        return super().call(kind, timeout_seconds, **payload)
 
 
 PRINT = '(displayln (string-append "OBSERVE_SELECTORS_PARITY=" (value->jsexpr-string %s)))\n'
@@ -267,10 +241,6 @@ def run_case(binary, root, observation):
         (root / directory).mkdir(parents=True)
     root = root.resolve()
     env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ') if key in os.environ}
-    # Stays on the supervisor's wire (`check_agent_bounce.Client`): the
-    # runtime daemon's kernel `agent-roster` lists no sibling root session, and
-    # its current row keeps no name a rename gave.
-    env['PRIME_AGENT_RUNTIME_DAEMON'] = '0'
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), DO_NOT_TRACK='1', PI_OFFLINE='1',
         PI_CODING_AGENT_DIR=str(root / 'agent'), PRIME_AGENT_CODING_AGENT_DIR=str(root / 'agent'),
         PI_SESSION_DIR=str(root / 'sessions'), PRIME_AGENT_SESSION_DIR=str(root / 'sessions'),
@@ -319,24 +289,10 @@ def run_case(binary, root, observation):
                    'durable': value['sessionId'], 'file': value['sessionFile'], 'raw': value}
             assert row['active'], 'create omitted actual active identity'
             created[name] = row
-            deadline = time.monotonic() + LIMIT
-            while True:
-                scope.discover()
-                matches = []
-                for path in (root / 'agent/daemon-workers').rglob('*.json'):
-                    try:
-                        descriptor = json.loads(path.read_text())
-                        if descriptor.get('rootActiveSessionId') == row['active']:
-                            # The session runs inside the fixture's own daemon.
-                            matches.append(verify_session(descriptor, row['active'], binary, socket_path, process.pid))
-                    except (OSError, ValueError):
-                        pass  # Atomic/transitional descriptor reads are not readiness.
-                if matches:
-                    assert len(matches) == 1, 'duplicate descriptor identity'
-                    observation.setdefault('session_identities', {})[name] = matches[0]
-                    break
-                assert time.monotonic() < deadline, 'actual session descriptor never ready'
-                threading.Event().wait(0.025)
+            scope.discover()
+            # The session runs inside the fixture's own daemon.
+            observation.setdefault('session_identities', {})[name] = verify_runtime_session(
+                client, row['active'], binary, process.pid)
             return row
         parent = create('observe-parent')
         other_parent = create('observe-other-parent')

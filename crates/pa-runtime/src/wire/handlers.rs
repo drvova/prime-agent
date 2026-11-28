@@ -58,7 +58,8 @@ pub enum Query {
     /// `session.model`: an open session's model, thinking level and the
     /// levels its model supports.
     SessionModel,
-    /// `session.system_prompt`: an open session's system prompt.
+    /// `session.system_prompt`: a running session's system prompt (a
+    /// subagent's too).
     SessionSystemPrompt,
     /// `runtime.roster`: every running session's roster entry; its changes
     /// follow on `runtime/roster`.
@@ -208,6 +209,9 @@ pub enum Call {
     /// `session.withdraw`: takes the session's queued input back out of its
     /// queue and answers it.
     SessionWithdraw,
+    /// `session.clear_queue`: withdraws the session's queued input and takes
+    /// the agent messages waiting on it, bouncing each to its sender.
+    SessionClearQueue,
     /// `session.restore`: puts input back at the front of the session's
     /// queue as steers, delivered together as its next turn.
     SessionRestore,
@@ -388,6 +392,7 @@ impl FromStr for Call {
             "session.abort_and_send_queued" => Call::SessionAbortAndSendQueued,
             "session.resume_queue" => Call::SessionResumeQueue,
             "session.withdraw" => Call::SessionWithdraw,
+            "session.clear_queue" => Call::SessionClearQueue,
             "session.restore" => Call::SessionRestore,
             "session.compact" => Call::SessionCompact,
             "session.wait_idle" => Call::SessionWaitIdle,

@@ -23,9 +23,10 @@
 //!   link keeps under the prompt's admission id, so
 //!   `cancel_prompt_admission` cancels it (`session.cancel_task`), also when
 //!   the cancel came before the reply.
-//! - `abort_and_clear_queue` is `session.abort`, `session.withdraw` and
-//!   `session.resume_queue`: the running turn aborted, the queue emptied and
-//!   running again for the next prompt. `wait_for_idle` and
+//! - `abort_and_clear_queue` is `session.abort`, `session.clear_queue` and
+//!   `session.resume_queue`: the running turn aborted, the queue emptied (its
+//!   agent messages bounced to their senders, as the old worker's clear does)
+//!   and running again for the next prompt. `wait_for_idle` and
 //!   `wait_for_headless_completion` are `session.wait_idle`, with
 //!   `"subagents"` as the command's `waitForRlmQuiescence`.
 //!
@@ -451,7 +452,11 @@ impl Wire2Link {
     /// `session.abort`, `session.withdraw`, `session.resume_queue`.
     async fn abort_and_clear(&self, session: &str) -> anyhow::Result<Result<Value, String>> {
         let args = json!({ "session": session });
-        for method in ["session.abort", "session.withdraw", "session.resume_queue"] {
+        for method in [
+            "session.abort",
+            "session.clear_queue",
+            "session.resume_queue",
+        ] {
             if let Err(error) = self.call(method, args.clone()).await? {
                 return Ok(Err(error));
             }

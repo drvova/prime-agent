@@ -450,7 +450,7 @@ impl SessionHost {
         ));
         match (&turn.agent, &turn.task) {
             (Some(agent), Some(task)) if turn.steerable && *task == running.id => {
-                agent.steer(message.clone());
+                steer_as_a_client(agent, message.clone());
                 turn.steered = true;
                 turn.taken.push((steer.clone(), message));
                 Steered::Taken
@@ -585,7 +585,10 @@ fn serve<B: SessionBuilder>(
             Some(rebuild)
         }
     };
-    let mut failures = rebuild.as_ref().map_or(0, |rebuild| rebuild.failures);
+    // The daemon's death a revival reports is no crash of the session's
+    // lifetimes: the lifetime the revival starts counts its own crashes from
+    // none, as the old daemon's adopted session did.
+    let mut failures = 0;
     // The replacement whose new engine the next lifetime answers.
     let mut replaced = None;
     loop {
@@ -909,7 +912,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                         for (_, steer, message) in
                             pending.into_iter().filter(|(id, ..)| *id == task.id)
                         {
-                            agent.steer(message.clone());
+                            steer_as_a_client(&agent, message.clone());
                             taken.push((steer, message));
                         }
                     }
@@ -1618,4 +1621,16 @@ impl<B: SessionBuilder> Lifetime<B> {
             refine_command_failed: boundary.refine_command_failed(),
         }
     }
+}
+
+/// Offers a client's steer to `agent`: like the old daemon's steering lane
+/// (`enqueue_priority`, where a plain user row ranks above a custom row), it
+/// goes ahead of the custom rows waiting at the queue's end (agent messages,
+/// children's and kernel notices), not behind them.
+fn steer_as_a_client(agent: &Agent, message: pa_agent::types::AgentMessage) {
+    agent.steer_ahead_of(message, |batch| {
+        batch
+            .iter()
+            .all(|row| matches!(row, pa_agent::types::AgentMessage::Custom(_)))
+    });
 }

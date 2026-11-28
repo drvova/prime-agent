@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use pa_core::update::restart::restore::selector_matches;
 use pa_types::daemon::DaemonWorkerDescriptor;
 use serde_json::Value;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -692,13 +693,6 @@ impl SessionRegistry {
         };
         lock.lock_owned().await
     }
-}
-
-pub(crate) fn selector_matches(candidate: &str, suffix: &str) -> bool {
-    let normalize = |value: &str| -> String { value.replace('-', "").to_lowercase() };
-    let candidate = normalize(candidate);
-    let suffix = normalize(suffix);
-    !candidate.is_empty() && !suffix.is_empty() && candidate.ends_with(&suffix)
 }
 
 #[cfg(test)]

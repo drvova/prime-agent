@@ -15,6 +15,7 @@ use pa_core::session_engine::rlm_host::{
     RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle, RlmSpawnRequest, RlmSubagentEntry,
     RlmSubagentHost,
 };
+use pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason;
 use pa_core::session_engine::rlm_notices::{compact_rlm_text, rlm_child_label};
 use pa_types::event_log::{AgentTarget, Priority, Route, Scope, Subscription, TopicFilter, Trust};
 
@@ -247,42 +248,7 @@ impl RlmSubagentHost for SessionSubagents {
         let node = Arc::clone(&self.0);
         Box::pin(async move {
             let child = node.find_child(&target).await.map_err(anyhow::Error::msg)?;
-            let was_running = !child.state.lock().await.settled;
-            // The child and its subtree end: runs abort, kernels get their
-            // final snapshots, sessions close.
-            dispose_child(&child).await;
-            let unsettled = child_is_unsettled(&child).await;
-            let tools = tool_use_count(&child.node).await;
-            let entry = {
-                let mut state = child.state.lock().await;
-                state.settled = true;
-                if was_running {
-                    state.status = "cancelled";
-                    state.error = Some("Deleted by parent orchestrator".to_string());
-                }
-                roster_entry(&child, &state, unsettled, tools)
-            };
-            child.publish_update().await;
-            node.children
-                .lock()
-                .await
-                .retain(|other| !Arc::ptr_eq(other, &child));
-            lock(&node.deleted_children).insert(child.rlm_child_id.clone());
-            let child_file = lock(&child.node.adopted).session_file.clone();
-            if let (Some(family), Some(child_file)) = (
-                node.tree.upgrade().as_ref().and_then(|tree| tree.daemon()),
-                child_file,
-            ) {
-                family
-                    .deleted(
-                        child.rlm_child_id.clone(),
-                        child_file,
-                        child.node.session_dir(),
-                    )
-                    .await;
-            }
-            // The settle the parked parent drive waits for.
-            node.activity.notify_waiters();
+            let entry = delete_child(&node, &child, RlmLedgerDeleteReason::User).await?;
             Ok(RlmDeleteSubagentResult {
                 subagent: entry,
                 outcome: Some("deleted"),
@@ -393,6 +359,16 @@ impl RlmSubagentHost for SessionSubagents {
             rename_session(&child.node, &name).await?;
             Ok(name)
         })
+    }
+}
+
+impl Subagents {
+    /// A client's rename of running subagent `id` (`session.rename`), as its
+    /// own `rlm.rename` does: the name row, the node's name and the spawn
+    /// ledger's edge. `None` when the runtime runs no subagent `id`.
+    pub(crate) async fn rename_subagent(&self, id: &str, name: &str) -> Option<anyhow::Result<()>> {
+        let node = self.node(id).filter(|node| node.is_subagent())?;
+        Some(rename_session(&node, name).await)
     }
 }
 
@@ -654,6 +630,72 @@ impl Subagents {
         }
         Ok(reopened)
     }
+}
+
+/// Deletes `node`'s child `child`: its deletion boundary first (in the
+/// runtime daemon, its ledger edge tombstoned for `reason` and its display
+/// entry `deleted`), so a boundary that is not written fails the delete and
+/// leaves the child as it was, as the old supervisor's delete does; then the
+/// child is retired ([`retire_child`]) and its handle answers deleted from
+/// now on. Its roster entry as it ended.
+///
+/// # Errors
+///
+/// The deletion boundary was not written.
+pub(super) async fn delete_child(
+    node: &Arc<Node>,
+    child: &Arc<Child>,
+    reason: RlmLedgerDeleteReason,
+) -> anyhow::Result<RlmSubagentEntry> {
+    let child_file = lock(&child.node.adopted).session_file.clone();
+    if let (Some(family), Some(child_file)) = (
+        node.tree.upgrade().as_ref().and_then(|tree| tree.daemon()),
+        child_file,
+    ) {
+        family
+            .deleted(
+                child.rlm_child_id.clone(),
+                child_file,
+                child.node.session_dir(),
+                reason,
+            )
+            .await?;
+    }
+    let entry = retire_child(node, child, "Deleted by parent orchestrator").await;
+    lock(&node.deleted_children).insert(child.rlm_child_id.clone());
+    Ok(entry)
+}
+
+/// Ends `node`'s child `child` and lets it go from the family: its runs
+/// abort, its kernels get their final snapshots and its sessions close
+/// (with its subtree); a child that was running settles as cancelled with
+/// `error`. Its roster entry as it ended.
+pub(super) async fn retire_child(
+    node: &Arc<Node>,
+    child: &Arc<Child>,
+    error: &str,
+) -> RlmSubagentEntry {
+    let was_running = !child.state.lock().await.settled;
+    dispose_child(child).await;
+    let unsettled = child_is_unsettled(child).await;
+    let tools = tool_use_count(&child.node).await;
+    let entry = {
+        let mut state = child.state.lock().await;
+        state.settled = true;
+        if was_running {
+            state.status = "cancelled";
+            state.error = Some(error.to_string());
+        }
+        roster_entry(child, &state, unsettled, tools)
+    };
+    child.publish_update().await;
+    node.children
+        .lock()
+        .await
+        .retain(|other| !Arc::ptr_eq(other, child));
+    // The settle the parked parent drive waits for.
+    node.activity.notify_waiters();
+    entry
 }
 
 fn roster_entry(

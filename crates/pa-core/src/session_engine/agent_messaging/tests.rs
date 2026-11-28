@@ -957,3 +957,26 @@ fn the_wait_preview_is_one_fenced_line_within_the_cap() {
     let long = create_agent_message_preview(&"y".repeat(500));
     assert_eq!(long, format!("{}…", "y".repeat(239)));
 }
+
+#[test]
+fn bounce_text_limits_receiver_and_body_without_losing_the_notice() {
+    for (receiver, message) in [
+        (
+            "target".to_string(),
+            "界".repeat(DEFAULT_AGENT_MESSAGE_MAX_CHARS),
+        ),
+        (
+            "界".repeat(DEFAULT_AGENT_MESSAGE_MAX_CHARS + 1),
+            "body".to_string(),
+        ),
+        (
+            "界".repeat(DEFAULT_AGENT_MESSAGE_MAX_CHARS + 1),
+            String::new(),
+        ),
+    ] {
+        let text = cleared_agent_message_bounce_text(&receiver, &message);
+        assert_eq!(text.chars().count(), DEFAULT_AGENT_MESSAGE_MAX_CHARS);
+        assert!(text.starts_with("Your agent message was cleared from "));
+        assert!(text.contains("'s queue before delivery: "));
+    }
+}

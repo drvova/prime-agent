@@ -15,8 +15,8 @@ import subprocess
 import tempfile
 import threading
 
-from check_agent_bounce import Client, Provider, Handler, LIMIT
-from lifecycle_lib import digest, supervisor_env_for, stop
+from check_agent_bounce import Provider, Handler, LIMIT
+from lifecycle_lib import Wire2Client, Wire2Error, digest, env_for, stop
 
 FIRST = 'WRITE_CLEANUP_INITIAL_BUSY_TURN'
 SECOND = 'WRITE_CLEANUP_QUEUED_SECOND_CLIENT'
@@ -49,35 +49,20 @@ class CompletionHandler(Handler):
             pass
 
 
-class RecordedIO:
-    def __init__(self, inner, wire, direction):
-        self.inner, self.wire, self.direction = inner, wire, direction
-
-    def __getattr__(self, key):
-        return getattr(self.inner, key)
-
-    def sendall(self, data):
-        self.wire.append({'direction': self.direction, 'utf8': data.decode()})
-        return self.inner.sendall(data)
-
-    def readline(self):
-        data = self.inner.readline()
-        self.wire.append({'direction': self.direction, 'utf8': data.decode()})
-        return data
-
-
-class WireClient(Client):
+class WireClient(Wire2Client):
+    """The runtime daemon's wire2 client, every frame kept as its bytes."""
     def __init__(self, path, process):
         super().__init__(path, process)
-        self.raw_wire = []
-        self.sock = RecordedIO(self.sock, self.raw_wire, 'out')
-        self.reader = RecordedIO(self.reader, self.raw_wire, 'in')
-        self.closed = False
+        self.finished = False
+
+    @property
+    def raw_wire(self):
+        return {'sent': self.raw_sent, 'received': self.raw_received}
 
     def close(self):
-        if not self.closed:
+        if not self.finished:
             super().close()
-            self.closed = True
+            self.finished = True
 
 
 def owned_processes(root):
@@ -116,7 +101,9 @@ def validate_rename_trigger(data, active):
     assert isinstance(data, dict), 'rename trigger omitted its session summary'
     assert data.get('activeSessionId') == active, 'rename summary changed session identity'
     assert data.get('sessionName') == 'Write cleanup fixture', 'rename summary has wrong name'
-    assert isinstance(data.get('workerPid'), int), 'rename summary omitted worker identity'
+    # The runtime daemon runs the session itself (no worker process): its row
+    # says the daemon holds it open.
+    assert data.get('open') is True, 'rename summary omitted the open session'
 
 
 def pause_released(client, active, pause_id):
@@ -124,19 +111,13 @@ def pause_released(client, active, pause_id):
     try:
         client.call('release_session_input_pause', activeSessionId=active, pauseId=pause_id)
         return True
-    except AssertionError:
-        response = client.wire[-1]
-        assert response.get('command') == 'release_session_input_pause' and response.get('success') is False, response
-        assert response.get('error') == 'Session input pause is owned by another client: ' + pause_id, response
+    except Wire2Error as error:
+        assert error.reply.get('message') == 'Session input pause is owned by another client: ' + pause_id, error.reply
         return False
 
 
 def run_case(binary, root, observed):
-    # On the supervisor's wire (`check_agent_bounce.Client`):
-    # the runtime daemon's `session.release_input` releases a hold for any
-    # connection (no owner refusal shows a pause still held), and its rename
-    # answers no session summary.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     provider = Provider()
     provider.RequestHandlerClass = CompletionHandler
     threading.Thread(target=provider.serve_forever, daemon=True).start()

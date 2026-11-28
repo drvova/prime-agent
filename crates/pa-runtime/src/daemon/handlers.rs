@@ -29,6 +29,7 @@ use super::held::OpenSessions;
 use super::schedules::Schedules;
 use crate::runtime::{AfterAbort, Runtime};
 use crate::session::SessionBuilder;
+use crate::subagents::ChildStop;
 use crate::wire::{Attached, Call, ConnectionId, Handlers, Query};
 pub(super) use bash::UserBashes;
 pub(super) use feeds::Feeds;
@@ -223,9 +224,14 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
 
     async fn stop(&self, args: &Value) -> anyhow::Result<Value> {
         let id = string_arg(args, "session")?;
+        let stop = Self::child_stop(args)?;
+        if !self.open.contains(&id) {
+            // A subagent's, or a stopped one's delete.
+            return self.stop_subagent(&id, stop).await;
+        }
         anyhow::ensure!(
-            self.open.contains(&id),
-            "session {id} is not open in the runtime daemon"
+            matches!(stop, ChildStop::Stop),
+            "Failed to delete RLM subagent: session {id} is not a subagent"
         );
         // Stopped on purpose: its jobs wake nothing until it is opened again.
         self.schedules.disarm(&id);
@@ -348,49 +354,32 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         }))
     }
 
-    /// `session.rename`: the name row and, for a name that replaces another,
-    /// the renamed notice (pa-core's rule, the old worker's too); an open
-    /// session's clients hear `session_info_changed`, then the notice's
-    /// frames, as the old worker sent them.
     async fn rename(&self, args: &Value) -> anyhow::Result<Value> {
         let name = string_arg(args, "name")?;
-        let (id, _, open) = self.session(args)?;
-        let mut renamed = self
-            .change(args, move |manager| {
-                let previous = manager.get_session_name();
-                manager.append_session_info(&name)?;
-                let notice = pa_core::session_engine::messages::session_renamed_notice(
-                    previous.as_deref(),
-                    &name,
-                    None,
-                );
-                if let Some(notice) = &notice {
-                    manager.append_custom_message_entry(
-                        pa_core::session_engine::messages::SESSION_RENAMED_CUSTOM_TYPE,
-                        pa_types::ai::UserContent::Text(
-                            notice["content"].as_str().unwrap_or_default().to_string(),
-                        ),
-                        /*display*/ true,
-                        None,
-                    )?;
-                }
-                Ok(json!({ "session": manager.get_session_id(), "name": name, "notice": notice }))
-            })
-            .await?;
-        let notice = renamed
-            .as_object_mut()
-            .and_then(|reply| reply.remove("notice"))
-            .filter(|notice| !notice.is_null());
-        if open {
-            let stream = self.runtime.stream_sender(&id)?;
-            stream(json!({ "type": "session_info_changed", "name": renamed["name"] }));
-            if let Some(notice) = notice {
-                for kind in ["message_start", "message_end"] {
-                    stream(json!({ "type": kind, "message": notice }));
-                }
+        let id = string_arg(args, "session")?;
+        // The old worker's `session_info_changed`: every client following an
+        // open session re-reads its name.
+        let changed = |id: &str| {
+            if let Ok(stream) = self.runtime.stream_sender(id) {
+                stream(json!({ "type": "session_info_changed", "name": name }));
             }
+        };
+        if let Some(renamed) = self.runtime.subagents().rename_subagent(&id, &name).await {
+            renamed?;
+            changed(&id);
+            return Ok(json!({ "session": id, "name": name }));
         }
-        Ok(renamed)
+        let renamed = name.clone();
+        self.change(args, move |manager| {
+            manager.append_session_info(&renamed)?;
+            Ok(Value::Null)
+        })
+        .await?;
+        self.runtime.subagents().set_session_name(&id, &name);
+        changed(&id);
+        // The old daemon's rename answers the renamed session's summary.
+        let (id, path, open) = self.session(args)?;
+        self.summary(&id, path, open).await
     }
 
     async fn label(&self, args: &Value) -> anyhow::Result<Value> {
@@ -491,6 +480,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionAbortAndSendQueued => self.abort(&args, AfterAbort::SendQueued).await,
             Call::SessionResumeQueue => self.resume_queue(&args),
             Call::SessionWithdraw => self.withdraw(&args).await,
+            Call::SessionClearQueue => self.clear_queue(&args).await,
             Call::SessionRestore => self.restore(&args).await,
             Call::SessionCompact => self.compact(&args).await,
             Call::SessionWaitIdle => self.wait_idle(&args).await,
@@ -501,7 +491,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::ScheduleAdd => self.schedule_add(&args).await,
             Call::ScheduleCancel => self.schedule_cancel(&args),
             Call::SessionPauseInput => self.pause_input(&args, connection),
-            Call::SessionReleaseInput => self.release_input(&args),
+            Call::SessionReleaseInput => self.release_input(&args, connection),
             Call::SessionCancelTask => self.cancel_task(&args).await,
             Call::SessionCancelChild => self.cancel_child(&args).await,
             Call::SessionCycleModel => self.cycle_model(&args).await,

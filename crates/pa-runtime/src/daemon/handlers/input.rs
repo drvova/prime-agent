@@ -10,7 +10,8 @@
 //!   with the same key gets the same `pauseId` back. A hold is independent of
 //!   the lane's park (`session.abort`, `session.resume_queue`): resuming a
 //!   held lane leaves it held. `session.release_input {session, pauseId}`
-//!   releases one; the connection's end releases all of its holds, and a
+//!   releases one the calling connection holds (another connection's is
+//!   refused, "Session input pause is owned by another client: <pauseId>"); the connection's end releases all of its holds, and a
 //!   session stopped releases every hold on it, so no client that is gone
 //!   keeps a session from running.
 //! - **Cancel one task.** `session.cancel_task {session, task}` takes the task
@@ -72,12 +73,20 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         Ok(json!({ "session": id, "pauseId": pause }))
     }
 
-    pub(super) fn release_input(&self, args: &Value) -> anyhow::Result<Value> {
+    pub(super) fn release_input(
+        &self,
+        args: &Value,
+        connection: ConnectionId,
+    ) -> anyhow::Result<Value> {
         let id = string_arg(args, "session")?;
         let pause = string_arg(args, "pauseId")?;
         let held = {
             let mut holds = lock(&self.holds.holds);
             match holds.get(&pause) {
+                Some(hold) if hold.session == id && hold.connection != connection => {
+                    // The old daemon's `release_session_input_pause` refusal.
+                    anyhow::bail!("Session input pause is owned by another client: {pause}");
+                }
                 Some(hold) if hold.session == id => holds.remove(&pause),
                 Some(_) | None => None,
             }

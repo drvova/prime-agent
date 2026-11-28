@@ -8,6 +8,11 @@
 //!   prompts stay), under the node's delivery gate, so no delivery lands
 //!   between the read and the take. A wake task queued for a taken row then
 //!   runs over nothing and ends.
+//! - **A queue clear.** `session.clear_queue` takes the agent messages too,
+//!   and bounces each to the session that sent it (a client's has no session
+//!   to bounce to) with pa-core's `cleared_agent_message_bounce_text`, as
+//!   the old worker's `clear_queue` does: the sender otherwise never learns
+//!   its message will not be delivered.
 //! - **The depth bound.** Its status reads the node's bound and where it
 //!   comes from; a chat override fixes it.
 //! - **A heartbeat's queued fire.** A change to a heartbeat (all but a
@@ -16,6 +21,14 @@
 //! - **The delete.** Only a settled child is deleted (with the kernel's
 //!   `rlm.delete_subagent` teardown); one with live work answers `running`,
 //!   and a handle deleted before answers deleted again.
+//! - **A subagent's stop** (`session.stop` of a child, the old `kill` of its
+//!   session). A plain stop ends the child, running or not, and lets it go
+//!   from its family; its ledger edge stays, so it lists as a passive child
+//!   and its parent opened again finds it. A stop that deletes
+//!   (`rlmLedgerDelete`, the old supervisor's marker) writes the child's
+//!   deletion boundary before its teardown, as the kernel's delete does; one
+//!   aimed at a child no session runs (stopped before, or a retry of a delete)
+//!   is the ledger's alone, and a retry writes no second boundary.
 
 use std::sync::Arc;
 
@@ -24,13 +37,16 @@ use pa_core::session_engine::agent_controls::{
     agent_message_safety_status, cleared_agent_messages, rlm_max_depth_status,
     SubagentDeleteOutcome,
 };
-use pa_core::session_engine::agent_messaging::AGENT_MESSAGE_CUSTOM_TYPE;
+use pa_core::session_engine::agent_messaging::{
+    cleared_agent_message_bounce_text, AGENT_MESSAGE_CUSTOM_TYPE,
+};
 use pa_core::session_engine::messages::HEARTBEAT_PROMPT_CUSTOM_TYPE;
 use pa_core::session_engine::rlm_host::RlmSubagentHost as _;
+use pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason;
 use serde_json::Value;
 
-use super::host::SessionSubagents;
-use super::{child_is_unsettled, lock, Node, Subagents};
+use super::host::{delete_child, retire_child, SessionSubagents};
+use super::{child_is_unsettled, lock, Delivery, MessageSender, Node, Subagents};
 
 impl Subagents {
     /// The node of session `id`, root or subagent.
@@ -86,6 +102,59 @@ impl Subagents {
         let node = self.controlled(id)?;
         let (steering, follow_up) = take_agent_messages(&node);
         Ok(cleared_agent_messages(&steering, &follow_up))
+    }
+
+    /// The agent half of session `id`'s queue clear (see the module
+    /// documentation): its waiting agent messages are taken out and each
+    /// bounced to its sender; their prompts, by lane. A bounce that fails is
+    /// logged, never retried.
+    ///
+    /// # Errors
+    ///
+    /// The runtime runs no session `id`.
+    pub(crate) async fn clear_and_bounce_agent_messages(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        let node = self.controlled(id)?;
+        let (steering, follow_up) = take_rows(&node, is_agent_message);
+        // The cleared queue is this session's own: its name, else its id,
+        // names the receiver.
+        let receiver = node
+            .session_name()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| id.to_string());
+        for row in steering.iter().chain(&follow_up) {
+            let AgentMessage::Custom(custom) = row else {
+                continue;
+            };
+            let details = &custom.payload["details"];
+            let Some(sender) = details["from"]["activeSessionId"]
+                .as_str()
+                .filter(|sender| !sender.is_empty() && self.node(sender).is_some())
+            else {
+                continue;
+            };
+            let text = cleared_agent_message_bounce_text(
+                &receiver,
+                details["message"].as_str().unwrap_or_default(),
+            );
+            if let Err(error) = self
+                .deliver_message(
+                    sender,
+                    text,
+                    MessageSender::Session(id.to_string()),
+                    Delivery::Steer,
+                )
+                .await
+            {
+                tracing::error!("a cleared agent message's bounce to {sender} failed: {error:#}");
+            }
+        }
+        Ok((
+            steering.iter().map(row_prompt).collect(),
+            follow_up.iter().map(row_prompt).collect(),
+        ))
     }
 
     /// Withdraws heartbeat `job`'s fire waiting on session `id`'s agent (its
@@ -171,21 +240,88 @@ impl Subagents {
     }
 }
 
+/// What a subagent's stop does (see the module documentation).
+pub(crate) enum ChildStop {
+    /// The child ends; its ledger edge stays.
+    Stop,
+    /// The child is deleted for `reason`; `child_id`, when given, is the
+    /// handle the delete names.
+    Delete {
+        reason: RlmLedgerDeleteReason,
+        child_id: Option<String>,
+    },
+}
+
+/// What a subagent's stop found.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ChildStopped {
+    /// The child's session ran and was ended.
+    Session,
+    /// No session ran it: the delete's boundary is the ledger's.
+    Ledger,
+    /// The runtime runs no subagent by that id.
+    Unknown,
+}
+
+impl Subagents {
+    /// `session.stop` of subagent `id` (see the module documentation).
+    ///
+    /// # Errors
+    ///
+    /// The delete names another child's handle, or its deletion boundary
+    /// was not written.
+    pub(crate) async fn stop_child(
+        &self,
+        id: &str,
+        stop: ChildStop,
+    ) -> anyhow::Result<ChildStopped> {
+        let found = self.child_of(id).await;
+        let parent = found.as_ref().and_then(|child| child.node.parent_node());
+        match (stop, found, parent) {
+            (ChildStop::Stop, Some(child), Some(parent)) => {
+                retire_child(&parent, &child, "The subagent's session was stopped").await;
+                Ok(ChildStopped::Session)
+            }
+            (ChildStop::Delete { reason, child_id }, Some(child), Some(parent)) => {
+                if let Some(named) = child_id.filter(|named| *named != child.rlm_child_id) {
+                    anyhow::bail!("session {id} is not RLM subagent {named}");
+                }
+                delete_child(&parent, &child, reason).await?;
+                Ok(ChildStopped::Session)
+            }
+            (ChildStop::Delete { reason, child_id }, _, _) => match self.daemon() {
+                Some(family) => {
+                    family
+                        .deleted_stopped(id.to_string(), child_id, reason)
+                        .await?;
+                    Ok(ChildStopped::Ledger)
+                }
+                None => Ok(ChildStopped::Unknown),
+            },
+            (ChildStop::Stop, _, _) => Ok(ChildStopped::Unknown),
+        }
+    }
+}
+
 /// Takes the agent messages waiting on `node`'s agent out of both lanes:
 /// each one's prompt, by lane, in queue order.
 fn take_agent_messages(node: &Node) -> (Vec<String>, Vec<String>) {
-    let prompt = |message: &AgentMessage| match message {
+    let (steering, follow_up) = take_rows(node, is_agent_message);
+    (
+        steering.iter().map(row_prompt).collect(),
+        follow_up.iter().map(row_prompt).collect(),
+    )
+}
+
+/// A taken agent message's prompt: its row's content.
+fn row_prompt(message: &AgentMessage) -> String {
+    match message {
         AgentMessage::Custom(custom) => custom.payload["content"]
             .as_str()
             .unwrap_or_default()
             .to_string(),
         AgentMessage::Standard(_) => String::new(),
-    };
-    let (steering, follow_up) = take_rows(node, is_agent_message);
-    (
-        steering.iter().map(prompt).collect(),
-        follow_up.iter().map(prompt).collect(),
-    )
+    }
 }
 
 /// Takes the rows `taken` picks out of both lanes of `node`'s agent, under

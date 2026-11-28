@@ -871,6 +871,45 @@ async fn a_wake_idle_notice_to_a_session_in_a_turn_is_dropped() {
     bed.close().await;
 }
 
+/// A root's family lists the runtime's other root sessions as its siblings,
+/// by the name a client's rename gave them (the old daemon's
+/// `row_is_sibling` for a top-level session).
+#[tokio::test]
+async fn a_roots_family_lists_the_other_roots_as_siblings() {
+    use pa_core::session_engine::agent_messaging::AgentObserveController;
+    let bed = bed(json!({ "responses": [] })).await;
+    let other = bed
+        .runtime
+        .create_session(SessionSpec {
+            cwd: bed.cwd.clone(),
+            ..SessionSpec::default()
+        })
+        .await
+        .unwrap();
+    bed.runtime
+        .subagents()
+        .set_session_name(&other, "the other root");
+    let listed = super::FamilyObserve(bed.node(&bed.parent))
+        .list_agents()
+        .await
+        .unwrap();
+    let siblings: Vec<(String, Option<AgentFamilyRelationship>, Option<String>)> = listed
+        .agents
+        .into_iter()
+        .map(|agent| (agent.session_id, agent.relationship, agent.session_name))
+        .collect();
+    assert_eq!(
+        siblings,
+        vec![(
+            other.clone(),
+            Some(AgentFamilyRelationship::Sibling),
+            Some("the other root".to_string())
+        )]
+    );
+    bed.runtime.finish(&other).await.unwrap();
+    bed.close().await;
+}
+
 /// A parent opened again lists its family from the ledger without building
 /// a child: the children are passive until used, and a message to one
 /// builds that one alone and delivers to it, as the old daemon's passive
