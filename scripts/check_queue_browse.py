@@ -3,7 +3,8 @@
 
 Browsing visits only user rows and swaps with the adjacent user row. Full decoded
 styled frames and raw ANSI are retained. A protocol fixture controls only the
-queue snapshot; the client parses real input and constructs mutations.
+queue snapshot (a wire2 fixture daemon); the client parses real input and
+constructs mutations.
 """
 import argparse
 import copy
@@ -16,9 +17,8 @@ import sys
 import tempfile
 import time
 
-from check_agent_bounce import Client
 from lifecycle_lib import DockScreen
-from lifecycle_lib import Supervisor, Terminal, digest, supervisor_env_for
+from lifecycle_lib import FixtureDaemon, Terminal, Wire2Client, digest, env_for
 from lifecycle_lib import OwnedProcesses, TAG, finish
 
 USER_A, USER_B = 'QUEUE_BROWSE_USER_A', 'QUEUE_BROWSE_USER_B'
@@ -34,7 +34,7 @@ def check_mutation(command):
     assert command == expected, command
 
 
-class QueueSupervisor(Supervisor):
+class QueueDaemon(FixtureDaemon):
     def __init__(self, path, hello, root, internal_only):
         self.queue = {'steering': [INTERNAL] if internal_only else [USER_A, INTERNAL, USER_B], 'followUp': []}
         self.mutations = []
@@ -48,8 +48,8 @@ class QueueSupervisor(Supervisor):
         name = data.get('command')
         if data.get('type') == 'daemon_hello':
             # Advertise the actual queue-mutation protocol this subclass owns.
-            # The base fixture server deliberately omits this capability.
-            data['serverCapabilities'] = ['session_input_admission', 'queue_message_mutation']
+            # The base fixture daemon deliberately omits this capability.
+            data['serverCapabilities'] = ['queue_message_mutation']
         if data.get('type') == 'response':
             if name == 'attach':
                 data['data']['snapshot']['state']['sessionActions'] = self.actions()
@@ -60,9 +60,6 @@ class QueueSupervisor(Supervisor):
 
     def extra_command(self, command, response):
         name = command['type']
-        if name == 'get_queue':
-            response['data'] = copy.deepcopy(self.queue)
-            return True
         if name != 'mutate_queued_message':
             return False
         assert command['lane'] == 'steering', command
@@ -78,7 +75,9 @@ class QueueSupervisor(Supervisor):
 
 
 def discover_hello(binary, root, env, observed):
-    path = root / 'hello.sock'
+    # Its own folder: the runtime daemon's socket is `daemon2.sock` beside it.
+    (root / 'hello').mkdir()
+    path = root / 'hello' / 'hello.sock'
     scope = OwnedProcesses(binary, root, path)
     daemon = client = None
     with open(root / 'hello.log', 'wb') as log:
@@ -87,8 +86,8 @@ def discover_hello(binary, root, env, observed):
             daemon = subprocess.Popen(command, cwd=root, env=env, stdout=log,
                 stderr=subprocess.STDOUT, start_new_session=True)
             scope.register(daemon, command)
-            client = Client(path, daemon)
-            hello = client.hello
+            client = Wire2Client(path, daemon)
+            hello = client.query('daemon.identity')
             assert hello.get('schemaId'), hello
             assert 'queue_message_mutation' in hello.get('serverCapabilities', []), hello
             observed['hello'] = hello
@@ -105,13 +104,11 @@ def frame(terminal):
 
 
 def observe(binary, root, internal_only, observed):
-    # On the supervisor's wire: the TUI is driven against a fixture of the
-    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     env[TAG] = str(root)
     hello_cleanup = observed['hello_discovery'] = {}
     hello = discover_hello(binary, root, env, hello_cleanup)
-    server = QueueSupervisor(root / 'ui.sock', hello, root, internal_only)
+    server = QueueDaemon(root / 'ui.sock', hello, root, internal_only)
     scope = OwnedProcesses(binary, root, server.path)
     terminal = None
     observed['frames'] = {}

@@ -2,12 +2,11 @@
 import unittest
 from pathlib import Path
 import tempfile
-import json
 import threading
 from unittest.mock import Mock, patch
 
-from check_dock_events import DockSupervisor, child, cost_ready, parent, run_case, running_visible, visible_cost
-from lifecycle_lib import DockScreen
+from check_dock_events import DockDaemon, child, cost_ready, parent, run_case, running_visible, visible_cost
+from lifecycle_lib import DockScreen, wire2_decode
 
 
 class CaptureTests(unittest.TestCase):
@@ -87,7 +86,7 @@ class CaptureTests(unittest.TestCase):
         terminal.close.side_effect = RuntimeError('terminal cleanup failed')
         with tempfile.TemporaryDirectory() as folder, \
                 patch('check_dock_events.actual_hello', return_value={}), \
-                patch('check_dock_events.DockSupervisor', return_value=server), \
+                patch('check_dock_events.DockDaemon', return_value=server), \
                 patch('check_dock_events.Terminal', return_value=terminal):
             observed = {}
             with self.assertRaisesRegex(RuntimeError, 'terminal cleanup failed'):
@@ -129,21 +128,22 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(screen.unsupported_terminal, [])
 
     def test_dock_hello_advertises_implemented_roster_capability(self):
-        server = DockSupervisor.__new__(DockSupervisor)
+        server = DockDaemon.__new__(DockDaemon)
         server.write_lock = threading.Lock()
         sock = Mock()
-        server.send(sock, {'type': 'daemon_hello', 'serverCapabilities': ['session_input_admission']})
-        wire = json.loads(sock.sendall.call_args.args[0])
-        self.assertEqual(wire['serverCapabilities'], ['session_input_admission', 'agent_roster'])
+        server.send(sock, {'type': 'daemon_hello', 'id': 'compat:identity', 'serverCapabilities': []})
+        wire = wire2_decode(sock.sendall.call_args.args[0].hex())
+        self.assertEqual(wire, {'type': 'reply', 'id': 'compat:identity', 'status': 'ok',
+                                'result': {'serverCapabilities': ['agent_roster']}})
 
     def test_context_tree_and_roster_describe_same_family_usage(self):
-        server = DockSupervisor.__new__(DockSupervisor)
+        server = DockDaemon.__new__(DockDaemon)
         server.write_lock = threading.Lock()
         server.roster = [parent(), child('c1', 'running', 0.42), child('c2', 'running', 0.49)]
         server.context_responses = []
         sock = Mock()
         server.send(sock, {'type': 'response', 'command': 'get_context_tree', 'success': True, 'data': {}})
-        tree = json.loads(sock.sendall.call_args.args[0])['data']
+        tree = wire2_decode(sock.sendall.call_args.args[0].hex())['result']
         self.assertAlmostEqual(tree['totalUsage']['cost']['total'], 0.91)
         self.assertEqual([node['ownUsage']['cost']['total'] for node in tree['children']], [0.42, 0.49])
         self.assertEqual(len(server.context_responses), 1)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hosted actual quoted @ completion keys and menu captures.
 
-Ordinary PTY clients use a controlled protocol-7 peer with no selected model.
+Ordinary PTY clients use a controlled wire2 fixture daemon with no selected model.
 The actual binary enumerates a temporary project containing spaces. It must
 refresh directory children after Tab, Enter, a typed quoted slash, and deleting
 inside that quoted token.
@@ -16,9 +16,8 @@ import sys
 import tempfile
 import time
 
-from check_agent_bounce import Client
 from lifecycle_lib import DockScreen
-from lifecycle_lib import Supervisor, Terminal, digest, supervisor_env_for
+from lifecycle_lib import FixtureDaemon, Terminal, Wire2Client, digest, env_for
 from lifecycle_lib import OwnedProcesses, TAG, finish, process_identity
 
 DIRECTORY = 'dir with spaces'
@@ -91,9 +90,7 @@ def discover_direct(scope, command):
 def discover_hello(binary, root, observed):
     """Learn the real schema; graceful ACK + close + exit, with fallback RED."""
     root.mkdir(parents=True)
-    # On the supervisor's wire: the TUI is driven against a fixture of the
-    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     env[TAG] = str(root)
     socket_path = root / 'hello.sock'
     scope = OwnedProcesses(binary, root, socket_path)
@@ -104,9 +101,9 @@ def discover_hello(binary, root, observed):
             process = subprocess.Popen(command, cwd=root, env=env, stdout=log,
                                        stderr=subprocess.STDOUT, start_new_session=True)
             scope.register(process, command)
-            client = Client(socket_path, process)
-            hello = client.hello
-            assert hello.get('schemaId'), 'actual daemon greeting lacks schema identity'
+            client = Wire2Client(socket_path, process)
+            hello = client.query('daemon.identity')
+            assert hello.get('schemaId'), 'actual daemon identity lacks schema identity'
             observed['hello'] = hello
         finally:
             discover_direct(scope, command)
@@ -156,12 +153,12 @@ def close_terminal(terminal, scope, server, observed):
         try:
             server.close()
         except Exception as error:
-            errors.append('controlled supervisor cleanup: ' + str(error))
+            errors.append('controlled fixture daemon cleanup: ' + str(error))
         observed['wire_commands'] = server.commands
         observed['fixture_errors'] = server.errors
         observed['owned_process_identities'] = dict(scope.targets)
     if server.errors:
-        errors.append('controlled supervisor errors: ' + str(server.errors))
+        errors.append('controlled fixture daemon errors: ' + str(server.errors))
     if errors:
         observed['cleanup_errors'] = errors
         raise AssertionError('; '.join(errors))
@@ -170,14 +167,12 @@ def close_terminal(terminal, scope, server, observed):
 
 def run_case(binary, root, hello, case, observed):
     root.mkdir(parents=True)
-    # On the supervisor's wire: the TUI is driven against a fixture of the
-    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     env[TAG] = str(root)
     (root / DIRECTORY).mkdir()
     (root / DIRECTORY / CHILD).write_text('fixture child\n')
     socket_path = root / 'fixture.sock'
-    server = Supervisor(socket_path, hello, 'at_completion', root)
+    server = FixtureDaemon(socket_path, hello, 'at_completion', root)
     scope = OwnedProcesses(binary, root, socket_path)
     terminal = None
     observed['frames'] = {}

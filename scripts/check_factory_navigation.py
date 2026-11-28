@@ -4,7 +4,7 @@ Enter on a run header are inert, the stop key only arms, Left closes. Enter
 on a state opens its child session without ending the app, and Left in the
 child returns to the page with the same run and state selected.
 
-A protocol fixture supplies one real-shaped run; actual input parsing, view
+A wire2 fixture daemon supplies one real-shaped run; actual input parsing, view
 rendering and fallback keys execute unchanged.
 """
 import argparse
@@ -18,9 +18,8 @@ import sys
 import tempfile
 import time
 
-from check_agent_bounce import Client
 from lifecycle_lib import DockScreen
-from lifecycle_lib import Supervisor, Terminal, digest, supervisor_env_for
+from lifecycle_lib import FixtureDaemon, Terminal, Wire2Client, digest, env_for
 from lifecycle_lib import OwnedProcesses, TAG, finish
 
 RUN = 'factory-navigation-run'
@@ -37,7 +36,7 @@ ROSTER = [{'agentId': 'work-agent', 'summary': {'runtimeKind': 'subagent',
 STATE_SELECTED = '\u25b8 \u25cf work'
 
 
-class FactorySupervisor(Supervisor):
+class FactoryDaemon(FixtureDaemon):
     def extra_command(self, command, response):
         return command.get('type') == 'cancel_rlm_child'
 
@@ -46,7 +45,7 @@ class FactorySupervisor(Supervisor):
         if data.get('type') == 'response' and data.get('command') == 'cancel_rlm_child':
             return  # A real socket sink that never replies to the confirmed stop.
         if data.get('type') == 'daemon_hello':
-            data['serverCapabilities'] = ['session_input_admission', 'factory_activity']
+            data['serverCapabilities'] = ['factory_activity']
         if data.get('type') == 'response' and data.get('command') == 'factory_activity':
             # The base fixture already recognizes this lane with an empty
             # legacy response. Supply its graph shape without mutating errors.
@@ -70,7 +69,9 @@ class FactorySupervisor(Supervisor):
 
 
 def hello(binary, root, env, observed):
-    path = root / 'hello.sock'
+    # Its own folder: the runtime daemon's socket is `daemon2.sock` beside it.
+    (root / 'hello').mkdir()
+    path = root / 'hello' / 'hello.sock'
     scope = OwnedProcesses(binary, root, path)
     daemon = client = None
     with open(root / 'hello.log', 'wb') as log:
@@ -79,8 +80,8 @@ def hello(binary, root, env, observed):
             daemon = subprocess.Popen(command, cwd=root, env=env, stdout=log,
                 stderr=subprocess.STDOUT, start_new_session=True)
             scope.register(daemon, command)
-            client = Client(path, daemon)
-            observed['hello'] = client.hello
+            client = Wire2Client(path, daemon)
+            observed['hello'] = client.query('daemon.identity')
         finally:
             finish(scope, client, daemon, observed)
     assert observed['cleanup_verified'], observed
@@ -96,13 +97,11 @@ def factory_click(screen):
 
 
 def observe(binary, root, observed):
-    # On the supervisor's wire: the TUI is driven against a fixture of the
-    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     env[TAG] = str(root)
     discovered = observed['hello_discovery'] = {}
     actual = hello(binary, root, env, discovered)
-    server = FactorySupervisor(root / 'ui.sock', actual, 'factory-navigation', root)
+    server = FactoryDaemon(root / 'ui.sock', actual, 'factory-navigation', root)
     scope = OwnedProcesses(binary, root, server.path)
     terminal = None
     observed['frames'] = {}
