@@ -23,7 +23,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use pa_types::wire2::{Outcome, Since};
+use pa_types::wire2::{Outcome, ServerFrame, Since};
 use serde_json::{json, Value};
 
 use super::schedules::until;
@@ -426,6 +426,10 @@ async fn a_stop_cuts_off_a_running_subagents_turn() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the waits read in order: the family, the roster's wait edge, the cycle, the message, the timeout"
+)]
 async fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
     let bed = Bed::new();
     let records = bed.dir.path().join("records");
@@ -436,19 +440,18 @@ async fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
         "(rlm-spawn \"wait for beta\" #:name \"alpha\")\n(rlm-spawn \"talk to alpha\" #:name \"beta\")\n{}\n(rlm-collect #:timeout-ms 120000)",
         mark(&spawned)
     );
-    // Alpha parks on beta once both are spawned, and says so.
+    // Alpha parks on beta once both are spawned.
     let alpha = format!(
-        "{}\n{}\n{}",
+        "{}\n{}",
         await_marker(&spawned),
-        mark(&parked),
         record(
             r#"(event-wait #:sender "beta" #:timeout-ms 60000)"#,
             "alpha-wait",
             &records
         )
     );
-    // Beta waits on alpha (a cycle), sends to it, then waits again (no one
-    // sends: a timeout).
+    // Beta waits on alpha (a cycle) once the roster shows alpha parked on
+    // it, sends to it, then waits again (no one sends: a timeout).
     let beta = [
         await_marker(&parked),
         record(
@@ -476,11 +479,39 @@ async fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
             "beta": { "responses": [cell("talking", &beta), "absorbed"], "repeatLastResponse": true },
         },
     }));
+    // The readiness beta's cycle check needs: alpha's wait edge, as the
+    // roster reports it (its `waitingOn` naming beta), not alpha's word that
+    // it is about to wait, which beta's check could still overtake.
+    let (mut watcher, _) = Client::connect(&bed.runtime_socket()).await;
+    watcher.subscribe("runtime/roster", Since::Now).await;
+    let parked_on_beta = tokio::spawn(async move {
+        let mut names = std::collections::HashMap::new();
+        loop {
+            let ServerFrame::Event { event, .. } = watcher.frame().await else {
+                continue;
+            };
+            let changed = event.event.payload["changed"].as_array().cloned();
+            for summary in changed.iter().flatten().map(|entry| &entry["summary"]) {
+                if let (Some(id), Some(name)) = (
+                    summary["activeSessionId"].as_str(),
+                    summary["sessionName"].as_str(),
+                ) {
+                    names.insert(id.to_string(), name.to_string());
+                }
+                let on = summary["waitingOn"].as_str().and_then(|on| names.get(on));
+                if summary["sessionName"] == "alpha" && on.is_some_and(|on| on == "beta") {
+                    std::fs::write(&parked, "ready").expect("the parked marker");
+                    return;
+                }
+            }
+        }
+    });
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
     let created = ok(client.call("session.create", json!({})).await);
     let id = created["session"].as_str().unwrap().to_string();
     client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
     run_turn(&mut client, &id, "set them talking").await;
+    parked_on_beta.await.expect("the roster watch");
 
     let cycle = recorded(&records, "beta-cycle").await;
     assert!(
