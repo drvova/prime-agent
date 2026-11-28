@@ -67,6 +67,14 @@ impl RuntimeDaemon {
         RuntimeDaemon::spawn_with(dir, |_| {})
     }
 
+    /// [`RuntimeDaemon::spawn`] whose sessions' turns the faux script at `script` answers
+    /// (`PRIME_AGENT_FAUX_SCRIPT`, which the daemon reads as it starts: the file must exist).
+    pub fn spawn_scripted(dir: &Path, script: &Path) -> RuntimeDaemon {
+        RuntimeDaemon::spawn_with(dir, |command| {
+            command.env("PRIME_AGENT_FAUX_SCRIPT", script);
+        })
+    }
+
     /// [`RuntimeDaemon::spawn`] with `configure` applied to the command last (extra env, a
     /// different agent dir, a log file for its standard error).
     ///
