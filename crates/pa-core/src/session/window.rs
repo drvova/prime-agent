@@ -35,7 +35,7 @@ impl ReverseLines {
     fn next(&mut self) -> io::Result<Option<Vec<u8>>> {
         let mut pieces = Vec::new();
         loop {
-            if let Some(index) = self.pending.iter().rposition(|byte| *byte == b'\n') {
+            if let Some(index) = memchr::memrchr(b'\n', &self.pending) {
                 let mut line = self.pending.split_off(index + 1);
                 self.pending.pop();
                 self.line_start = self.position + self.pending.len() as u64 + 1;

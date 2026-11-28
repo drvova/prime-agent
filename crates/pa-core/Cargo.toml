@@ -70,6 +70,8 @@ spider_transformations = { version = "=2.39.13", default-features = false }
 spider_agent = { version = "=2.54.2", default-features = false, features = ["chrome"] }
 # Checks `web-crawl`'s include and exclude patterns as spider will compile them.
 regex = "1"
+# memchr's vector byte search for the line and newline scans.
+memchr = "2"
 tar = "0.4"
 flate2 = "1"
 unicode-normalization = "0.1"
