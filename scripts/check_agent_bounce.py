@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 
-from lifecycle_lib import digest, env_for, stop
+from lifecycle_lib import digest, supervisor_env_for, stop
 
 LIMIT = 35
 MESSAGE = 'AGENT_BOUNCE_PARITY_MESSAGE'
@@ -105,8 +105,45 @@ class Client:
         self.sock.close()
 
 
+class RawReader:
+    def __init__(self, reader, received):
+        self.reader, self.received = reader, received
+
+    def readline(self):
+        line = self.reader.readline()
+        self.received.append(line.hex())
+        return line
+
+    def close(self):
+        self.reader.close()
+
+
+class RawSocket:
+    def __init__(self, sock, sent):
+        self.sock, self.sent = sock, sent
+
+    def sendall(self, data):
+        self.sent.append(data.hex())
+        self.sock.sendall(data)
+
+    def close(self):
+        self.sock.close()
+
+
+class RecordingClient(Client):
+    """The old wire's client, keeping every line after the hello as its bytes."""
+    def __init__(self, path, process):
+        super().__init__(path, process)
+        self.received, self.sent = [], []
+        self.reader = RawReader(self.reader, self.received)
+        self.sock = RawSocket(self.sock, self.sent)
+
 def run_case(binary, root, long_name, observed):
-    env = env_for(root)
+    # On the supervisor's wire (`check_agent_bounce.Client`):
+    # the runtime daemon has no `clear_queue`: nothing there clears a
+    # session's lane and its agent messages together and bounces the agent
+    # messages to their senders.
+    env = supervisor_env_for(root)
     provider = Provider()
     thread = threading.Thread(target=provider.serve_forever, daemon=True)
     thread.start()

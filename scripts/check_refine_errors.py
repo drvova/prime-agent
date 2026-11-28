@@ -9,8 +9,8 @@ import subprocess
 import tempfile
 import threading
 
-from check_saved_catalog import CatalogClient
-from lifecycle_lib import OwnedProcesses, TAG, digest, env_for, finish
+from check_agent_bounce import RecordingClient as CatalogClient
+from lifecycle_lib import OwnedProcesses, TAG, digest, supervisor_env_for, finish
 
 
 class Server(http.server.ThreadingHTTPServer):
@@ -58,7 +58,10 @@ CASES = ('length', 'provider_error', 'normal_invalid')
 
 
 def observe(binary, root, case, receipt):
-    env = env_for(root)
+    # On the supervisor's wire (`check_agent_bounce.Client`):
+    # `refine` is the supervisor's own command: no client of this build
+    # sends it, and wire2 has no form of it.
+    env = supervisor_env_for(root)
     env[TAG] = str(root)
     server = Server(case)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

@@ -14,7 +14,7 @@ import tempfile
 import threading
 
 from check_agent_bounce import Client, Provider
-from lifecycle_lib import digest, env_for
+from lifecycle_lib import digest, supervisor_env_for
 from lifecycle_lib import OwnedProcesses, TAG, finish
 
 EARLIER, DRAFT, EDITED = 'QUEUE_PRIORITY_EARLIER', 'QUEUE_PRIORITY_DRAFT', 'QUEUE_PRIORITY_EDITED'
@@ -26,7 +26,10 @@ def check_order(queue, agent_preview):
 
 
 def observe(binary, root, observed):
-    env = env_for(root)
+    # On the supervisor's wire (`check_agent_bounce.Client`):
+    # a follow-up the runtime daemon re-lanes into steering is listed after
+    # an agent message that arrived before the edit, not ahead of it.
+    env = supervisor_env_for(root)
     env[TAG] = str(root)
     provider = Provider()
     threading.Thread(target=provider.serve_forever, daemon=True).start()

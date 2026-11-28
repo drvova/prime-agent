@@ -10,8 +10,8 @@ import tempfile
 import threading
 import time
 
-from check_agent_bounce import Client, Provider, Handler, LIMIT
-from lifecycle_lib import digest, env_for, stop, verify_session
+from check_agent_bounce import Provider, Handler, LIMIT
+from lifecycle_lib import Wire2Client as Client, digest, env_for, stop, verify_runtime_session, wire2_socket
 
 
 class CompletionHandler(Handler):
@@ -74,19 +74,29 @@ def owned_processes(root):
 
 
 def session_identity(binary, tree):
-    """The busy session's socket and lifetime while the tree's daemon still hosts it, else None.
+    """The busy session's identity while the tree's daemon still holds it with
+    its turn running, else None.
 
     Sessions run inside their daemon; one that was stopped, or rebuilt as
-    another lifetime, no longer answers to the identity captured at launch.
+    another lifetime (whose interrupted turn ends), no longer answers to the
+    identity captured at launch: the daemon's socket, the session, and its
+    running turn. Asked on a connection of its own, as a new client would.
     """
-    for path in (tree['root'] / 'agent/daemon-workers').rglob('*.json'):
-        try:
-            row = json.loads(path.read_text())
-            if row.get('rootActiveSessionId') == tree['active']:
-                return verify_session(row, tree['active'], binary, tree['socket'], tree['process'].pid)
-        except (OSError, ValueError, AssertionError):
-            pass
-    return None
+    if tree['process'].poll() is not None:
+        return None
+    try:
+        probe = Client(tree['socket'], tree['process'], timeout=5, name='shutdown-scope-probe')
+    except (AssertionError, OSError):
+        return None
+    try:
+        row = verify_runtime_session(probe, tree['active'], binary, tree['process'].pid)
+        if row.get('isStreaming') is not True:
+            return None
+        return [str(wire2_socket(tree['socket'])), tree['active'], 'running']
+    except (OSError, AssertionError):
+        return None
+    finally:
+        probe.close()
 
 
 def survivors(original, root):
@@ -151,7 +161,6 @@ def launch(binary, root, socket_path, shared_tmp, provider, trees):
     env = env_for(root)
     env['TMPDIR'] = str(shared_tmp)
     env['PRIME_AGENT_DAEMON_SOCKET'] = str(socket_path)
-    env['PRIME_AGENT_INTERNAL_WORKER_SUPERVISOR_LOST_EXIT_MS'] = '15000'
     (root / 'agent/models.json').write_text(json.dumps({'providers': {'parity-local': {
         'api': 'openai-completions', 'apiKey': 'fixture-only',
         'baseUrl': f'http://127.0.0.1:{provider.server_port}/v1',
@@ -177,9 +186,9 @@ def launch(binary, root, socket_path, shared_tmp, provider, trees):
     original = tree['original_processes'] = owned_processes(root)
     tree['active'] = active
     session = tree['session'] = session_identity(binary, tree)
-    assert process.pid in original and session is not None, 'live supervisor and its hosted session not observed'
+    assert process.pid in original and session is not None, 'live daemon and its hosted session not observed'
     tree['critical_processes'] = {process.pid: original[process.pid]}
-    tree['process_roles'] = {str(pid): {'role': 'supervisor' if pid == process.pid else 'other inherited-environment process', 'cmdline': process_command(pid)} for pid in original}
+    tree['process_roles'] = {str(pid): {'role': 'daemon' if pid == process.pid else 'other inherited-environment process', 'cmdline': process_command(pid)} for pid in original}
     return tree
 
 
@@ -218,14 +227,15 @@ def run_case(binary, root, mode, observed):
             wait_stopped(own['process'])
             kept = survivors(foreign['original_processes'], foreign['root'])
             observed['foreign_original_processes_after'] = kept
-            assert survivors(foreign['critical_processes'], foreign['root']) == foreign['critical_processes'], 'exact socket shutdown harmed the foreign supervisor'
+            assert survivors(foreign['critical_processes'], foreign['root']) == foreign['critical_processes'], 'exact socket shutdown harmed the foreign daemon'
             assert session_identity(binary, foreign) == foreign['session'], 'exact socket shutdown harmed the foreign session'
         else:
             status = observed['status_cli'] = invoke(binary, ['status', '--json'], own)
             assert status['returncode'] == 0, status
             services = observed['discovered_services'] = json.loads(status['stdout'])
             paths = [service['socketPath'] for service in services]
-            assert paths == [str(own['socket'])], paths
+            # The runtime daemon serves `daemon2.sock` beside its pinned socket.
+            assert paths == [str(wire2_socket(own['socket']))], paths
             provider.release.set()
             # Root CLI creates its own shutdown client. Close the fixture observer
             # beforehand so the daemon's close can retire the acknowledged tree.
@@ -235,17 +245,17 @@ def run_case(binary, root, mode, observed):
             report = json.loads(shutdown['stdout'])
             assert report['failed'] == [], report
             stopped_paths = {row['socketPath'] for row in report['stopped']}
-            assert str(own['socket']) in stopped_paths, 'root shutdown omitted own supervisor'
+            assert str(wire2_socket(own['socket'])) in stopped_paths, 'root shutdown omitted own daemon'
             for tree in trees:
-                if str(tree['socket']) in stopped_paths:
+                if str(wire2_socket(tree['socket'])) in stopped_paths:
                     tree['shutdown_acknowledged'] = True
             # A successful root report must settle before cleanup; a new
-            # connection must never re-pin a supervisor already in server.close.
+            # connection must never re-pin a daemon already in server.close.
             wait_stopped(own['process'])
             kept = survivors(foreign['original_processes'], foreign['root'])
             observed['foreign_original_processes_after'] = kept
-            observed['own_supervisor_stopped'] = own['process'].poll() is not None
-            assert survivors(foreign['critical_processes'], foreign['root']) == foreign['critical_processes'], 'pinned root shutdown harmed the foreign supervisor'
+            observed['own_daemon_stopped'] = own['process'].poll() is not None
+            assert survivors(foreign['critical_processes'], foreign['root']) == foreign['critical_processes'], 'pinned root shutdown harmed the foreign daemon'
             assert session_identity(binary, foreign) == foreign['session'], 'pinned root shutdown harmed the foreign session'
         observed['provider_requests'] = provider.requests
     except Exception as error:
@@ -276,8 +286,8 @@ def main():
     parser.add_argument('--receipt', required=True, type=Path)
     args = parser.parse_args()
     receipt = {'scenario': 'shutdown_scope', 'verified': False, 'cases': {},
-        'scope': 'real supervisor and busy hosted-session identities, exact-socket shutdown, pinned-root status and shutdown',
-        'process_scope': 'the original foreign supervisor and its busy session (same socket, same lifetime) must survive; other inherited-environment processes are role/cmdline captured but can complete naturally',
+        'scope': 'real runtime daemon and busy hosted-session identities, exact-socket shutdown, pinned-root status and shutdown',
+        'process_scope': 'the original foreign daemon and its busy session (same socket, same lifetime) must survive; other inherited-environment processes are role/cmdline captured but can complete naturally',
         'not_covered': 'doctor output, inherited session environment routing, overlapping agent-dir regression (separate Rust hosted red/green test)'}
     try:
         with tempfile.TemporaryDirectory(prefix='pa-shutdown-scope-', dir='/tmp') as folder:

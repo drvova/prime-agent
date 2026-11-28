@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from check_catalog_field_removal import COUNT, CWD, REMOVED, seed, validate
+from lifecycle_lib import wire2_frame
 
 
 class CatalogFieldRemovalGuards(unittest.TestCase):
@@ -18,22 +19,26 @@ class CatalogFieldRemovalGuards(unittest.TestCase):
         rows = copy.deepcopy(self.expected)
         for row in rows:
             row['path'] = str(self.root / 'agent/sessions' / row['path'])
-        frames = [{'type': 'session_list_item', 'id': '1',
-            'command': 'list_saved_sessions', 'session': copy.deepcopy(row)} for row in rows]
-        frames.append({'type': 'session_list_progress', 'id': '1',
-            'command': 'list_saved_sessions', 'loaded': COUNT, 'total': COUNT})
+        topic = 'runtime/session_list/list-1'
+        event = lambda payload: {'type': 'event', 'subId': 'list:list-1', 'event': {
+            'id': 'live', 'seq': 0, 'ts': 1, 'topic': topic, 'source': 'runtime',
+            'payload': dict(payload, id='list-1', command='list_saved_sessions'), 'trust': 'owner'}}
+        frames = [{'type': 'backfilled', 'subId': 'list:list-1', 'throughSeq': 0}]
+        frames += [event({'session': copy.deepcopy(row)}) for row in rows]
+        frames.append(event({'loaded': COUNT, 'total': COUNT}))
         data = {'sessions': rows}
-        frames.append({'type': 'response', 'id': '1', 'command': 'list_saved_sessions',
-                       'success': True, 'data': data})
-        observed = {'frames': frames, 'final_data': data, 'raw_sent_hex': [json.dumps({
-            'id': '1', 'type': 'command', 'command': {'type': 'list_saved_sessions',
-                'cwd': CWD, 'scope': 'all'}}).encode().hex()]}
+        frames.append({'type': 'reply', 'id': 'check-2', 'status': 'ok', 'result': data})
+        sent = [{'type': 'subscribe', 'subId': 'list:list-1', 'filter': topic, 'since': {'from': 'now'}},
+                {'type': 'query', 'id': 'check-2', 'name': 'sessions.list', 'args': {
+                    'shape': 'saved', 'stream': 'list-1', 'cwd': CWD, 'scope': 'all'}},
+                {'type': 'unsubscribe', 'subId': 'list:list-1'}]
+        observed = {'frames': frames, 'final_data': data, 'after_reply': [],
+                    'raw_sent_hex': [wire2_frame(frame).hex() for frame in sent]}
         self.raw(observed)
         return observed
 
     def raw(self, observed):
-        observed['raw_received_hex'] = [(json.dumps(frame) + '\n').encode().hex()
-                                       for frame in observed['frames']]
+        observed['raw_received_hex'] = [wire2_frame(frame).hex() for frame in observed['frames']]
 
     def check(self, observed):
         return validate(observed, self.root, self.expected)
@@ -51,7 +56,7 @@ class CatalogFieldRemovalGuards(unittest.TestCase):
         for location in ('stream', 'final'):
             for value in (None, '', 'stale text'):
                 observed = self.observation()
-                row = observed['frames'][0]['session'] if location == 'stream' else observed['final_data']['sessions'][0]
+                row = observed['frames'][1]['event']['payload']['session'] if location == 'stream' else observed['final_data']['sessions'][0]
                 row[REMOVED] = value
                 self.raw(observed)
                 with self.subTest(location=location, value=value), self.assertRaises(AssertionError):
@@ -61,15 +66,16 @@ class CatalogFieldRemovalGuards(unittest.TestCase):
         for location in ('stream', 'final'):
             for mode in ('missing', 'duplicate', 'escaped', 'changed'):
                 observed = self.observation()
-                rows = [frame['session'] for frame in observed['frames'] if frame['type'] == 'session_list_item'] if location == 'stream' else observed['final_data']['sessions']
+                rows = [frame['event']['payload']['session'] for frame in observed['frames']
+                        if frame['type'] == 'event' and 'session' in frame['event']['payload']] if location == 'stream' else observed['final_data']['sessions']
                 if mode == 'missing':
                     if location == 'stream':
-                        observed['frames'].pop(0)
+                        observed['frames'].pop(1)
                     else:
                         rows.pop()
                 elif mode == 'duplicate':
                     if location == 'stream':
-                        observed['frames'].insert(0, copy.deepcopy(observed['frames'][0]))
+                        observed['frames'].insert(1, copy.deepcopy(observed['frames'][1]))
                     else:
                         rows.append(copy.deepcopy(rows[0]))
                 else:
@@ -84,14 +90,15 @@ class CatalogFieldRemovalGuards(unittest.TestCase):
             if mode == 'missing_raw':
                 observed['raw_received_hex'] = []
             elif mode == 'wrong_raw':
-                observed['raw_received_hex'][0] = b'{}\n'.hex()
+                observed['raw_received_hex'][0] = wire2_frame({}).hex()
             elif mode == 'wrong_request':
-                observed['raw_sent_hex'] = [b'{"id":"wrong","command":{}}'.hex()]
+                observed['raw_sent_hex'][1] = wire2_frame({'type': 'query', 'id': 'wrong',
+                                                           'name': 'sessions.list', 'args': {}}).hex()
             else:
                 if mode == 'after_final':
-                    observed['frames'].append(copy.deepcopy(observed['frames'][0]))
+                    observed['frames'].append(copy.deepcopy(observed['frames'][1]))
                 else:
-                    observed['frames'][-1]['success'] = False
+                    observed['frames'][-1]['status'] = 'error'
                 self.raw(observed)
             with self.subTest(mode=mode), self.assertRaises(AssertionError):
                 self.check(observed)

@@ -20,7 +20,7 @@ import threading
 import time
 
 from check_agent_bounce import Client
-from lifecycle_lib import digest, env_for, session_serving, stop, transcript_text, verify_session
+from lifecycle_lib import digest, supervisor_env_for, session_serving, stop, transcript_text, verify_session
 from check_restore_notice import texts
 
 MARKER = 'LAUNCH_ENV_PARITY='
@@ -194,7 +194,11 @@ def finish_daemon(client, process, kind, **payload):
 
 
 def run_case(binary, root, observed):
-    env = env_for(root)
+    # On the supervisor's wire (`check_agent_bounce.Client`):
+    # the runtime daemon has no client-owned session with a transcript
+    # (`lifecycle: client_owned`), no `promote_owned_session`, and its prepared
+    # update keeps no worker roster.
+    env = supervisor_env_for(root)
     env.update(PA_ENV_BASE='daemon-base', PA_ENV_PRECEDENCE='daemon', RLM_DEPTH='3',
         PRIME_AGENT_STUCK_CELL_GRACE_MS='300', PRIME_AGENT_TEST_BLOCKING_CELL_SEAM='1')
     provider = Provider()

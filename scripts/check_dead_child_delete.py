@@ -20,7 +20,7 @@ import time
 
 from check_ledger_liveness import Provider, PARENT, NAME
 from check_agent_bounce import Client
-from lifecycle_lib import digest, env_for
+from lifecycle_lib import digest, supervisor_env_for
 from lifecycle_lib import OwnedProcesses, TAG, finish, verify_session, session_serving
 
 
@@ -32,7 +32,10 @@ def delete_contract(rows, child_id):
 
 
 def observe(binary, root, observed):
-    env = env_for(root)
+    # On the supervisor's wire (`check_agent_bounce.Client`):
+    # the runtime daemon has no `kill` with `rlmLedgerDelete` (a running
+    # child's deletion boundary), and its `sessions.list` lists no subagent.
+    env = supervisor_env_for(root)
     env[TAG] = str(root)
     provider = Provider()
     threading.Thread(target=provider.serve_forever, daemon=True).start()

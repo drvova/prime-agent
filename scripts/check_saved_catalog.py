@@ -13,8 +13,7 @@ import subprocess
 import sys
 import tempfile
 
-from check_agent_bounce import Client
-from lifecycle_lib import digest, env_for
+from lifecycle_lib import Wire2Client as Client, digest, env_for, saved_list_capture, saved_list_stream
 from lifecycle_lib import OwnedProcesses, TAG, finish
 
 COUNT = 205
@@ -85,51 +84,13 @@ def same_rows(actual, expected):
         expected, key=lambda row: row['id']), 'catalog stable fields differ'
 
 
-class RawReader:
-    def __init__(self, reader, received):
-        self.reader, self.received = reader, received
-
-    def readline(self):
-        line = self.reader.readline()
-        self.received.append(line.hex())
-        return line
-
-    def close(self):
-        self.reader.close()
-
-
-class RawSocket:
-    def __init__(self, sock, sent):
-        self.sock, self.sent = sock, sent
-
-    def sendall(self, data):
-        self.sent.append(data.hex())
-        self.sock.sendall(data)
-
-    def close(self):
-        self.sock.close()
-
-
-class CatalogClient(Client):
-    def __init__(self, path, process):
-        super().__init__(path, process)
-        # Preserve exact bytes after the separately recorded actual daemon hello.
-        self.received, self.sent = [], []
-        self.reader = RawReader(self.reader, self.received)
-        self.sock = RawSocket(self.sock, self.sent)
+# Every frame is kept as its bytes too (`raw_received`, `raw_sent`).
+CatalogClient = Client
 
 
 def query(client, observed, label, **paging):
     call = observed['queries'][label] = {'paging': paging}
-    start, raw_start, sent_start = len(client.wire), len(client.received), len(client.sent)
-    try:
-        data = client.call('list_saved_sessions', cwd=CWD, scope='all', **paging)
-        call['final_data'] = data
-        return call
-    finally:
-        call['frames'] = client.wire[start:]
-        call['raw_received_hex'] = client.received[raw_start:]
-        call['raw_sent_hex'] = client.sent[sent_start:]
+    return saved_list_capture(client, call, cwd=CWD, scope='all', **paging)
 
 
 def validate_query(call, root, expected, *, ordered=False, remaining=None, cursor=False):
@@ -139,27 +100,7 @@ def validate_query(call, root, expected, *, ordered=False, remaining=None, curso
     same_rows(rows, expected)
     if ordered:
         assert rows == expected, 'catalog is not deterministic newest-first'
-    finals = [frame for frame in call['frames'] if frame.get('type') == 'response']
-    assert len(finals) == 1, 'missing/duplicate terminal response'
-    final = finals[0]
-    assert final.get('success') is True and final.get('command') == 'list_saved_sessions', final
-    assert final.get('data') == data and call['frames'][-1] == final, 'final is not the stream terminator'
-    assert call['raw_received_hex'] and call['raw_sent_hex'], 'missing raw traffic'
-    assert [json.loads(bytes.fromhex(line)) for line in call['raw_received_hex']] == call['frames'], 'raw/decoded receipt mismatch'
-    request, = [json.loads(bytes.fromhex(line)) for line in call['raw_sent_hex']]
-    assert request['id'] == final['id'], 'request/response ID mismatch'
-    assert request['command'] == {'type': 'list_saved_sessions', 'cwd': CWD,
-                                  'scope': 'all', **call['paging']}, request
-    items = []
-    progress = []
-    for frame in call['frames'][:-1]:
-        assert frame.get('id') == final['id'] and frame.get('command') == 'list_saved_sessions', frame
-        if frame.get('type') == 'session_list_item':
-            items.append(frame['session'])
-        else:
-            assert frame.get('type') == 'session_list_progress', frame
-            assert 0 <= frame['loaded'] <= frame['total'], frame
-            progress.append(frame)
+    items, progress = saved_list_stream(call, {'cwd': CWD, 'scope': 'all', **call['paging']})
     # The daemon may drop progress/item frames under backpressure. Final rows are
     # authoritative; streamed rows must be unique, correct members of that final.
     streamed = normalize(items, root)
@@ -226,12 +167,12 @@ def observe(binary, root, observed):
                 target, = [row for row in rows if row['id'] == expected[-1]['id']]
                 assert target['name'] == TARGET
             scope.discover()
-            assert set(scope.targets) == set(scope.direct), 'catalog unexpectedly spawned a worker/kernel'
+            assert set(scope.targets) == set(scope.direct), 'catalog unexpectedly spawned a process or kernel'
             observed['behavior_verified'] = True
         finally:
             observed['wire'] = list(client.wire) if client else []
-            observed['raw_received_hex'] = list(client.received) if client else []
-            observed['raw_sent_hex'] = list(client.sent) if client else []
+            observed['raw_received_hex'] = list(client.raw_received) if client else []
+            observed['raw_sent_hex'] = list(client.raw_sent) if client else []
             finish(scope, client, daemon, observed)
             log.flush()
             observed['daemon_log'] = (root / 'daemon.log').read_text(errors='replace')[-10000:]

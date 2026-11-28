@@ -11,12 +11,14 @@ import re
 from pathlib import Path
 import tempfile
 
-from lifecycle_lib import Supervisor, Terminal, actual_hello, digest, env_for
+from lifecycle_lib import Supervisor, Terminal, actual_hello, digest, supervisor_env_for
 
 
 def observe(binary, root):
     root.mkdir()
-    env = env_for(root)
+    # On the supervisor's wire: the TUI is driven against a fixture of the
+    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
+    env = supervisor_env_for(root)
     hello = actual_hello(binary, root, env)
     server = Supervisor(root / 'ui.sock', hello, 'settings', root)
     terminal = None
