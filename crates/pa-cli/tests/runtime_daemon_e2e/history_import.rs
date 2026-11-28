@@ -30,8 +30,7 @@ use pa_types::wire2::ServerFrame;
 use serde_json::{json, Value};
 
 use super::old_reference::OldReference;
-use super::saved_list::{old_list, read_as_the_tui_does, runtime_list, transcript};
-use super::side_questions::OldClient;
+use super::saved_list::{read_as_the_tui_does, runtime_list, transcript};
 use super::{Bed, Client};
 
 /// The distribution build's agent dir, under the bed's dir (its home).
@@ -147,33 +146,6 @@ fn catalog_rows(bed: &Bed, frames: &[Value]) -> Vec<Value> {
     rows
 }
 
-/// The old daemon's import, and how many frames its catalog streamed
-/// before its response.
-fn old_import(bed: &Bed) -> (Imported, usize) {
-    let env = env(bed);
-    let env: Vec<(&str, &str)> = env
-        .iter()
-        .map(|(key, value)| (*key, value.as_str()))
-        .collect();
-    let _daemon = bed.old_daemon_with(&env);
-    let mut booted = OldClient::connect(&bed.old_socket());
-    let started = |seen: &[Value]| seen.iter().any(|frame| frame["type"] == "history_import");
-    booted.until(started);
-    // The copy is held before its first file: this client joins mid-import.
-    let mut joined = OldClient::connect(&bed.old_socket());
-    joined.until(|seen| seen.iter().any(|frame| frame["type"] == "daemon_hello") && started(seen));
-    std::fs::remove_file(hold(bed)).unwrap();
-    booted.until(finished);
-    joined.until(finished);
-    let catalog = old_list(&bed.old_socket(), "catalog", &catalog());
-    let imported = Imported {
-        booted: import_frames(booted.seen()),
-        joined: import_frames(joined.seen()),
-        catalog: catalog_rows(bed, &catalog),
-    };
-    (imported, catalog.len() - 1)
-}
-
 /// A compat client of the runtime daemon: it follows `system/history_import`
 /// and asks for a running import as the compat layer's transport does once
 /// connected; the frames it hands the TUI so far.
@@ -256,9 +228,8 @@ async fn runtime_import(bed: &Bed, streamed: usize) -> Imported {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_boot_imports_the_official_chats_as_on_the_old_daemon() {
-    let old_bed = seeded();
-    let mut reference = OldReference::open("history_import", &old_bed);
-    let (old, streamed): (Imported, usize) = reference.take("import", || old_import(&old_bed));
+    let (old, streamed): (Imported, usize) =
+        OldReference::open("history_import", &Bed::new()).take("import");
     let runtime = runtime_import(&seeded(), streamed).await;
     let started = json!({ "type": "history_import", "phase": "started", "sessions": 2 });
     let finished =

@@ -1,1 +1,1 @@
-- With the opt-in runtime daemon selected, `prime-agent list`, `sessions`, `stop`, `rename`, `send` and `schedule` talk to it with the same output, and opening a session the daemon revived after a restart attaches to it instead of failing.
+- On the runtime daemon, `prime-agent list`, `sessions`, `stop`, `rename`, `send` and `schedule` talk to it with the same output, and opening a session the daemon revived after a restart attaches to it instead of failing.

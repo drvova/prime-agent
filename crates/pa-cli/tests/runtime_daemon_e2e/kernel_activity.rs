@@ -29,13 +29,12 @@ use pa_types::daemon::DaemonCommand;
 use serde_json::{json, Value};
 
 use super::old_reference::OldReference;
-use super::saved_list::{old_list, runtime_list};
-use super::side_questions::OldClient;
+use super::saved_list::runtime_list;
 use super::switches::read_as_the_tui_does;
 use super::turns::{cell, Attached};
 use super::{Bed, Client};
 
-/// Both daemons run offline.
+/// The runtime daemon runs offline, as the old daemon did for its golden.
 const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
 
 /// Turns the factory lane on for the daemons `bed` starts (it is opt-in).
@@ -127,57 +126,6 @@ fn steps(activity: &str) -> Vec<Step> {
     ]
 }
 
-/// The old daemon's answers: the first list, then [`steps`].
-fn old_kernel_activity(bed: &Bed) -> Vec<Value> {
-    let script = bed.dir.path().join("old-script.json");
-    std::fs::write(
-        &script,
-        json!({ "engine": "faux", "modelId": "faux-1", "modelName": "Faux Model",
-                "reasoning": false, "contextWindow": 128_000, "responses": responses() })
-        .to_string(),
-    )
-    .unwrap();
-    factory_on(bed);
-    let _daemon = bed.old_daemon_with(OFFLINE);
-    let socket = bed.old_socket();
-    let created = old_list(
-        &socket,
-        "create",
-        &json!({ "type": "create", "config": {
-            "cwd": bed.dir.path(), "sessionDir": bed.agent_dir().join("sessions"),
-            "script": script,
-        } }),
-    );
-    let created = created.last().unwrap();
-    assert_eq!(created["success"], true, "{created}");
-    let active = created["data"]["id"].as_str().unwrap().to_string();
-    let mut client = OldClient::connect(&socket);
-    let with_session = |mut command: Value| {
-        command["activeSessionId"] = json!(active);
-        command
-    };
-    let ran = client.send(
-        "turn",
-        &with_session(json!({ "type": "prompt_and_wait", "message": "start" })),
-    );
-    assert_eq!(ran["success"], true, "{ran}");
-    let listed = client.send("list", &with_session(json!({ "type": "list_kernel_bash" })));
-    let activity = first_activity(&listed);
-    let mut answers = vec![normalized(&listed, &activity)];
-    let mut request = 0;
-    for Step { command, done } in steps(&activity) {
-        let response = loop {
-            request += 1;
-            let response = client.send(&format!("s{request}"), &with_session(command.clone()));
-            if done(&response["data"]) {
-                break response;
-            }
-        };
-        answers.push(normalized(&response, &activity));
-    }
-    answers
-}
-
 /// What the compat layer hands the TUI for `command` (with the session's id)
 /// on the runtime daemon.
 pub(super) async fn runtime_answer(session: &mut Attached, command: &Value) -> Value {
@@ -220,8 +168,7 @@ async fn runtime_kernel_activity(bed: &Bed) -> Vec<Value> {
 #[tokio::test(flavor = "multi_thread")]
 async fn kernel_bash_and_the_factory_lane_answer_as_the_old_daemons_do() {
     let old_bed = Bed::new();
-    let mut reference = OldReference::open("kernel_activity", &old_bed);
-    let old: Vec<Value> = reference.take("answers", || old_kernel_activity(&old_bed));
+    let old: Vec<Value> = OldReference::open("kernel_activity", &old_bed).take("answers");
     let runtime = runtime_kernel_activity(&Bed::new()).await;
 
     let refused = |command: &str, error: &str| json!({ "type": "response", "command": command, "success": false, "error": error });
@@ -412,24 +359,7 @@ fn catalog_command(bed: &Bed) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn persistent_shells_answer_as_the_old_daemons_do() {
     let old_bed = Bed::new();
-    let mut reference = OldReference::open("persistent_shells", &old_bed);
-    let old: Vec<Value> = reference.take("answers", || {
-        let bed = &old_bed;
-        let _sleeper = shell_fixture(bed);
-        let _daemon = bed.old_daemon();
-        let socket = bed.old_socket();
-        let catalog = old_list(&socket, "l1", &catalog_command(bed));
-        let responses: Vec<Value> = shell_commands()
-            .iter()
-            .enumerate()
-            .map(|(index, command)| {
-                old_list(&socket, &format!("s{index}"), command)
-                    .pop()
-                    .unwrap()
-            })
-            .collect();
-        shell_answers(&catalog, &responses)
-    });
+    let old: Vec<Value> = OldReference::open("persistent_shells", &old_bed).take("answers");
     let runtime = {
         let bed = Bed::new();
         let _sleeper = shell_fixture(&bed);

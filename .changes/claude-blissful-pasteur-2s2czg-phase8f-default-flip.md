@@ -1,1 +1,1 @@
-- Prime Agent now runs on the runtime daemon by default: the TUI, the session commands, ACP and updates use it, an update moves sessions off a running old daemon, `status` and `doctor --fix` list and reap it, and `"daemon": "supervisor"` in the global settings (or `PRIME_AGENT_RUNTIME_DAEMON=0`) keeps the old daemon for one more release.
+- Prime Agent runs on the runtime daemon: the TUI, the session commands, ACP and updates use it, an update moves sessions off an old daemon left running, and `status` and `doctor --fix` list and reap one.

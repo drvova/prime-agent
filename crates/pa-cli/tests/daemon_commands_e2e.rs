@@ -52,14 +52,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-/// Env keys this box's own worker sets; they must not leak into spawned
+/// Env keys this box's own session may carry; they must not leak into spawned
 /// daemons. `PI_PACKAGE_DIR` too: it redirects the package dir both binaries resolve.
-const SCRUB_ENV: [&str; 10] = [
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
-    "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
+const SCRUB_ENV: [&str; 5] = [
     "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
     "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL",
     "PRIME_AGENT_INTERNAL_SESSION_LEASES",

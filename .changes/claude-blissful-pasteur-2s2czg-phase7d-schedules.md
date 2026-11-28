@@ -1,1 +1,1 @@
-- The opt-in runtime daemon runs scheduled jobs and heartbeats: its sessions can schedule them, they fire while it is the selected daemon, and an idle session with a due job is woken unless it was stopped.
+- The runtime daemon runs scheduled jobs and heartbeats: its sessions can schedule them, they fire while it is the selected daemon, and an idle session with a due job is woken unless it was stopped.

@@ -23,13 +23,11 @@ use serde_json::{json, Value};
 
 use super::kernel_activity::runtime_answer;
 use super::old_reference::OldReference;
-use super::saved_list::old_list;
-use super::side_questions::OldClient;
 use super::switches::read_as_the_tui_does;
 use super::turns::{cell, Attached};
 use super::Bed;
 
-/// Both daemons run offline.
+/// The runtime daemon runs offline, as the old daemon did for its golden.
 const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
 
 /// `value` with the bed's own ids, paths and times by their form.
@@ -124,94 +122,6 @@ fn heartbeat_rows(rows: &[Value]) -> usize {
         .count()
 }
 
-fn old_flow(bed: &Bed) -> Seen {
-    let release = bed.dir.path().join("release");
-    let script = bed.dir.path().join("old-script.json");
-    std::fs::write(
-        &script,
-        json!({ "engine": "faux", "modelId": "faux-1", "modelName": "Faux Model",
-                "reasoning": false, "contextWindow": 128_000,
-                "responses": responses(&release), "repeatLastResponse": true })
-        .to_string(),
-    )
-    .unwrap();
-    let _daemon = bed.old_daemon_with(OFFLINE);
-    let socket = bed.old_socket();
-    let created = old_list(
-        &socket,
-        "create",
-        &json!({ "type": "create", "config": {
-            "cwd": bed.dir.path(), "sessionDir": bed.agent_dir().join("sessions"),
-            "script": script,
-        } }),
-    );
-    let created = created.last().unwrap();
-    assert_eq!(created["success"], true, "{created}");
-    let active = created["data"]["id"].as_str().unwrap().to_string();
-    let scoped = |mut command: Value| {
-        command["activeSessionId"] = json!(active);
-        command
-    };
-    let mut client = OldClient::connect(&socket);
-    let mut answers = Vec::new();
-    let mut job = String::new();
-    for (index, command) in steps().iter().enumerate() {
-        let response = client.send(&format!("h{index}"), &scoped(with_job(command, &job)));
-        if let Some(id) = job_of(&response) {
-            job = id;
-        }
-        answers.push(masked(read_as_the_tui_does(&response)));
-    }
-    let attached = client.send(
-        "attach",
-        &scoped(json!({ "type": "attach", "clientId": "tui:1" })),
-    );
-    assert_eq!(attached["success"], true, "{attached}");
-    let prompted = client.send(
-        "hold",
-        &scoped(json!({ "type": "prompt", "message": "hold" })),
-    );
-    assert_eq!(prompted["success"], true, "{prompted}");
-    client.until(|seen| {
-        seen.iter().any(|frame| {
-            frame["type"] == "session_event" && frame["event"]["type"] == "tool_execution_start"
-        })
-    });
-    let set = client.send("tick", &scoped(steered()));
-    assert_eq!(set["success"], true, "{set}");
-    // The old worker sends no queue view while its turn runs: its state's
-    // `sessionActions` is read until the fire waits there, then until the
-    // pause took it out.
-    let mut reads = 0;
-    let mut queued_now = |client: &mut OldClient| {
-        reads += 1;
-        let state = client.send(
-            &format!("state{reads}"),
-            &scoped(json!({ "type": "get_state" })),
-        );
-        queued(&state["data"]["sessionActions"])
-    };
-    while queued_now(&mut client) != Some(true) {}
-    let paused = client.send(
-        "pause",
-        &scoped(json!({ "type": "heartbeat_update", "action": "pause" })),
-    );
-    answers.push(masked(read_as_the_tui_does(&paused)));
-    while queued_now(&mut client) != Some(false) {}
-    std::fs::write(&release, "go").unwrap();
-    let idle = client.send("idle", &scoped(json!({ "type": "wait_for_idle" })));
-    assert_eq!(idle["success"], true, "{idle}");
-    let messages = client.send("messages", &scoped(json!({ "type": "get_messages" })));
-    Seen {
-        answers,
-        heartbeat_rows: heartbeat_rows(
-            messages["data"]["messages"]
-                .as_array()
-                .unwrap_or(&Vec::new()),
-        ),
-    }
-}
-
 async fn runtime_flow(bed: &Bed) -> Seen {
     let release = bed.dir.path().join("release");
     let _daemon = bed.runtime_daemon_with(
@@ -265,8 +175,7 @@ async fn runtime_flow(bed: &Bed) -> Seen {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sessions_heartbeat_answers_and_withdraws_as_the_old_daemons_does() {
     let old_bed = Bed::new();
-    let mut reference = OldReference::open("heartbeats", &old_bed);
-    let old: Seen = reference.take("flow", || old_flow(&old_bed));
+    let old: Seen = OldReference::open("heartbeats", &old_bed).take("flow");
     let runtime = runtime_flow(&Bed::new()).await;
 
     let answered = |command: &str, heartbeat: Value| {

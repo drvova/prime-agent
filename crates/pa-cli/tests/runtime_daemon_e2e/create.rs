@@ -28,7 +28,6 @@ use pa_types::wire2::{ClientFrame, Since};
 use serde_json::{json, Value};
 
 use super::old_reference::OldReference;
-use super::saved_list::old_list;
 use super::switches::read_as_the_tui_does;
 use super::{Bed, Client, Daemon};
 
@@ -278,56 +277,6 @@ fn saved_with_bash(agent_dir: &Path, file: &Path) -> (String, String) {
 /// environment and of the recursion marker.
 const MARKER_COMMAND: &str = "echo \"${PA_MARKER:-unset} ${RLM_DEPTH:-unset}\"";
 
-/// What the old daemon builds for each create.
-fn old_builds(bed: &Bed, bearers: &Arc<Mutex<Vec<String>>>) -> Vec<Value> {
-    let _daemon = bed.old_daemon_with(OFFLINE);
-    let socket = bed.old_socket();
-    let mut parent: Option<PathBuf> = None;
-    let mut builds = Vec::new();
-    for (index, create) in creates().iter().enumerate() {
-        let create = filled(create, bed.dir.path(), parent.as_deref());
-        let created = old_list(&socket, &format!("c{index}"), &create);
-        let created = created.last().unwrap();
-        assert_eq!(created["success"], true, "{created}");
-        let active = created["data"]["id"].as_str().unwrap().to_string();
-        let file = PathBuf::from(created["data"]["sessionFile"].as_str().unwrap());
-        parent.get_or_insert_with(|| file.clone());
-        let state = old_list(
-            &socket,
-            &format!("s{index}"),
-            &json!({ "type": "get_state", "activeSessionId": active }),
-        );
-        let state = read_as_the_tui_does(state.last().unwrap())["data"].clone();
-        bearers.lock().unwrap().clear();
-        let turn = old_list(
-            &socket,
-            &format!("t{index}"),
-            &json!({ "type": "prompt_and_wait", "activeSessionId": active, "message": "hello" }),
-        );
-        assert_eq!(turn.last().unwrap()["success"], true, "{turn:?}");
-        let sent = std::mem::take(&mut *bearers.lock().unwrap());
-        let bash = old_list(
-            &socket,
-            &format!("b{index}"),
-            &json!({ "type": "execute_bash", "activeSessionId": active,
-                     "command": MARKER_COMMAND }),
-        );
-        assert_eq!(bash.last().unwrap()["success"], true, "{bash:?}");
-        builds.push(built(bed, &file, parent.as_deref().unwrap(), &state, &sent));
-    }
-    for (index, create) in refused_creates().iter().enumerate() {
-        let create = filled(create, bed.dir.path(), None);
-        let refused = old_list(&socket, &format!("r{index}"), &create);
-        let mut refused = read_as_the_tui_does(refused.last().unwrap());
-        // The supervisor wraps its worker's refusal; the runtime daemon has no worker to name.
-        if let Some(error) = refused["error"].as_str() {
-            refused["error"] = json!(error.trim_start_matches("session worker create failed: "));
-        }
-        builds.push(refused);
-    }
-    builds
-}
-
 /// The runtime daemon on real engines (no faux script), offline.
 fn real_runtime_daemon(bed: &Bed) -> Daemon {
     let mut command = bed.runtime_daemon_command(&Value::Null, &bed.old_socket());
@@ -425,13 +374,10 @@ fn written_under(dir: &Path, needle: &[u8]) -> Vec<PathBuf> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tui_create_builds_on_the_runtime_daemon_what_it_builds_on_the_old_daemon() {
-    let (old_bed, runtime_bed) = (Bed::new(), Bed::new());
-    let (old_origin, old_bearers) = completions();
+    let runtime_bed = Bed::new();
     let (runtime_origin, runtime_bearers) = completions();
-    seed(&old_bed, &old_origin);
     seed(&runtime_bed, &runtime_origin);
-    let mut reference = OldReference::open("tui_create", &old_bed);
-    let old: Vec<Value> = reference.take("builds", || old_builds(&old_bed, &old_bearers));
+    let old: Vec<Value> = OldReference::open("tui_create", &Bed::new()).take("builds");
     let runtime = runtime_builds(&runtime_bed, &runtime_bearers).await;
     let pin = json!({ "provider": "openai", "id": "c_00000000e2e0work", "label": "work" });
     // The variants do what they say on the old daemon.

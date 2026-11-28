@@ -1694,7 +1694,7 @@ windows_stop_summary=""
 ts_socket="${TMPDIR:-/tmp}/prime-agent-$(id -u)/daemon.sock"
 rust_socket="${TMPDIR:-/tmp}/${DAEMON_SOCKET_DIR_NAME:-prime-agent-rust}-$(id -u)/daemon.sock"
 # The launcher pins /tmp when the TMPDIR path exceeds the non-Linux
-# 103-byte sun_path limit (pa-daemon socket_dir() owns the rule); the
+# 103-byte sun_path limit (pa-core daemon_endpoint::socket_dir() owns the rule); the
 # stop probe must look where the launcher actually pinned.
 if [ "$OS" != "Linux" ] && [ "$(printf '%s' "$rust_socket" | wc -c)" -gt 103 ]; then
   rust_socket="/tmp/${DAEMON_SOCKET_DIR_NAME:-prime-agent-rust}-$(id -u)/daemon.sock"
@@ -2935,7 +2935,7 @@ launcher_tmp="$(mktemp "${bin_dir}/.prime-agent.XXXXXX")"
 if [ "$WINDOWS" = "yes" ]; then
   # The Git Bash launcher: execs the payload's prime-agent.exe. NO daemon
   # socket pin — this product's Windows daemon endpoint is the fixed named
-  # pipe (pa-daemon platform/paths), which is rust-only by construction:
+  # pipe (pa-core platform/daemon_endpoint), which is rust-only by construction:
   # the TypeScript product never shipped a Windows build, so the unix
   # cohabitation pin (a rust-only socket path that never collides with a
   # TS daemon) has no TS daemon to avoid here.
@@ -2967,7 +2967,7 @@ if [ -f "$(dirname "$0")/../share/.prime-agent-npm-bridge/legacy-daemon-socket" 
   export PRIME_AGENT_DAEMON_SOCKET="${PRIME_AGENT_DAEMON_SOCKET:-${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/prime-agent-$(id -u)/daemon.sock}"
 else
   if [ -z "${PRIME_AGENT_DAEMON_SOCKET:-}" ]; then
-    # Same rule as pa-daemon socket_dir(): non-Linux sun_path caps a unix
+    # Same rule as pa-core daemon_endpoint::socket_dir(): non-Linux sun_path caps a unix
     # socket at 103 bytes, so a too-deep TMPDIR pins /tmp/prime-agent-rust-<uid>.
     PRIME_AGENT_DAEMON_SOCKET="${TMPDIR:-/tmp}/prime-agent-rust-$(id -u)/daemon.sock"
     if [ "$(printf '%s' "$PRIME_AGENT_DAEMON_SOCKET" | wc -c)" -gt 103 ] && [ "$(uname -s)" != "Linux" ]; then

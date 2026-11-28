@@ -221,10 +221,10 @@ and the update run on it. Nothing selects the supervisor any more:
   `status`, `doctor` and `shutdown` do not list the greeter. A supervisor
   that holds `daemon.sock` keeps it.
 
-It serves the same Rust update transaction as the supervisor; both run `pa_core::update::restart`. Its
+It serves the Rust update transaction an earlier release's supervisor served (`pa_core::update::restart`). Its
 wire2 calls are `daemon.prepare_update_restart {updateId, toVersion?}` and
 `daemon.commit_update_restart {updateId}`, whose results and refusals are
-the supervisor's `prepare_update_restart` and `commit_update_restart`
+the old supervisor's `prepare_update_restart` and `commit_update_restart`
 responses' `data`, message and `errorInfo`, verbatim:
 
 - The prepare drains the calls in flight and writes `roster.json` and
@@ -232,7 +232,7 @@ responses' `data`, message and `errorInfo`, verbatim:
   the open sessions that keep a transcript (a running turn is `streaming`;
   queued input is `steering`/`followUps`); it has no worker rows, because
   the runtime's sessions run in its own process. Subagent and heartbeat rows
-  are the same as the supervisor's.
+  are the same as the old supervisor's.
 - While the transaction is active, every mutating call and every input
   publish is refused with `Daemon is preparing an update restart`
   (`update_restarting`). The abort family still passes while the prepare
@@ -244,7 +244,7 @@ responses' `data`, message and `errorInfo`, verbatim:
   queued at the front of its session's queue. The held sessions stay in the
   agent database for the next daemon. The runtime's stop never refuses, so
   a commit is never abandoned.
-- The successor's boot restores the roster with the supervisor's restore
+- The successor's boot restores the roster with the old supervisor's restore
   pass (`pa_core::update::restart::restore`). The roster is read from
   `PRIME_AGENT_UPDATE_ROSTER` before the boot sweep. A session the revival
   already opened for its queued continuation is not prompted a second time.
@@ -253,10 +253,11 @@ responses' `data`, message and `errorInfo`, verbatim:
 - The update drives the daemons through `update_flow/endpoint.rs`:
   - the Rust coordinator prepares and commits on the daemon it finds holding
     the sessions (`Endpoint::running`): the runtime daemon when it answers,
-    else a supervisor when only it answers. A user whose supervisor a
+    else a supervisor an earlier release left running when only it answers. A user whose supervisor a
     release from before this one started is therefore moved by the update:
     the supervisor is prepared and stopped on the old wire as before (a
-    client built on `pa_types::daemon`; no supervisor code is linked), its
+    client built on `pa_types::daemon`; the supervisor's crate, `pa-daemon`,
+    is no longer in the workspace), its
     roster (session rows only; the runtime daemon has no workers) is handed
     to the successor, the runtime daemon, which restores the rows with the
     shared restore pass;
@@ -280,11 +281,12 @@ responses' `data`, message and `errorInfo`, verbatim:
   - the input pause holds the session's queue;
   - the update-complete notice is appended to the transcript;
   - the next-turn rows are steered to the session's agent;
-  - queued `turn` actions are checked as the worker checks them and queued
+  - queued `turn` actions are checked as the old worker checked them and queued
     as input, and an action carrying a custom message fails that row's
     restore;
   - the continuation is queued as a steer.
-- With both daemons running, the update restarts the runtime daemon only. An
+- With a supervisor of an earlier release still running beside it, the
+  update restarts the runtime daemon only. An
   upgrade that did not go through the coordinator (an installer run by
   hand) leaves the supervisor running on the old binary: the first launch
   on the runtime daemon stops it once it is idle (no session running a
@@ -292,7 +294,8 @@ responses' `data`, message and `errorInfo`, verbatim:
   daemon opens its sessions from their transcripts; a busy supervisor is
   left for a later launch to stop.
 - A session created with `--api-key` keeps its key in the runtime daemon's
-  memory only (the supervisor wrote it into its worker's durable create).
+  memory only (an earlier release's supervisor wrote it into its worker's
+  durable create).
   A session the runtime daemon revives after a death or an update, or wakes
   for a scheduled job, without a client giving the key again fails its build
   with the reason `session <id> was created with an API key, which the

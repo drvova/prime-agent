@@ -2,13 +2,12 @@
 //! restore, and the scenario mechanics. Unix-only.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 
-use crate::bench::{BenchCorpus, BenchOptions, BenchResult, Daemon, RunOptions, Scenario, Series};
+use crate::bench::{BenchCorpus, BenchOptions, BenchResult, RunOptions, Scenario, Series};
 use crate::corpus::{self, CacheMode, CorpusOptions, Manifest, Profile};
 
 use super::pty::PtyChild;
@@ -82,17 +81,11 @@ struct RunCtx {
     project_dir: PathBuf,
     agent_dir: PathBuf,
     liveness: Duration,
-    daemon: Daemon,
 }
 
 impl RunCtx {
     /// The manifest's agent dir paths, from the corpus at `root`.
-    fn load(
-        binary: &Path,
-        corpus_root: &Path,
-        liveness: Duration,
-        daemon: Daemon,
-    ) -> anyhow::Result<Self> {
+    fn load(binary: &Path, corpus_root: &Path, liveness: Duration) -> anyhow::Result<Self> {
         let manifest_path = corpus_root.join("corpus.json");
         let manifest: Manifest = serde_json::from_str(
             &std::fs::read_to_string(&manifest_path)
@@ -110,19 +103,14 @@ impl RunCtx {
                 .with_context(|| format!("resolve corpus root {}", corpus_root.display()))?,
             manifest,
             liveness,
-            daemon,
         })
     }
+}
 
-    /// The socket the run's daemon listens on when it is given the run's
-    /// `socket`: the runtime daemon's `daemon2.sock` beside it, or the
-    /// supervisor's own.
-    fn listen_socket(&self, socket: &Path) -> PathBuf {
-        match self.daemon {
-            Daemon::Runtime => socket.with_file_name("daemon2.sock"),
-            Daemon::Supervisor => socket.to_path_buf(),
-        }
-    }
+/// The socket the run's daemon listens on when it is given the run's
+/// `socket`: the runtime daemon's `daemon2.sock` beside it.
+fn listen_socket(socket: &Path) -> PathBuf {
+    socket.with_file_name("daemon2.sock")
 }
 
 /// The child environment: hermetic (a clean env plus the isolation vars).
@@ -135,15 +123,9 @@ fn child_env(ctx: &RunCtx) -> Vec<(String, String)> {
         ("DO_NOT_TRACK".to_string(), "1".to_string()),
         ("TERM".to_string(), "xterm-ghostty".to_string()),
         ("TERM_PROGRAM".to_string(), "ghostty".to_string()),
-        // The daemon, named either way, so a run never depends on the default.
-        (
-            "PRIME_AGENT_RUNTIME_DAEMON".to_string(),
-            match ctx.daemon {
-                Daemon::Runtime => "1",
-                Daemon::Supervisor => "0",
-            }
-            .to_string(),
-        ),
+        // The runtime daemon by name: an earlier release's binary, benched
+        // for a comparison, still reads the selection.
+        ("PRIME_AGENT_RUNTIME_DAEMON".to_string(), "1".to_string()),
     ];
     // PI_PACKAGE_DIR carries the packaged runtime dir to the binary and its
     // workers (a release binary resolves prime-agent-runtime/ beside the
@@ -171,7 +153,6 @@ pub(super) fn run(options: &BenchOptions) -> anyhow::Result<BenchResult> {
         &options.binary,
         &options.corpus,
         Duration::from_secs(options.liveness_secs),
-        options.daemon,
     )?;
     let runs = sample_runs(&ctx, options.runs, |index| match options.scenario {
         Scenario::FirstEval | Scenario::SubagentFirstEval | Scenario::WarmFirstEval => {
@@ -254,7 +235,7 @@ fn launch(ctx: &RunCtx, scenario: Scenario, run: usize) -> anyhow::Result<(Measu
         launched.child.finish();
         Ok((sample, launched))
     })();
-    let stopped = stop_daemon(ctx, &socket);
+    let stopped = stop_daemon(&socket);
     let exited = match &mut daemon {
         Some(daemon) => daemon.await_exit(),
         None => Ok(()),
@@ -272,16 +253,13 @@ fn launch_kernel(ctx: &RunCtx, scenario: Scenario, run: usize) -> anyhow::Result
     std::fs::create_dir_all(socket.parent().expect("a socket dir"))?;
     let scripts = kernel::scripts(&socket, scenario, run)?;
     // The runtime daemon reads its sessions' faux script from its own environment.
-    let env = match ctx.daemon {
-        Daemon::Runtime => vec![(
-            "PRIME_AGENT_FAUX_SCRIPT".to_string(),
-            scripts.daemon_script().to_string(),
-        )],
-        Daemon::Supervisor => Vec::new(),
-    };
+    let env = vec![(
+        "PRIME_AGENT_FAUX_SCRIPT".to_string(),
+        scripts.daemon_script().to_string(),
+    )];
     let mut daemon = start_daemon(ctx, &socket, &env)?;
     let outcome = kernel::measure(ctx, &socket, scenario, &scripts);
-    let stopped = stop_daemon(ctx, &socket);
+    let stopped = stop_daemon(&socket);
     let exited = daemon.await_exit();
     let measured = outcome.with_context(|| format!("{scenario:?} run {run}"))?;
     stopped?;
@@ -317,18 +295,8 @@ pub(super) fn run_suite(options: &RunOptions) -> anyhow::Result<Vec<BenchResult>
         cache: CacheMode::Warm,
         ..knobs()
     })?;
-    let cold_ctx = RunCtx::load(
-        &options.binary,
-        &options.out.join("corpus-cold"),
-        liveness,
-        options.daemon,
-    )?;
-    let warm_ctx = RunCtx::load(
-        &options.binary,
-        &options.out.join("corpus-warm"),
-        liveness,
-        options.daemon,
-    )?;
+    let cold_ctx = RunCtx::load(&options.binary, &options.out.join("corpus-cold"), liveness)?;
+    let warm_ctx = RunCtx::load(&options.binary, &options.out.join("corpus-warm"), liveness)?;
 
     let mut samples: BTreeMap<Scenario, Vec<Measured>> = BTreeMap::new();
     // Each scenario's share of the suite's wall time (the CI budget).
@@ -874,7 +842,7 @@ fn start_daemon(
         child: command.spawn()?,
     }
     .wait_until_ready(
-        &ctx.listen_socket(socket),
+        &listen_socket(socket),
         Instant::now() + Duration::from_secs(30),
     )
 }
@@ -937,16 +905,13 @@ fn socket_accepts(socket: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(socket).is_ok()
 }
 
-/// Stop the daemon on `socket` by the shutdown protocol: the hello line,
-/// the shutdown command, one response read, then wait until the socket no
-/// longer accepts (the observable exit). A daemon that never stops fails
+/// Stop the daemon started with `socket` by its shutdown call
+/// (`daemon.shutdown` on wire2, its reply read), then wait until its socket
+/// no longer accepts (the observable exit). A daemon that never stops fails
 /// the run loudly — no pid sweeps.
-fn stop_daemon(ctx: &RunCtx, socket: &Path) -> anyhow::Result<()> {
-    let socket = &ctx.listen_socket(socket);
-    match ctx.daemon {
-        Daemon::Supervisor => protocol_shutdown(socket),
-        Daemon::Runtime => kernel::runtime_shutdown(socket),
-    }
+fn stop_daemon(socket: &Path) -> anyhow::Result<()> {
+    let socket = &listen_socket(socket);
+    kernel::runtime_shutdown(socket);
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if !socket_accepts(socket) {
@@ -959,50 +924,6 @@ fn stop_daemon(ctx: &RunCtx, socket: &Path) -> anyhow::Result<()> {
         "the daemon on {} kept accepting after the shutdown protocol; the run is not clean",
         socket.display()
     )
-}
-
-/// The daemon-shutdown protocol (the e2es' `graceful_shutdown` shape): the
-/// hello line, the shutdown command, one response read.
-fn protocol_shutdown(socket: &Path) {
-    let Ok(stream) = std::os::unix::net::UnixStream::connect(socket) else {
-        return;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    // The hello can stall too: bound every read, not just the reply.
-    if reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .is_err()
-    {
-        return;
-    }
-    let mut hello = String::new();
-    if !matches!(reader.read_line(&mut hello), Ok(bytes) if bytes > 0) {
-        return;
-    }
-    let command = serde_json::json!({
-        "type": "command",
-        "id": "bench-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let Ok(mut line) = serde_json::to_string(&command) else {
-        return;
-    };
-    line.push('\n');
-    if writer.write_all(line.as_bytes()).is_err() {
-        return;
-    }
-    let _ = writer.flush();
-    let _ = reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)));
-    let mut response = String::new();
-    let _ = reader.read_line(&mut response);
 }
 
 /// Restore the corpus's exact generated state: delete every file under the
@@ -1326,13 +1247,7 @@ mod tests {
         })
         .expect("generate the tiny corpus");
         // A relative file is sufficient: loading does not execute it.
-        RunCtx::load(
-            Path::new("Cargo.toml"),
-            root,
-            Duration::ZERO,
-            Daemon::Runtime,
-        )
-        .expect("load corpus")
+        RunCtx::load(Path::new("Cargo.toml"), root, Duration::ZERO).expect("load corpus")
     }
 
     #[test]
@@ -1401,7 +1316,6 @@ mod tests {
             runs: 0,
             json: absent.clone(),
             liveness_secs: 1,
-            daemon: Daemon::Runtime,
         });
         assert_eq!(
             standalone.expect_err("zero runs rejected").to_string(),
@@ -1414,7 +1328,6 @@ mod tests {
             seed: 1,
             runs: 0,
             liveness_secs: 1,
-            daemon: Daemon::Runtime,
         });
         assert_eq!(
             suite.expect_err("zero suite runs rejected").to_string(),
@@ -1548,14 +1461,12 @@ mod tests {
             .expect("make the mock executable");
         ctx.binary = binary;
         ctx.liveness = Duration::from_secs(10);
-        // The mock speaks the supervisor's wire on the run's socket.
-        ctx.daemon = Daemon::Supervisor;
         let (sample, launched) = launch(&ctx, Scenario::WarmStart, 0)
             .expect("the daemon must drain its measured UI connection before exit");
         assert!(sample.settled[0] >= 0.0);
         assert!(launched.ready.is_some(), "the actual mock paint/attach ran");
         assert_eq!(
-            std::fs::read_to_string(run_socket(&ctx, 0).with_extension("drained"))
+            std::fs::read_to_string(run_socket(&ctx, 0).with_file_name("daemon2.drained"))
                 .expect("the mock daemon reached normal drain completion"),
             "all UI/control connections closed\n"
         );
@@ -1577,7 +1488,7 @@ mod tests {
             let _ = released.recv_timeout(Duration::from_secs(8));
         });
         let started = Instant::now();
-        protocol_shutdown(&socket);
+        kernel::runtime_shutdown(&socket);
         let elapsed = started.elapsed();
         let _ = release.send(());
         peer.join().expect("mock peer exited");

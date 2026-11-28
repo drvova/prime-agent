@@ -18,12 +18,11 @@ use pa_types::wire2::ClientFrame;
 use serde_json::{json, Value};
 
 use super::old_reference::OldReference;
-use super::saved_list::old_list;
 use super::switches::read_as_the_tui_does;
 use super::turns::{cell, Attached};
 use super::{ok, Bed, Client};
 
-/// Both daemons run offline.
+/// The runtime daemon runs offline, as the old daemon did for its golden.
 const OFFLINE: &[(&str, &str)] = &[("PI_OFFLINE", "1")];
 
 /// How long a queue view may take to show what was queued, or the wedge
@@ -108,78 +107,6 @@ fn user_texts(messages: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Waits until `read` answers `expected`, reading again while it does not.
-fn wait_for(expected: &Value, mut read: impl FnMut() -> Value) {
-    let deadline = Instant::now() + VIEW_WAIT;
-    loop {
-        let seen = read();
-        if seen == *expected {
-            return;
-        }
-        assert!(Instant::now() < deadline, "expected {expected}, saw {seen}");
-        std::thread::yield_now();
-    }
-}
-
-/// The old daemon's answers to [`edits`] with the queue view after each,
-/// and the user rows its session's transcript holds once the edited queue
-/// ran.
-fn old_edits(bed: &Bed) -> (Vec<Value>, Vec<String>) {
-    let script = bed.dir.path().join("old-script.json");
-    // The old daemon's agent engine on the same faux provider.
-    std::fs::write(
-        &script,
-        json!({ "engine": "faux", "modelId": "faux-1", "modelName": "Faux Model",
-                "reasoning": false, "contextWindow": 128_000, "responses": responses() })
-        .to_string(),
-    )
-    .unwrap();
-    let _daemon = bed.old_daemon_with(OFFLINE);
-    let socket = bed.old_socket();
-    let created = old_list(
-        &socket,
-        "create",
-        &json!({ "type": "create", "config": {
-            "cwd": bed.dir.path(), "sessionDir": bed.agent_dir().join("sessions"),
-            "script": script,
-        } }),
-    );
-    let created = created.last().unwrap();
-    assert_eq!(created["success"], true, "{created}");
-    let active = created["data"]["id"].as_str().unwrap().to_string();
-    let send = |id: &str, mut command: Value| {
-        command["activeSessionId"] = json!(active);
-        old_list(&socket, id, &command).pop().unwrap()
-    };
-    let state = || send("state", json!({ "type": "get_state" }))["data"].clone();
-    let answer = send("p", json!({ "type": "prompt", "message": "first" }));
-    assert_eq!(answer["success"], true, "{answer}");
-    // The wedge cell runs before anything queues behind it: an abort that
-    // lands while the first reply is still being asked for cancels that
-    // request, and the next turn gets the wedge cell instead.
-    wait_for(&json!(true), || state()["isRunningTools"].clone());
-    for text in ["f1", "f2", "f3"] {
-        let answer = send(text, json!({ "type": "follow_up", "message": text }));
-        assert_eq!(answer["success"], true, "{answer}");
-    }
-    wait_for(&queued(), || rows(&state()["sessionActions"]));
-    let answers = edits()
-        .into_iter()
-        .enumerate()
-        .map(|(index, edit)| {
-            let answer = read_as_the_tui_does(&send(&format!("e{index}"), edit));
-            json!({ "answer": answer, "rows": rows(&state()["sessionActions"]) })
-        })
-        .collect();
-    let aborted = send("abort", json!({ "type": "abort" }));
-    assert_eq!(aborted["success"], true, "{aborted}");
-    let resumed = send("go", json!({ "type": "resume_queue" }));
-    assert_eq!(resumed["success"], true, "{resumed}");
-    wait_for(&json!(false), || state()["isSessionActive"].clone());
-    let messages = send("messages", json!({ "type": "get_messages" }));
-    (answers, user_texts(&messages["data"]["messages"]))
-}
-
 /// `command` (without its session) sent to open session `id` through the
 /// compat layer, as the TUI reads its answer.
 async fn compat(client: &mut Client, id: &str, index: usize, mut command: Value) -> Value {
@@ -209,8 +136,8 @@ async fn runtime_rows(client: &mut Client, id: &str) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_queue_edits_answer_and_run_as_the_old_daemons_do() {
     let bed = Bed::new();
-    let mut reference = OldReference::open("queue_edits", &bed);
-    let (old, old_texts): (Vec<Value>, Vec<String>) = reference.take("edits", || old_edits(&bed));
+    let (old, old_texts): (Vec<Value>, Vec<String>) =
+        OldReference::open("queue_edits", &bed).take("edits");
 
     let _daemon = bed.runtime_daemon_with(&json!({ "responses": responses() }), OFFLINE);
     let mut session = Attached::open(&bed, bed.dir.path()).await;
@@ -342,8 +269,8 @@ async fn a_compaction_and_a_retry_stop_when_aborted() {
         });
 
     // The old daemon's answers, captured from it (pa-daemon's
-    // `supervisor_e2e` compaction test holds it to the same golden; this
-    // copy outlives it).
+    // `supervisor_e2e` compaction test held it to the same golden; this copy
+    // outlived it).
     let golden: Value = serde_json::from_str(include_str!(
         "../fixtures/old_daemon/compaction-live-ts.json"
     ))
