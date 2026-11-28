@@ -243,7 +243,6 @@ fn shutdown_force_stops_a_kept_runtime_daemon_and_its_keeper_does_not_restart_it
     bed.env(&mut command, "shutdown.log");
     let output = command
         .args(["shutdown", "--force"])
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "1")
         .env("PRIME_AGENT_DAEMON_SOCKET", bed.old_socket())
         .stdout(std::process::Stdio::piped())
         .output()

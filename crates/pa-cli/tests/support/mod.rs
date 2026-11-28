@@ -21,12 +21,11 @@ pub mod legacy_supervisor;
     dead_code,
     reason = "each test target compiles this module itself; not every one starts a runtime daemon"
 )]
-pub const RUNTIME_DAEMON_SCRUB_ENV: [&str; 8] = [
+pub const RUNTIME_DAEMON_SCRUB_ENV: [&str; 7] = [
     "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
     "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
     "PRIME_AGENT_INTERNAL_SESSION_LEASES",
     "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",
-    "PRIME_AGENT_RUNTIME_DAEMON",
     "PI_PACKAGE_DIR",
     "PRIME_AGENT_SESSION_DIR",
     "PRIME_AGENT_CODING_AGENT_SESSION_DIR",
@@ -348,36 +347,6 @@ pub fn await_listening(socket: &std::path::Path, child: &mut std::process::Child
     }
 }
 
-/// The daemon a tmux verifier's product runs on: each verifier runs on the default (the runtime
-/// daemon), and again on the supervisor, selected by name, under [`on_the_supervisor!`].
-#[allow(
-    dead_code,
-    reason = "each test target compiles this module itself; not every one runs on both daemons"
-)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Daemon {
-    /// `PRIME_AGENT_RUNTIME_DAEMON=0`: the supervisor on `daemon.sock`, the old wire.
-    Supervisor,
-    /// The default: the runtime daemon on `daemon2.sock`, wire2.
-    Runtime,
-}
-
-thread_local! {
-    /// The daemon of the test running on this thread (each test has its own).
-    #[allow(dead_code, reason = "each test target compiles this module itself")]
-    pub static DAEMON: std::cell::Cell<Daemon> = const { std::cell::Cell::new(Daemon::Runtime) };
-}
-
-/// The launcher environment entry that selects this test's daemon: nothing for the default, or
-/// the supervisor's switch (with a leading space, to sit after the launcher's other entries).
-#[allow(dead_code, reason = "each test target compiles this module itself")]
-pub fn daemon_env() -> &'static str {
-    match DAEMON.with(std::cell::Cell::get) {
-        Daemon::Supervisor => " PRIME_AGENT_RUNTIME_DAEMON=0",
-        Daemon::Runtime => "",
-    }
-}
-
 /// Stop the runtime daemon a test's product started in `agent_dir`, if one runs: its restart
 /// owner (or, unkept, the daemon) named in the agent dir's runtime-daemon lock is sent the
 /// deliberate stop, then the test waits for the lock's holder to be gone (bounded): the cleanup
@@ -408,26 +377,3 @@ pub fn stop_runtime_daemon(agent_dir: &std::path::Path) {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
-
-/// Runs each named test again on the supervisor (`supervisor::<test>`): the test reads its
-/// daemon through [`daemon_env`].
-#[allow(unused_macros, reason = "each test target compiles this module itself")]
-macro_rules! on_the_supervisor {
-    ($($test:ident),* $(,)?) => {
-        mod supervisor {
-            $(
-                #[test]
-                fn $test() {
-                    super::support::DAEMON
-                        .with(|daemon| daemon.set(super::support::Daemon::Supervisor));
-                    super::$test();
-                }
-            )*
-        }
-    };
-}
-#[allow(
-    unused_imports,
-    reason = "each test target compiles this module itself"
-)]
-pub(crate) use on_the_supervisor;

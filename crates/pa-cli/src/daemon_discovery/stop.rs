@@ -23,8 +23,8 @@ use super::plan::{
     plan_reap, plan_shutdown_all, plan_shutdown_confirmation, ReapActionKind,
     ShutdownConfirmationPlan,
 };
+use super::DaemonKind;
 use super::{discover_daemons, is_daemon_process_listening, probe_daemon, DaemonStateRoot};
-use crate::daemon_mode::DaemonKind;
 
 /// `status`: the daemons discovered in the given state root as JSON or
 /// as the table.

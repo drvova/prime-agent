@@ -29,7 +29,7 @@ pub struct CoordinatorOptions {
     /// ([`super::endpoint::Endpoint::running`]); a rollback starts it again.
     pub predecessor: super::endpoint::Endpoint,
     /// The daemon the new release starts and restores the sessions on: the
-    /// selected one.
+    /// runtime daemon.
     pub successor: super::endpoint::Endpoint,
     pub status_path: PathBuf,
     pub budget: UpdateTimeoutBudget,
@@ -416,8 +416,8 @@ mod tests {
     use super::*;
 
     /// A coordinator adopts the staged status the invoking update keyed by its own socket, also
-    /// when that is not the daemon the new release selects (an update started by a release from
-    /// before the runtime daemon was the default keys it by the supervisor's socket). With no
+    /// when that is not the runtime daemon's (an update started by a release from before the
+    /// runtime daemon was the default keys it by the supervisor's socket). With no
     /// daemon running and no staged candidate, it then runs to its terminal failure.
     #[tokio::test]
     async fn the_staged_status_is_adopted_by_the_invokers_socket() {

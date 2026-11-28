@@ -473,13 +473,11 @@ pub struct Settings {
     /// the database; kept for one release as the way back). Read once when
     /// the process starts. Only global settings select it.
     pub transcript_store: Option<String>,
-    /// Which daemon `prime-agent --mode daemon` starts, and every
-    /// daemon-backed mode runs on: `"supervisor"` (the old daemon, on the
-    /// daemon socket; kept for one release as the way back) or anything else,
-    /// unset included (the runtime daemon, serving wire2 on `daemon2.sock`
-    /// beside it). `PRIME_AGENT_RUNTIME_DAEMON=0` selects the supervisor and
-    /// `=1` the runtime daemon, over this setting. Read when a daemon or a
-    /// client starts. Only global settings select it.
+    /// The daemon an earlier release started (`"supervisor"`: the old
+    /// daemon). This release starts the runtime daemon whatever it says: the
+    /// key still loads, so a settings file that names it keeps working, and
+    /// the runtime daemon logs a notice at each boot while the global
+    /// settings say `"supervisor"`.
     pub daemon: Option<String>,
     pub quiet_startup: Option<bool>,
     pub shell_command_prefix: Option<String>,

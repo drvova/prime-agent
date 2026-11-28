@@ -31,14 +31,13 @@
 //!   [`DAEMON_DEATH_LOG`] and handed to the next daemon, whose
 //!   `daemon_hello` shows it to every client.
 //!
-//! - **Either daemon.** A kept launch keeps whichever daemon its command line
-//!   starts ([`KeptDaemon`]): the supervisor, or the runtime daemon when that
-//!   is selected. The keeper knows nothing of the supervisor's own records:
-//!   its launcher hands in how to count a dead supervisor's sessions. The runtime daemon's keeper keeps its records under the
-//!   runtime daemon's own socket (`daemon2.sock`), so the two daemons' keepers
-//!   on one agent dir never take each other's socket over or read each other's
-//!   deaths; the runtime daemon records its keeper in its lock file, so the
-//!   supervisor's boot reap spares both.
+//! - **Its own records.** The keeper keeps its records under the runtime
+//!   daemon's socket (`daemon2.sock`), so it never takes over the socket of,
+//!   or reads the deaths of, the keeper of a supervisor an earlier release
+//!   left running; the runtime daemon records its keeper in its lock file, so
+//!   that supervisor's boot reap spares both. A death record leaves the
+//!   sessions uncounted: they are held in the runtime daemon's database,
+//!   which the keeper does not open.
 //!
 //! A kept launch is the ordinary daemon command line plus [`KEEPER_ENV`]. The
 //! launched process splits in two first thing in `main` ([`enter`]): the copy
@@ -311,36 +310,17 @@ impl RestartPolicy {
     }
 }
 
-/// How the keeper counts a dead supervisor's sessions: given the socket's
-/// state dir and the socket, the (hosted, busy) sessions its records show.
-/// It runs on a blocking thread, so a fault in it cannot end the keeper.
-pub type CountSessions = fn(&Path, &Path) -> (u64, u64);
-
-/// Which daemon a keeper keeps.
-#[derive(Debug, Clone, Copy)]
-pub enum KeptDaemon {
-    /// The supervisor: its sessions are counted from its worker descriptors
-    /// when it dies, by the count its launcher hands in (the descriptors are
-    /// the supervisor's own records).
-    Supervisor { count_sessions: CountSessions },
-    /// The runtime daemon (`pa_runtime::daemon`): its sessions are held in
-    /// its database, which the keeper does not open, so a death record
-    /// leaves them uncounted.
-    Runtime,
-}
-
-/// What a keeper is started with: the daemon it keeps.
+/// What a keeper is started with: the runtime daemon it keeps.
 pub struct KeeperOptions {
     /// The daemon executable (this one).
     pub exe: PathBuf,
     /// The daemon's arguments (this process's own).
     pub args: Vec<std::ffi::OsString>,
-    /// The socket the kept daemon serves: the keeper's records (owner, stop
-    /// intent, death log) are kept per socket, so the runtime daemon's
-    /// keeper, keyed by `daemon2.sock`, never meets the supervisor's.
+    /// The socket the kept daemon serves (`daemon2.sock`): the keeper's
+    /// records (owner, stop intent, death log) are kept per socket, so it
+    /// never meets the keeper of a supervisor an earlier release started.
     pub socket_path: PathBuf,
     pub agent_dir: PathBuf,
-    pub daemon: KeptDaemon,
 }
 
 /// Run as the keeper of the daemon `options` describes until that daemon
@@ -528,18 +508,6 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
         }
         let uptime = started.elapsed();
         let verdict = POLICY.judge(consecutive, uptime);
-        // Reads of the dead daemon's own records, kept off this thread so a
-        // fault in them cannot end the keeper.
-        let counted = match options.daemon {
-            KeptDaemon::Runtime => None,
-            KeptDaemon::Supervisor { count_sessions } => {
-                let dir = dir.clone();
-                let socket_path = options.socket_path.clone();
-                tokio::task::spawn_blocking(move || count_sessions(&dir, &socket_path))
-                    .await
-                    .ok()
-            }
-        };
         let record = DaemonDeathRecord {
             at: now_iso(),
             pid,
@@ -553,8 +521,8 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
             },
             error: exit.as_ref().err().cloned(),
             uptime_ms: u64::try_from(uptime.as_millis()).unwrap_or(u64::MAX),
-            live_sessions: counted.map(|(live, _)| live),
-            busy_sessions: counted.map(|(_, busy)| busy),
+            live_sessions: None,
+            busy_sessions: None,
             consecutive: match verdict {
                 Verdict::Restart { consecutive, .. } | Verdict::GiveUp { consecutive } => {
                     consecutive

@@ -6,19 +6,20 @@ The `prime-agent` binary.
 Argument parsing, mode selection (interactive/headless/json/daemon subcommands), binary wiring of crates into processes, exit codes and user-facing errors. The daemon-forensics CLI (`incident.rs`, TS `src/cli/incident.ts`): the `prime-agent incident` timeline command — log-source discovery (agent.jsonl plus its `.old` rotation, falling back to the newest per-daemon log), `--since`/`--until` window and `--session` filter parsing, and the report rendering; the shared classifier lives in pa-types (`pa_types::incident`) and the agents-view notice in pa-tui. Client-side MCP auth flows (`mcp_login.rs`): the `/mcp login`/`/mcp logout` hook the TUI calls — the TS interactive client's placement — resolving a server (settings `mcpServers` + the builtin catalog), running the pa-core OAuth login on the suspended terminal, and persisting through the shared auth store. The same placement serves the TUI's client-command hooks: provider auth (`provider_login.rs` — the `/login`/`/logout` catalog, the API-key store, the MCP device flow, the Prime Inference terminal login (`prime_inference_login.rs` — the API-key flow: prime-cli credential reuse, the paste prompt with the whoami access check, the numbered team selector); the subscription OAuth and the Prime browser challenge stay unported and report it), trace-sharing state (`client_traces.rs` — the settings flag writes and the credential resolution `/traces` shows; the upload subsystem stays unported), and the `/update` runner (`client_update.rs` — the out-of-band installer funnel with the output captured, the same body `prime-agent update` runs; `installer_update.rs` is that CLI command's own driver, `--check` included), plus the staged update flow (`update_flow/`, `self_update.rs` — the `package update` self target's body). The descriptor OAuth commands (`descriptor_login.rs`): `login <provider> [--device]` and `logout <provider>`, plus the `/login` panel flow for models.json providers whose `auth` block declares `oauth`; the sign-in itself is pa-core's.
 
 ## Non-goals
-No business logic; it composes pa-daemon, pa-runtime, pa-core, pa-tui, pa-ai via their public APIs only.
+No business logic; it composes pa-runtime, pa-core, pa-tui, pa-ai via their public APIs only. It links no pa-daemon code (the dependency goes with that crate, phase 10 C2).
 
 ## Public API
-The `prime-agent` executable surface (flags, subcommands, exit codes). Internal lib types `pub(crate)`, plus the daemon wiring (`interactive_mode::{ensure_daemon_running, ensure_daemon_running_with, ensure_runtime_daemon_running_with, resolve_socket_path}`) exported for the integration verifier.
+The `prime-agent` executable surface (flags, subcommands, exit codes). Internal lib types `pub(crate)`, plus the daemon wiring (`interactive_mode::{ensure_runtime_daemon_running_with, resolve_socket_path}`) exported for the integration verifier.
 
 ## Depends on
-pa-types, pa-ai, pa-agent, pa-core, pa-daemon, pa-runtime, pa-tui (one-way, composition root).
+pa-types, pa-ai, pa-agent, pa-core, pa-daemon (no code linked; removed in phase 10 C2), pa-runtime, pa-tui (one-way, composition root).
 
 ## Runtime daemon
-`--mode daemon` starts the runtime daemon, the default, or the supervisor when the global
-setting `"daemon": "supervisor"` or `PRIME_AGENT_RUNTIME_DAEMON=0` selects it (kept for one
-release; `PRIME_AGENT_RUNTIME_DAEMON=1` selects the runtime daemon over the settings;
-`daemon_mode::DaemonKind::selected`). The runtime daemon (`print_runtime/daemon_session.rs`): the agent
+`--mode daemon` starts the runtime daemon, the only daemon this release starts
+(`daemon_mode.rs`). A settings file of an earlier release that still says `"daemon":
+"supervisor"` loads, and the choice is ignored: the runtime daemon appends a notice to its daemon
+log at each boot. `PRIME_AGENT_RUNTIME_DAEMON` and `PRIME_AGENT_DAEMON_SUPERVISOR` select nothing.
+The runtime daemon (`print_runtime/daemon_session.rs`): the agent
 dir's lock (`pa_core::platform::RuntimeDaemonLock`), then `daemon2.sock` beside the resolved daemon
 socket through the daemons' shared socket lifecycle (`pa_core::platform::daemon_socket`: stale-socket cleanup,
 owner-only permissions, the exit cleanup that spares a successor) and `pa_runtime::daemon::run`
@@ -40,31 +41,31 @@ builds subagents as the print run does (`print_session::build_subagent`; a scrip
 subagent runs `PRIME_AGENT_FAUX_CHILD_SCRIPT` when the script names none for it, the
 supervisor's `childScript`); a session's engine binds its kernel's
 `schedule.*` and `rlm_heartbeat.*` to the seams' `scheduled_jobs` (a print run has none, so its
-`schedule.*` still refuses). The daemon's `selected` re-reads the global settings before each
-scheduled job (`daemon_mode::DaemonKind::from_settings`; the environment switch is read
-once). A kept launch still splits into the keeper
-first; the runtime daemon has no keeper of its own yet (phase 7c). A launcher that waits on the supervisor's socket sets `PRIME_AGENT_DAEMON_SUPERVISOR=1` on the
-daemon it spawns (`daemon_mode::SUPERVISOR_ENV`): the update coordinator's successor or rollback
-while the supervisor is the daemon it drives, and a launch that selected the supervisor. That
-process and the daemon its keeper keeps are the supervisor whatever its settings say. The update
-coordinator prepares and stops the daemon it finds holding the sessions
-(`update_flow::endpoint::Endpoint::running`: the selected one, else the other one if only it
-answers) and starts and restores on the selected one, so a user whose supervisor an earlier
-release started is moved onto the runtime daemon by the update; it adopts the staged status by
-the socket the invoking update keyed it by.
-The interactive launch runs the TUI on the runtime daemon by default (phase 8f):
+`schedule.*` still refuses). A kept launch splits into the keeper first, which keeps the
+runtime daemon under `daemon2.sock`'s records. The old socket itself, when nothing answers on it,
+is the runtime daemon's legacy greeter (`pa_runtime::daemon`): an old client is told to restart.
+The update coordinator prepares and stops the daemon it finds holding the sessions
+(`update_flow::endpoint::Endpoint::running`: the runtime daemon, else a supervisor an earlier
+release left running if only it answers, driven on the old wire through pa-tui's
+`daemon_client`) and starts and restores on the runtime daemon, so a user whose supervisor an
+earlier release started is moved onto the runtime daemon by the update; it adopts the staged
+status by the socket the invoking update keyed it by. The successor's spawn still names the
+daemon to start in the switches an earlier release reads (`PRIME_AGENT_RUNTIME_DAEMON=1`, or
+`PRIME_AGENT_DAEMON_SUPERVISOR=1` for a rollback to a supervisor the update stopped), because a
+rollback's binary is that release's.
+The interactive launch runs the TUI on the runtime daemon:
 `interactive_mode` ensures it (`ensure_runtime_daemon_running`), declares `daemon2.sock` a wire2
 socket (`pa_tui::daemon_client::use_transport`), hands the TUI and its agents view that socket,
 and installs the TUI's `DaemonLauncher` (`interactive_mode::daemon::RuntimeDaemonLauncher`, the
-same ensure) for a window whose daemon nothing brought back; with the supervisor selected it
-ensures the supervisor. The runtime ensure also stops an idle supervisor it finds on the sibling
+same ensure) for a window whose daemon nothing brought back. The ensure also stops an idle
+supervisor an earlier release left on the sibling
 socket (no session running a turn, none with a window attached), on its own task, so the
 runtime daemon can lease those sessions; a busy one is left for a later launch. A session the TUI creates carries `executionMode: "interactive"`, stamped on
 its telemetry as the supervisor's are. `tests/runtime_default_launch_tmux_e2e.rs` is the launch's
-verifier (the default, and the idle supervisor's retirement), and the tmux verifiers that run the
-real binary under `env -i` run on the default and again on the supervisor
-(`support::on_the_supervisor!`). `prime-agent status` lists the runtime daemon and `doctor --fix`
-reaps it as it does the supervisor (`daemon_discovery`, each probed and stopped on its own wire).
+verifier (the runtime daemon, its legacy greeter, and the idle supervisor's retirement).
+`prime-agent status` lists the runtime daemon and `doctor --fix` reaps it, as they do a
+supervisor an earlier release left running (`daemon_discovery`, each probed and stopped on its
+own wire; the legacy greeter is the runtime daemon's and is not listed).
 `tests/runtime_daemon_e2e/` drives it over wire2 against the real binary; `turns.rs` there ports
 the supervisor's steer batching, queue order and abort tests (`steer_boundary_batch_e2e`,
 `queue_delivery_e2e`, `abort_kernel_e2e`) onto it, with withdraw, restore, compaction and the
@@ -102,10 +103,11 @@ frames of the goal loop, and the refinement rows with
 
 ## Daemon client
 The daemon-backed public commands (`list`, `stop`, `rename`, `send`, `schedule`) talk to the
-pa-daemon supervisor over its JSONL Unix socket through the crate-private client module
-(`daemon_client.rs`), or, with the runtime daemon selected, to the runtime daemon over wire2 on
-`daemon2.sock` beside the same socket (`runtime_daemon_client.rs`; `daemon_command.rs` maps
-each command to its query or call and resolves the session selector against `sessions.list`),
+runtime daemon over wire2 on `daemon2.sock` beside the resolved socket
+(`runtime_daemon_client.rs`; `daemon_command.rs` maps each command to its query or call and
+resolves the session selector against `sessions.list`), rendering the supervisor's output. The
+old wire's client (`daemon_client.rs`, built on `pa_types::daemon`) is left for discovery's probe
+and stop of a supervisor an earlier release left running.
 rendering the same output. The client never spawns a daemon - the TS CLI only auto-starts one for
 the internal `daemon start`/`open` commands, which are not reachable from the public surface.
 
@@ -149,13 +151,13 @@ fetch, archive staging) lives in pa-core's `update` module, and so do the
 daemon side's prepare transaction and boot restore pass (`update::restart`),
 which both daemons serve: the coordinator's `Restoring` phase polls the
 successor's `update_restore_status` RPC for the real per-session counts.
-The daemon the update drives is the selected one (`update_flow/endpoint.rs`):
-the supervisor on its socket, or, with the runtime daemon selected, the
-runtime daemon on `daemon2.sock`, greeted with `daemon.identity` and sent the
-update commands through pa-tui's `wire2_compat` (a connection per request),
-its successor spawned with `PRIME_AGENT_RUNTIME_DAEMON=1`; the update's lock
-and status are keyed by that daemon's socket. The legacy TS handoff below
-restores the TS sessions on the selected daemon the same way.
+The daemon the update restarts is the runtime daemon (`update_flow/endpoint.rs`)
+on `daemon2.sock`, greeted with `daemon.identity` and sent the update commands
+through pa-tui's `wire2_compat` (a connection per request); the update's lock
+and status are keyed by its socket. A supervisor an earlier release left
+running is prepared and stopped on the old wire when only it answers, and its
+sessions restored on the runtime daemon. The legacy TS handoff below restores
+the TS sessions on the runtime daemon the same way.
 The legacy restart adapter accepts the fresh status path supplied by shipped
 TypeScript updaters after they activate a release. It reports the original
 `requestId`/`phase` status schema, translates their session checkpoint to a

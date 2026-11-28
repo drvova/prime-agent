@@ -206,7 +206,6 @@ fn acp_daemon_attached_config_option_pickers() {
         .env("HOME", home.path())
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
         .env("PRIME_AGENT_FAUX_SCRIPT", &script_path)
-        .env_remove("PRIME_AGENT_RUNTIME_DAEMON")
         .current_dir(home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

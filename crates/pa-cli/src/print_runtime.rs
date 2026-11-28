@@ -74,8 +74,8 @@ impl crate::mode::Runtime for PrintRuntime {
     }
 }
 
-/// The ACP headless mode (TS main.ts, `useDaemonClient`): ensure a
-/// supervisor is listening (spawning one detached), create the daemon
+/// The ACP headless mode (TS main.ts, `useDaemonClient`): ensure the
+/// runtime daemon is listening (spawning one detached), create the daemon
 /// session the CLI session flags select, and serve the ACP surface over it
 /// until the client disconnects. Any startup failure is an `Error:` exit 1
 /// before the first ACP frame.
@@ -98,28 +98,15 @@ async fn acp_mode_main(options: &RunOptions) -> Result<i32, String> {
     // would target the TypeScript default socket and treat the schema
     // mismatch as a stale daemon).
     let socket_path = crate::config::resolve_daemon_socket_path(options.daemon_socket.as_deref());
-    // ACP drives the selected daemon: the runtime daemon on wire2 unless the supervisor is
-    // selected (`"daemon": "supervisor"`, `PRIME_AGENT_RUNTIME_DAEMON=0`).
-    let selected = crate::daemon_mode::DaemonKind::selected(&options.config.agent_dir);
-    let (socket_path, daemon) = if selected == crate::daemon_mode::DaemonKind::Runtime {
-        let socket = crate::interactive_mode::ensure_runtime_daemon_running(
-            &socket_path,
-            &options.config.cwd,
-        )
-        .await
-        .map_err(|error| format!("{error:#}"))?;
-        (socket, pa_runtime::acp::daemon::AcpDaemon::Runtime)
-    } else {
-        crate::interactive_mode::ensure_daemon_running(&socket_path, &options.config.cwd)
+    // ACP drives the runtime daemon on wire2.
+    let socket_path =
+        crate::interactive_mode::ensure_runtime_daemon_running(&socket_path, &options.config.cwd)
             .await
             .map_err(|error| format!("{error:#}"))?;
-        (socket_path, pa_runtime::acp::daemon::AcpDaemon::Supervisor)
-    };
     let (actual_cwd, create) = daemon_acp_create(options)?;
     pa_runtime::acp::daemon::run_daemon_attached_acp_mode(
         pa_runtime::acp::daemon::DaemonAcpOptions {
             socket_path,
-            daemon,
             actual_cwd,
             product_version: crate::config::version().to_string(),
             create,
@@ -1475,7 +1462,7 @@ fn lease_fresh_manager(
     (manager, lease)
 }
 
-/// Guard an in-process open: probe the selected daemon's live roster, then
+/// Guard an in-process open: probe the runtime daemon's live roster, then
 /// acquire the runtime lease. Returns the HELD lease — the caller owns its
 /// lifetime.
 fn session_open_guard(
@@ -1483,40 +1470,23 @@ fn session_open_guard(
     session_path: &std::path::Path,
 ) -> Result<pa_core::session::lease::SessionLease, String> {
     let socket = crate::interactive_mode::resolve_socket_path(socket_path);
-    let rows = |data: Option<serde_json::Value>| {
-        data.and_then(|data| data.get("sessions").cloned())
-            .and_then(|sessions| sessions.as_array().cloned())
+    // The runtime daemon's open sessions (on its socket beside `socket`); none when it does not
+    // answer or the list is refused.
+    let live = crate::runtime_daemon_client::RuntimeDaemonClient::connect(
+        &pa_runtime::daemon::socket_path(&socket),
+    )
+    .ok()
+    .and_then(|mut client| {
+        client
+            .query("sessions.list", serde_json::json!({ "open": true }))
+            .ok()
+    })
+    .map(|data| {
+        data.get("sessions")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
             .unwrap_or_default()
-    };
-    // The selected daemon's live sessions: the runtime daemon's open ones (on its socket beside
-    // `socket`), else the supervisor's `list`; none when no daemon answers or the list is refused.
-    let selected = crate::daemon_mode::DaemonKind::selected(&crate::config::get_agent_dir());
-    let live = if selected == crate::daemon_mode::DaemonKind::Runtime {
-        crate::runtime_daemon_client::RuntimeDaemonClient::connect(
-            &pa_runtime::daemon::socket_path(&socket),
-        )
-        .ok()
-        .and_then(|mut client| {
-            client
-                .query("sessions.list", serde_json::json!({ "open": true }))
-                .ok()
-        })
-        .map(|data| rows(Some(data)))
-    } else if let Ok(mut client) = crate::daemon_client::DaemonClient::connect(&socket) {
-        let list = client
-            .request(pa_types::daemon::DaemonCommand::List {
-                id: None,
-                all: None,
-                cwd: None,
-                session_dir: None,
-                include_client_owned: None,
-                rest: serde_json::Map::default(),
-            })
-            .map_err(|error| format!("Could not check active sessions: {error:#}"))?;
-        list.success.then(|| rows(list.data))
-    } else {
-        None
-    };
+    });
     if let Some(live) = live {
         let target = pa_core::session::lease::canonical_session_path(session_path);
         for row in live {

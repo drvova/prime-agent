@@ -109,10 +109,11 @@ pa-perf run --binary target/release/prime-agent --profile medium --out DIR [--ru
 pa-perf bench --binary target/release/prime-agent --corpus DIR --scenario S --runs 10 --json OUT
 ```
 
-Both take `--daemon runtime|supervisor` (default `runtime`, the product's default daemon): every
-run names its daemon to the product (`PRIME_AGENT_RUNTIME_DAEMON=1` or `0`), waits on that
-daemon's socket (`daemon2.sock` beside the run's socket for the runtime daemon) and stops it on
-its own wire, so the two daemons compare on the same corpus.
+Both take `--daemon runtime|supervisor` (default `runtime`): every run waits on that daemon's
+socket (`daemon2.sock` beside the run's socket for the runtime daemon) and stops it on its own
+wire. The product starts only the runtime daemon since phase 10 C1, so a `supervisor` run fails
+loudly: the run's socket is answered by the runtime daemon's legacy greeter. The `supervisor`
+choice and its old-wire bench client go with pa-daemon (phase 10 C2).
 
 Scenarios (timed from a triggering action to an observable needle — literal
 paints as byte needles, cell-diffed content through a vt100 screen model;

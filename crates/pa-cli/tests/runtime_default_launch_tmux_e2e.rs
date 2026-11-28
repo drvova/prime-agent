@@ -10,7 +10,8 @@
 //! An idle supervisor that an earlier release left running on `daemon.sock` (the upgrade's case;
 //! the test's legacy supervisor, `support::legacy_supervisor`) is stopped by the launch, off its
 //! path: the launch paints on the runtime daemon, and the supervisor is asked for its sessions
-//! and then to shut down.
+//! and then to shut down. Once no supervisor holds `daemon.sock`, the runtime daemon's legacy
+//! greeter may answer there; nothing else does.
 
 mod support;
 
@@ -176,10 +177,13 @@ fn an_idle_supervisor_left_running_is_stopped_by_a_launch_on_the_runtime_daemon(
         "the idle supervisor was never stopped: it was sent {:?}",
         supervisor.commands()
     );
+    // The supervisor is gone from `daemon.sock`: nothing answers there, or the runtime daemon's
+    // greeter does when it took the socket after the supervisor left.
     assert_eq!(
         (
             supervisor.commands(),
-            UnixStream::connect(dir.path().join("daemon.sock")).is_err(),
+            greeting(&dir.path().join("daemon.sock"), Duration::ZERO)
+                .is_none_or(|hello| hello.get("legacyGreeter").is_some()),
             UnixStream::connect(dir.path().join("daemon2.sock")).is_ok()
         ),
         (vec!["list".to_string(), "shutdown".to_string()], true, true)
@@ -193,7 +197,8 @@ fn interactive_launch_runs_on_the_runtime_daemon_by_default() {
     start(&pane);
     await_first_paint(&pane);
     // The daemon the launch spawned is the runtime daemon: it welcomes a wire2 client on
-    // `daemon2.sock`, and nothing listens on `daemon.sock`.
+    // `daemon2.sock`, and an old client on `daemon.sock` is greeted by its legacy greeter, which
+    // names that socket.
     let mut stream =
         UnixStream::connect(dir.path().join("daemon2.sock")).expect("daemon2.sock answers");
     stream.set_read_timeout(Some(WAIT)).expect("a read timeout");
@@ -223,9 +228,28 @@ fn interactive_launch_runs_on_the_runtime_daemon_by_default() {
     assert_eq!(
         (
             welcome["type"].clone(),
-            UnixStream::connect(dir.path().join("daemon.sock")).is_err()
+            greeting(&dir.path().join("daemon.sock"), WAIT)
+                .is_some_and(|hello| hello["legacyGreeter"]["runtimeSocket"]
+                    == json!(dir.path().join("daemon2.sock")))
         ),
         (json!("welcome"), true),
         "{welcome}"
     );
+}
+
+/// The first line a server on the old socket `path` sends (its `daemon_hello`), waiting up to
+/// `wait` for one to listen; `None` when nothing does.
+fn greeting(path: &Path, wait: Duration) -> Option<serde_json::Value> {
+    let deadline = Instant::now() + wait;
+    let stream = loop {
+        match UnixStream::connect(path) {
+            Ok(stream) => break stream,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => return None,
+        }
+    };
+    stream.set_read_timeout(Some(WAIT)).expect("a read timeout");
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut line).ok()?;
+    serde_json::from_str(line.trim()).ok()
 }

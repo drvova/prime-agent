@@ -1,12 +1,11 @@
-//! A TypeScript updater's restart handoff on the selected daemon (phase
-//! 8d-5b2): `prime-agent update --internal-update-restart-coordinator`, the
-//! process a shipped TS updater starts after it installed this release,
-//! restores the TS daemon's sessions from its converted checkpoint on the
-//! runtime daemon when the runtime daemon is the selected daemon, as it does
-//! on the supervisor otherwise (`docs/legacy-upgrade-contract.md`).
+//! A TypeScript updater's restart handoff (phase 8d-5b2): `prime-agent
+//! update --internal-update-restart-coordinator`, the process a shipped TS
+//! updater starts after it installed this release, restores the TS daemon's
+//! sessions from its converted checkpoint on the runtime daemon, as the
+//! supervisor of an earlier release did (`docs/legacy-upgrade-contract.md`).
 //!
 //! The TS daemon is gone already (its checkpoint's process is dead), so the
-//! coordinator takes the recovery path: it boots the selected daemon with the
+//! coordinator takes the recovery path: it boots the runtime daemon with the
 //! checkpoint as its roster, waits for its greeting, polls its restore
 //! status, and writes the TS status record. Both daemons replay the row the
 //! same way: the update-complete notice for the session the update was
@@ -14,7 +13,8 @@
 //! first, then the follow-up.
 //!
 //! The old daemon's side is frozen: its answers are read from a golden
-//! ([`super::old_reference`]).
+//! ([`super::old_reference`]); this release no longer starts the supervisor,
+//! so that golden cannot be blessed again.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -161,11 +161,6 @@ async fn legacy_restore(bed: &Bed, runtime: bool) -> Restored {
             "PRIME_AGENT_FAUX_SCRIPT",
             std::fs::read_to_string(&script).unwrap(),
         );
-    // The runtime daemon is the default; the supervisor is selected by name.
-    command.env(
-        "PRIME_AGENT_RUNTIME_DAEMON",
-        if runtime { "1" } else { "0" },
-    );
     let finished = command.status().expect("run the coordinator");
     let status: Value =
         serde_json::from_str(&std::fs::read_to_string(&status_path).unwrap()).unwrap();
@@ -224,10 +219,9 @@ async fn stop_successor(bed: &Bed, runtime: bool) {
 }
 
 /// The supervisor's restore of a TS checkpoint, replayed on the runtime
-/// daemon when it is the selected daemon: the same status record and the
-/// same restored turns.
+/// daemon: the same status record and the same restored turns.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_ts_checkpoint_restores_on_the_selected_daemon_as_on_the_old_daemon() {
+async fn a_ts_checkpoint_restores_on_the_runtime_daemon_as_on_the_old_daemon() {
     let old_bed = Bed::new();
     let mut reference = OldReference::open("ts_checkpoint_restore", &old_bed);
     let old: Restored = reference

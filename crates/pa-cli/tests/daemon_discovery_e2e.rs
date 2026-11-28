@@ -9,7 +9,6 @@
     unix,
     expect(
         clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
         reason = "the daemon pids read back from its lock are kernel-bounded pids"
     )
 )]
@@ -98,7 +97,6 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, tmp_dir: &Path) -> Daemon {
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env("TMPDIR", tmp_dir)
         .env("PRIME_AGENT_FAUX_SCRIPT", &script)
-        .env_remove("PRIME_AGENT_RUNTIME_DAEMON")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -189,7 +187,6 @@ fn interactive_launcher_detaches_the_daemon_from_client_session() {
     for key in SCRUB_ENV {
         client.env_remove(key);
     }
-    client.env_remove("PRIME_AGENT_RUNTIME_DAEMON");
     let client = client.output().expect("spawn launcher client");
     assert!(
         client.status.success(),
@@ -840,79 +837,4 @@ fn a_pinned_root_with_an_overlapping_agent_dir_never_stops_foreign_workers() {
     shutdown_on_socket(&foreign_socket);
     wait_until_stopped(&foreign_socket, &mut foreign_daemon);
     assert!(foreign_hosted.wait_gone(Duration::from_secs(10)));
-}
-
-/// A fresh top-level invocation must not inherit an ancestor worker's
-/// identity: a kernel bash hands a session's full environment to every
-/// child, so `prime-agent --mode daemon --daemon-socket B` launched from
-/// inside an old supervisor's worker must come up as B's daemon — never as a
-/// second worker of the live supervisor the inherited env points at.
-#[test]
-fn a_daemon_launched_with_an_inherited_worker_env_comes_up_as_the_daemon() {
-    let fixture = fixture_dir();
-    let agent_dir = fixture.path().join("agent");
-    let tmp_dir = fixture.path().join("tmp");
-    let socket = fixture.path().join("daemon.sock");
-    let worker_socket = fixture.path().join("worker.sock");
-    let ancestor_socket = fixture.path().join("ancestor-supervisor.sock");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    std::fs::create_dir_all(&tmp_dir).expect("tmp dir");
-    let mut command = Command::new(cli_binary());
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .env("TMPDIR", &tmp_dir)
-        // The old worker's inherited handshake set (what a kernel bash sees).
-        .env("PRIME_AGENT_INTERNAL_DAEMON_WORKER", "1")
-        .env(
-            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN",
-            "inherited-worker-token",
-        )
-        .env(
-            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_INSTANCE_ID",
-            "inherited-instance",
-        )
-        .env(
-            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID",
-            "inherited-session",
-        )
-        .env("PRIME_AGENT_INTERNAL_DAEMON_WORKER_CWD", fixture.path())
-        .env(
-            "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
-            &ancestor_socket,
-        )
-        .env("PRIME_AGENT_INTERNAL_DAEMON_WORKER_SOCKET", &worker_socket)
-        .env(
-            "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL",
-            fixture.path().join("recovery.jsonl"),
-        )
-        .env("PRIME_AGENT_INTERNAL_DAEMON_WORKER_TELEMETRY_DISABLED", "1")
-        .env_remove("PRIME_AGENT_RUNTIME_DAEMON")
-        .env(
-            pa_core::session::lease::SESSION_LEASE_OWNER_ID_ENV,
-            "inherited-session",
-        )
-        .env(
-            pa_core::kernel::orphan_journal::ORPHAN_PROCESS_JOURNAL_ENV,
-            fixture.path().join("orphans.jsonl"),
-        )
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let child = command.spawn().expect("spawn the daemon");
-    let pid = child.id();
-    let mut daemon = Daemon { child };
-
-    // The invocation must come up as B's daemon. On a routing regression (an
-    // inherited worker env rerouting it into worker mode) the process starts
-    // as a worker instead and nothing ever listens here.
-    support::await_listening(&runtime_socket(&socket), &mut daemon.child);
-
-    // The daemon's lock names this child as the daemon.
-    assert_eq!(
-        lock_holder(&agent_dir).1,
-        pid as i32,
-        "the lock must name this child as the daemon"
-    );
 }

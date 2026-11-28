@@ -1,13 +1,12 @@
-//! Which daemon an update restart drives: the runtime daemon on
-//! `daemon2.sock` (the default), or the supervisor on its socket (the old
-//! wire) when it is selected (`"daemon": "supervisor"` or
-//! `PRIME_AGENT_RUNTIME_DAEMON=0`), whose update calls and queries answer
-//! the old responses (pa-tui's `wire2_compat` maps the commands and replies).
-//! The coordinator's phases go to the daemon it finds running
-//! ([`Endpoint::running`]), and the successor's spawn and the restore report
-//! to the selected one, so an update restores its sessions on the selected
-//! daemon, also when the daemon that held them was the other one (the
-//! supervisor of a release from before the runtime daemon was the default).
+//! Which daemon an update restart drives. The successor is the runtime
+//! daemon on `daemon2.sock`, the only daemon this release starts. The
+//! daemon the update prepares and stops is the one it finds running
+//! ([`Endpoint::running`]): the runtime daemon, or the supervisor on its
+//! socket (the old wire) that a release from before this one left running,
+//! whose update calls and queries answer the old responses. Its sessions are
+//! then restored on the runtime daemon. That old-wire client is pa-tui's
+//! (`pa_tui::daemon_client`, built on `pa_types::daemon`); no supervisor code
+//! is linked for it.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -22,7 +21,7 @@ const ANSWER_PROBE: Duration = Duration::from_millis(250);
 /// The daemon an update restart drives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Endpoint {
-    /// The supervisor on its socket.
+    /// A supervisor an earlier release left running on its socket.
     Supervisor(PathBuf),
     /// The runtime daemon on `socket`, started with `--daemon-socket
     /// daemon_socket` (the supervisor's socket it derives its own from).
@@ -33,43 +32,28 @@ pub enum Endpoint {
 }
 
 impl Endpoint {
-    /// The selected daemon for the supervisor's `daemon_socket` over
-    /// `agent_dir`, as `--mode daemon` selects it.
+    /// The runtime daemon beside the supervisor's `daemon_socket`.
     #[must_use]
-    pub fn selected(daemon_socket: &Path, agent_dir: &Path) -> Self {
-        if crate::daemon_mode::DaemonKind::selected(agent_dir)
-            == crate::daemon_mode::DaemonKind::Runtime
-        {
-            Endpoint::Runtime {
-                daemon_socket: daemon_socket.to_path_buf(),
-                socket: pa_runtime::daemon::socket_path(daemon_socket),
-            }
-        } else {
-            Endpoint::Supervisor(daemon_socket.to_path_buf())
+    pub fn runtime(daemon_socket: &Path) -> Self {
+        Endpoint::Runtime {
+            daemon_socket: daemon_socket.to_path_buf(),
+            socket: pa_runtime::daemon::socket_path(daemon_socket),
         }
     }
 
     /// The daemon an update finds holding the sessions, which it prepares
-    /// and stops: the selected one when it answers, else the other one when
-    /// it answers (a daemon the selection has moved away from, such as the
-    /// supervisor an upgrade to the runtime default finds running, whose
-    /// sessions the update then restores on the selected one), else the
-    /// selected one (an update with no daemon to stop).
-    pub async fn running(daemon_socket: &Path, agent_dir: &Path) -> Self {
-        let selected = Self::selected(daemon_socket, agent_dir);
-        let other = match &selected {
-            Endpoint::Supervisor(_) => Endpoint::Runtime {
-                daemon_socket: daemon_socket.to_path_buf(),
-                socket: pa_runtime::daemon::socket_path(daemon_socket),
-            },
-            Endpoint::Runtime { .. } => Endpoint::Supervisor(daemon_socket.to_path_buf()),
-        };
-        if pa_core::platform::daemon_socket::can_connect(selected.socket(), ANSWER_PROBE).await
-            || !pa_core::platform::daemon_socket::can_connect(other.socket(), ANSWER_PROBE).await
+    /// and stops: the runtime daemon when it answers, else the supervisor on
+    /// `daemon_socket` when it answers (one a release from before this one
+    /// left running, whose sessions the update then restores on the runtime
+    /// daemon), else the runtime daemon (an update with no daemon to stop).
+    pub async fn running(daemon_socket: &Path) -> Self {
+        let runtime = Self::runtime(daemon_socket);
+        if pa_core::platform::daemon_socket::can_connect(runtime.socket(), ANSWER_PROBE).await
+            || !pa_core::platform::daemon_socket::can_connect(daemon_socket, ANSWER_PROBE).await
         {
-            selected
+            runtime
         } else {
-            other
+            Endpoint::Supervisor(daemon_socket.to_path_buf())
         }
     }
 
@@ -196,42 +180,30 @@ impl Connection {
 mod tests {
     use super::*;
 
-    /// The update stops the daemon that holds the sessions: the other one when only it answers
-    /// (the supervisor an upgrade to the runtime default finds running), else the selected one.
+    /// The update stops the daemon that holds the sessions: the supervisor when only it answers
+    /// (one an earlier release left running), else the runtime daemon.
     #[tokio::test]
-    async fn the_running_daemon_is_the_one_that_answers_preferring_the_selected() {
+    async fn the_running_daemon_is_the_one_that_answers_preferring_the_runtime_daemon() {
         let dir = tempfile::tempdir().unwrap();
         let daemon_socket = dir.path().join("daemon.sock");
-        let selected = Endpoint::selected(&daemon_socket, dir.path());
-        let other = if selected.is_runtime() {
-            daemon_socket.clone()
-        } else {
-            pa_runtime::daemon::socket_path(&daemon_socket)
-        };
-        let mut answers = vec![(
-            "nothing answers",
-            Endpoint::running(&daemon_socket, dir.path()).await,
-        )];
-        let _other = std::os::unix::net::UnixListener::bind(&other).unwrap();
+        let runtime = Endpoint::runtime(&daemon_socket);
+        let mut answers = vec![("nothing answers", Endpoint::running(&daemon_socket).await)];
+        let _supervisor = std::os::unix::net::UnixListener::bind(&daemon_socket).unwrap();
         answers.push((
-            "only the other answers",
-            Endpoint::running(&daemon_socket, dir.path()).await,
+            "only the supervisor answers",
+            Endpoint::running(&daemon_socket).await,
         ));
-        let _selected = std::os::unix::net::UnixListener::bind(selected.socket()).unwrap();
-        answers.push((
-            "both answer",
-            Endpoint::running(&daemon_socket, dir.path()).await,
-        ));
-        let sockets: Vec<(&str, PathBuf)> = answers
-            .into_iter()
-            .map(|(case, endpoint)| (case, endpoint.socket().to_path_buf()))
-            .collect();
+        let _runtime = std::os::unix::net::UnixListener::bind(runtime.socket()).unwrap();
+        answers.push(("both answer", Endpoint::running(&daemon_socket).await));
         assert_eq!(
-            sockets,
+            answers,
             vec![
-                ("nothing answers", selected.socket().to_path_buf()),
-                ("only the other answers", other),
-                ("both answer", selected.socket().to_path_buf()),
+                ("nothing answers", runtime.clone()),
+                (
+                    "only the supervisor answers",
+                    Endpoint::Supervisor(daemon_socket.clone())
+                ),
+                ("both answer", runtime),
             ]
         );
     }

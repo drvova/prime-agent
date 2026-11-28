@@ -85,11 +85,6 @@ fn pointer<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
         .try_fold(value, |current, key| current.get(key))
 }
 
-/// A session summary with a routable active id.
-fn is_live_session_summary(value: &Value) -> bool {
-    is_session_summary(value) && string_field(value, "activeSessionId").is_some()
-}
-
 fn session_summary_from_value(value: &Value) -> Option<SessionSummary> {
     if !is_session_summary(value) {
         return None;
@@ -130,11 +125,6 @@ pub(crate) fn get_session_summaries(data: &Value) -> Option<Vec<SessionSummary>>
         .iter()
         .map(|session| session_summary_from_value(session))
         .collect()
-}
-
-/// A public guard for create/rename output paths.
-pub(crate) fn live_session_summary(data: &Value) -> Option<&Value> {
-    is_live_session_summary(data).then_some(data)
 }
 
 /// The shared CLI table renderer (TS `formatTable`): every column pads to the widest

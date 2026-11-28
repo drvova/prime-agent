@@ -198,12 +198,30 @@ continuation is admitted, so follow-up input cannot run ahead of that turn.
 
 ### The runtime daemon
 
-The runtime daemon (`daemon2.sock`) is the default daemon from this release:
+The runtime daemon (`daemon2.sock`) is the only daemon this release starts:
 `prime-agent --mode daemon`, the interactive TUI, the session commands, ACP
-and the update run on it unless the global setting `"daemon": "supervisor"`
-or `PRIME_AGENT_RUNTIME_DAEMON=0` selects the supervisor (both kept for one
-release; `PRIME_AGENT_RUNTIME_DAEMON=1` selects the runtime daemon over the
-settings). It serves the same Rust update transaction as the supervisor; both run `pa_core::update::restart`. Its
+and the update run on it. Nothing selects the supervisor any more:
+
+- A global settings file an earlier release wrote with `"daemon":
+  "supervisor"` still loads. The choice is ignored, and the runtime daemon
+  appends a notice to its daemon log at each boot. Compatibility comes first:
+  refusing the file would stop an install that only kept a setting the
+  previous release honored.
+- `PRIME_AGENT_RUNTIME_DAEMON` and `PRIME_AGENT_DAEMON_SUPERVISOR` are read
+  by no code of this release. The update still sets them on the successor
+  and rollback it spawns, because a rollback's binary is an earlier
+  release's, which reads them.
+- While nothing else answers on the daemon socket (`daemon.sock`), the
+  runtime daemon serves a legacy greeter there. A client of an earlier
+  release (an old window reconnecting after the update, a launcher waiting on
+  the old socket) is sent a `daemon_hello` whose `legacyGreeter` names the
+  reason and the runtime daemon's socket, and its first request is answered
+  with a failed `response` telling it to restart the client, instead of
+  waiting out its timeouts. The hello names no supervisor process, and
+  `status`, `doctor` and `shutdown` do not list the greeter. A supervisor
+  that holds `daemon.sock` keeps it.
+
+It serves the same Rust update transaction as the supervisor; both run `pa_core::update::restart`. Its
 wire2 calls are `daemon.prepare_update_restart {updateId, toVersion?}` and
 `daemon.commit_update_restart {updateId}`, whose results and refusals are
 the supervisor's `prepare_update_restart` and `commit_update_restart`
@@ -234,28 +252,31 @@ responses' `data`, message and `errorInfo`, verbatim:
   and a client that creates or attaches to a roster row waits for that row.
 - The update drives the daemons through `update_flow/endpoint.rs`:
   - the Rust coordinator prepares and commits on the daemon it finds holding
-    the sessions (`Endpoint::running`): the selected daemon when it answers,
-    else the other one when only it answers. A user whose supervisor a
+    the sessions (`Endpoint::running`): the runtime daemon when it answers,
+    else a supervisor when only it answers. A user whose supervisor a
     release from before this one started is therefore moved by the update:
-    the supervisor is prepared and stopped as before, its roster (session
-    rows only; the runtime daemon has no workers) is handed to the
-    successor, and the successor is the selected daemon, the runtime daemon,
-    which restores the rows with the shared restore pass;
+    the supervisor is prepared and stopped on the old wire as before (a
+    client built on `pa_types::daemon`; no supervisor code is linked), its
+    roster (session rows only; the runtime daemon has no workers) is handed
+    to the successor, the runtime daemon, which restores the rows with the
+    shared restore pass;
   - the successor's spawn, its greeting and the restore report go to the
-    selected daemon: on `daemon2.sock` greeted with `daemon.identity` (the
+    runtime daemon on `daemon2.sock`, greeted with `daemon.identity` (the
     hello's identity fields), the successor spawned with
-    `PRIME_AGENT_RUNTIME_DAEMON=1`; with the supervisor selected, on its
-    socket, spawned with `PRIME_AGENT_DAEMON_SUPERVISOR=1`;
-  - a rollback starts the previous binary as the daemon the update stopped;
+    `PRIME_AGENT_RUNTIME_DAEMON=1`;
+  - a rollback starts the previous binary as the daemon the update stopped:
+    with `PRIME_AGENT_RUNTIME_DAEMON=1` for the runtime daemon, or with
+    `PRIME_AGENT_DAEMON_SUPERVISOR=1` on its socket for a supervisor, which
+    that release reads;
   - the update's lock and status are keyed by the socket of the daemon the
-    invoking release selected (`daemon2.sock` from this release on), and the
+    invoking release drove (`daemon2.sock` from this release on), and the
     coordinator adopts the staged status by that socket, so an update an
     earlier release invokes, keyed by `daemon.sock`, still completes; the
     prepared roster lives under the stopped daemon's own socket.
 - The TS handoff (`--internal-update-restart-coordinator` from a shipped
   updater) still prepares and stops the TS daemon on its own socket. It then
-  restores the TS checkpoint on the selected daemon. On the runtime daemon
-  that replay works as follows:
+  restores the TS checkpoint on the runtime daemon, whose greeter then
+  answers that socket. The replay works as follows:
   - the input pause holds the session's queue;
   - the update-complete notice is appended to the transcript;
   - the next-turn rows are steered to the session's agent;
@@ -263,7 +284,7 @@ responses' `data`, message and `errorInfo`, verbatim:
     as input, and an action carrying a custom message fails that row's
     restore;
   - the continuation is queued as a steer.
-- With both daemons running, the update restarts the selected one only. An
+- With both daemons running, the update restarts the runtime daemon only. An
   upgrade that did not go through the coordinator (an installer run by
   hand) leaves the supervisor running on the old binary: the first launch
   on the runtime daemon stops it once it is idle (no session running a

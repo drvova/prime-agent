@@ -3,10 +3,11 @@
 //!
 //! - [`Bed::old_daemon`], which only a blessing of the frozen old-daemon
 //!   answers starts ([`super::old_reference`]);
-//! - ownership: with the old daemon started on the same agent dir after the
-//!   runtime daemon (its boot reap spares the runtime daemon), a session
-//!   either one holds is refused by the other (the session lease). Two
-//!   daemons exist only while the supervisor does.
+//! - ownership: with the old daemon running on the same agent dir when the
+//!   runtime daemon starts (an earlier release's supervisor, which keeps
+//!   `daemon.sock`: the runtime daemon's legacy greeter stays off it), a
+//!   session either one holds is refused by the other (the session lease).
+//!   Two daemons exist only while the supervisor does.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -54,10 +55,10 @@ async fn the_old_and_the_runtime_daemon_never_hold_one_session() {
     let bed = Bed::new();
     let script = bed.dir.path().join("old-script.json");
     std::fs::write(&script, json!({ "responses": ["old answer"] }).to_string()).unwrap();
-    // The runtime daemon first: the old daemon's boot reap, which takes a
-    // command line naming its socket for a predecessor, must spare it.
-    let _runtime = bed.runtime_daemon(&json!({ "responses": ["runtime answer"] }));
+    // The old daemon first, as an earlier release left it running: the runtime daemon then
+    // finds `daemon.sock` taken and serves only its own socket.
     let _old = bed.old_daemon();
+    let _runtime = bed.runtime_daemon(&json!({ "responses": ["runtime answer"] }));
 
     // The old daemon holds a session: the runtime daemon cannot open it.
     let old_file = {

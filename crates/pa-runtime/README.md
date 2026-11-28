@@ -341,16 +341,22 @@ SQLite implementations over `pa-log`.
   with the lease handed over.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
-- **Runtime daemon** (`daemon`, the default daemon since phase 8f: `prime-agent --mode daemon`
-  starts it unless the global setting `"daemon": "supervisor"` or `PRIME_AGENT_RUNTIME_DAEMON=0`
-  selects the supervisor, kept for one release). `daemon::run(listener, DaemonOptions, shutdown)` opens a `Runtime` over the agent
+- **Runtime daemon** (`daemon`, the only daemon `prime-agent --mode daemon` starts since phase
+  10 C1; a settings file's `"daemon": "supervisor"` is ignored, with a notice in the daemon log
+  at each boot). `daemon::run(listener, DaemonOptions, shutdown)` opens a `Runtime` over the agent
   dir and serves one `WireServer::serve` per connection on the listener the embedder bound at
   `daemon::socket_path` (`daemon2.sock` beside the old daemon's socket; on Windows the old pipe
   name with `2` appended), through `pa_types::platform::transport` as the old daemon's socket is.
   The embedder takes `pa_core::platform::RuntimeDaemonLock` (an OS file lock on
   `<agent dir>/runtime-daemon.lock`, its pid, socket and restart owner inside) with
   `daemon::take_lock` and holds it for the process's life: a second runtime daemon on the agent
-  dir refuses to start, and the supervisor's boot reap spares the holder and its restart owner.
+  dir refuses to start, and the boot reap of a supervisor an earlier release starts spares the
+  holder and its restart owner. **The old socket** (`daemon/legacy_greeter.rs`): the old daemon's
+  socket the runtime daemon's sits beside (`DaemonOptions::legacy_socket`), taken only when
+  nothing answers there, greets each old-wire client with a `daemon_hello` that names no
+  supervisor (`legacyGreeter: {reason, runtimeSocket}`) and answers its first request with a
+  failed `response` telling it to restart the client, so an old client never waits there; the
+  file is removed with the daemon.
   A holder that does not answer a wire2 hello on the same socket within 3 s is a wedged
   predecessor: `take_lock` stops it (`RuntimeDaemonLock::reap_holder`) and then takes the lock. Its
   `Handlers`: `sessions.list` (the sessions dir's saved sessions and the open ones, or
@@ -717,11 +723,9 @@ SQLite implementations over `pa-log`.
   as the same task behind `TURN_INTERRUPTED_NOTICE`, stored done when its answer was saved, or,
   on its second death in a row, stored failed with the crash's reason. A kept launch is kept by
   the restart owner (`daemon::keeper`, moved from pa-daemon: `KEEPER_ENV`, `enter`, `run_keeper`,
-  `KeeperOptions`, `KeptDaemon`, `CountSessions`, `keeper_pid`, `boot_death`,
-  `record_stop_intent`, `DAEMON_DEATH_LOG`), its records under `daemon2.sock`
-  (`KeptDaemon::Runtime`). It keeps the supervisor too while that exists
-  (`KeptDaemon::Supervisor`), counting a dead supervisor's sessions with the count its launcher
-  hands in, so it reads none of the supervisor's records itself.
+  `KeeperOptions`, `keeper_pid`, `boot_death`, `record_stop_intent`, `DAEMON_DEATH_LOG`), its
+  records under `daemon2.sock`; it keeps the runtime daemon only, and its death records leave
+  the sessions uncounted.
   **Its own end** (`daemon/handlers/lifecycle.rs`): `daemon.shutdown` and `daemon.restart` (the
   old `shutdown` and `restart`, the same stop; `force` accepted and, as on the old supervisor,
   unused) are answered without a result, then request the stop (`wire::after_reply`, so the
@@ -788,8 +792,7 @@ SQLite implementations over `pa-log`.
   the session's agent and queues an empty input, deferred by pa-core's rule; a fire waits for its
   task's `done`. A job due in a session the daemon holds dormant (idle when its predecessor died,
   `"dormant": true` in the held record) opens it under its lease; a session stopped or deleted
-  on purpose is disarmed and not held. A job runs only while `DaemonOptions::selected` says the
-  daemon is the selected one; otherwise its fire is recorded as a skip. Subagents keep no jobs.
+  on purpose is disarmed and not held. Subagents keep no jobs.
   Not yet: cross-session features (7e), a running
   session's model switch, and the lane's suspension across a restart (a restored lane starts
   unparked). Under the print modes (`Runtime::open`) a panic still only fails its task and the
@@ -798,13 +801,11 @@ SQLite implementations over `pa-log`.
 - **ACP mode** (`acp`, `prime-agent --mode acp`): the Agent Client Protocol JSON-RPC surface on
   stdio (initialize, session/new, session/load, session/list, session/prompt, session/cancel,
   session/close, session/set_config_option, and the outgoing session/update notifications with
-  the namespaced `_meta` correlation), served over a session of the supervisor (`pa-daemon`),
-  which it reaches as a socket client on the old wire (`pa_types::daemon`): it links no daemon
-  code. Every daemon request goes through a command-level transport (`acp/transport.rs`:
-  `DaemonTransport`, the old wire's `DaemonLink`), whose one frame stream delivers each response
+  the namespaced `_meta` correlation), served over a session of the runtime daemon: it links no
+  daemon code. Every daemon request goes through a command-level transport (`acp/transport.rs`:
+  `DaemonTransport`, the old wire's commands), whose one frame stream delivers each response
   after the events sent before it. The TS capture corpus it is checked against is
-  `testdata/acp/`. On the runtime daemon (the default) it drives that daemon on wire2 instead
-  (`acp/wire2_link.rs`, `Wire2Link`): `create` is `session.create {path, cwd, sessionDir,
+  `testdata/acp/`. It drives the runtime daemon on wire2 (`acp/wire2_link.rs`, `Wire2Link`): `create` is `session.create {path, cwd, sessionDir,
   launchEnv, options}` (the command's telemetry opt-out among the options; `--no-session` an
   `ephemeral` one), `attach`/`detach` subscribe to and unsubscribe from
   `agent/<id>/#` (an attach answers at its `backfilled`), `prompt_and_wait` publishes on
@@ -860,10 +861,10 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   memory only), `SubagentSpec`,
   `BuiltSession` (`queue_modes`: `QueueModes`), `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
   `TaskQueue::session_idle`.
-- `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions, AcpDaemon}` (pa-cli
-  dispatches `--mode acp` through it; `AcpDaemon` picks the supervisor or the runtime daemon).
-- `daemon::{run, DaemonOptions, socket_path}` (`DaemonOptions::selected`: whether the daemon
-  is the selected one, asked before each scheduled job). On the wire (strings, not Rust surface): the
+- `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions}` (pa-cli dispatches
+  `--mode acp` through it, on the runtime daemon's socket).
+- `daemon::{run, DaemonOptions, socket_path}` (`DaemonOptions::legacy_socket`: the old socket
+  the legacy greeter answers while nothing else does). On the wire (strings, not Rust surface): the
   queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,
   `session.breakdown`, `session.model`, `session.system_prompt`, `session.children`,
   `runtime.roster`, `runtime.traffic`, `sessions.list {shape: "saved"}`, `session.commands`,

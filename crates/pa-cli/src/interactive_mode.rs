@@ -21,10 +21,7 @@ use pa_tui::interactive::{
 
 mod daemon;
 
-pub use daemon::{
-    ensure_daemon_running, ensure_daemon_running_with, ensure_runtime_daemon_running,
-    ensure_runtime_daemon_running_with,
-};
+pub use daemon::{ensure_runtime_daemon_running, ensure_runtime_daemon_running_with};
 
 mod onboarding;
 
@@ -101,28 +98,21 @@ pub fn run_interactive_mode(options: &RunOptions) -> Result<i32> {
             .track(client);
         }
         let attach_started = std::time::Instant::now();
-        // The daemon the UI runs on: the runtime daemon on its own socket (`daemon2.sock`,
-        // wire2) unless the supervisor is selected (`"daemon": "supervisor"`,
-        // `PRIME_AGENT_RUNTIME_DAEMON=0`). A runtime window that loses its daemon gets it started
-        // again the way this launch started it, when its restart owner does not bring it back.
-        let selected = crate::daemon_mode::DaemonKind::selected(&options.config.agent_dir);
-        let tui_options = if selected == crate::daemon_mode::DaemonKind::Runtime {
-            let socket =
-                ensure_runtime_daemon_running(&tui_options.socket_path, &tui_options.cwd).await?;
-            pa_tui::daemon_client::use_transport(&socket, pa_tui::daemon_client::Transport::Wire2);
-            pa_tui::daemon_reconnect::install_daemon_launcher(std::sync::Arc::new(
-                daemon::RuntimeDaemonLauncher {
-                    daemon_socket: tui_options.socket_path.clone(),
-                    spawn_cwd: tui_options.cwd.clone(),
-                },
-            ));
-            InteractiveOptions {
-                socket_path: socket,
-                ..tui_options
-            }
-        } else {
-            ensure_daemon_running(&tui_options.socket_path, &tui_options.cwd).await?;
-            tui_options
+        // The UI runs on the runtime daemon, on its own socket (`daemon2.sock`, wire2). A window
+        // that loses its daemon gets it started again the way this launch started it, when its
+        // restart owner does not bring it back.
+        let socket =
+            ensure_runtime_daemon_running(&tui_options.socket_path, &tui_options.cwd).await?;
+        pa_tui::daemon_client::use_transport(&socket, pa_tui::daemon_client::Transport::Wire2);
+        pa_tui::daemon_reconnect::install_daemon_launcher(std::sync::Arc::new(
+            daemon::RuntimeDaemonLauncher {
+                daemon_socket: tui_options.socket_path.clone(),
+                spawn_cwd: tui_options.cwd.clone(),
+            },
+        ));
+        let tui_options = InteractiveOptions {
+            socket_path: socket,
+            ..tui_options
         };
         if let Some(client) = startup_telemetry.as_ref() {
             pa_telemetry::AgentStartupStage {

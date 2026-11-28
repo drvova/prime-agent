@@ -31,7 +31,7 @@ use tokio::sync::Mutex;
 use super::jsonrpc::{self, Incoming};
 use super::meta::{self, PrimeAgentEventPhase, PrimeAgentOutcome, PrimeAgentSessionMeta};
 use super::producer::{self, UpdateProducer};
-use super::transport::{DaemonLink, DaemonTransport, TransportFrame};
+use super::transport::{DaemonTransport, TransportFrame};
 use super::types;
 use super::wire2_link::Wire2Link;
 use super::wire_config::{
@@ -40,21 +40,10 @@ use super::wire_config::{
 };
 use super::wire_events::{self, WireMappingState};
 
-/// Which daemon the ACP surface drives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcpDaemon {
-    /// The supervisor, on the old wire (`DaemonLink`).
-    Supervisor,
-    /// The runtime daemon, on wire2 (`Wire2Link`): `socket_path` is its
-    /// `daemon2.sock`.
-    Runtime,
-}
-
 #[derive(Clone)]
 pub struct DaemonAcpOptions {
-    /// The socket of the daemon `daemon` names.
+    /// The runtime daemon's socket (`daemon2.sock`).
     pub socket_path: PathBuf,
-    pub daemon: AcpDaemon,
     pub actual_cwd: PathBuf,
     pub product_version: String,
     /// The startup `create` built from the CLI session flags.
@@ -123,8 +112,8 @@ pub(crate) struct DaemonAcpState {
 }
 
 /// Serve the daemon-attached ACP mode until stdin closes. The caller
-/// guarantees the socket answers (the composition spawns a supervisor
-/// when none is listening).
+/// guarantees the socket answers (the composition spawns the runtime
+/// daemon when none is listening).
 ///
 /// # Errors
 ///
@@ -138,16 +127,8 @@ pub(crate) struct DaemonAcpState {
 /// The frame-consumer task panics when the link's pending-response map
 /// lock is poisoned (a holder panicked while holding it).
 pub async fn run_daemon_attached_acp_mode(options: DaemonAcpOptions) -> anyhow::Result<i32> {
-    match options.daemon {
-        AcpDaemon::Supervisor => {
-            let link = Arc::new(DaemonLink::connect(&options.socket_path).await?);
-            serve_acp(link, options).await
-        }
-        AcpDaemon::Runtime => {
-            let link = Arc::new(Wire2Link::connect(&options.socket_path).await?);
-            serve_acp(link, options).await
-        }
-    }
+    let link = Arc::new(Wire2Link::connect(&options.socket_path).await?);
+    serve_acp(link, options).await
 }
 
 /// Serve the ACP surface over `link` until stdin closes (see
@@ -1942,12 +1923,41 @@ async fn teardown<L: DaemonTransport>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
-    use pa_types::daemon::{DaemonCommandEnvelope, DaemonResponse, DAEMON_PROTOCOL_VERSION};
-    use tokio::sync::mpsc;
+    use pa_types::daemon::DaemonResponse;
+    use tokio::sync::{mpsc, oneshot};
 
     use super::*;
+    use crate::acp::transport::ResponseWait;
+
+    /// A transport whose requests the test answers: each command arrives with the sender of its
+    /// response, and a dropped sender is an acknowledgement that never reaches the connection.
+    struct ScriptedLink {
+        commands: mpsc::UnboundedSender<(DaemonCommand, oneshot::Sender<DaemonResponse>)>,
+    }
+
+    impl DaemonTransport for ScriptedLink {
+        async fn exchange(
+            &self,
+            command: DaemonCommand,
+            _wait: ResponseWait,
+        ) -> anyhow::Result<DaemonResponse> {
+            let (reply, response) = oneshot::channel();
+            self.commands
+                .send((command, reply))
+                .map_err(|_| anyhow::anyhow!("the daemon connection is closed"))?;
+            response
+                .await
+                .map_err(|_| anyhow::anyhow!("the daemon connection closed mid-request"))
+        }
+
+        fn next_frame(&self) -> impl std::future::Future<Output = Option<TransportFrame>> + Send {
+            std::future::ready(None)
+        }
+
+        fn deliver(&self, _response: DaemonResponse) {}
+
+        fn close(&self) {}
+    }
 
     fn hosted_session() -> HostedSession {
         let (sink, _drain) = mpsc::unbounded_channel();
@@ -2028,24 +2038,15 @@ mod tests {
 
     #[tokio::test]
     async fn lost_replace_and_clear_ack_retries_clear_before_an_empty_session() {
-        let (writer, mut commands) = mpsc::unbounded_channel::<String>();
-        let (_frames_tx, frames) = mpsc::unbounded_channel();
-        let pending = Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let link = Arc::new(DaemonLink {
-            writer,
-            pending: Arc::clone(&pending),
-            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            frames: Mutex::new(frames),
-            protocol_version: DAEMON_PROTOCOL_VERSION,
-            next_request_id: std::sync::atomic::AtomicU64::new(0),
+        let (commands_tx, mut commands) = mpsc::unbounded_channel();
+        let link = Arc::new(ScriptedLink {
+            commands: commands_tx,
         });
         let worker = tokio::spawn(async move {
             let mut replacements = Vec::new();
             let mut installed = Vec::<String>::new();
-            while let Some(line) = commands.recv().await {
-                let envelope: DaemonCommandEnvelope = serde_json::from_str(&line).unwrap();
-                let id = envelope.id;
-                let (command, data, lose_ack) = match envelope.command {
+            while let Some((command, reply)) = commands.recv().await {
+                let (command, data, lose_ack) = match command {
                     DaemonCommand::GetConnectionState { .. } => {
                         ("get_connection_state", None, false)
                     }
@@ -2067,11 +2068,10 @@ mod tests {
                     }
                     other => panic!("unexpected command: {other:?}"),
                 };
-                let reply = pending.lock().unwrap().remove(&id).unwrap();
                 if !lose_ack {
                     reply
                         .send(DaemonResponse {
-                            id: Some(id),
+                            id: None,
                             command: command.to_string(),
                             success: true,
                             data,
