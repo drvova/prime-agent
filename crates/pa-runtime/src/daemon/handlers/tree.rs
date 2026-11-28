@@ -32,12 +32,17 @@
 //!   the open session written as the standalone HTML viewer (every entry, its
 //!   leaf, its system prompt and tools, the settings' theme), to `outputPath`
 //!   as given or to the default name beside the daemon.
+//! - `session.export {session, outputPath?}` (`export_jsonl`): `{path}`, the
+//!   open session's current branch re-chained into one JSONL file
+//!   (`pa_core::session::branch_export`), at `outputPath` resolved against
+//!   the session's directory, or at `session-<now>.jsonl` there.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
 use pa_agent::abort::AbortController;
+use pa_core::session::branch_export;
 use pa_core::session::navigation::{self, NavigateRequest};
 use pa_core::session_engine::branch_summarization::{
     collect_entries_for_branch_summary, run_branch_summary, BranchSummaryOutcome,
@@ -391,6 +396,40 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 })
                 .await
                 .context("the export's thread panicked")?
+            })
+            .await
+            .context("the session's runtime ended during the export")??;
+        Ok(json!({ "path": path }))
+    }
+
+    /// `session.export` (see the module documentation).
+    pub(super) async fn export_jsonl(&self, args: &Value) -> anyhow::Result<Value> {
+        let id = self.open_session(args)?;
+        let output = optional_string_arg(args, "outputPath")?;
+        let live = self.runtime.built_engine(&id).await?;
+        let engine = Arc::clone(&live.engine);
+        let path = live
+            .runtime
+            .spawn(async move {
+                let persistence = engine.session.shared_persistence();
+                let mut manager = persistence.lock().await;
+                manager.ensure_full_history().await?;
+                let cwd = manager.get_cwd().to_path_buf();
+                let branch = manager
+                    .get_branch(None)
+                    .into_iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let body = branch_export::branch_body(
+                    manager.get_session_id(),
+                    &cwd.to_string_lossy(),
+                    branch,
+                )?;
+                drop(manager);
+                let file = branch_export::output_file(&cwd, output.as_deref());
+                tokio::task::spawn_blocking(move || branch_export::write(&file, &body))
+                    .await
+                    .context("the export's thread panicked")?
             })
             .await
             .context("the session's runtime ended during the export")??;

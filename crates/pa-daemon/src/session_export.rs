@@ -3,7 +3,9 @@
 //! exporter (the embedded template plus the session data); the JSONL export is the current
 //! branch re-chained into a linear file.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use pa_core::session::branch_export;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result};
@@ -133,10 +135,10 @@ impl ExportCommands {
                         == Ok("1") =>
             {
                 let _held = self.core.lock().unwrap();
-                write_export(&file_path, &body)
+                branch_export::write(&file_path, &body)
             }
             Ok((file_path, body)) => {
-                tokio::task::spawn_blocking(move || write_export(&file_path, &body))
+                tokio::task::spawn_blocking(move || branch_export::write(&file_path, &body))
                     .await
                     .unwrap_or_else(|error| {
                         Err(anyhow::anyhow!("the export writer failed: {error}"))
@@ -164,43 +166,14 @@ impl ExportCommands {
         } else {
             PathBuf::from(&core.cwd)
         };
-        let file_path = match output_path {
-            Some(path) => {
-                let absolute = Path::new(path);
-                if absolute.is_absolute() {
-                    absolute.to_path_buf()
-                } else {
-                    cwd.join(path)
-                }
-            }
-            None => cwd.join(format!(
-                "session-{}.jsonl",
-                pa_core::session::manager::format_iso_now().replace([':', '.'], "-")
-            )),
-        };
-        let header = json!({
-            "type": "session",
-            "version": pa_core::session::CURRENT_SESSION_VERSION,
-            "id": store.session_id(),
-            "timestamp": pa_core::session::manager::format_iso_now(),
-            "cwd": core.cwd,
-        });
-        let mut lines = vec![serde_json::to_string(&header)?];
-        // The branch walks root-to-leaf; parent ids re-chain linearly so
-        // the exported file resumes as one straight session.
-        let mut previous: Option<String> = None;
-        for entry in store.branch() {
-            let mut value = serde_json::to_value(entry)?;
-            if let Some(map) = value.as_object_mut() {
-                match previous.clone() {
-                    Some(parent) => map.insert("parentId".to_string(), Value::String(parent)),
-                    None => map.insert("parentId".to_string(), Value::Null),
-                };
-            }
-            previous = value.get("id").and_then(Value::as_str).map(str::to_string);
-            lines.push(serde_json::to_string(&value)?);
-        }
-        Ok((file_path, format!("{}\n", lines.join("\n"))))
+        let file_path = branch_export::output_file(&cwd, output_path);
+        let branch = store
+            .branch()
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        let body = branch_export::branch_body(store.session_id(), &core.cwd, branch)?;
+        Ok((file_path, body))
     }
 }
 
@@ -212,36 +185,10 @@ impl ExportCommands {
 /// SIGSTOP was to a worker process). Release builds ignore it.
 pub const EXPORT_HOLDS_SESSION_SEAM_ENV: &str = "PRIME_AGENT_TEST_EXPORT_HOLDS_SESSION";
 
-/// Write one export's `body` to `file_path`, creating its directory, and
-/// return the path as the response carries it.
-fn write_export(file_path: &Path, body: &str) -> Result<String> {
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    // A file is replaced whole, so a failed export leaves the previous one
-    // as it was; a pipe or a device (`/dev/stdout`) cannot be replaced and
-    // is written through.
-    if std::fs::metadata(file_path).is_ok_and(|metadata| !metadata.is_file()) {
-        std::fs::write(file_path, body)
-    } else {
-        pa_types::platform::replace_file(
-            file_path,
-            body.as_bytes(),
-            pa_types::platform::ReplaceOptions {
-                durability: pa_types::platform::Durability::Unsynced,
-                mode: pa_types::platform::FileMode::KeepTarget,
-                symlinks: pa_types::platform::Symlinks::FollowToTarget,
-            },
-        )
-    }
-    .with_context(|| format!("writing {}", file_path.display()))?;
-    Ok(file_path.to_string_lossy().into_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn core_with_session(dir: &Path) -> SessionCore {
         let file = dir.join("sess.jsonl");
