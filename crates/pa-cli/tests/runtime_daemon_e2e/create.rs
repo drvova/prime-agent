@@ -520,3 +520,84 @@ async fn a_session_opens_with_no_provider_signed_in() {
         "{state}"
     );
 }
+
+/// A runtime daemon started from an agent's command (its own environment
+/// carries `RLM_DEPTH`) hides it from its sessions, as the old supervisor
+/// hid it from its workers: the `!` command a session runs sees none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_never_sees_the_daemons_rlm_depth() {
+    let bed = Bed::new();
+    let (origin, _bearers) = completions();
+    seed(&bed, &origin);
+    let mut command = bed.runtime_daemon_command(&Value::Null, &bed.old_socket());
+    command
+        .env_remove("PRIME_AGENT_FAUX_SCRIPT")
+        .envs(OFFLINE.iter().copied())
+        .env("RLM_DEPTH", "3");
+    let mut child = command.spawn().expect("spawn the runtime daemon");
+    super::support::await_listening(&bed.runtime_socket(), &mut child);
+    let _daemon = Daemon(child);
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = through_the_compat_layer(
+        &mut client,
+        "create",
+        &filled(&creates()[0], bed.dir.path(), None),
+    )
+    .await;
+    assert_eq!(created["success"], true, "{created}");
+    let active = created["data"]["activeSessionId"].as_str().unwrap();
+    let file = PathBuf::from(created["data"]["sessionFile"].as_str().unwrap());
+    let bash = through_the_compat_layer(
+        &mut client,
+        "bash",
+        &json!({ "type": "execute_bash", "activeSessionId": active,
+                 "command": MARKER_COMMAND }),
+    )
+    .await;
+    assert_eq!(bash["success"], true, "{bash}");
+    assert_eq!(saved_with_bash(&bed.agent_dir(), &file).1, "unset unset");
+}
+
+/// A new session whose saved default is not available starts on the startup
+/// chain's pick and says so, as the old worker's summary did: its state names
+/// the default it could not start on and the model it runs on instead, the
+/// notice the TUI shows as the session opens.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_off_an_unavailable_default_says_which_model_it_runs_on() {
+    let bed = Bed::new();
+    // A private Prime Inference id no signed-in account lists: never rebuilt
+    // from its provider's template.
+    std::fs::write(
+        bed.agent_dir().join("settings.json"),
+        json!({ "defaultProvider": "prime-inference", "defaultModel": "internal/glm-5.3-fast" })
+            .to_string(),
+    )
+    .unwrap();
+    let _daemon = real_runtime_daemon(&bed);
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = through_the_compat_layer(
+        &mut client,
+        "create",
+        &json!({ "type": "create", "config": { "cwd": bed.dir.path() } }),
+    )
+    .await;
+    assert_eq!(created["success"], true, "{created}");
+    let active = created["data"]["activeSessionId"].as_str().unwrap();
+    let state = through_the_compat_layer(
+        &mut client,
+        "state",
+        &json!({ "type": "get_state", "activeSessionId": active }),
+    )
+    .await;
+    assert_eq!(state["success"], true, "{state}");
+    let state = state["data"].clone();
+    assert_eq!(
+        state["modelFallbackMessage"],
+        json!(format!(
+            "Default model prime-inference/internal/glm-5.3-fast is not available. Using {}/{}",
+            state["model"]["provider"].as_str().unwrap(),
+            state["model"]["id"].as_str().unwrap()
+        )),
+        "{state}"
+    );
+}

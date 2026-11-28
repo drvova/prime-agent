@@ -157,6 +157,7 @@ impl SessionBuilder for TreeBuilder {
             events: DriverEvents::Stream,
             autonomous: None,
             queue_modes: crate::session::QueueModes::Built,
+            model_fallback_message: None,
         })
     }
 }
@@ -214,6 +215,7 @@ async fn bed_in(dir: tempfile::TempDir, script: Value, parent: SessionSpec) -> B
             listener_capacity: NonZeroUsize::new(4096).unwrap(),
             cwd: cwd.clone(),
             sessions: Vec::new(),
+            hidden_env: std::collections::BTreeSet::new(),
         },
     )
     .await

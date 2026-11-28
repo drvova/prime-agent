@@ -25,9 +25,8 @@ import termios
 import threading
 import time
 
-from lifecycle_lib import Screen, digest, stop
+from lifecycle_lib import Screen, Wire2Client, digest, stop
 from lifecycle_lib import OwnedProcesses, TAG, finish
-from check_agent_bounce import Client as KernelClient
 
 PUBLIC = 'z-ai/glm-5.3'
 PRIVATE = 'internal/glm-5.3-fast'
@@ -82,10 +81,6 @@ def prepare(binary, root, scenario):
                     'reasoning': True, 'input': ['text'],
                     'contextWindow': 128000, 'maxTokens': 8192}]}}}))
     env = {name: os.environ[name] for name in ('PATH', 'LANG', 'LC_ALL', 'TZ') if name in os.environ}
-    # Stays on the supervisor's wire (`check_agent_bounce.Client`): it finds
-    # the TUI's session by its worker descriptor, and runs only on hosted CI
-    # (it needs `ip` and GITHUB_ACTIONS), where its port is still to be proven.
-    env['PRIME_AGENT_RUNTIME_DAEMON'] = '0'
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'),
                XDG_CONFIG_HOME=str(root / 'xdg'), XDG_CACHE_HOME=str(root / 'xdg'),
                XDG_DATA_HOME=str(root / 'xdg'), TERM='xterm-256color', COLORTERM='truecolor',
@@ -160,51 +155,24 @@ def write_frame(directory, name, terminal):
             'input_preserved': INPUT in text}
 
 
-def active_worker(agent, socket_path):
-    candidates = []
-    for path in (agent / 'daemon-workers').rglob('*.json'):
-        try:
-            value = json.loads(path.read_text())
-            if value.get('supervisorSocketPath') == str(socket_path):
-                candidates.append(value['rootActiveSessionId'])
-        except (FileNotFoundError, json.JSONDecodeError, KeyError):
-            pass
-    ids = set(candidates)
-    assert len(ids) <= 1, 'ambiguous fixture worker identity'
-    return next(iter(ids)) if ids else None
-
-
 def connection_model(state):
     return state.get('model') or state.get('state', {}).get('model')
 
 
-def wait_for_created_session(terminal, client, active):
-    state = None
+def wait_for_created_session(terminal, client):
+    """The session the TUI created on the fixture's runtime daemon, once it
+    is open there, and its connection state (the read waits for the
+    session's first build). A refused read fails."""
+    open_sessions = []
 
     def created():
-        nonlocal state
-        try:
-            state = client.call('get_connection_state', activeSessionId=active)
-            return True
-        except AssertionError as error:
-            # A descriptor identifies the spawned worker, not a completed create.
-            # Only this explicit transitional response is pending readiness;
-            # transport errors and every other daemon refusal still fail.
-            response = error.args[0] if error.args else None
-            if isinstance(response, dict) and response.get('success') is False:
-                info = response.get('errorInfo') or {}
-                if (response.get('error') == 'Unknown active session: ' + active
-                        # The daemon reports worker lifecycle before accepting
-                        # forwarded state requests.
-                        or response.get('error') in ('Session worker is starting',
-                            'Session worker is recovering', 'Session worker is not connected')
-                        or (info.get('code') == 'session_recovering'
-                            and info.get('activeSessionId') == active)):
-                    return False
-            raise
+        open_sessions[:] = [row['session'] for row in client.query('sessions.list', open=True)['sessions']]
+        assert len(open_sessions) <= 1, 'ambiguous fixture session identity'
+        return bool(open_sessions)
 
     terminal.wait('fresh session create completed', created)
-    return state
+    active = open_sessions[0]
+    return active, client.query('session.snapshot', session=active, shape='connection')
 
 
 def validate_observation(scenario, observed):
@@ -245,14 +213,12 @@ def capture(binary, scenario, root, directory, observed):
         process = subprocess.Popen(command, cwd=root / 'work', env=env, stdout=log,
                                    stderr=log, start_new_session=True)
         scope.register(process, command)
-        client = KernelClient(socket_path, process)
-        observed['hello'] = client.hello
+        client = Wire2Client(socket_path, process)
+        observed['hello'] = client.query('daemon.identity')
         command = [str(binary), '--daemon-socket', str(socket_path)]
         terminal = Terminal(command, root / 'work', env)
         scope.register(terminal.process, command)
-        terminal.wait('fresh worker descriptor', lambda: active_worker(root / 'agent', socket_path))
-        active = active_worker(root / 'agent', socket_path)
-        state = wait_for_created_session(terminal, client, active)
+        active, state = wait_for_created_session(terminal, client)
         attached = client.call('attach', activeSessionId=active)
         observed.update(active_session_id=active, state=state, attach=attached)
         model = connection_model(state)
@@ -282,10 +248,10 @@ def capture(binary, scenario, root, directory, observed):
             observed['frames'][f'{columns}x{rows}'] = frame
         # Observe availability only after capturing natural startup. Refreshing
         # metadata beforehand could itself trigger a redraw or clear a notice.
-        models = client.call('get_available_models', activeSessionId=active)
+        models = client.call('get_available_models')
         observed['available_ids'] = [row['id'] for row in models['models']
                                      if row.get('provider') == 'prime-inference']
-        after_refresh = client.call('get_connection_state', activeSessionId=active)
+        after_refresh = client.query('session.snapshot', session=active, shape='connection')
         refreshed_model = connection_model(after_refresh) or {}
         assert (refreshed_model.get('provider'), refreshed_model.get('id')) == (
             model['provider'], selected), 'catalog read retargeted the active model'

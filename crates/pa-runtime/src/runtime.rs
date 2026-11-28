@@ -72,6 +72,11 @@ pub struct RuntimeOptions<B> {
     /// The sessions to open with the runtime: their engines start building
     /// while its database opens, so opening it costs a first turn nothing.
     pub sessions: Vec<SessionSpec>,
+    /// The process environment's variables no session of the runtime sees
+    /// (`pa_types::session_scope`'s removed variables): the runtime daemon
+    /// hides `RLM_DEPTH`, which a daemon started from an agent's command
+    /// carries and none of its sessions takes, as the old supervisor hid it.
+    pub hidden_env: BTreeSet<String>,
 }
 
 /// The runtime's model caller: `Call` routes have no model to call yet, so
@@ -192,6 +197,7 @@ impl<B: SessionBuilder> Runtime<B> {
             Arc::clone(&subagents),
             faults,
             Arc::clone(&jobs),
+            Arc::new(options.hidden_env),
         ));
         let runner = SessionRunner::new(Arc::clone(&sessions));
         let restored = async {

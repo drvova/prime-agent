@@ -31,7 +31,13 @@
 //!   faux provider's chunking, so a run compares as its last update and its
 //!   summary as one delta; and `meta.id` and `meta.sequence` (the numbers a
 //!   superseded update consumed follow the same timer) are compared by their
-//!   form, in the list's first line. A collect's `queued_ms` is only there
+//!   form, in the list's first line. `attach_paging`'s recording ran where
+//!   Amazon Bedrock was signed in (its machine's AWS credentials, which a
+//!   replay's bed scrubs): its reopened session, whose saved faux model
+//!   does not restore, fell back to a Bedrock model and said so
+//!   (`modelFallbackMessage`). Its script's `env` gives the replay a
+//!   Bedrock profile, so the fallback lands where the recording's did. A
+//!   collect's `queued_ms` is only there
 //!   when the child waited a millisecond or more for its start (both
 //!   daemons leave a zero out: pa-core `RlmCollectResult`), which a replay's
 //!   timing decides, so an entry that holds a count is left out on both
@@ -323,8 +329,17 @@ async fn replay(name: &str) -> Replayed {
     )
     .unwrap();
     // Offline, as the recordings ran: the model catalog is the one the
-    // daemon carries, never a fetched one.
-    let _daemon = bed.runtime_daemon_with(&script, &[("PI_OFFLINE", "1")]);
+    // daemon carries, never a fetched one. A scenario's `env` is what the
+    // recording's machine carried beside it.
+    let mut env = vec![("PI_OFFLINE", "1")];
+    if let Some(recorded) = scenario["env"].as_object() {
+        env.extend(
+            recorded
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str().unwrap())),
+        );
+    }
+    let _daemon = bed.runtime_daemon_with(&script, &env);
     let steps = scenario["steps"].as_array().unwrap();
     let mut session = match scenario.get("seed") {
         Some(seed) => {

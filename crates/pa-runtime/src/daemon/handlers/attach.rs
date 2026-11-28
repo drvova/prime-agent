@@ -707,6 +707,16 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         put("workerPid", json!(std::process::id()));
         put("rosterDeltaSequence", json!(0));
         put("model", model_metadata.clone());
+        // Why it does not run on the model it was meant to, as the old
+        // worker's summary says: its saved model not restored, else the
+        // saved default it could not start on.
+        if let Some(message) = live
+            .model_fallback_message
+            .clone()
+            .or_else(|| self.open.model_fallback_message(&id))
+        {
+            put("modelFallbackMessage", json!(message));
+        }
         put(
             "runtimeKind",
             json!(if lineage.is_some() {

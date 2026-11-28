@@ -12,8 +12,6 @@ impl AgentSessionEngine {
     /// The startup chain: the saved settings default, then the featured
     /// default, then the first available model.
     fn startup_chain_model(&self, registry: &pa_core::models::ModelRegistry) -> Option<Model> {
-        let available: Vec<Model> = registry.get_available().into_iter().cloned().collect();
-        let all: Vec<Model> = registry.get_all().to_vec();
         let settings =
             pa_core::settings::SettingsManager::create(self.cwd(), &self.config.agent_dir);
         let default = settings
@@ -28,19 +26,16 @@ impl AgentSessionEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .unwrap_or_default();
-        let resolved = pa_core::models::find_initial_model(&pa_core::models::InitialModelOptions {
-            cli_provider: None,
-            cli_model: None,
-            scoped_models: &scope.scoped_models,
-            is_continuing: scope.is_continuing,
-            default_provider: default.as_ref().map(|(provider, _)| provider.as_str()),
-            default_model_id: default.as_ref().map(|(_, model)| model.as_str()),
-            all_models: &all,
-            available_models: &available,
-        })
-        .or_else(|| all.first().cloned());
+        let resolved = pa_core::models::startup_chain_model(
+            registry,
+            default
+                .as_ref()
+                .map(|(provider, model)| (provider.as_str(), model.as_str())),
+            &scope.scoped_models,
+            scope.is_continuing,
+        );
         if let (Some(model), Some(default)) = (&resolved, &default) {
-            self.record_startup_default_fallback(model, default, &scope, &available, &all);
+            self.record_startup_default_fallback(model, default, &scope, registry);
         }
         resolved
     }
@@ -50,11 +45,9 @@ impl AgentSessionEngine {
         model: &Model,
         default: &(String, String),
         scope: &StartupScope,
-        available_models: &[Model],
-        all_models: &[Model],
+        registry: &pa_core::models::ModelRegistry,
     ) {
-        let (provider, model_id) = default;
-        if scope.is_continuing || (model.provider == *provider && model.id == *model_id) {
+        if scope.is_continuing {
             return;
         }
         let session_file = self
@@ -73,21 +66,16 @@ impl AgentSessionEngine {
         {
             return;
         }
-        let wanted = scope.patterns.is_empty()
-            || pa_core::models::scope_patterns_select_reference(
-                &scope.patterns,
-                provider,
-                model_id,
-                available_models,
-                all_models,
-            );
-        if !wanted {
+        let available: Vec<Model> = registry.get_available().into_iter().cloned().collect();
+        let Some(message) = pa_core::models::default_model_fallback_message(
+            model,
+            (&default.0, &default.1),
+            &scope.patterns,
+            &available,
+            registry.get_all(),
+        ) else {
             return;
-        }
-        let message = format!(
-            "Default model {provider}/{model_id} is not available. Using {}/{}",
-            model.provider, model.id
-        );
+        };
         eprintln!("{message}");
         *decision = Some(RestoredSessionModel {
             session_file,
@@ -191,13 +179,8 @@ impl AgentSessionEngine {
             // The restore miss is on the record — the startup chain owns the
             // session.
             let fallback = self.startup_chain_model(&registry);
-            let message = match &fallback {
-                Some(fallback) => format!(
-                    "Could not restore model {provider}/{model_id}. Using {}/{}",
-                    fallback.provider, fallback.id
-                ),
-                None => format!("Could not restore model {provider}/{model_id}"),
-            };
+            let message =
+                pa_core::models::restore_fallback_message(&provider, &model_id, fallback.as_ref());
             eprintln!("{message}");
             (None, Some(message))
         };

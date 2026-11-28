@@ -1,5 +1,8 @@
 {
   "prefix": "atpag",
+  "env": {
+    "AWS_PROFILE": "inbound-golden-recording"
+  },
   "settings": {
     "onboardingCompleted": true,
     "onboardingShown": true,

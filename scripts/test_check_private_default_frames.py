@@ -19,7 +19,7 @@ def observation(scenario):
 
 
 class CaptureGuards(unittest.TestCase):
-    def test_spawned_worker_waits_for_create_but_other_refusals_fail(self):
+    def test_waits_for_the_tuis_session_and_fails_on_a_refused_read(self):
         terminal = Mock()
         def wait(_description, predicate):
             self.assertFalse(predicate())
@@ -27,27 +27,16 @@ class CaptureGuards(unittest.TestCase):
         terminal.wait.side_effect = wait
         state = {'model': {'id': PUBLIC}}
         client = Mock()
-        client.call.side_effect = [AssertionError({'success': False,
-            'error': 'Unknown active session: fixture'}), state]
-        self.assertEqual(wait_for_created_session(terminal, client, 'fixture'), state)
-        self.assertEqual(client.call.call_count, 2)
-        client.call.side_effect = [AssertionError({'success': False,
-            'errorInfo': {'code': 'session_recovering', 'activeSessionId': 'fixture'}}), state]
-        self.assertEqual(wait_for_created_session(terminal, client, 'fixture'), state)
-        for message in ('Session worker is starting', 'Session worker is recovering',
-                        'Session worker is not connected'):
-            client.call.side_effect = [AssertionError({'success': False, 'error': message}), state]
-            self.assertEqual(wait_for_created_session(terminal, client, 'fixture'), state)
+        client.query.side_effect = [{'sessions': []}, {'sessions': [{'session': 'fixture'}]}, state]
+        self.assertEqual(wait_for_created_session(terminal, client), ('fixture', state))
+        self.assertEqual(client.query.call_args.kwargs, {'session': 'fixture', 'shape': 'connection'})
+        client.query.side_effect = [{'sessions': [{'session': 'one'}, {'session': 'two'}]}]
+        with self.assertRaisesRegex(AssertionError, 'ambiguous'):
+            wait_for_created_session(terminal, client)
         terminal.wait.side_effect = lambda _description, predicate: predicate()
-        for message in ('Permission denied', 'Session worker is failed', 'Session worker is stopping',
-                        'Daemon client is not attached to this session'):
-            client.call.side_effect = AssertionError({'success': False, 'error': message})
-            with self.assertRaises(AssertionError):
-                wait_for_created_session(terminal, client, 'fixture')
-        client.call.side_effect = AssertionError({'success': False,
-            'errorInfo': {'code': 'session_recovering', 'activeSessionId': 'other'}})
-        with self.assertRaises(AssertionError):
-            wait_for_created_session(terminal, client, 'fixture')
+        client.query.side_effect = [{'sessions': [{'session': 'fixture'}]}, AssertionError('refused')]
+        with self.assertRaisesRegex(AssertionError, 'refused'):
+            wait_for_created_session(terminal, client)
 
     def test_both_connection_state_shapes_keep_the_same_model(self):
         model = {'id': PUBLIC, 'provider': 'prime-inference'}

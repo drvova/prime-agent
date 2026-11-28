@@ -183,6 +183,8 @@ pub(crate) struct LiveEngine {
     /// The lifetime's workspace checkpoints ([`Checkpoints`]); `None` for a
     /// subagent or a session kept in memory.
     pub(crate) checkpoints: Option<Arc<Checkpoints>>,
+    /// Its build's [`crate::BuiltSession::model_fallback_message`].
+    pub(crate) model_fallback_message: Option<String>,
 }
 
 /// One session's host thread, as the runtime holds it.
@@ -267,6 +269,7 @@ impl SessionHost {
         events: Arc<BusEvents>,
         faults: SessionFaults,
         jobs: super::JobsSlot,
+        hidden_env: Arc<BTreeSet<String>>,
         opening: Opening,
     ) -> std::io::Result<Self> {
         let (work, queued) = mpsc::unbounded_channel();
@@ -296,6 +299,7 @@ impl SessionHost {
                             events,
                             faults,
                             jobs,
+                            hidden_env,
                         },
                         queued,
                         opening,
@@ -598,6 +602,9 @@ struct Lifetime<B> {
     faults: SessionFaults,
     /// The runtime daemon's scheduled jobs, once attached.
     jobs: super::JobsSlot,
+    /// The process variables the session's scope hides
+    /// ([`crate::RuntimeOptions::hidden_env`]).
+    hidden_env: Arc<BTreeSet<String>>,
 }
 
 /// How a lifetime ended.
@@ -802,7 +809,7 @@ impl<B: SessionBuilder> Lifetime<B> {
             self.id.clone(),
             self.spec.cwd.clone(),
             self.spec.env.clone(),
-            BTreeSet::new(),
+            (*self.hidden_env).clone(),
         )
     }
 
@@ -1284,6 +1291,7 @@ impl<B: SessionBuilder> Lifetime<B> {
                 autonomous: hosted.autonomous.state_handle(),
                 provider_target: Arc::clone(&hosted.built.provider_target),
                 checkpoints: hosted.checkpoints.clone(),
+                model_fallback_message: hosted.built.model_fallback_message.clone(),
             });
         }
         self.node.built(Ok(()));
