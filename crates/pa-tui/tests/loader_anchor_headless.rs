@@ -7,7 +7,7 @@
 
 mod support;
 
-use std::os::unix::net::UnixListener;
+use support::UnixListener;
 
 use crossterm::event::KeyCode;
 use pa_tui::interactive::{

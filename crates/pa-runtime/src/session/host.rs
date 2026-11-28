@@ -802,9 +802,15 @@ impl<B: SessionBuilder> Lifetime<B> {
                     return Ended::Replaced(replacement);
                 }
                 Ok(None) => {
-                    // Dropped on its runtime: what the engine spawns as it
-                    // goes down still has one to run on.
-                    runtime.block_on(async move { drop(hosted) });
+                    // Its subagents end with it (a family opened again
+                    // stops reopening), then the engine is dropped on its
+                    // runtime: what it spawns as it goes down still has one
+                    // to run on.
+                    let node = Arc::clone(&self.node);
+                    runtime.block_on(async move {
+                        dispose(&node).await;
+                        drop(hosted);
+                    });
                     return Ended::Closed;
                 }
                 Err(crash) => return Self::crashed(runtime, hosted, crash),

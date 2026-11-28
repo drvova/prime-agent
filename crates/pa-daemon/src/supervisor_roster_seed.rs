@@ -8,13 +8,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pa_types::daemon::agent_roster::{roster_agent_id_for_summary, AgentRosterEntry};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::supervisor::Supervisor;
 use pa_core::session::catalog::read_session_info;
 use pa_core::session::lease::canonical_session_path;
 use pa_core::session::usage_summary::SessionUsageSummary;
 use pa_core::session_engine::rlm_ledger::RlmLedgerEdge;
+use pa_core::session_engine::rlm_roster::{hydrate_seeded_summary, seeded_child_summary};
 
 impl Supervisor {
     /// Seed passivated ledger-descended children into the live roster, once per boot after adoption
@@ -356,30 +357,7 @@ impl SeededRosterEntry {
     /// alone - no transcript read; `seededCwd` rides it for lazy hydration.
     fn edge_only(edge: &RlmLedgerEdge) -> Self {
         let child = Path::new(&edge.child);
-        let persisted_session_id = child
-            .file_stem()
-            .map_or_default(|stem| stem.to_string_lossy().to_string());
-        let dirname = child
-            .parent()
-            .map_or_default(|dir| dir.to_string_lossy().to_string());
-        let summary = json!({
-            "id": persisted_session_id,
-            "lifecycle": "live",
-            "activity": "idle",
-            "isSessionActive": false,
-            "runtimeKind": "subagent",
-            "rlmDepth": edge.depth,
-            "sessionId": persisted_session_id,
-            "sessionFile": edge.child,
-            "sessionName": edge.name,
-            "cwd": dirname,
-            "isStreaming": false,
-            "isCompacting": false,
-            "attachedClients": 0,
-            "messageCount": 0,
-            "parentSessionPath": edge.parent,
-            "rlmChildId": edge.child_id,
-        });
+        let summary = seeded_child_summary(edge);
         Self {
             agent_id: roster_agent_id_for_summary(&summary),
             child_file: canonical_session_path(child).to_string_lossy().to_string(),
@@ -404,8 +382,8 @@ impl SeededRosterEntry {
 }
 
 /// The one lazy display read behind both hydration paths (TS
-/// `hydratedSeedEntry`): the child file's durable rows - the same rows
-/// a live worker's summary reports. The parse runs on the blocking pool.
+/// `hydratedSeedEntry`, pa-core's [`hydrate_seeded_summary`]): the child
+/// file's durable rows. The parse runs on the blocking pool.
 async fn hydrate_summary_display(summary: &mut Value, file: PathBuf) -> bool {
     let info = tokio::task::spawn_blocking(move || read_session_info(&file))
         .await
@@ -414,23 +392,7 @@ async fn hydrate_summary_display(summary: &mut Value, file: PathBuf) -> bool {
     let Some(info) = info else {
         return false;
     };
-    if let Some(object) = summary.as_object_mut() {
-        object.insert("cwd".to_string(), json!(info.cwd));
-        if let Some((provider, model_id)) = &info.model {
-            object.insert(
-                "model".to_string(),
-                json!({ "provider": provider, "modelId": model_id }),
-            );
-        }
-        if let Some(level) = &info.thinking_level {
-            object.insert("thinkingLevel".to_string(), json!(level));
-        }
-        // The own-usage summary rides the seeded row (the rollup must
-        // not bill a passive child as zero).
-        if let Some(usage) = &info.usage {
-            object.insert("usage".to_string(), json!(usage));
-        }
-    }
+    hydrate_seeded_summary(summary, &info);
     true
 }
 
@@ -462,6 +424,7 @@ pub(crate) mod tests {
     use crate::supervisor::ClientRouting;
     use pa_core::session_engine::rlm_ledger::RlmLedgerEdge;
     use pa_types::daemon::agent_roster::AgentRosterStatus;
+    use serde_json::json;
     use serde_json::Map;
 
     fn edge(child_id: &str, parent: &str, child: &str, depth: u32, name: &str) -> RlmLedgerEdge {

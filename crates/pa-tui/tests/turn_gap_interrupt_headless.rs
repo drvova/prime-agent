@@ -4,10 +4,14 @@
 //! lands on a running tool must still leave the interrupt row.
 #![cfg(unix)]
 
+mod support;
+
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use support::UnixListener;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pa_tui::interactive::{

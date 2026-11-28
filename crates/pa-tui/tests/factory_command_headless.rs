@@ -15,8 +15,8 @@
 
 mod support;
 
-use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
+use support::UnixListener;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

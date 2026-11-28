@@ -6,8 +6,10 @@
 mod support;
 
 use std::io::{BufRead, BufReader};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
+
 use std::time::Duration;
+use support::UnixListener;
 
 use pa_tui::interactive::{
     run_interactive, HeadlessPlan, HeadlessStep, InteractiveOptions, UiMode,

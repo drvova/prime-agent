@@ -425,6 +425,9 @@ pub(crate) struct FamilyMember {
     pub(crate) depth: u32,
     pub(crate) status: &'static str,
     pub(crate) session_id: String,
+    /// Opened again as a settled child and not run since (see
+    /// [`Subagents::wake_reopened`]).
+    pub(crate) dormant: bool,
     pub(crate) children: Vec<FamilyMember>,
 }
 
@@ -488,6 +491,9 @@ impl Subagents {
                 continue;
             };
             let unsettled = child_is_unsettled(&child).await;
+            if unsettled {
+                child.reopened.store(false, Ordering::SeqCst);
+            }
             let status = if unsettled {
                 "running"
             } else {
@@ -504,6 +510,7 @@ impl Subagents {
                 depth,
                 status,
                 session_id: node.session_id.clone(),
+                dormant: child.reopened.load(Ordering::SeqCst),
                 children: members.remove(&node.session_id).unwrap_or_default(),
             };
             members
@@ -512,6 +519,49 @@ impl Subagents {
                 .push(member);
         }
         members.remove(id).unwrap_or_default()
+    }
+
+    /// Whether session `id` is a child opened again as settled and not run
+    /// or opened by a client since.
+    pub(crate) async fn is_dormant(&self, id: &str) -> bool {
+        match self.child_of(id).await {
+            Some(child) => child.reopened.load(Ordering::SeqCst),
+            None => false,
+        }
+    }
+
+    /// A client opens the transcript of subagent `id`: a child opened again
+    /// from the ledger and not run since is the old daemon's passive ledger
+    /// child, which a client opens as its own session, so the runtime lets
+    /// it go from its parent's family (it holds no work); the family opened
+    /// again later finds it in the ledger. Whether it was let go.
+    pub(crate) async fn release_dormant(&self, id: &str) -> bool {
+        let Some(child) = self.child_of(id).await else {
+            return false;
+        };
+        let Some(parent) = child.node.parent_node() else {
+            return false;
+        };
+        {
+            let mut children = parent.children.lock().await;
+            if !child.reopened.load(Ordering::SeqCst) || child_is_unsettled(&child).await {
+                return false;
+            }
+            children.retain(|other| !Arc::ptr_eq(other, &child));
+        }
+        dispose_child(&child).await;
+        true
+    }
+
+    /// Subagent `id`'s record under its parent.
+    async fn child_of(&self, id: &str) -> Option<Arc<Child>> {
+        let node = self.node(id)?;
+        let parent = node.parent_node()?;
+        let children = parent.children.lock().await;
+        children
+            .iter()
+            .find(|child| Arc::ptr_eq(&child.node, &node))
+            .cloned()
     }
 
     /// The roster of open session `id`'s direct subagents, in spawn order,
@@ -882,6 +932,10 @@ pub(crate) struct Child {
     state: tokio::sync::Mutex<ChildState>,
     /// The status its last `rlm_child_update` published.
     published: Mutex<Option<&'static str>>,
+    /// Opened again from the ledger and not run or opened by a client
+    /// since: the old daemon's passive ledger child, which the roster lists
+    /// as the ledger's row ([`FamilyMember::dormant`]).
+    reopened: AtomicBool,
 }
 
 impl Child {
@@ -1256,6 +1310,7 @@ async fn settle_child(child: &Arc<Child>, cut: Option<RunCut>, trust: Trust) {
 /// state reads running again, and an empty input on `agent/<child>/input`
 /// (with `trust`) queues the task. The caller holds the child's state.
 fn retask(child: &Child, state: &mut ChildState, trust: Trust) {
+    child.reopened.store(false, Ordering::SeqCst);
     state.settled = false;
     state.status = "running";
     state.started_at_ms = now_ms();

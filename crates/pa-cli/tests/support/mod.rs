@@ -5,6 +5,59 @@
 #[cfg(unix)]
 pub mod runtime_daemon;
 
+/// The fixture transcript `text` (JSONL) as a session store holds one: each row after the header
+/// that names no parent is linked to the row before it, and each assistant message is completed
+/// with the members the agent's message type requires (`api`, `provider`, `model`, `usage`,
+/// `stopReason`) where it lacks them. The runtime daemon serves a session's rows from the store,
+/// walked back from the engine's leaf, so a fixture must be one the engine reads and keeps as it
+/// would its own transcript.
+///
+/// # Panics
+///
+/// A line is not JSON.
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one writes fixture transcripts"
+)]
+#[must_use]
+pub fn valid_transcript(text: &str) -> String {
+    let mut previous: Option<serde_json::Value> = None;
+    let mut out = String::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let mut row: serde_json::Value = serde_json::from_str(line).expect("a JSON fixture row");
+        if row["type"] != "session" {
+            if row.get("parentId").is_none() {
+                row["parentId"] = previous
+                    .as_ref()
+                    .filter(|previous| previous["type"] != "session")
+                    .map_or(serde_json::Value::Null, |previous| previous["id"].clone());
+            }
+            let message = &mut row["message"];
+            if message["role"] == "assistant" {
+                let defaults = serde_json::json!({
+                    "api": "faux",
+                    "provider": "faux",
+                    "model": "faux-1",
+                    "usage": {
+                        "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 }
+                    },
+                    "stopReason": "stop",
+                });
+                for (key, value) in defaults.as_object().expect("an object") {
+                    if message.get(key).is_none() {
+                        message[key] = value.clone();
+                    }
+                }
+            }
+        }
+        out.push_str(&row.to_string());
+        out.push('\n');
+        previous = Some(row);
+    }
+    out
+}
+
 /// Strip ambient provider credentials from THIS process, once.
 ///
 /// The in-process client forwards its whole environment to the session

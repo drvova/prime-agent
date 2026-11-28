@@ -1,0 +1,1 @@
+- Fixed the terminal UI leaving a connection to the runtime daemon open after it gave up on a session (for example a refused open that falls back to the agents view).

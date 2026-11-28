@@ -8,8 +8,8 @@
 
 mod support;
 
-use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
+use support::UnixListener;
 
 use pa_tui::interactive::{HeadlessPlan, HeadlessStep, InteractiveOptions};
 use pa_types::ai::Model;

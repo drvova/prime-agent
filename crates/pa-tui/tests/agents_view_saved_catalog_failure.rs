@@ -8,9 +8,11 @@
 mod support;
 
 use std::io::{BufRead, BufReader};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use support::UnixListener;
 
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewUiMode};
 use pa_tui::interactive::SessionSelection;

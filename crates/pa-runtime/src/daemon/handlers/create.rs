@@ -96,6 +96,12 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             let cwd = self.open.cwd(&id);
             return Ok(json!({ "session": id, "path": path, "cwd": cwd, "reused": true }));
         }
+        // A settled child its parent's family opened again is passive, as the
+        // old daemon's ledger child: opened by its transcript, it runs as its
+        // own session.
+        if self.runtime.subagents().release_dormant(&id).await {
+            self.feeds.due(&id);
+        }
         let cwd = match given_cwd {
             Some(cwd) => PathBuf::from(cwd),
             None => pa_core::session::manager::read_session_header(&path)
