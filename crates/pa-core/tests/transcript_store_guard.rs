@@ -119,6 +119,22 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "the session-info scan sidecar write",
     ),
     (
+        "pa-core/src/session/branch_export.rs",
+        "if std::fs::metadata(file_path).is_ok_and(|metadata| !metadata.is_file()) {",
+        "the `/export <file>.jsonl` output is the file the user named, not a stored transcript \
+         (its callers read the branch through the store and hand it in)",
+    ),
+    (
+        "pa-core/src/session/branch_export.rs",
+        "std::fs::write(file_path, body)",
+        "the `/export` output file the user named (a non-regular target such as a FIFO)",
+    ),
+    (
+        "pa-core/src/session/branch_export.rs",
+        "pa_types::platform::replace_file(",
+        "the `/export` output file the user named, replaced whole",
+    ),
+    (
         "pa-daemon/src/context_tree_children.rs",
         "let Ok(entries) = std::fs::read_dir(dir) else {",
         "`child_session_dirs` lists the `sub-*` child-session directories by their own mtimes \

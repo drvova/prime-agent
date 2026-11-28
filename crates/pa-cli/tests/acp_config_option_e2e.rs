@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+mod support;
+
 const TIMEOUT: Duration = Duration::from_mins(1);
 
 struct AcpChild {
@@ -108,18 +110,14 @@ fn select_params(session_id: &str, config_id: &str, value: &Value) -> Value {
     json!({ "sessionId": session_id, "configId": config_id, "value": value })
 }
 
-fn shutdown_sandboxed_daemon(socket: &std::path::Path) {
-    use std::io::Write as _;
-    let Ok(mut stream) = pa_types::platform::transport::connect_blocking(socket) else {
-        return;
-    };
-    let frame = format!(
-            "{{\"type\":\"command\",\"id\":\"shutdown-test\",\"protocol\":{{\"name\":\"prime-agent.daemon\",\"version\":{}}},\"command\":{{\"type\":\"shutdown\"}}}}\n",
-            pa_types::daemon::DAEMON_PROTOCOL_VERSION
-        );
-    let _ = stream.write_all(frame.as_bytes());
-    let _ = stream.flush();
-    std::thread::sleep(Duration::from_millis(300));
+/// Stop the sandboxed runtime daemon the child spawned on `agent_dir` (the
+/// shared-daemon product behavior leaves it running; a test owns its
+/// sandbox), and wait until its restart owner and the daemon are gone.
+fn shutdown_sandboxed_daemon(agent_dir: &std::path::Path) {
+    #[cfg(unix)]
+    support::stop_runtime_daemon(agent_dir);
+    #[cfg(not(unix))]
+    let _ = agent_dir;
 }
 
 /// The models.json fixture: a second faux-provider model the pickers can
@@ -208,10 +206,7 @@ fn acp_daemon_attached_config_option_pickers() {
         .env("HOME", home.path())
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
         .env("PRIME_AGENT_FAUX_SCRIPT", &script_path)
-        .env(
-            pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-            "15000",
-        )
+        .env_remove("PRIME_AGENT_RUNTIME_DAEMON")
         .current_dir(home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -449,5 +444,5 @@ fn acp_daemon_attached_config_option_pickers() {
     let (close_response, _) = client.wait_response(close, TIMEOUT);
     assert_eq!(close_response["result"], json!({}));
     drop(client);
-    shutdown_sandboxed_daemon(&socket);
+    shutdown_sandboxed_daemon(&agent_dir);
 }

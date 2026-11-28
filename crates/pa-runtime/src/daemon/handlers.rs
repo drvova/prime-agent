@@ -381,31 +381,6 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         })
         .await
     }
-
-    async fn export(&self, args: &Value) -> anyhow::Result<Value> {
-        let (id, _, _) = self.session(args)?;
-        let out = PathBuf::from(string_arg(args, "out")?);
-        let (roots, base) = (vec![self.session_dir.clone()], self.agent_dir.clone());
-        let selected = id.clone();
-        let report = tokio::task::spawn_blocking(move || {
-            pa_core::session::store::export_jsonl(
-                &roots,
-                &base,
-                pa_core::session::store::ExportSelection::Session(&selected),
-                &out,
-            )
-        })
-        .await
-        .context("the export's thread panicked")??;
-        if let Some((path, reason)) = report.failed.first() {
-            anyhow::bail!("export {}: {reason}", path.display());
-        }
-        Ok(json!({
-            "session": id,
-            "written": report.written,
-            "unchanged": report.unchanged,
-        }))
-    }
 }
 
 impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
@@ -486,7 +461,7 @@ impl<B: SessionBuilder> Handlers for RuntimeHandlers<B> {
             Call::SessionSetEffort => self.set_effort(&args).await,
             Call::SessionFork => self.fork(&args).await,
             Call::SessionLabel => self.label(&args).await,
-            Call::SessionExport => self.export(&args).await,
+            Call::SessionExport => self.export_jsonl(&args).await,
             Call::SessionAbort => self.abort(&args, AfterAbort::Park).await,
             Call::SessionAbortAndSendQueued => self.abort(&args, AfterAbort::SendQueued).await,
             Call::SessionResumeQueue => self.resume_queue(&args),
