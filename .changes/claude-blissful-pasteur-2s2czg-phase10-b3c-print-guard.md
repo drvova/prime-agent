@@ -1,0 +1,1 @@
+- `prime-agent -p -c` and `--resume` again refuse a session the runtime daemon has open, naming the live session to attach to, as they did on the old daemon.
