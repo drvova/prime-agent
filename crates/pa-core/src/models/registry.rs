@@ -278,6 +278,38 @@ impl ModelRegistry {
             || self.has_configured_provider_request_auth(&model.provider)
     }
 
+    /// The run-start auth refusal of a turn on `model` (TS
+    /// `AgentSession.prompt`'s preflight): `None` when the provider has a
+    /// configured credential, else the text the turn fails with before any
+    /// provider request — the expired-credential guidance for a stored OAuth
+    /// sign-in, the login guidance otherwise. The old daemon's turns and the
+    /// runtime daemon's sessions run it when no request key was given.
+    #[must_use]
+    pub fn run_start_auth_refusal(&self, model: &Model) -> Option<String> {
+        if self.has_configured_auth(model) {
+            return None;
+        }
+        let uses_oauth = self
+            .auth
+            .get_all()
+            .credential(&model.provider)
+            .is_some_and(|credential| matches!(credential, AuthCredential::Oauth { .. }));
+        Some(if uses_oauth {
+            format!(
+                "Authentication failed for \"{}\". Credentials may have expired or network is unavailable.\n\nRun /login to update credentials.",
+                model.provider
+            )
+        } else {
+            let docs = crate::packages::docs_path();
+            format!(
+                "No API key found for {}.\n\nUse /login to log into a provider via OAuth or API key. See:\n  {}\n  {}",
+                model.provider,
+                docs.join("providers.md").display(),
+                docs.join("models.md").display()
+            )
+        })
+    }
+
     /// The provider's auth status without credential values: callers
     /// classifying unauthenticated vs stale providers read this instead of
     /// probing for keys.

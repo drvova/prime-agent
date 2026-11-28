@@ -213,11 +213,31 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         Ok(usage)
     }
 
+    /// `session.tree`: `nodes` (each entry's id, parent, kind and label)
+    /// and `flatNodes`, the old `get_session_tree`'s rows that `/tree` reads
+    /// (every entry in file order as stored, with its active label and the
+    /// label's timestamp), beside the leaf.
     pub(super) async fn tree(&self, args: &Value) -> anyhow::Result<Value> {
-        let (id, (nodes, leaf), _) = self
+        let (id, (nodes, flat_nodes, leaf), _) = self
             .read(args, |manager| {
                 let entries = manager.retained_entries();
                 let tree = SessionTree::build(entries);
+                let flat_nodes: Vec<Value> = entries
+                    .iter()
+                    .filter(|entry| !matches!(entry, FileEntry::Header { .. }))
+                    .map(|entry| {
+                        let mut node = json!({ "entry": entry });
+                        let label = entry
+                            .id()
+                            .and_then(|id| Some((id, tree.labels.get(id).cloned().flatten()?)));
+                        if let Some((id, label)) = label {
+                            node["label"] = json!(label);
+                            node["labelTimestamp"] =
+                                json!(tree.label_timestamps.get(id).map_or("", String::as_str));
+                        }
+                        node
+                    })
+                    .collect();
                 let nodes: Vec<Value> = entries
                     .iter()
                     .filter(|entry| !matches!(entry, FileEntry::Label { .. }))
@@ -232,10 +252,10 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                         }))
                     })
                     .collect();
-                (nodes, manager.get_leaf_id().map(str::to_string))
+                (nodes, flat_nodes, manager.get_leaf_id().map(str::to_string))
             })
             .await?;
-        Ok(json!({ "session": id, "leafId": leaf, "nodes": nodes }))
+        Ok(json!({ "session": id, "leafId": leaf, "nodes": nodes, "flatNodes": flat_nodes }))
     }
 
     pub(super) async fn context_tree(&self, args: &Value) -> anyhow::Result<Value> {

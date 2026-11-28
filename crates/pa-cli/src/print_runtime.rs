@@ -730,21 +730,31 @@ pub(crate) async fn build_headless_engine_with(
                 .map(pa_core::session::manager::SessionManager::active_context);
             match select_model(&mut registry, config, session.as_ref()).await {
                 Ok(model) => model,
-                // A daemon's session (the runtime daemon gives each a faux lane of its own) that
-                // names no model and finds none signed in starts on the catalog's first, as the
-                // old worker's does: it opens, and a prompt reports the missing sign-in. A print
-                // or RPC run fails here instead.
+                // A daemon's session (the runtime daemon gives each a faux lane of its own)
+                // that finds no signed-in model starts on the full catalog, as the old worker's
+                // does: on the model it names (the old worker resolves a named model there), or
+                // on the catalog's first when it names none. It opens, and a prompt reports the
+                // missing sign-in. A print or RPC run fails here instead.
                 Err(error)
-                    if config.model.is_none()
-                        && matches!(
-                            embedding,
-                            HeadlessEmbedding::Root {
-                                faux_lane: Some(_),
-                                ..
-                            }
-                        ) =>
+                    if matches!(
+                        embedding,
+                        HeadlessEmbedding::Root {
+                            faux_lane: Some(_),
+                            ..
+                        }
+                    ) =>
                 {
-                    registry.get_all().first().cloned().ok_or(error)?
+                    match config.model.as_deref() {
+                        None => registry.get_all().first().cloned().ok_or(error)?,
+                        Some(name) => {
+                            let resolved = pa_core::models::resolve_cli_model(
+                                config.provider.as_deref(),
+                                name,
+                                registry.get_all(),
+                            );
+                            resolved.model.ok_or(resolved.error.unwrap_or(error))?
+                        }
+                    }
                 }
                 Err(error) => return Err(error),
             }
@@ -794,6 +804,7 @@ pub(crate) async fn build_headless_engine_with(
         let stream_fn = route_authoritative_stream_fn(
             std::sync::Arc::clone(&provider_target),
             std::sync::Arc::clone(&armed_target),
+            config.agent_dir.clone(),
         );
         // TS settings.imageModel routing: image-attaching batches on a session model
         // without image input route to the configured image model or refuse.
@@ -946,9 +957,17 @@ pub(crate) async fn build_headless_engine_with(
 
 /// The armed image route stays AUTHORITATIVE while an episode is armed: a
 /// `set_model` picker write to the slot lands only when the settle clears it.
+///
+/// A request without a key runs the run-start auth preflight on the model it
+/// serves first, as the old worker's turn does (pa-core's
+/// `ModelRegistry::run_start_auth_refusal`): a model whose provider is not
+/// signed in (a daemon session opened on one, `select_model`'s fallback)
+/// fails before any provider request, with the login guidance, as the
+/// call's error.
 fn route_authoritative_stream_fn(
     provider_target: ProviderTargetSlot,
     armed_target: std::sync::Arc<std::sync::Mutex<Option<ProviderTarget>>>,
+    agent_dir: std::path::PathBuf,
 ) -> StreamFn {
     std::sync::Arc::new(
         move |_requested: AgentModel, context: LlmContext, options: StreamRequestOptions| {
@@ -964,7 +983,49 @@ fn route_authoritative_stream_fn(
                         .clone()
                 })
                 .expect("provider target set before the first stream");
-            Box::pin(async move { stream_once(target, context, options) })
+            let agent_dir = agent_dir.clone();
+            Box::pin(async move {
+                if target.api_key.is_none() {
+                    let model = target.model.clone();
+                    // The registry reads models.json and auth.json: off the executor.
+                    let refusal = tokio::task::spawn_blocking(move || {
+                        pa_core::models::ModelRegistry::create(
+                            pa_core::auth::AuthStorage::create(&agent_dir),
+                            agent_dir.join("models.json"),
+                        )
+                        .run_start_auth_refusal(&model)
+                    })
+                    .await
+                    .map_err(|error| anyhow::anyhow!("the auth preflight failed: {error}"))?;
+                    if let Some(refusal) = refusal {
+                        // The model call fails as a provider's does without a key: one
+                        // terminal error, its message the refusal.
+                        let failed = pa_agent::types::AssistantMessage {
+                            content: Vec::new(),
+                            api: target.model.api.clone(),
+                            provider: target.model.provider.clone(),
+                            model: target.model.id.clone(),
+                            response_model: None,
+                            response_id: None,
+                            diagnostics: None,
+                            usage: pa_agent::types::Usage::zero(),
+                            stop_reason: pa_agent::types::StopReason::Error,
+                            stop_reason_raw: None,
+                            error_message: Some(refusal),
+                            timestamp: pa_agent::now_ms(),
+                        };
+                        let (handle, stream) = pa_agent::stream::event_stream();
+                        handle.push(pa_agent::stream::AssistantMessageEvent::Error {
+                            reason: pa_agent::types::StopReason::Error,
+                            error: failed.clone(),
+                        });
+                        handle.end(Some(failed));
+                        let stream: Box<dyn pa_agent::stream::ModelStream> = Box::new(stream);
+                        return Ok(stream);
+                    }
+                }
+                stream_once(target, context, options)
+            })
         },
     )
 }
