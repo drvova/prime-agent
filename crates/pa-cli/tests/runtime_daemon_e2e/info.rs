@@ -190,8 +190,6 @@ async fn the_session_info_reads_answer_as_the_old_daemons_do() {
     let mut reference = OldReference::open("session_info", &bed);
     let (old, old_id, old_transcript): (Vec<Value>, String, PathBuf) =
         reference.take("answers", || old_answers(&bed));
-    // The spend history counts the saved sessions: the old daemon's is one.
-    reference.restore_transcript("transcript", &bed.agent_dir(), &old_transcript);
 
     let _daemon = bed.runtime_daemon_with(&json!({ "responses": ["hi"] }), OFFLINE);
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
@@ -214,8 +212,11 @@ async fn the_session_info_reads_answer_as_the_old_daemons_do() {
         (false, true)
     );
     assert_eq!(answers, old);
-    // A transcript the session has not written a turn to is kept in memory:
-    // one turn stores it.
+    // The marker row is in the stored transcript, as it is in the old
+    // daemon's. Its transcript comes back only now: the spend history above
+    // counts the saved sessions, and each daemon's own (written at its create)
+    // is one of them.
+    reference.restore_transcript("transcript", &bed.agent_dir(), &old_transcript);
     client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
     super::run_turn(&mut client, &id, "hello").await;
     let marker = json!({ "type": "custom",

@@ -628,6 +628,15 @@ impl Subagents {
             }
             *lock(&child_node.passive) = Some(spec);
             lock(&self.nodes).insert(session_id.clone(), Arc::clone(&child_node));
+            // A run its daemon's stop or its parent's crash cut off is listed
+            // as failed, as the old daemon's reseed lists it.
+            let status = if display.as_ref().is_some_and(
+                pa_core::session_engine::rlm_ledger::RlmSubagentDisplayEntry::interrupted,
+            ) {
+                "error"
+            } else {
+                "done"
+            };
             let label = rlm_child_label(
                 display
                     .and_then(|display| display.prompt)
@@ -641,7 +650,7 @@ impl Subagents {
                 queued_ms: 0,
                 node: Arc::clone(&child_node),
                 state: tokio::sync::Mutex::new(ChildState {
-                    status: "done",
+                    status,
                     settled: true,
                     answer_text: None,
                     error: None,

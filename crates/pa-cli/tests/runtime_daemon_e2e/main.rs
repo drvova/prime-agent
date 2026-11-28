@@ -85,6 +85,17 @@
 //!   daemon (phase 8d-5c): [`history_import`].
 //! - A kernel webhook source: an authenticated `POST` runs an untrusted
 //!   turn, a bad token none (phase 9): [`webhooks`].
+//! - A session's lease after its daemon was killed or gave it up, and the
+//!   crash count of a revived session's lifetime (phase 10): [`leases`].
+//! - A subagent spawn's gates: its `#:cwd`, the recursion bound and a name
+//!   admitted once (phase 10): [`spawn_gates`].
+//! - A goal rehydrated after its session's rebuild, and a prompt queued
+//!   behind the goal's continuations (phase 10): [`goal_recovery`].
+//! - A session pinned to its own provider when the retry budget is spent
+//!   ([`provider_pinning`]), an unsuccessful auto-compaction's outcome row
+//!   ([`compaction_outcome`]), an imported session's compaction
+//!   ([`import_compaction`]) and the session-local harness store
+//!   ([`kernel_harness`]) (phase 10).
 //! - A depth-0 session's `rlm.create_session`: a sibling root, shown under
 //!   its creator and kept through its creator's crash: [`root_sessions`].
 #![cfg(unix)]
@@ -95,18 +106,25 @@ mod agents_view;
 mod bash;
 mod checkpoints;
 mod client_surface;
+mod compaction_outcome;
 mod create;
 mod family;
+mod goal_recovery;
 mod goldens;
 mod heartbeats;
 mod history_import;
+mod import_compaction;
 mod info;
 mod keeper;
 mod kernel_activity;
+mod kernel_harness;
+mod leases;
 mod legacy_update;
 mod lifecycle;
 mod old_daemon;
 mod old_reference;
+mod openai_mock;
+mod provider_pinning;
 mod questions;
 mod queue_edit;
 mod reliability;
@@ -116,6 +134,7 @@ mod saved_list;
 mod schedules;
 mod shutdown_flush;
 mod side_questions;
+mod spawn_gates;
 mod stream;
 #[path = "../support/mod.rs"]
 mod support;

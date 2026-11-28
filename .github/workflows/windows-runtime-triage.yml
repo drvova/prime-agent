@@ -214,14 +214,14 @@ jobs:
             ForEach-Object { Remove-Item -Path ("Env:" + $_.Name) -ErrorAction SilentlyContinue }
           cargo test --locked --no-fail-fast -p pa-core 2>&1 | Tee-Object -FilePath pa-core_win.log
           exit $LASTEXITCODE
-      - name: pa-daemon battery
-        id: pa_daemon
+      - name: pa-runtime battery
+        id: pa_runtime
         continue-on-error: true
         shell: pwsh
         run: |
           Get-ChildItem Env: | Where-Object { $_.Name -like 'PRIME_AGENT_*' } |
             ForEach-Object { Remove-Item -Path ("Env:" + $_.Name) -ErrorAction SilentlyContinue }
-          cargo test --locked --no-fail-fast -p pa-daemon 2>&1 | Tee-Object -FilePath pa-daemon_win.log
+          cargo test --locked --no-fail-fast -p pa-runtime 2>&1 | Tee-Object -FilePath pa-runtime_win.log
           exit $LASTEXITCODE
       - name: pa-tui battery
         id: pa_tui
@@ -310,10 +310,10 @@ jobs:
       - name: Summary + the overall verdict
         shell: pwsh
         run: |
-          $summary = "WIN_BATTERY pa-types=${{ steps.pa_types.outcome }} pa-core=${{ steps.pa_core.outcome }} pa-daemon=${{ steps.pa_daemon.outcome }} pa-tui=${{ steps.pa_tui.outcome }} pa-cli=${{ steps.pa_cli.outcome }} install-e2e=${{ steps.install_e2e.outcome }} channel-fallback=${{ steps.channel_fallback.outcome }} raw-one-liner=${{ steps.raw_one_liner.outcome }}"
+          $summary = "WIN_BATTERY pa-types=${{ steps.pa_types.outcome }} pa-core=${{ steps.pa_core.outcome }} pa-runtime=${{ steps.pa_runtime.outcome }} pa-tui=${{ steps.pa_tui.outcome }} pa-cli=${{ steps.pa_cli.outcome }} install-e2e=${{ steps.install_e2e.outcome }} channel-fallback=${{ steps.channel_fallback.outcome }} raw-one-liner=${{ steps.raw_one_liner.outcome }}"
           Add-Content -Path win_battery_summary.log -Value $summary
           Write-Output $summary
-          if (@("${{ steps.pa_types.outcome }}", "${{ steps.pa_core.outcome }}", "${{ steps.pa_daemon.outcome }}", "${{ steps.pa_tui.outcome }}", "${{ steps.pa_cli.outcome }}", "${{ steps.install_e2e.outcome }}", "${{ steps.channel_fallback.outcome }}", "${{ steps.raw_one_liner.outcome }}") -contains 'failure') { exit 1 }
+          if (@("${{ steps.pa_types.outcome }}", "${{ steps.pa_core.outcome }}", "${{ steps.pa_runtime.outcome }}", "${{ steps.pa_tui.outcome }}", "${{ steps.pa_cli.outcome }}", "${{ steps.install_e2e.outcome }}", "${{ steps.channel_fallback.outcome }}", "${{ steps.raw_one_liner.outcome }}") -contains 'failure') { exit 1 }
       - name: Upload the per-crate logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -322,7 +322,7 @@ jobs:
           path: |
             pa-types_win.log
             pa-core_win.log
-            pa-daemon_win.log
+            pa-runtime_win.log
             pa-tui_win.log
             pa-cli_win.log
             win-install-e2e.log

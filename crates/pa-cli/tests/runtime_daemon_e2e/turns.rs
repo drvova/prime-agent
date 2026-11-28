@@ -160,12 +160,19 @@ impl Attached {
     }
 
     pub(super) async fn query(&mut self, name: &str) -> Value {
+        self.query_with(name, json!({})).await
+    }
+
+    /// Queries `name` on the session with `args`.
+    pub(super) async fn query_with(&mut self, name: &str, args: Value) -> Value {
         let request = self.client.id();
+        let mut args = args;
+        args["session"] = json!(self.id);
         self.client
             .send(&ClientFrame::Query {
                 id: request.clone(),
                 name: name.to_string(),
-                args: json!({ "session": self.id }),
+                args,
             })
             .await;
         ok(self.client.reply(&request, &mut self.frames).await)

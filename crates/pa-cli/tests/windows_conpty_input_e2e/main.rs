@@ -166,12 +166,16 @@ fn win32_key(vk: u16, scan: u16, uchar: u16, down: bool, control: u32) -> Vec<u8
 // ---------------------------------------------------------------------------
 // The product under the pseudoconsole.
 
-struct Supervisor {
+/// The runtime daemon a scenario's TUI attaches to: `given` is the pipe name
+/// the TUI is handed (`--daemon-socket`), `socket` the runtime daemon's
+/// endpoint beside it, the one a client connects to.
+struct Daemon {
     child: Child,
+    given: PathBuf,
     socket: PathBuf,
 }
 
-impl Drop for Supervisor {
+impl Drop for Daemon {
     fn drop(&mut self) {
         shutdown_daemon(&self.socket);
         let _ = self.child.kill();
@@ -205,42 +209,39 @@ fn shutdown_daemon(socket: &Path) {
     let _ = shutdown.join();
 }
 
-fn spawn_supervisor(agent_dir: &Path) -> Supervisor {
+/// The runtime daemon (the default) on `agent_dir`, its sessions' turns
+/// answered by the faux script at `script` (the daemon reads it as it
+/// starts), its endpoint declared wire2 for this process's daemon client.
+fn spawn_daemon(agent_dir: &Path, script: &Path) -> Daemon {
     support::scrub_ambient_provider_credentials();
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or_default(|stamp| stamp.as_nanos());
-    let socket = PathBuf::from(format!(
+    let given = PathBuf::from(format!(
         r"\\.\pipe\prime-agent-conpty-{}-{unique}",
         std::process::id()
     ));
+    let socket = pa_runtime::daemon::socket_path(&given);
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
+        .arg(&given)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
+        .env("PRIME_AGENT_FAUX_SCRIPT", script)
         .env("PI_OFFLINE", "1")
-        .env("PA_DAEMON_WORKER_CONNECT_TIMEOUT_MS", "90000")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
+    for var in support::RUNTIME_DAEMON_SCRUB_ENV {
         command.env_remove(var);
     }
     let child = command.spawn().expect("spawn prime-agent --mode daemon");
-    let supervisor = Supervisor { child, socket };
+    pa_tui::daemon_client::use_transport(&socket, pa_tui::daemon_client::Transport::Wire2);
+    let daemon = Daemon {
+        child,
+        given,
+        socket,
+    };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -249,7 +250,7 @@ fn spawn_supervisor(agent_dir: &Path) -> Supervisor {
         let deadline = Instant::now() + Duration::from_secs(90);
         while Instant::now() < deadline {
             if let Ok((client, events)) =
-                pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket).await
+                pa_tui::daemon_client::DaemonClient::connect(&daemon.socket).await
             {
                 client.close();
                 drop(events);
@@ -257,9 +258,9 @@ fn spawn_supervisor(agent_dir: &Path) -> Supervisor {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        panic!("the supervisor never answered a client connect");
+        panic!("the daemon never answered a client connect");
     });
-    supervisor
+    daemon
 }
 
 /// The rendered screen: the console host repaints with cursor moves, so
@@ -717,7 +718,7 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         json!({ "responses": ["conpty scripted reply"] }).to_string(),
     )
     .expect("script");
-    let supervisor = spawn_supervisor(&agent_dir);
+    let daemon = spawn_daemon(&agent_dir, &script);
     let mut env = base_env();
     for (key, value) in [
         (
@@ -728,8 +729,6 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         ("PRIME_AGENT_FAUX_SCRIPT", script.display().to_string()),
         ("PI_OFFLINE", "1".to_string()),
         ("DO_NOT_TRACK", "1".to_string()),
-        // The TUI talks to the supervisor this test spawned, on the old wire.
-        ("PRIME_AGENT_RUNTIME_DAEMON", "0".to_string()),
     ] {
         env.push((key.to_string(), value));
     }
@@ -737,12 +736,12 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         InputMode::Native => format!(
             "\"{}\" --daemon-socket \"{}\"",
             env!("CARGO_BIN_EXE_prime-agent"),
-            supervisor.socket.display()
+            daemon.given.display()
         ),
         InputMode::VtInputInherited => {
             env.push((
                 VT_INPUT_LAUNCH_ENV.to_string(),
-                supervisor.socket.display().to_string(),
+                daemon.given.display().to_string(),
             ));
             format!(
                 "\"{}\" --exact conpty_vt_input_launcher_child_mode --nocapture --test-threads=1",
@@ -926,7 +925,7 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         ),
     );
     drop(term);
-    drop(supervisor);
+    drop(daemon);
     failures
 }
 
@@ -1209,7 +1208,6 @@ fn background_children_open_no_console_windows() {
         ),
         ("PRIME_AGENT_SESSION_DIR", session_dir.display().to_string()),
         ("PRIME_AGENT_FAUX_SCRIPT", script.display().to_string()),
-        ("PA_DAEMON_WORKER_CONNECT_TIMEOUT_MS", "90000".to_string()),
         ("DO_NOT_TRACK", "1".to_string()),
     ] {
         env.push((key.to_string(), value));
@@ -1342,7 +1340,7 @@ fn a_pasted_image_renders_inline_without_escape_text_on_conpty() {
         .expect("script");
         let image = root.join("clipboard.png");
         std::fs::write(&image, ONE_PIXEL_PNG).expect("write the clipboard image");
-        let supervisor = spawn_supervisor(&agent_dir);
+        let daemon = spawn_daemon(&agent_dir, &script);
         let mut env = base_env();
         env.retain(|(key, _)| key != "WT_SESSION");
         for (key, value) in [
@@ -1358,8 +1356,6 @@ fn a_pasted_image_renders_inline_without_escape_text_on_conpty() {
             ),
             ("PI_OFFLINE", "1".to_string()),
             ("DO_NOT_TRACK", "1".to_string()),
-            // The TUI talks to the supervisor this test spawned, on the old wire.
-            ("PRIME_AGENT_RUNTIME_DAEMON", "0".to_string()),
         ] {
             env.push((key.to_string(), value));
         }
@@ -1373,7 +1369,7 @@ fn a_pasted_image_renders_inline_without_escape_text_on_conpty() {
         let command = format!(
             "\"{}\" --daemon-socket \"{}\"",
             env!("CARGO_BIN_EXE_prime-agent"),
-            supervisor.socket.display()
+            daemon.given.display()
         );
         let pty = PseudoConsole::spawn(&host, &command, &env, &cwd, 100, 30);
         let mut term = Terminal::new(pty, 100, 30);
@@ -1447,7 +1443,7 @@ fn a_pasted_image_renders_inline_without_escape_text_on_conpty() {
             ),
         );
         drop(term);
-        drop(supervisor);
+        drop(daemon);
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }

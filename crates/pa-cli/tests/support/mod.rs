@@ -12,6 +12,26 @@ pub mod runtime_daemon;
 )]
 pub mod legacy_supervisor;
 
+/// Env keys a test's own environment may carry that must not reach a runtime daemon it starts:
+/// the old worker's role and leases, the daemon selection, a package dir pointing outside the
+/// fixture, and a sessions dir (fleet shells export one) that would put the daemon's default
+/// sessions dir, and the subagent ledger resolved against it, outside the agent dir. Outside the
+/// unix-only [`runtime_daemon`] module: the Windows suites start a runtime daemon too.
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; not every one starts a runtime daemon"
+)]
+pub const RUNTIME_DAEMON_SCRUB_ENV: [&str; 8] = [
+    "PRIME_AGENT_INTERNAL_DAEMON_WORKER",
+    "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET",
+    "PRIME_AGENT_INTERNAL_SESSION_LEASES",
+    "PRIME_AGENT_INTERNAL_SESSION_LEASE_OWNER_ID",
+    "PRIME_AGENT_RUNTIME_DAEMON",
+    "PI_PACKAGE_DIR",
+    "PRIME_AGENT_SESSION_DIR",
+    "PRIME_AGENT_CODING_AGENT_SESSION_DIR",
+];
+
 /// The fixture transcript `text` (JSONL) as a session store holds one: each row after the header
 /// that names no parent is linked to the row before it, and each assistant message is completed
 /// with the members the agent's message type requires (`api`, `provider`, `model`, `usage`,

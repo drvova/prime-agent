@@ -1,0 +1,1 @@
+- On the runtime daemon a prompt queued while a goal's continuations run (such as `/goal pause`) now runs once the current turn ends, as on the old daemon, instead of waiting behind the goal's continuations forever.

@@ -54,6 +54,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             cwd: given_cwd,
             ephemeral,
             session_dir,
+            name,
             launch_env: given_env,
             options,
         } = serde_json::from_value(args).context("the session.create arguments")?;
@@ -177,6 +178,20 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         if let Some(startup) = scope.startup {
             startup.choose(&mut options);
         }
+        // A new session's transcript is written at its create, header first (then its name,
+        // when the create gives one), as the old worker's create wrote it: a saved-session list, `/resume` or a store read right after
+        // the create finds it, and every row it takes from then on is kept as it is appended
+        // (a model or level switch before any prompt included).
+        if !resumed && !ephemeral {
+            let (path, cwd, agent_dir) = (path.clone(), cwd.clone(), self.agent_dir.clone());
+            let (id, options) = (id.clone(), options.clone());
+            let name = name.filter(|name| !name.trim().is_empty());
+            tokio::task::spawn_blocking(move || {
+                write_new_transcript(&id, &path, &cwd, &agent_dir, &options, name.as_deref())
+            })
+            .await
+            .context("the new transcript's thread panicked")??;
+        }
         // The client's environment, re-filtered (the socket peer is
         // untrusted), under the session's own internal variables.
         let mut env =
@@ -211,4 +226,52 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         self.feeds.due(&id);
         Ok(json!({ "session": id, "path": path, "cwd": cwd, "reused": false }))
     }
+}
+
+/// Writes new session `id`'s transcript at `path`: its header, with the parent, depth,
+/// credential pin and profile its build would give it, then its `name`'s `session_info` row.
+fn write_new_transcript(
+    id: &str,
+    path: &std::path::Path,
+    cwd: &std::path::Path,
+    agent_dir: &std::path::Path,
+    options: &crate::SessionOptions,
+    name: Option<&str>,
+) -> anyhow::Result<()> {
+    let credential_pin = pa_core::auth::AuthAccounts::create(agent_dir)
+        .new_session_pin(
+            options.profile.as_deref(),
+            options.provider.as_deref(),
+            options.credential.as_deref(),
+            options
+                .parent
+                .as_ref()
+                .map(|parent| std::path::Path::new(&parent.path)),
+        )
+        .map_err(anyhow::Error::msg)?;
+    let session_dir = path.parent().context("a transcript path has a directory")?;
+    let mut manager = pa_core::session::manager::SessionManager::persisted(cwd, session_dir);
+    manager.new_session(&pa_core::session::manager::NewSessionOptions {
+        id: Some(id.to_string()),
+        parent_session: options.parent.as_ref().map(|parent| parent.path.clone()),
+        rlm_depth: options
+            .parent
+            .as_ref()
+            .map(|parent| u64::from(parent.rlm_depth)),
+        credential_pin,
+        profile: options.profile.clone(),
+    });
+    anyhow::ensure!(
+        manager.get_session_file() == Some(path),
+        "session {id}'s transcript is not at {}",
+        path.display()
+    );
+    if let Some(name) = name {
+        manager
+            .append_session_info(name)
+            .with_context(|| format!("name session {id}"))?;
+    }
+    manager
+        .flush_now()
+        .with_context(|| format!("write the transcript of session {id}"))
 }

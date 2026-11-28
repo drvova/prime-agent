@@ -1,0 +1,1 @@
+- A session the runtime daemon creates is written to the transcript store at its create, with the name the create gives it, as the old daemon wrote it: `/resume`, `prime-agent list` and the saved-session list show a new session before its first prompt, and a model or effort switch made before any prompt is kept.
