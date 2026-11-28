@@ -85,8 +85,6 @@ def main():
             owned = Path(temp) / 'rust'
             owned.mkdir()
             env = env_for(owned)
-            # The launcher's pin is checked with the daemon a launch selects by default.
-            del env['PRIME_AGENT_RUNTIME_DAEMON']
             tmp = owned / 'tmp'
             legacy = tmp / f'prime-agent-{os.getuid()}/daemon.sock'
             command = install_launcher(binary, owned, env)

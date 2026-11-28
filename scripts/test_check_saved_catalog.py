@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from check_saved_catalog import COUNT, PAGE, TARGET, normalize, seed, validate_query
+from lifecycle_lib import wire2_frame
 
 
 class SavedCatalogGuards(unittest.TestCase):
@@ -21,22 +22,25 @@ class SavedCatalogGuards(unittest.TestCase):
         data = {'sessions': rows, 'remaining': remaining}
         if cursor is not None:
             data['nextCursor'] = cursor
-        frames = [{'type': 'session_list_item', 'id': '1',
-            'command': 'list_saved_sessions', 'session': row} for row in rows]
-        frames.append({'type': 'session_list_progress', 'id': '1',
-            'command': 'list_saved_sessions', 'loaded': len(rows), 'total': len(rows)})
-        frames.append({'type': 'response', 'id': '1', 'success': True,
-            'command': 'list_saved_sessions', 'data': data})
-        request = {'type': 'command', 'id': '1',
-            'command': {'type': 'list_saved_sessions', 'cwd': '/tmp/catalog-paging-fixture',
-                        'scope': 'all'}}
-        return {'paging': {}, 'frames': frames, 'final_data': data,
-            'raw_received_hex': [(json.dumps(frame) + '\n').encode().hex() for frame in frames],
-            'raw_sent_hex': [(json.dumps(request) + '\n').encode().hex()]}
+        topic = 'runtime/session_list/list-1'
+        event = lambda payload: {'type': 'event', 'subId': 'list:list-1', 'event': {
+            'id': 'live', 'seq': 0, 'ts': 1, 'topic': topic, 'source': 'runtime',
+            'payload': dict(payload, id='list-1', command='list_saved_sessions'), 'trust': 'owner'}}
+        frames = [{'type': 'backfilled', 'subId': 'list:list-1', 'throughSeq': 0}]
+        frames += [event({'session': row}) for row in rows]
+        frames.append(event({'loaded': len(rows), 'total': len(rows)}))
+        frames.append({'type': 'reply', 'id': 'check-2', 'status': 'ok', 'result': data})
+        sent = [{'type': 'subscribe', 'subId': 'list:list-1', 'filter': topic, 'since': {'from': 'now'}},
+                {'type': 'query', 'id': 'check-2', 'name': 'sessions.list', 'args': {
+                    'shape': 'saved', 'stream': 'list-1', 'cwd': '/tmp/catalog-paging-fixture',
+                    'scope': 'all'}},
+                {'type': 'unsubscribe', 'subId': 'list:list-1'}]
+        return {'paging': {}, 'frames': frames, 'final_data': data, 'after_reply': [],
+            'raw_received_hex': [wire2_frame(frame).hex() for frame in frames],
+            'raw_sent_hex': [wire2_frame(frame).hex() for frame in sent]}
 
     def refresh_raw(self, call):
-        call['raw_received_hex'] = [(json.dumps(frame) + '\n').encode().hex()
-                                    for frame in call['frames']]
+        call['raw_received_hex'] = [wire2_frame(frame).hex() for frame in call['frames']]
 
     def check(self, call, rows=None, **kwargs):
         return validate_query(call, self.root, self.expected if rows is None else rows,
@@ -107,32 +111,38 @@ class SavedCatalogGuards(unittest.TestCase):
 
     def test_raw_terminal_and_stream_disagreement_fail_closed(self):
         for mode in ('missing_raw', 'bad_raw', 'wrong_request', 'wrong_stream',
-                     'duplicate_stream', 'wrong_order', 'no_stream', 'after_final'):
+                     'duplicate_stream', 'wrong_order', 'no_stream', 'after_final',
+                     'foreign_after_reply'):
             call = self.call()
             if mode == 'missing_raw':
                 call['raw_received_hex'] = []
             elif mode == 'bad_raw':
-                call['raw_received_hex'][0] = b'{}\n'.hex()
+                call['raw_received_hex'][0] = wire2_frame({}).hex()
             elif mode == 'wrong_request':
-                call['raw_sent_hex'] = [b'{"id":"elsewhere","command":{}}\n'.hex()]
+                call['raw_sent_hex'][1] = wire2_frame({'type': 'query', 'id': 'elsewhere',
+                                                       'name': 'sessions.list', 'args': {}}).hex()
             elif mode == 'wrong_stream':
-                call['frames'][0] = copy.deepcopy(call['frames'][0])
-                call['frames'][0]['session']['firstMessage'] = 'wrong'
+                call['frames'][1] = copy.deepcopy(call['frames'][1])
+                call['frames'][1]['event']['payload']['session']['firstMessage'] = 'wrong'
             elif mode == 'duplicate_stream':
-                call['frames'].insert(0, copy.deepcopy(call['frames'][0]))
+                call['frames'].insert(1, copy.deepcopy(call['frames'][1]))
             elif mode == 'wrong_order':
-                call['frames'][0], call['frames'][1] = call['frames'][1], call['frames'][0]
+                call['frames'][1], call['frames'][2] = call['frames'][2], call['frames'][1]
             elif mode == 'no_stream':
-                call['frames'] = call['frames'][-2:]
+                call['frames'] = call['frames'][:1] + call['frames'][-1:]
+            elif mode == 'foreign_after_reply':
+                call['after_reply'] = [{'type': 'event', 'subId': 'elsewhere', 'event': {}}]
             else:
-                call['frames'].append(copy.deepcopy(call['frames'][0]))
-            if mode not in ('missing_raw', 'bad_raw', 'wrong_request'):
+                call['frames'].append(copy.deepcopy(call['frames'][1]))
+            if mode not in ('missing_raw', 'bad_raw', 'wrong_request', 'foreign_after_reply'):
                 self.refresh_raw(call)
             with self.subTest(mode=mode), self.assertRaises(AssertionError):
                 self.check(call)
-        # Dropped streamed items are legal under real Rust backpressure.
+        # Dropped streamed items are legal under real Rust backpressure, and the
+        # stream's rows after the reply are dropped by the client.
         call = self.call()
-        del call['frames'][1:PAGE]
+        del call['frames'][2:PAGE]
+        call['after_reply'] = [copy.deepcopy(call['frames'][1])]
         self.refresh_raw(call)
         self.check(call)
 

@@ -3,9 +3,6 @@
 import copy
 import http.client
 import json
-from pathlib import Path
-import socket
-import tempfile
 import threading
 import unittest
 
@@ -62,41 +59,6 @@ class VerifierTests(unittest.TestCase):
         new = {'role': 'tool', 'content': [{'type': 'text', 'text': check.MARKER + json.dumps(after)}]}
         requests = [{'messages': [old]}, {'messages': [old, new]}]
         self.assertEqual(check.latest_probe(requests), after)
-
-    def test_jsonl_client_preserves_fragmented_frames_and_protocol(self):
-        errors = []
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'test.sock'
-            listener = socket.socket(socket.AF_UNIX)
-            listener.bind(str(path))
-            listener.listen(1)
-            protocol = {'name': 'prime-agent.daemon', 'version': 7}
-            def serve():
-                try:
-                    with listener.accept()[0] as connection:
-                        greeting = json.dumps({'type': 'daemon_hello', 'protocol': protocol}).encode() + b'\n'
-                        connection.sendall(greeting[:5])
-                        connection.sendall(greeting[5:])
-                        envelope = json.loads(connection.makefile('rb').readline())
-                        assert envelope['protocol'] == protocol
-                        assert envelope['command'] == {'type': 'reload'}
-                        response = {'type': 'response', 'id': envelope['id'], 'success': True, 'data': {'ok': 1}}
-                        connection.sendall(b'{"type":"session_event"}\n' + json.dumps(response).encode() + b'\n')
-                except Exception as error:
-                    errors.append(error)
-            thread = threading.Thread(target=serve)
-            thread.start()
-            process = type('Process', (), {'poll': lambda self: None})()
-            client = check.Client(path, process)
-            try:
-                self.assertEqual(client.request({'type': 'reload'}), {'ok': 1})
-                self.assertEqual(len(client.frames), 3)
-            finally:
-                client.socket.close()
-                thread.join(timeout=3)
-                listener.close()
-            self.assertFalse(thread.is_alive())
-            self.assertEqual(errors, [])
 
 
 if __name__ == '__main__':

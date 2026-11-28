@@ -20,7 +20,7 @@ import time
 
 from check_agent_bounce import Client
 from lifecycle_lib import DockScreen
-from lifecycle_lib import Supervisor, Terminal, digest, env_for
+from lifecycle_lib import Supervisor, Terminal, digest, supervisor_env_for
 from lifecycle_lib import OwnedProcesses, TAG, finish
 
 RUN = 'factory-navigation-run'
@@ -96,7 +96,9 @@ def factory_click(screen):
 
 
 def observe(binary, root, observed):
-    env = env_for(root)
+    # On the supervisor's wire: the TUI is driven against a fixture of the
+    # old daemon (`lifecycle_lib.Supervisor`), which has no wire2 form yet.
+    env = supervisor_env_for(root)
     env[TAG] = str(root)
     discovered = observed['hello_discovery'] = {}
     actual = hello(binary, root, env, discovered)

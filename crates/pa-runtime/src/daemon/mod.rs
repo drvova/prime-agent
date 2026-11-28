@@ -327,13 +327,18 @@ pub async fn run<B: SessionBuilder>(
     }
     // Its sessions' families are recorded in the old daemon's ledger, wait
     // on each other's messages and observe each other.
+    // A wait edge's change is the session's roster entry's news.
+    let feeds = Arc::new(handlers::Feeds::default());
     runtime
         .subagents()
         .attach_daemon(crate::subagents::DaemonFamily::new(
             &options.agent_dir,
             &options.session_dir,
+            {
+                let feeds = Arc::clone(&feeds);
+                Arc::new(move |id: &str| feeds.due(id))
+            },
         ));
-    let feeds = Arc::new(handlers::Feeds::default());
     // A session given up on is closed, and its lease released.
     let given_up = {
         let mut listener = runtime.listen();

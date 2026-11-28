@@ -4,7 +4,7 @@
 Cells run through the offered eval tool. Only auxiliary request thinking
 controls are checked: prompt wording, token budgets, and UI frames are not.
 Branch summary uses an owned daemon and its real navigate_tree command. The owned
-supervisor shuts down workers and kernels before temporary files are removed.
+daemon shuts down its sessions and kernels before temporary files are removed.
 All providers, homes, sessions, and subprocesses belong to this fixture.
 """
 import argparse
@@ -157,7 +157,6 @@ def run_case(binary, scenario, root, observation):
         (root / name).mkdir(parents=True)
     agent, sessions, cwd = root / 'agent', root / 'sessions', root / 'work'
     env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ') if key in os.environ}
-    env['PRIME_AGENT_RUNTIME_DAEMON'] = '0'  # the supervisor's wire (lifecycle_lib.env_for)
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), DO_NOT_TRACK='1',
                PI_OFFLINE='1', PI_CODING_AGENT_DIR=str(agent),
                PRIME_AGENT_CODING_AGENT_DIR=str(agent), PI_SESSION_DIR=str(sessions),
@@ -238,7 +237,7 @@ def run_case(binary, scenario, root, observation):
     finally:
         observation['requests'] = server.requests
         observation['daemon_wire'] = list(client.wire) if client else []
-        # Owning the supervisor gives an acknowledged shutdown before temporary files vanish.
+        # Owning the daemon gives an acknowledged shutdown before temporary files vanish.
         finish(scope, client, process, observation)
         log.close()
         observation['daemon_log'] = (root / 'daemon.log').read_text(errors='replace')[-6000:]

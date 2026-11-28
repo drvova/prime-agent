@@ -11,14 +11,12 @@ import json
 import os
 from pathlib import Path
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 
-from lifecycle_lib import digest
+from lifecycle_lib import Wire2Client, digest
 from check_restore_notice import texts
 
 MARKER = 'LIVE_MCP_PARITY_RESULT='
@@ -101,59 +99,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(wire.encode())
 
 
-class Client:
-    """Bounded JSONL client using each real daemon's advertised protocol."""
-    def __init__(self, path, process):
-        self.frames = []
-        self.buffer = b''
-        deadline = time.monotonic() + 45
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                raise RuntimeError('daemon exited before socket readiness')
-            connection = socket.socket(socket.AF_UNIX)
-            try:
-                connection.connect(str(path))
-                self.socket = connection
-                break
-            except (FileNotFoundError, ConnectionRefusedError):
-                connection.close()
-                threading.Event().wait(0.025)
-        else:
-            raise TimeoutError('daemon socket readiness')
-        self.hello = self.read(deadline)
-        assert self.hello.get('type') == 'daemon_hello', self.hello
-        self.protocol = self.hello['protocol']
-        self.sequence = 0
-
-    def read(self, deadline):
-        while b'\n' not in self.buffer:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError('daemon response deadline')
-            self.socket.settimeout(remaining)
-            data = self.socket.recv(65536)
-            if not data:
-                raise RuntimeError('daemon closed socket')
-            self.buffer += data
-        line, self.buffer = self.buffer.split(b'\n', 1)
-        frame = json.loads(line)
-        self.frames.append(frame)
-        return frame
-
-    def request(self, command):
-        self.sequence += 1
-        request_id = 'live-mcp-' + str(self.sequence)
-        envelope = {'type': 'command', 'id': request_id,
-                    'protocol': self.protocol, 'command': command}
-        self.socket.sendall((json.dumps(envelope) + '\n').encode())
-        deadline = time.monotonic() + 90
-        while True:
-            frame = self.read(deadline)
-            if frame.get('type') == 'response' and frame.get('id') == request_id:
-                assert frame.get('success') is True, frame
-                return frame.get('data') or {}
-
-
 def stop(process):
     # Signal only the owned process group; the fixture never touches live services.
     try:
@@ -180,7 +125,6 @@ def run_case(binary, root, observation):
         (root / name).mkdir(parents=True)
     agent, cwd = root / 'agent', root / 'work'
     env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ') if key in os.environ}
-    env['PRIME_AGENT_RUNTIME_DAEMON'] = '0'  # the supervisor's wire (lifecycle_lib.env_for)
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), DO_NOT_TRACK='1',
                PI_OFFLINE='1', PI_CODING_AGENT_DIR=str(agent),
                PRIME_AGENT_CODING_AGENT_DIR=str(agent), PI_SESSION_DIR=str(root / 'sessions'),
@@ -206,12 +150,12 @@ def run_case(binary, root, observation):
                                    cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT,
                                    start_new_session=True)
         try:
-            client = Client(path, process)
-            created = client.request({'type': 'create', 'config': {'cwd': str(cwd),
-                'sessionDir': str(root / 'sessions'), 'provider': 'fixture', 'model': 'mcp-fixture'}})
+            client = Wire2Client(path, process, timeout=45)
+            created = client.call('create', config={'cwd': str(cwd),
+                'sessionDir': str(root / 'sessions'), 'provider': 'fixture', 'model': 'mcp-fixture'})
             active = created.get('activeSessionId') or created.get('sessionId') or created.get('id')
             assert active, created
-            client.request({'type': 'attach', 'activeSessionId': active})
+            client.call('attach', activeSessionId=active)
             for phase in ('before', 'after'):
                 server.phase = phase
                 if phase == 'after':
@@ -219,10 +163,10 @@ def run_case(binary, root, observation):
                     settings_path.write_text(json.dumps(settings))
                     # The public reload does not rebuild the core: the same
                     # registered handler must read live.
-                    client.request({'type': 'reload', 'activeSessionId': active})
-                client.request({'type': 'prompt', 'activeSessionId': active,
-                                'message': 'Probe live MCP configuration: ' + phase})
-                client.request({'type': 'wait_for_idle', 'activeSessionId': active})
+                    client.call('reload', activeSessionId=active)
+                client.call('prompt', activeSessionId=active,
+                            message='Probe live MCP configuration: ' + phase)
+                client.call('wait_for_idle', timeout_seconds=90, activeSessionId=active)
                 observation[phase] = latest_probe(server.requests[phase])
             assert not server.errors, server.errors
             assert {k: len(v) for k, v in server.requests.items()} == {'before': 2, 'after': 2}
@@ -231,11 +175,11 @@ def run_case(binary, root, observation):
             if client is not None:
                 if active is not None:
                     try:
-                        client.request({'type': 'kill', 'activeSessionId': active})
+                        client.call('kill', activeSessionId=active)
                     except Exception as error:
                         observation['cleanup_error'] = str(error)
-                observation['daemon_frames'] = client.frames
-                client.socket.close()
+                observation['daemon_frames'] = client.wire
+                client.close()
             stop(process)
             server.shutdown()
             server.server_close()

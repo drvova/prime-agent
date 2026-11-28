@@ -525,10 +525,14 @@ pub struct SessionSeams {
 /// session's kernel binds its jobs to, or `None` for a session that keeps
 /// none (a subagent, a session without a transcript). `fired` is told,
 /// from the bus's routing, that a job timer of `session` fired; it must
-/// return at once and run the session's due jobs elsewhere.
+/// return at once and run the session's due jobs elsewhere. `arm_passive`
+/// arms the jobs of a subagent its family opened again with no engine yet
+/// (the subagent `spec` opens as `id`): it may block on the job store, and
+/// a job of the subagent's that comes due builds it.
 pub(crate) trait SessionJobs: Send + Sync {
     fn wiring(&self, id: &str, spec: &SessionSpec) -> Option<KernelCronWiring>;
     fn fired(&self, session: &str);
+    fn arm_passive(&self, id: &str, spec: &SessionSpec);
 }
 
 /// Where a runtime's sessions and its routing reach its [`SessionJobs`],
@@ -725,6 +729,14 @@ impl<B: SessionBuilder> Sessions<B> {
     /// The sessions the runtime's stores keep nothing of.
     pub(crate) fn unstored(&self) -> &crate::log_stores::Unstored {
         &self.unstored
+    }
+
+    /// Arms the scheduled jobs of the passive subagent `spec` opens as `id`
+    /// ([`SessionJobs::arm_passive`]); nothing outside the runtime daemon.
+    pub(crate) fn arm_passive(&self, id: &str, spec: &SessionSpec) {
+        if let Some(jobs) = self.jobs.get() {
+            jobs.arm_passive(id, spec);
+        }
     }
 
     /// Attaches the runtime daemon's scheduled jobs (once; a second attach
