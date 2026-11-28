@@ -735,6 +735,15 @@ impl<B: SessionBuilder> Runtime<B> {
             .is_some_and(|host| !host.given_up())
     }
 
+    /// Whether session `session` is open here and its supervision gave it
+    /// up: its `agent/<id>/failed` is out or about to be, and the daemon
+    /// lets it go.
+    pub(crate) fn given_up(&self, session: &str) -> bool {
+        self.sessions
+            .host(session)
+            .is_some_and(|host| host.given_up())
+    }
+
     pub(crate) fn session_engine(&self, session: &str) -> Option<crate::session::LiveEngine> {
         self.sessions.host(session)?.engine()
     }
