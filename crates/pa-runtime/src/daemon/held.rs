@@ -92,6 +92,8 @@ pub(super) struct OpenSessions {
     /// The API keys the daemon's sessions were created with
     /// (`handlers/create.rs`), held in memory only, for the daemon's life.
     api_keys: Mutex<HashMap<String, pa_types::wire2::ApiKey>>,
+    /// Woken as each session is let go of (its lease released).
+    released: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -128,6 +130,7 @@ impl OpenSessions {
             open: Mutex::new(HeldSessions::default()),
             bashes: UserBashes::default(),
             api_keys: Mutex::default(),
+            released: tokio::sync::Notify::new(),
         }
     }
 
@@ -175,6 +178,22 @@ impl OpenSessions {
 
     pub(super) fn contains(&self, id: &str) -> bool {
         lock(&self.open).open.contains_key(id)
+    }
+
+    /// Resolves once session `id` is no longer open (at once when it is
+    /// not): its entry, and with it its lease, is gone.
+    pub(super) async fn until_released(&self, id: &str) {
+        loop {
+            let released = self.released.notified();
+            tokio::pin!(released);
+            // Registered before the check, so a release between the check
+            // and the wait is not missed.
+            released.as_mut().enable();
+            if !self.contains(id) {
+                return;
+            }
+            released.await;
+        }
     }
 
     /// Open session `id`'s scoped model list (empty when none is set).
@@ -302,10 +321,12 @@ impl OpenSessions {
     pub(super) async fn remove(&self, id: &str) {
         let kept = {
             let mut open = lock(&self.open);
-            open.open.remove(id);
+            // Its lease goes with its entry.
+            drop(open.open.remove(id));
             open.dormant.remove(id);
             self.keep(&open)
         };
+        self.released.notify_waiters();
         if let Err(error) = kept.wait().await {
             tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
         }
