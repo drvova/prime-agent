@@ -13,7 +13,7 @@ use super::{import_trees, ExportReport, ExportSelection, TranscriptImportReport,
 fn captured() -> Vec<Vec<u8>> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     [
-        manifest.join("../pa-daemon/tests/fixtures/attribution-fold-captured.jsonl"),
+        manifest.join("tests/fixtures/attribution-fold-captured.jsonl"),
         manifest.join("tests/fixtures/run_metrics/synthetic-two-runs.jsonl"),
     ]
     .iter()

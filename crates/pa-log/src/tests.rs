@@ -30,7 +30,7 @@ fn session_files_round_trip_byte_for_byte() {
     )
     .unwrap();
     let files = [
-        workspace_file("pa-daemon/tests/fixtures/attribution-fold-captured.jsonl"),
+        workspace_file("pa-core/tests/fixtures/attribution-fold-captured.jsonl"),
         workspace_file("pa-core/tests/fixtures/run_metrics/synthetic-two-runs.jsonl"),
         torn,
     ];
@@ -329,7 +329,7 @@ fn transcripts_read_back_byte_for_byte_from_any_position() {
     torn.extend_from_slice(b"age\"");
     let originals = [
         std::fs::read(workspace_file(
-            "pa-daemon/tests/fixtures/attribution-fold-captured.jsonl",
+            "pa-core/tests/fixtures/attribution-fold-captured.jsonl",
         ))
         .unwrap(),
         std::fs::read(workspace_file(
