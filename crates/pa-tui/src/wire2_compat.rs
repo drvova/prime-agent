@@ -1079,6 +1079,7 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
         DaemonCommand::Create {
             session_path,
             no_session,
+            name,
             config,
             telemetry_disabled,
             launch_env,
@@ -1113,6 +1114,7 @@ pub(crate) fn outgoing(request_id: String, command: DaemonCommand) -> Result<Out
                 cwd: text("cwd"),
                 ephemeral: *no_session == Some(true),
                 session_dir: text("sessionDir"),
+                name: name.clone(),
                 launch_env: launch_env.clone(),
                 options: Some(Value::Object(options)),
                 ..SessionCreate::default()

@@ -37,10 +37,12 @@
 //!
 //! The harness is PORTABLE by design: the same battery runs in the linux
 //! CI shards (so every lane gates it) and on the windows-2022 runner (the
-//! Windows surface). The daemon endpoint is a Unix socket on unix hosts
-//! and a named pipe on Windows (`--daemon-socket` carries the pipe name);
-//! everything else - the scripted engine, the headless TUI driver, the
-//! store reads - is platform-neutral product code.
+//! Windows surface). The daemon is the runtime daemon (the default), on the
+//! endpoint beside the one `--daemon-socket` names: `daemon2.sock` beside a
+//! Unix socket on unix hosts, the pipe name with `2` appended on Windows;
+//! everything else - the scripted engine (`PRIME_AGENT_FAUX_SCRIPT`, which
+//! the daemon reads as it starts), the headless TUI driver, the store reads -
+//! is platform-neutral product code.
 
 mod support;
 
@@ -55,16 +57,17 @@ use pa_tui::interactive::{
 };
 use serde_json::{json, Map, Value};
 
-/// The daemon supervisor spawned as the freshly-built binary
-/// (`CARGO_BIN_EXE_prime-agent --mode daemon`).
-struct Supervisor {
+/// The runtime daemon spawned as the freshly-built binary
+/// (`CARGO_BIN_EXE_prime-agent --mode daemon`); `socket` is the endpoint it
+/// listens on, the one a client connects to.
+struct Daemon {
     child: Child,
     socket: PathBuf,
 }
 
-impl Drop for Supervisor {
+impl Drop for Daemon {
     fn drop(&mut self) {
-        stop_supervisor(self);
+        stop_daemon(self);
     }
 }
 
@@ -72,8 +75,8 @@ impl Drop for Supervisor {
 /// hard-kill the child. The portable form: the daemon client rides the
 /// platform transport (named pipe on Windows, Unix socket elsewhere), so
 /// the shutdown works on every host.
-fn stop_supervisor(supervisor: &mut Supervisor) {
-    let socket = supervisor.socket.clone();
+fn stop_daemon(daemon: &mut Daemon) {
+    let socket = daemon.socket.clone();
     // The shutdown rides its own thread: `Drop` can run inside the async
     // test's runtime, where `block_on` would be a nested runtime.
     let shutdown = std::thread::spawn(move || {
@@ -97,8 +100,8 @@ fn stop_supervisor(supervisor: &mut Supervisor) {
         });
     });
     let _ = shutdown.join();
-    let _ = supervisor.child.kill();
-    let _ = supervisor.child.wait();
+    let _ = daemon.child.kill();
+    let _ = daemon.child.wait();
 }
 
 /// The daemon endpoint for this test run: a Unix socket file under the
@@ -126,44 +129,36 @@ fn daemon_endpoint(dir: &Path) -> PathBuf {
     }
 }
 
-/// Spawn the freshly-built binary as a daemon supervisor.
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    // The in-process client forwards this process's env to the worker.
+/// Spawn the freshly-built binary as the runtime daemon, its sessions' turns
+/// answered by the faux script at `script` (the file must exist: the daemon
+/// reads it as it starts), and declare its endpoint wire2 for this process's
+/// daemon client, as the composition root does for the window it launches.
+fn spawn_daemon(dir: &Path, script: &Path) -> Daemon {
+    // The in-process client forwards this process's env to the session.
     support::scrub_ambient_provider_credentials();
-    let socket = daemon_endpoint(dir);
+    let given = daemon_endpoint(dir);
+    let socket = pa_runtime::daemon::socket_path(&given);
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
+        .arg(&given)
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("PRIME_AGENT_FAUX_SCRIPT", script)
         // The daemon's startup catalog refresh must never reach the network
         // from a test: PI_OFFLINE keeps it on the bundled snapshot.
         .env("PI_OFFLINE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // The launcher strips inherited worker role env vars before spawning
-    // the supervisor; a CLI running inside a daemon worker must not leak
-    // them.
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
+    // A CLI running inside an agent's session must not leak its session's
+    // internal keys, its daemon selection or its session dir into the daemon.
+    for var in support::RUNTIME_DAEMON_SCRUB_ENV {
         command.env_remove(var);
     }
     // Ambient provider credentials must not leak into the daemon's
-    // catalog: every spawned supervisor here serves models.json fixtures
+    // catalog: every spawned daemon here serves models.json fixtures
     // only.
     for provider in pa_ai::models_generated::get_providers() {
         if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
@@ -173,11 +168,6 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         }
     }
     command.env_remove("PRIME_TEAM_ID");
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    command.env("PA_DAEMON_WORKER_CONNECT_TIMEOUT_MS", "90000");
     // Die with this test binary on Linux (the protocol teardown below is
     // the exit path; this is the backstop for a failing test).
     #[cfg(target_os = "linux")]
@@ -188,12 +178,13 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         });
     }
     let child = command.spawn().expect("spawn prime-agent --mode daemon");
-    Supervisor { child, socket }
+    pa_tui::daemon_client::use_transport(&socket, pa_tui::daemon_client::Transport::Wire2);
+    Daemon { child, socket }
 }
 
 /// Wait until the session's runtime lease is free (no live owner), the
-/// bounded cold-reopen drain: a killed supervisor's workers exit on their
-/// supervisor-lost watchdog, never instantly.
+/// bounded cold-reopen drain: a stopped daemon releases its leases as it
+/// exits, never before.
 fn drain_session_lease(agent_dir: &Path, session_path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(45);
     while Instant::now() < deadline {
@@ -202,11 +193,11 @@ fn drain_session_lease(agent_dir: &Path, session_path: &Path) {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    panic!("the killed daemon's worker still held the session lease past the drain bound");
+    panic!("the stopped daemon still held the session lease past the drain bound");
 }
 
-/// Wait until the supervisor answers a client connect (the readiness
-/// probe - a named pipe has no socket file to poll for).
+/// Wait until the daemon answers a client connect (the readiness probe - a
+/// named pipe has no socket file to poll for).
 async fn wait_for_daemon(socket: &Path) {
     let deadline = Instant::now() + Duration::from_secs(90);
     while Instant::now() < deadline {
@@ -217,7 +208,7 @@ async fn wait_for_daemon(socket: &Path) {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("the supervisor never answered a client connect");
+    panic!("the daemon never answered a client connect");
 }
 
 /// The base options every TUI run in this battery uses: the scripted
@@ -299,32 +290,23 @@ fn dump_frames(scenario: &str, frames: &[String]) {
     std::fs::write(joined, frames.join("\n")).expect("write the joined pane dump");
 }
 
-/// The daemon-protocol session create the battery uses: the scripted
-/// engine's responses ride the script file; a parent path + depth make
-/// the session a real subagent (the same durable create a `rlm.spawn`
-/// issues).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the harness mirrors the daemon Create command's config rows; a builder would shadow the protocol"
-)]
+/// The daemon-protocol session create the battery uses: the daemon's
+/// script answers its turns; a parent path + depth make the session a real
+/// subagent (the same durable create a `rlm.spawn` issues).
 async fn create_session_via_daemon(
     socket: &Path,
-    script_path: &Path,
-    script: &Value,
     cwd: &Path,
     session_dir: &Path,
     name: Option<&str>,
     parent_session_path: Option<&Path>,
     rlm_depth: Option<u64>,
 ) -> String {
-    std::fs::write(script_path, script.to_string()).expect("write script");
     let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let mut config = json!({
         "cwd": cwd.display().to_string(),
         "sessionDir": session_dir.display().to_string(),
-        "script": script_path.display().to_string(),
         "telemetryDisabled": true,
     });
     if let Some(parent) = parent_session_path {
@@ -349,9 +331,7 @@ async fn create_session_via_daemon(
         .await
         .expect("create session");
     client.close();
-    // The DURABLE identity: `sessionId` is the session file's header id
-    // (`activeSessionId` is the live worker's ephemeral id - the worker's
-    // lifecycle rows publish both).
+    // The DURABLE identity: `sessionId` is the session file's header id.
     data.get("sessionId")
         .or_else(|| data.get("id"))
         .and_then(Value::as_str)
@@ -388,7 +368,7 @@ fn the_session_file(session_dir: &Path) -> (PathBuf, String) {
 
 /// Scenario (1): reopening an old session renders its old messages. The
 /// first run writes real turns; the daemon is stopped (the cold-reopen
-/// path - no live worker holds the history); a fresh daemon boots against
+/// path - no live session holds the history); a fresh daemon boots against
 /// the same store; the reopened session must render the OLD messages.
 #[tokio::test]
 async fn tui_reopen_renders_the_old_history() {
@@ -408,9 +388,9 @@ async fn tui_reopen_renders_the_old_history() {
         .to_string(),
     )
     .expect("write script");
-    let mut supervisor = spawn_supervisor(dir.path());
-    wait_for_daemon(&supervisor.socket).await;
-    let mut options = tui_options(&supervisor.socket, &session_dir, &script_path);
+    let mut daemon = spawn_daemon(dir.path(), &script_path);
+    wait_for_daemon(&daemon.socket).await;
+    let mut options = tui_options(&daemon.socket, &session_dir, &script_path);
     options.cwd = dir.path().to_path_buf();
     let plan = HeadlessPlan {
         steps: vec![
@@ -438,23 +418,19 @@ async fn tui_reopen_renders_the_old_history() {
         "the session file holds the turns"
     );
 
-    // The cold reopen: the daemon (and its live worker) are gone; a fresh
-    // supervisor boots against the same store.
-    stop_supervisor(&mut supervisor);
-    // The killed supervisor's session workers can outlive it (unix's
-    // PDEATHSIG kills only the supervisor's own child; Windows has no
-    // equivalent - the worker exits on its supervisor-lost watchdog),
-    // and a lingering worker holds the session's runtime lease: a
-    // reopen before it exits answers the session-hold refusal, not the
-    // stored history. Drain the lease first (the first windows-runner
-    // run of this battery caught exactly this class: the reopen came
-    // back with an empty session id).
+    // The cold reopen: the daemon (and its live session) are gone; a fresh
+    // daemon boots against the same store.
+    stop_daemon(&mut daemon);
+    // A reopen while the stopped daemon's lease is still held answers the
+    // session-hold refusal, not the stored history. Drain the lease first
+    // (the first windows-runner run of this battery caught exactly this
+    // class: the reopen came back with an empty session id).
     drain_session_lease(&agent_dir, &session_path);
-    let second_supervisor = spawn_supervisor(dir.path());
-    wait_for_daemon(&second_supervisor.socket).await;
+    let second_daemon = spawn_daemon(dir.path(), &script_path);
+    wait_for_daemon(&second_daemon.socket).await;
 
     // Run 2: the stored session reopens and renders the OLD messages.
-    let mut options = tui_options(&second_supervisor.socket, &session_dir, &script_path);
+    let mut options = tui_options(&second_daemon.socket, &session_dir, &script_path);
     options.cwd = dir.path().to_path_buf();
     options.session = SessionSelection::Resume(session_path.clone());
     let plan = HeadlessPlan {
@@ -501,15 +477,18 @@ async fn subagent_session_stays_a_distinct_store_entry() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
-    wait_for_daemon(&supervisor.socket).await;
+    let script = dir.path().join("script.json");
+    std::fs::write(
+        &script,
+        json!({ "responses": [ { "text": "the session answers" } ] }).to_string(),
+    )
+    .expect("write script");
+    let daemon = spawn_daemon(dir.path(), &script);
+    wait_for_daemon(&daemon.socket).await;
 
     // The parent session (a real daemon create, scripted engine).
-    let parent_script = dir.path().join("parent-script.json");
     create_session_via_daemon(
-        &supervisor.socket,
-        &parent_script,
-        &json!({ "responses": [ { "text": "the parent orchestrates" } ] }),
+        &daemon.socket,
         dir.path(),
         &session_dir,
         Some("triage-parent"),
@@ -522,11 +501,8 @@ async fn subagent_session_stays_a_distinct_store_entry() {
     // The child: the REAL subagent create (the daemon create carrying
     // `parentSessionPath`/`rlmDepth` - the same durable create a
     // `rlm.spawn` issues).
-    let child_script = dir.path().join("child-script.json");
     let child_id = create_session_via_daemon(
-        &supervisor.socket,
-        &child_script,
-        &json!({ "responses": [ { "text": "the child works" } ] }),
+        &daemon.socket,
         dir.path(),
         &session_dir,
         Some("triage-child"),
@@ -566,9 +542,9 @@ async fn subagent_session_stays_a_distinct_store_entry() {
     );
 
     // The daemon's own session list reports both, with distinct files.
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let list = client
         .request_ok(pa_types::daemon::DaemonCommand::List {
             id: None,
@@ -604,7 +580,7 @@ async fn subagent_session_stays_a_distinct_store_entry() {
     // The agents view nests the child under the parent - the operator's
     // report 2: sessions and subagents must NOT merge into one session.
     let options = pa_tui::agents_view::AgentsViewOptions {
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         theme: "prime".to_string(),
@@ -670,9 +646,9 @@ async fn agent_message_rows_dump_their_glyphs() {
         json!({ "responses": [ { "text": "reply café 中文 ◆ ▸" } ] }).to_string(),
     )
     .expect("write script");
-    let supervisor = spawn_supervisor(dir.path());
-    wait_for_daemon(&supervisor.socket).await;
-    let mut options = tui_options(&supervisor.socket, &session_dir, &script_path);
+    let daemon = spawn_daemon(dir.path(), &script_path);
+    wait_for_daemon(&daemon.socket).await;
+    let mut options = tui_options(&daemon.socket, &session_dir, &script_path);
     options.cwd = dir.path().to_path_buf();
     let plan = HeadlessPlan {
         steps: vec![
