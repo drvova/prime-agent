@@ -36,6 +36,9 @@ use pa_core::session_engine::rlm_notices::{
     cap_text, compact_rlm_text, create_rlm_child_failure_message, create_rlm_child_terminal_notice,
     RlmChildTerminalNotice, ANSWER_TEXT_MAX_CHARS,
 };
+use pa_core::session_engine::semantic_edges::{
+    last_committed_request_id, semantic_edge_ledger_path,
+};
 use pa_types::ai::{Model, ModelThinkingLevel};
 use pa_types::event_log::{
     AgentDone, AgentInput, AgentTarget, Event, NewEvent, Priority, Route, Scope, Subscription,
@@ -1256,6 +1259,10 @@ impl RunCut {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "a settle reads in its order: the answer, the return's edge, the state and notice, the wake"
+)]
 async fn settle_child(child: &Arc<Child>, cut: Option<RunCut>, trust: Trust) {
     let engine = child.node.engine();
     // The last assistant row: its text is the answer the collect envelope
@@ -1291,6 +1298,30 @@ async fn settle_child(child: &Arc<Child>, cut: Option<RunCut>, trust: Trust) {
         .session_name()
         .unwrap_or_else(|| child.rlm_child_id.clone());
     let parent = child.node.parent_node();
+    // The parent's semantic-edge ledger records a child's return (its last
+    // committed request, read from the child's own ledger off the runtime's
+    // threads) before the parent hears the settle, so the edge precedes the
+    // request the notice starts; a cancelled run never returns.
+    let returns = match (
+        cut.as_ref().is_some_and(|cut| cut.status == "cancelled"),
+        parent
+            .as_ref()
+            .and_then(|parent| parent.engine())
+            .and_then(|engine| engine.session.semantic_edges()),
+    ) {
+        (false, Some(recorder)) => {
+            let ledger =
+                semantic_edge_ledger_path(Some(Path::new(&child.node.session_dir())), None);
+            let last_committed = tokio::task::spawn_blocking(move || {
+                ledger.as_deref().and_then(last_committed_request_id)
+            })
+            .await
+            .ok()
+            .flatten();
+            Some((recorder, last_committed))
+        }
+        (true, _) | (false, None) => None,
+    };
     // Whether the parent was given a notice: it takes it as a delivered row.
     let notified = {
         let mut state = child.state.lock().await;
@@ -1298,6 +1329,9 @@ async fn settle_child(child: &Arc<Child>, cut: Option<RunCut>, trust: Trust) {
             return;
         }
         state.settled = true;
+        if let Some((recorder, last_committed)) = returns {
+            recorder.record_child_returned(&child.node.session_id, last_committed);
+        }
         state.answer_text = answer.map(|text| cap_text(&text, ANSWER_TEXT_MAX_CHARS));
         let notice = if let Some(cut) = cut.or(terminal_error.map(RunCut::failed)) {
             state.status = cut.status;
@@ -1538,6 +1572,36 @@ async fn dispose_child(child: &Arc<Child>) {
             lock(&tree.nodes).remove(&node.session_id);
         }
         pending.extend(std::mem::take(&mut *node.children.lock().await));
+    }
+}
+
+/// A crash ended `root`'s lifetime: in the runtime daemon its subagents'
+/// sessions are closed (a stop: their ledger edges stay, nothing is
+/// tombstoned), and its family is opened again from the ledger as settled
+/// children ([`Subagents::reopen_children`]), a run a child was running
+/// listed as failed, as the old supervisor's death close and the rebuilt
+/// worker's reseed do. `root` itself takes children again. A headless run
+/// keeps its children.
+pub(crate) async fn close_children_after_crash(root: &Arc<Node>) {
+    let Some(tree) = root.tree.upgrade() else {
+        return;
+    };
+    if tree.daemon().is_none() {
+        return;
+    }
+    let children = std::mem::take(&mut *root.children.lock().await);
+    if children.is_empty() {
+        return;
+    }
+    for child in children {
+        dispose_child(&child).await;
+    }
+    root.activity.notify_waiters();
+    if let Err(error) = tree.reopen_children(&root.session_id).await {
+        tracing::warn!(
+            "session {}'s subagents were not opened again after its crash: {error:#}",
+            root.session_id
+        );
     }
 }
 
