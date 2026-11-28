@@ -8,8 +8,10 @@
 mod support;
 
 use std::io::{BufRead, BufReader};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
+
 use std::sync::{Arc, Mutex};
+use support::UnixListener;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pa_tui::interactive::{
@@ -633,6 +635,9 @@ fn close_after_rebind_keeps_the_outlived_prompt_consumed() {
         HeadlessStep::WaitMs(300),
     ];
     let run = run_plan_with(steps, |supervisor| {
+        // The rebind is the supervisor's `session_binding`, which wire2 has no form for (a wire2
+        // session keeps its id across rebuilds): this race exists on the old wire alone.
+        supervisor.listener.keep_old_wire();
         supervisor.close_on_prompt = true;
         supervisor.rebind_before_close = true;
     })

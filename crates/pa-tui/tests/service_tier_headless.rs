@@ -7,7 +7,7 @@
 
 mod support;
 
-use std::os::unix::net::UnixListener;
+use support::UnixListener;
 
 use pa_tui::interactive::{HeadlessPlan, HeadlessStep, InteractiveOptions};
 use serde_json::{json, Value};

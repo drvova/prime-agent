@@ -54,7 +54,7 @@ use pa_types::event_log::{Event, EventId, NewEvent, Topic, TopicFilter, Trust};
 use pa_types::wire2::{ClientFrame, Outcome, ServerFrame};
 use serde_json::{json, Value};
 
-use support::{accept_within_idle_window, run_headless, write_json, MockSupervisor};
+use support::{accept_within_idle_window, run_headless, write_json, UnixListener};
 
 /// The replies that start a block of streamed frames.
 const TURN_STARTS: [&str; 2] = ["attach", "prompt"];
@@ -417,11 +417,11 @@ fn replay(
             ..support::options(socket)
         },
         |socket| {
+            let listener = UnixListener::bind_unbridged(socket).expect("bind the replay socket");
             pa_tui::daemon_client::use_transport(socket, transport);
-            let mock = MockSupervisor::bind(socket);
             move || {
                 let mut connections = Vec::new();
-                while let Some(stream) = accept_within_idle_window(&mock.listener) {
+                while let Some(stream) = accept_within_idle_window(&listener) {
                     let replay = Arc::clone(&replay);
                     connections.push(std::thread::spawn(move || match transport {
                         Transport::OldWire => serve(stream, &replay),
