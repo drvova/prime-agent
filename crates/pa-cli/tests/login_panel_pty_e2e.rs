@@ -1,18 +1,13 @@
-#![cfg_attr(
-    unix,
-    expect(
-        clippy::too_many_lines,
-        reason = "the fake login server's `serve` answers every scripted route in one loop"
-    )
-)]
-
 //! Real-terminal e2e for the inline auth panel (the `/login` Prime
 //! Inference team picker): the login flow must NEVER take the terminal
 //! over — no alternate-screen leave, no screen clear, no mouse-tracking
 //! release — while the panel and the team picker render inline.
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
+#[path = "support/mock_runtime.rs"]
+mod mock_runtime;
+
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -22,6 +17,7 @@ use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
 
+use mock_runtime::{Answer, MockRuntime};
 use pa_tui::auth_panel::{AuthPanelHandle, PrimeTeamOption, PrimeTeamPick};
 use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
@@ -38,12 +34,13 @@ use std::sync::Arc;
 const CHILD_SOCKET_ENV: &str = "PA_LOGIN_PANEL_CHILD_SOCKET";
 
 /// The child half: the real interactive loop against the parent's mock
-/// supervisor, with the scripted provider-auth hook.
+/// runtime, with the scripted provider-auth hook.
 #[test]
 fn login_panel_child_mode() {
     let Ok(socket) = std::env::var(CHILD_SOCKET_ENV) else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = child_options(PathBuf::from(socket));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -59,6 +56,7 @@ fn login_panel_mcp_child_mode() {
     let Ok(socket) = std::env::var(CHILD_SOCKET_ENV) else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = mcp_child_options(PathBuf::from(socket));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -74,6 +72,7 @@ fn model_sign_in_child_mode() {
     let Ok(socket) = std::env::var(CHILD_SOCKET_ENV) else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = model_sign_in_child_options(PathBuf::from(socket));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -89,6 +88,7 @@ fn accounts_child_mode() {
     let Ok(socket) = std::env::var(CHILD_SOCKET_ENV) else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let socket = PathBuf::from(socket);
     let agent_dir = socket.parent().expect("the socket's dir").join("agent");
     let options = InteractiveOptions {
@@ -695,10 +695,10 @@ fn login_adds_a_named_credential_and_logout_removes_it() {
     harness.finish();
 }
 
-/// One pty-backed product child plus the mock supervisor it attaches to.
+/// One pty-backed product child plus the mock runtime it attaches to.
 struct LoginPanelHarness {
     child: Child,
-    /// The mock-supervisor server thread's join handle (it exits with the child's connection).
+    /// The mock-runtime server thread's join handle (it exits with the child's connection).
     _server: std::thread::JoinHandle<()>,
     master: PtyReader,
     /// The socket's temp dir, removed whenever the harness drops (after
@@ -725,8 +725,8 @@ impl LoginPanelHarness {
     fn start_for(child_test: &'static str) -> LoginPanelHarness {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let socket = dir.path().join("tui.sock");
-        let supervisor = MockSupervisor::bind(&socket);
-        let server = std::thread::spawn(move || supervisor.serve());
+        let mock = MockRuntime::bind(&socket);
+        let server = std::thread::spawn(move || serve(mock));
 
         let pty = openpty(
             Some(&Winsize {
@@ -845,178 +845,58 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-/// One attached session behind a mock supervisor socket (the headless e2e's frame contract).
-struct MockSupervisor {
-    listener: std::os::unix::net::UnixListener,
-}
-
-impl MockSupervisor {
-    fn bind(socket: &std::path::Path) -> Self {
-        MockSupervisor {
-            listener: std::os::unix::net::UnixListener::bind(socket).expect("bind mock socket"),
-        }
-    }
-
-    fn serve(self) {
-        let Ok((stream, _)) = self.listener.accept() else {
-            return;
-        };
-        let write_stream = stream.try_clone().expect("clone mock socket");
-        let mut writer = write_stream;
-        let mut reader = std::io::BufReader::new(stream);
-        write_json(
-            &mut writer,
-            &json!({
-                "type": "daemon_hello",
-                "protocol": { "name": "prime-agent.daemon", "version": 7 },
-                "serverCapabilities": [],
-                "clientId": "mock",
-            }),
-        );
-        // The set_model sequence: the first switch answers with the
-        // typed refusal, the post-login retry succeeds.
-        let mut set_model_count = 0usize;
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let Ok(envelope) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            let id = envelope.get("id").and_then(Value::as_str).unwrap_or("");
-            let command = envelope.get("command").cloned().unwrap_or(Value::Null);
-            let command_type = command
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            match command_type.as_str() {
-                "create" => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "create",
-                            "success": true,
-                            "data": {
-                                "activeSessionId": "s1",
-                                "id": "s1",
-                                "sessionId": "sess-1",
-                                "sessionFile": "/tmp/sess-1.jsonl",
-                            },
-                        }),
-                    );
+/// One attached session behind the mock runtime. The `session.set_model` sequence: the first
+/// switch answers with the typed refusal, the post-login retry succeeds.
+fn serve(mock: MockRuntime) {
+    let mut set_model_count = 0usize;
+    mock.serve_first(move |request| match request.name {
+        "session.create" => Answer::Result(mock_runtime::created()),
+        "session.attach" => Answer::Result(attach_data()),
+        "session.set_model" => {
+            set_model_count += 1;
+            if set_model_count == 1 {
+                // The typed refusal the TUI routes to the sign-in
+                // flow (never the dead-end "Model not found").
+                Answer::Error {
+                    message: "Provider \"zai\" is not signed in. Sign in to the provider (the TUI's /login command), then set the model again.".to_string(),
+                    info: Some(json!({
+                        "code": "model_provider_unauthenticated",
+                        "provider": "zai",
+                    })),
                 }
-                "attach" => {
-                    write_json(&mut writer, &attach_data(id));
-                }
-                "set_model" => {
-                    set_model_count += 1;
-                    if set_model_count == 1 {
-                        // The typed refusal the TUI routes to the sign-in
-                        // flow (never the dead-end "Model not found").
-                        write_json(
-                            &mut writer,
-                            &json!({
-                                "type": "response",
-                                "id": id,
-                                "command": "set_model",
-                                "success": false,
-                                "error": "Provider \"zai\" is not signed in. Sign in to the provider (the TUI's /login command), then set the model again.",
-                                "errorInfo": {
-                                    "code": "model_provider_unauthenticated",
-                                    "provider": "zai",
-                                },
-                            }),
-                        );
-                    } else {
-                        write_json(
-                            &mut writer,
-                            &json!({
-                                "type": "response",
-                                "id": id,
-                                "command": "set_model",
-                                "success": true,
-                                "data": {},
-                            }),
-                        );
-                    }
-                }
-                "get_model_catalog" => {
-                    // The model stays listed (discovery), the provider
-                    // stays unconfigured (the row keeps its marking).
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "get_model_catalog",
-                            "success": true,
-                            "data": {
-                                "models": [serde_json::to_value(unauthenticated_catalog_model())
-                                    .expect("mock model serializes")],
-                                "configuredProviders": [],
-                            }
-                        }),
-                    );
-                }
-                "get_mcp_connections" => {
-                    // One connectable OAuth service (Enter runs its login flow).
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "get_mcp_connections",
-                            "success": true,
-                            "data": {
-                                "connections": [
-                                    {
-                                        "server": "linear",
-                                        "label": "Linear",
-                                        "connected": false,
-                                        "usesOAuth": true,
-                                        "authKind": "subscription",
-                                        "transport": "http",
-                                        "userDeclared": false,
-                                        "generic": false,
-                                        "tools": null,
-                                        "error": null
-                                    }
-                                ]
-                            },
-                        }),
-                    );
-                }
-                _ => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": command_type,
-                            "success": true,
-                            "data": {},
-                        }),
-                    );
-                }
+            } else {
+                Answer::Default
             }
         }
-    }
+        // The model stays listed (discovery), the provider
+        // stays unconfigured (the row keeps its marking).
+        "session.model_catalog" => Answer::Result(json!({
+            "models": [serde_json::to_value(unauthenticated_catalog_model())
+                .expect("mock model serializes")],
+            "configuredProviders": [],
+        })),
+        // One connectable OAuth service (Enter runs its login flow).
+        "session.mcp_connections" => Answer::Result(json!({
+            "connections": [
+                {
+                    "server": "linear",
+                    "label": "Linear",
+                    "connected": false,
+                    "usesOAuth": true,
+                    "authKind": "subscription",
+                    "transport": "http",
+                    "userDeclared": false,
+                    "generic": false,
+                    "tools": null,
+                    "error": null
+                }
+            ]
+        })),
+        _ => Answer::Default,
+    });
 }
 
-fn write_json(writer: &mut std::os::unix::net::UnixStream, value: &Value) {
-    let mut line = serde_json::to_string(value).expect("serialize mock frame");
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("write mock frame");
-    writer.flush().expect("flush mock frame");
-}
-
-fn attach_data(id: &str) -> Value {
+fn attach_data() -> Value {
     let messages: Vec<Value> = (0..4)
         .map(|index| {
             json!({
@@ -1025,34 +905,5 @@ fn attach_data(id: &str) -> Value {
             })
         })
         .collect();
-    json!({
-        "type": "response",
-        "id": id,
-        "command": "attach",
-        "success": true,
-        "data": {
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "activeSessionId": "s1",
-            "snapshot": {
-                "activeSessionId": "s1",
-                "summary": { "id": "s1", "cwd": "/tmp" },
-                "state": {
-                    "activeSessionId": "s1",
-                    "cwd": "/tmp",
-                    "sessionId": "sess-1",
-                    "sessionName": "login panel session",
-                    "model": null,
-                    "isStreaming": false,
-                    "isCompacting": false,
-                    "sessionActions": { "queuedCount": 0, "steering": [], "followUps": [] },
-                },
-                "messages": messages,
-                "lastEventSequence": 0,
-                "lastEventCursor": null,
-            },
-            "client": { "id": "mock", "capabilities": [] },
-            "lastEventSequence": 0,
-            "lastEventCursor": null,
-        },
-    })
+    mock_runtime::attached("login panel session", None, &messages)
 }
