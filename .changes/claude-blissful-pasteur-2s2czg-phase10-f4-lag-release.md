@@ -1,0 +1,1 @@
+- Runtime daemon: a session the daemon gave up on is let go of (its lease released) even when the daemon fell behind on its events, so it can be opened again.

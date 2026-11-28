@@ -77,12 +77,12 @@ use pa_types::event_log::{NewEvent, Topic, Trust, SYSTEM_CLOSING};
 use pa_types::platform::transport::TransportListener;
 use tokio::task::JoinSet;
 
-use crate::bus::Heard;
 use crate::runtime::{Runtime, RuntimeOptions};
 use crate::session::{SessionBuilder, SessionFaults, Supervision};
 use crate::wire::{Attached, WireConfig};
 
 mod boot_reap;
+mod given_up;
 mod handlers;
 mod held;
 pub mod keeper;
@@ -366,41 +366,12 @@ pub async fn run<B: SessionBuilder>(
             },
         ));
     // A session given up on is closed, and its lease released.
-    let given_up = {
-        let mut listener = runtime.listen();
-        let (runtime, open, schedules, feeds) = (
-            Arc::clone(&runtime),
-            Arc::clone(&open),
-            Arc::clone(&schedules),
-            Arc::clone(&feeds),
-        );
-        tokio::spawn(async move {
-            while let Some(heard) = listener.recv().await {
-                let event = match heard {
-                    Heard::Event(event) => event,
-                    Heard::Lagged { .. } => continue,
-                };
-                let mut levels = event.event.topic.levels();
-                let (Some("agent"), Some(id), Some("failed"), None) =
-                    (levels.next(), levels.next(), levels.next(), levels.next())
-                else {
-                    continue;
-                };
-                if open.contains(id) {
-                    let closing = open.bashes.close(id).await;
-                    if let Err(error) = runtime.close_session(id).await {
-                        tracing::warn!(
-                            "the given-up session {id} did not close cleanly: {error:#}"
-                        );
-                    }
-                    open.remove(id).await;
-                    drop(closing);
-                    schedules.disarm(id);
-                    feeds.due(id);
-                }
-            }
-        })
-    };
+    let given_up = given_up::spawn(
+        Arc::clone(&runtime),
+        Arc::clone(&open),
+        Arc::clone(&schedules),
+        Arc::clone(&feeds),
+    );
     // An update's boot (spec §6): this socket's update scratch and the stale
     // TS names are swept (the roster was read before), then the sessions the
     // revival did not bring up are restored from the roster once serving.
