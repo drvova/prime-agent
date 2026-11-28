@@ -125,7 +125,9 @@ SQLite implementations over `pa-log`.
   `message_end`, `compaction_summary_delta` while a summary is written; a tool's update and end
   name no tool, as the old frames do not), each frame, driver events, `!` commands and child
   updates included, numbered with the session's `meta.sequence`, a parked update consuming its
-  number as it parks. In those shapes the stream carries the old worker's queue view,
+  number as it parks. A steer the running turn takes after it settled a reply is framed as a
+  run of its own (`agent_end`, then `agent_start` before the steer's row), as the old worker
+  delivered a steer at the next boundary. In those shapes the stream carries the old worker's queue view,
   `session_action_update` (`session/stream/actions.rs`), built from the lane's reports and the
   rows waiting on the agent: a task queued behind work (its lane running, holding a task or
   stopped) is listed in its lane (`Steer` under `steering`, the rest under `followUps`), a
