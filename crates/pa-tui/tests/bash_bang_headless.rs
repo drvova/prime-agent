@@ -8,8 +8,8 @@
 mod support;
 
 use std::io::{BufRead, BufReader};
-use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
+use support::UnixListener;
 
 use pa_tui::interactive::{
     run_interactive, HeadlessPlan, HeadlessStep, InteractiveOptions, UiMode,

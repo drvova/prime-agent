@@ -257,3 +257,32 @@ async fn a_reconnect_follows_the_session_after_the_last_stored_event_seen() {
         vec![Since::After { seq: 3 }, Since::After { seq: 41 }]
     );
 }
+
+/// A client dropped without `close` ends its connection, as a dropped old-wire client does: the
+/// runtime reads the connection's end, so it holds nothing (an attach, a question's waiter) for a
+/// client that is gone.
+#[tokio::test]
+async fn a_dropped_client_ends_its_connection() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let socket = dir.path().join("daemon2.sock");
+    use_transport(&socket, Transport::Wire2);
+    let listener = UnixListener::bind(&socket).unwrap();
+    let connecting = connect(&socket);
+    let mut served = serve(&listener).await;
+    served
+        .next(|frame| matches!(frame, ClientFrame::Query { name, .. } if name == "daemon.identity"))
+        .await;
+    served
+        .send(&ServerFrame::Reply {
+            id: "compat:identity".to_string(),
+            outcome: Outcome::Ok { result: json!({}) },
+        })
+        .await;
+    let (client, events) = connecting.await.unwrap();
+    drop((client, events));
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while served.frames.recv().await.is_some() {}
+    })
+    .await;
+    assert!(ended.is_ok(), "the connection outlived its dropped client");
+}

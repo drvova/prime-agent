@@ -8,8 +8,8 @@
 mod support;
 
 use std::io::{BufRead, BufReader};
-use std::os::unix::net::UnixListener;
 use std::time::Duration;
+use support::UnixListener;
 
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewUiMode};
 use serde_json::{json, Value};
