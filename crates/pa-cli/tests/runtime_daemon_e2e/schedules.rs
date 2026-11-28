@@ -13,6 +13,7 @@
 //!   store's state lock held: the next daemon's lane runs its failed passes
 //!   again until the lock is stale;
 //! - a session stopped on purpose is never woken by its due job;
+//! - a closed session's job and state follow its close reason;
 //! - a plain scheduled job runs its prompt as a turn;
 //! - a runtime daemon the settings no longer select skips its jobs.
 
@@ -324,6 +325,55 @@ async fn a_session_stopped_on_purpose_is_never_woken_by_its_due_job() {
             .collect::<Vec<_>>(),
         vec![sibling.id.as_str()],
         "only the sibling was woken"
+    );
+}
+
+/// A session closed on purpose keeps what the old worker's `kill` kept for
+/// its reason: a stop cancels its job and archives it, a replacement of a
+/// root archives it and keeps its job, a shutdown keeps both.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_session_cancels_and_archives_as_its_close_reason_says() {
+    let bed = Bed::new();
+    let _daemon = bed.runtime_daemon(&script(HEARTBEAT));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let mut closed = Vec::new();
+    for marker in [None, Some("replaced"), Some("shutdown")] {
+        let session = Session::create(&mut client).await;
+        let mut args = json!({ "session": session.id });
+        if let Some(marker) = marker {
+            args["rlmCloseReason"] = json!(marker);
+        }
+        ok(client.call("session.stop", args).await);
+        let page = ok(client
+            .query(
+                "transcript.page",
+                json!({ "session": session.id, "limit": 500 }),
+            )
+            .await);
+        let state = page["entries"]
+            .as_array()
+            .expect("a page of entries")
+            .iter()
+            .rev()
+            .find(|row| row["type"] == "session_state")
+            .map(|row| row["state"]["status"].clone());
+        closed.push((marker, session.job(&bed).status, state));
+    }
+    assert_eq!(
+        closed,
+        vec![
+            (
+                None,
+                pa_core::cron::JobStatus::Cancelled,
+                Some(json!("archived"))
+            ),
+            (
+                Some("replaced"),
+                pa_core::cron::JobStatus::Active,
+                Some(json!("archived"))
+            ),
+            (Some("shutdown"), pa_core::cron::JobStatus::Active, None),
+        ]
     );
 }
 

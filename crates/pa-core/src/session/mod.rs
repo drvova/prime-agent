@@ -4,6 +4,7 @@ pub mod boot_import;
 pub mod branch_export;
 pub mod catalog;
 pub mod checkpoints;
+pub mod close;
 pub mod crash;
 pub mod discovery;
 pub mod display_transcript;

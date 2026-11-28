@@ -251,3 +251,54 @@ async fn a_steer_the_running_turn_takes_is_listed_until_its_row_settles() {
         "the stream: {stream:?}"
     );
 }
+
+/// A model call that fails to start (its stream function returns an error:
+/// here a model on an api no provider serves) streams its failed reply: a
+/// settled assistant row with the error, which the TUI draws as the turn's
+/// error row, as the old worker's failed turn showed one. The run failure's
+/// row converts to the wire like any other.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_call_that_fails_to_start_streams_its_error_row() {
+    let bed = Bed::new();
+    let cwd = bed.dir.path().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(
+        bed.agent_dir().join("models.json"),
+        json!({ "providers": { "unserved": {
+            "api": "no-such-api", "baseUrl": "http://localhost:0", "apiKey": "sk-unserved",
+            "models": [{ "id": "unserved-1", "name": "Unserved", "api": "no-such-api",
+                "baseUrl": "http://localhost:0", "contextWindow": 128_000, "maxTokens": 4_096 }],
+        } } })
+        .to_string(),
+    )
+    .unwrap();
+    let _daemon = bed.runtime_daemon(&json!({ "responses": ["never served"] }));
+    let mut session = Attached::open(&bed, &cwd).await;
+    session
+        .call(
+            "session.set_model",
+            json!({ "provider": "unserved", "modelId": "unserved-1" }),
+        )
+        .await;
+    let prompt = session.publish("hello", None).await;
+    session.done(&prompt["task"]).await;
+    let failed: Vec<(Value, bool)> = session
+        .payloads("stream")
+        .iter()
+        .filter(|event| event["type"] == "message_end" && event["message"]["role"] == "assistant")
+        .map(|event| {
+            (
+                event["message"]["stopReason"].clone(),
+                event["message"]["errorMessage"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("no-such-api")),
+            )
+        })
+        .collect();
+    assert_eq!(
+        failed,
+        vec![(json!("error"), true)],
+        "one settled failed reply naming the failure: {:?}",
+        session.payloads("stream")
+    );
+}

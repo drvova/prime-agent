@@ -416,8 +416,10 @@ SQLite implementations over `pa-log`.
   `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
   (`session_already_active`) and the old daemon is refused one this daemon holds; a
   `session.stop` publishes `agent/<id>/closed {reason: "killed"}` (stored) once the session is
-  closed, the old worker's `session_closed` (`shutdown` or `replaced` when the stop's
-  `rlmCloseReason` names one, as the old `kill`'s child-close marker did); a session it
+  closed, the old worker's `session_closed`, and closes it as the old `kill` did
+  (`pa_core::session::close`): its jobs are cancelled and its `archived` state recorded
+  (`rlmCloseReason` `replaced` cancels only a subagent's RLM heartbeats, `shutdown` keeps both,
+  and the closed event names the reason); a session it
   holds open already (revived at boot, opened by another client) is answered as it runs
   (`"reused": true`), the old daemon's create-open reuse;
   `session.rename`, `session.label` and `session.set_effort` change an open session through its

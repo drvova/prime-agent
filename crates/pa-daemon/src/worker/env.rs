@@ -3,48 +3,28 @@
 
 use serde_json::Value;
 
-use crate::protocol::DaemonSessionClosedReason;
+/// Why one `kill` closes its session, and what that does to the session's
+/// jobs and state: pa-core's rule (`pa_core::session::close`), which the
+/// runtime daemon's `session.stop` applies too.
+pub(crate) use pa_core::session::close::SessionCloseReason as KillCloseReason;
 
 /// The close reason one `kill` carries: the plain client kill is `killed`; a
-/// child-close cascade passes `shutdown` or `replaced` through the `rlmCloseReason`
-/// marker — `killed` cancels the jobs and archives, `shutdown` keeps the resume
-/// entry, `replaced` cancels the RLM heartbeats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KillCloseReason {
-    Killed,
-    Shutdown,
-    Replaced,
+/// child-close cascade passes `shutdown` or `replaced` through the
+/// `rlmCloseReason` marker (any other marker reads as the plain kill).
+pub(crate) fn kill_close_reason(payload: &Value) -> KillCloseReason {
+    KillCloseReason::from_marker(payload.get("rlmCloseReason").and_then(Value::as_str))
+        .unwrap_or(KillCloseReason::Killed)
 }
 
-impl KillCloseReason {
-    /// The `rlmCloseReason` marker of a child-close cascade (the plain client
-    /// kill carries none).
-    pub(crate) fn from_payload(payload: &Value) -> Self {
-        match payload.get("rlmCloseReason").and_then(Value::as_str) {
-            Some("shutdown") => Self::Shutdown,
-            Some("replaced") => Self::Replaced,
-            _ => Self::Killed,
-        }
-    }
-
-    /// The wire `session_closed` reason.
-    pub(crate) fn session_closed_reason(self) -> DaemonSessionClosedReason {
-        match self {
-            Self::Killed => DaemonSessionClosedReason::Killed,
-            Self::Shutdown => DaemonSessionClosedReason::Shutdown,
-            Self::Replaced => DaemonSessionClosedReason::Replaced,
-        }
-    }
-
-    /// The recovery journal's close operation.
-    pub(crate) fn recovery_operation(self) -> &'static str {
-        match self {
-            Self::Killed => "killed",
-            Self::Shutdown => "shutdown",
-            Self::Replaced => "replaced",
-        }
+/// The recovery journal's close operation.
+pub(crate) fn recovery_operation(reason: KillCloseReason) -> &'static str {
+    match reason {
+        KillCloseReason::Killed => "killed",
+        KillCloseReason::Shutdown => "shutdown",
+        KillCloseReason::Replaced => "replaced",
     }
 }
+
 /// TS-parity worker environment variables.
 pub const WORKER_ROLE_ENV: &str = "PRIME_AGENT_INTERNAL_DAEMON_WORKER";
 pub const WORKER_TOKEN_ENV: &str = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_TOKEN";

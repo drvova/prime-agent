@@ -76,6 +76,7 @@ use pa_core::cron::{
     is_heartbeat_cron_job, should_defer_heartbeat_cron_job, AgentCronJob, HeartbeatSessionActivity,
     JobStatus,
 };
+use pa_core::session::close::ClosedJobs;
 use pa_core::session::lease::acquire_runtime_session_lease;
 use pa_core::session_engine::runtime_wiring::{KernelCronBinding, KernelCronWiring};
 use pa_sources::SourceKind;
@@ -304,6 +305,47 @@ impl<B: SessionBuilder> Schedules<B> {
             self.disarm(id);
         }
         active
+    }
+
+    /// Session `id` is closed on purpose: its jobs are cancelled as the
+    /// close's rule says (pa-core's `session::close`, the old worker's
+    /// `kill`: a stop cancels every one, a replacement a subagent's RLM
+    /// heartbeats, a shutdown none), then disarmed. A job the close keeps is
+    /// armed again when the session is next opened.
+    ///
+    /// # Errors
+    ///
+    /// The store could not record the cancel; the jobs are disarmed anyway.
+    pub(super) fn close(&self, id: &str, jobs: ClosedJobs) -> anyhow::Result<()> {
+        let cancelled = match (self.armed(id), jobs) {
+            (None, _) | (Some(_), ClosedJobs::Keep) => Ok(()),
+            (Some(armed), ClosedJobs::CancelAll) => {
+                let binding = armed.binding();
+                armed
+                    .store
+                    .cancel_jobs_for_session(
+                        &CancelJobsFilter {
+                            active_session_id: Some(binding.active_session_id),
+                            session_id: Some(binding.session_id),
+                            session_file: Some(binding.session_file),
+                        },
+                        pa_core::autonomous::now_millis(),
+                    )
+                    .map(drop)
+            }
+            (Some(armed), ClosedJobs::CancelSubagentHeartbeats) => {
+                if lock(&self.subagents).contains(id) {
+                    armed
+                        .store
+                        .cancel_rlm_heartbeats_for_session(id, pa_core::autonomous::now_millis())
+                        .map(drop)
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        self.disarm(id);
+        cancelled
     }
 
     /// Disarms session `id`'s jobs: its lane stops and its timers go. Its
