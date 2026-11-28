@@ -145,6 +145,12 @@ impl Subagents {
         self.daemon.get()
     }
 
+    /// The session that open session `id`'s newest named wait waits on (its
+    /// roster summary's `waitingOn`).
+    pub(crate) fn waiting_on(&self, id: &str) -> Option<String> {
+        self.node(id).and_then(|node| node.waits.waiting_on())
+    }
+
     /// Every open session's wait edge, as the wait-cycle walk reads a
     /// roster: its id, name, and the session its newest named wait waits on.
     fn wait_roster(&self) -> Vec<Value> {
@@ -784,12 +790,20 @@ impl Node {
         // A message waiting in the backlog counts while its row still waits
         // on the agent, not once a turn has taken it into the context.
         let queued_on = Arc::downgrade(engine);
-        // A child that starts or stops waiting wakes its parent's collect.
-        let parent = self.parent.clone();
+        // A child that starts or stops waiting wakes its parent's collect,
+        // and its `waitingOn` changes on the daemon's roster.
+        let (parent, tree, id) = (
+            self.parent.clone(),
+            self.tree.clone(),
+            self.session_id.clone(),
+        );
         self.waits.set_hooks(
             Arc::new(move || {
                 if let Some(parent) = parent.as_ref().and_then(Weak::upgrade) {
                     parent.activity.notify_waiters();
+                }
+                if let Some(family) = tree.upgrade().as_deref().and_then(Subagents::daemon) {
+                    family.wait_edge_changed(&id);
                 }
             }),
             Arc::new(move |message_id| {

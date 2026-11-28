@@ -617,6 +617,11 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         if let Some(first) = &first_message {
             put("firstMessage", json!(first));
         }
+        // The family member its newest named `agent_message.wait` waits on,
+        // the edge a cycle walk follows (the old summary's).
+        if let Some(target) = self.runtime.subagents().waiting_on(&id) {
+            put("waitingOn", json!(target));
+        }
         if read.tool_calls > 0 {
             put("toolUseCount", json!(read.tool_calls));
         }
