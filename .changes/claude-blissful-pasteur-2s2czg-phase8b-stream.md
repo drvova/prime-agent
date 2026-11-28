@@ -1,0 +1,1 @@
+- Internal: the daemon's live session-event building and token-stream coalescing now live in one shared place, so the upcoming runtime daemon streams exactly what the interactive TUI renders today; nothing changes on the wire.

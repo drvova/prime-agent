@@ -17,14 +17,20 @@
 //! then-last event, and the events the listener still holds from before that
 //! point are skipped as they arrive.
 //!
-//! A live-only event (`Topic::is_live_only`: stream and tool deltas) is not
-//! in the log and has no sequence number: it goes to every subscription
+//! A live-only event (`Topic::is_live_only`: stream and tool deltas, the
+//! roster and traffic feeds), or any
+//! event of a session the log keeps nothing of (an ephemeral one), is not
+//! in the log and has no sequence number (`seq` 0): it goes to every subscription
 //! whose filter matches it as it arrives, outside the cursor and `through`
 //! checks, and never moves the cursor. A subscription to one replays
 //! nothing, and a connection that lags loses the live-only events the bus
 //! dropped for it.
+//!
+//! The runtime's end (`pa_types::event_log::SYSTEM_CLOSING`, live only) is
+//! delivered like any live-only event, then the feed sends `closing` and
+//! ends: every connection hears the end after what was queued before it.
 
-use pa_types::event_log::{Event, TopicFilter};
+use pa_types::event_log::{Event, TopicFilter, SYSTEM_CLOSING};
 use pa_types::wire2::{ServerFrame, Since};
 use tokio::sync::mpsc;
 
@@ -117,6 +123,17 @@ impl<'a, E: EventStore> Feed<'a, E> {
                     None => return Ok(()),
                 },
                 heard = listener.recv() => match heard {
+                    // The runtime's end: delivered to the subscriptions that
+                    // follow it, then the connection is closed.
+                    Some(Heard::Event(event)) if event.event.topic.as_str() == SYSTEM_CLOSING => {
+                        self.deliver(&event).await?;
+                        let reason = match event.event.payload["reason"].as_str() {
+                            Some(reason) => format!("the runtime is closing ({reason})"),
+                            None => "the runtime is closing".to_string(),
+                        };
+                        let _ = self.out.send(ServerFrame::Closing { reason }).await;
+                        return Ok(());
+                    }
                     Some(Heard::Event(event)) => self.deliver(&event).await.map_err(anyhow::Error::from),
                     Some(Heard::Lagged { missed }) => {
                         tracing::debug!("a wire client lost {missed} events; catching up from the log");
@@ -144,7 +161,8 @@ impl<'a, E: EventStore> Feed<'a, E> {
     /// it, unless the connection has read it already; a live-only event to
     /// every subscription that matches it.
     async fn deliver(&mut self, event: &Event) -> Result<(), ClientGone> {
-        let live_only = event.event.topic.is_live_only();
+        // Not in the log: a live-only event, or an unstored session's.
+        let live_only = event.seq == 0;
         if !live_only {
             if event.seq <= self.cursor {
                 return Ok(());

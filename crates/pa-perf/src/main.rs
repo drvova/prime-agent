@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use pa_perf::bench::{BenchOptions, RunOptions, Scenario};
+use pa_perf::bench::{BenchOptions, Daemon, RunOptions, Scenario};
 use pa_perf::corpus::{self, CacheMode, CorpusOptions, Profile};
 use pa_perf::report::{self, Baseline};
 use pa_perf::trials::{self, Bootstrap, Prices, SessionTotals};
@@ -131,6 +131,9 @@ struct BenchArgs {
     /// The per-run liveness deadline (seconds).
     #[arg(long, default_value_t = 180)]
     liveness_secs: u64,
+    /// The daemon the product runs on: its default, or the supervisor by name.
+    #[arg(long, value_enum, default_value_t = Daemon::Runtime)]
+    daemon: Daemon,
 }
 
 #[derive(clap::Args)]
@@ -153,6 +156,9 @@ struct RunArgs {
     /// The per-run liveness deadline (seconds).
     #[arg(long, default_value_t = 180)]
     liveness_secs: u64,
+    /// The daemon the product runs on: its default, or the supervisor by name.
+    #[arg(long, value_enum, default_value_t = Daemon::Runtime)]
+    daemon: Daemon,
 }
 
 #[derive(clap::Args)]
@@ -275,6 +281,7 @@ fn bench_command(args: BenchArgs) -> anyhow::Result<()> {
         runs: args.runs,
         json: args.json,
         liveness_secs: args.liveness_secs,
+        daemon: args.daemon,
     };
     let result = pa_perf::bench::run(&options)?;
     println!(
@@ -296,6 +303,7 @@ fn run_command(args: RunArgs) -> anyhow::Result<()> {
         seed: args.seed,
         runs: args.runs,
         liveness_secs: args.liveness_secs,
+        daemon: args.daemon,
     };
     pa_perf::bench::run_suite(&options)?;
     Ok(())

@@ -491,7 +491,7 @@ async fn summary(
             }
             .to_string(),
         ),
-        cwd: Some(node.cwd.to_string_lossy().into_owned()),
+        cwd: Some(node.cwd().to_string_lossy().into_owned()),
         status,
         activity: has_engine.then_some(if is_streaming {
             AgentObserveActivity::Model

@@ -1,20 +1,22 @@
 //! The agent-message ingestion surface: the worker arms for
 //! `agent_messages_status`/`_pause`/`_resume`/`_clear`, plus the paused
-//! delivery gate, and the per-(sender, target) wake budget. The per-sender
+//! delivery gate, and the per-(sender, target) wake budget. The pause flag,
+//! its refusal and the reply shapes are pa-core's
+//! (`session_engine::agent_controls`), which the runtime daemon shares. The per-sender
 //! rate bucket the status reports is enforced on the sending side, in
 //! pa-core's `agent_message.send` handler; the wake budget is enforced here,
 //! by the receiving worker, so no sender can spend another's.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
+use pa_core::session_engine::agent_controls::{
+    agent_message_safety_status, cleared_agent_messages, AgentMessagePause,
+};
 use pa_core::session_engine::agent_messaging::{
-    DEFAULT_AGENT_MESSAGE_MAX_CHARS, DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
-    DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY, DEFAULT_AGENT_MESSAGE_RATE_LIMIT_REFILL_MS,
     DEFAULT_AGENT_MESSAGE_WAKE_BUDGET, DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS,
 };
 
@@ -23,7 +25,7 @@ use crate::worker::Worker;
 
 /// The worker's agent-message ingestion state: the pause flag and the wake budget.
 pub(crate) struct AgentMessageIngest {
-    paused: AtomicBool,
+    paused: AgentMessagePause,
     /// Each sender's wakes of this (idle) session inside the trailing
     /// [`DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS`], oldest first, keyed by the
     /// sender's durable session id.
@@ -33,7 +35,7 @@ pub(crate) struct AgentMessageIngest {
 impl AgentMessageIngest {
     pub(crate) fn new() -> Self {
         AgentMessageIngest {
-            paused: AtomicBool::new(false),
+            paused: AgentMessagePause::default(),
             wakes: Mutex::new(HashMap::new()),
         }
     }
@@ -68,11 +70,11 @@ impl AgentMessageIngest {
     }
 
     pub(crate) fn paused(&self) -> bool {
-        self.paused.load(Ordering::SeqCst)
+        self.paused.paused()
     }
 
     fn set_paused(&self, paused: bool) {
-        self.paused.store(paused, Ordering::SeqCst);
+        self.paused.set(paused);
     }
 }
 
@@ -85,13 +87,7 @@ impl Default for AgentMessageIngest {
 impl Worker {
     /// The safety-status wire object.
     fn agent_message_safety_status(&self) -> Value {
-        json!({
-            "paused": self.agent_messages.paused(),
-            "maxMessageChars": DEFAULT_AGENT_MESSAGE_MAX_CHARS,
-            "maxPendingPerSession": DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
-            "rateLimitCapacity": DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY,
-            "rateLimitRefillMs": DEFAULT_AGENT_MESSAGE_RATE_LIMIT_REFILL_MS,
-        })
+        agent_message_safety_status(self.agent_messages.paused())
     }
 
     /// `agent_messages_status`: the safety status, no side effects.
@@ -152,15 +148,9 @@ impl Worker {
         reason = "the error channel carries the whole wire response, which is wide by design"
     )]
     pub(crate) fn refuse_delivery_if_paused(&self) -> Result<(), DaemonResponse> {
-        if self.agent_messages.paused() {
-            return Err(response_failure(
-                None,
-                "worker_deliver_message",
-                "Agent messaging is paused",
-                None,
-            ));
-        }
-        Ok(())
+        self.agent_messages.paused.admit().map_err(|refusal| {
+            response_failure(None, "worker_deliver_message", &refusal.to_string(), None)
+        })
     }
 
     /// Remove the queued agent-message items from both lanes (never
@@ -193,7 +183,7 @@ impl Worker {
             operation: "queue_mutated",
         });
         let _ = self.emit_action_update(&snapshot);
-        json!({ "steering": steering, "followUp": follow_up })
+        cleared_agent_messages(&steering, &follow_up)
     }
 }
 

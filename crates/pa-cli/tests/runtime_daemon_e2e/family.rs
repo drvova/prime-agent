@@ -16,7 +16,9 @@
 //! - `agent_message.wait` ends on the awaited sibling's message, answers a
 //!   wait that would close a cycle at once, and times out;
 //! - a kernel timer source keeps firing for its subscription after the
-//!   daemon restarts.
+//!   daemon restarts;
+//! - a stop cuts off a subagent's running turn, as the old worker closes its
+//!   children at a daemon-wide stop, so the daemon exits at once.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -282,6 +284,8 @@ async fn a_child_settling_while_its_parent_is_idle_wakes_the_parent() {
 /// budget): the child messages its parent once the parent's task has ended,
 /// and the parent answers it with no prompt sent. The child's reply
 /// withholds its terminal notice, so the message is the parent's one row.
+/// The delivery is the traffic pane's entry, on the traffic feed as it
+/// lands and in what `runtime.traffic` keeps.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_to_an_idle_parent_wakes_it() {
     let bed = Bed::new();
@@ -310,9 +314,29 @@ async fn a_message_to_an_idle_parent_wakes_it() {
     let id = created["session"].as_str().unwrap().to_string();
     client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
     run_turn(&mut client, &id, "spawn the kid").await;
+    let (mut traffic, _) = Client::connect(&bed.runtime_socket()).await;
+    traffic.subscribe("runtime/traffic", Since::Now).await;
     std::fs::write(&release, "go").unwrap();
     let sent = recorded(&records, "send").await;
     assert_eq!(sent["deliveryStatus"], json!("delivered"), "{sent}");
+    let kid = ok(client
+        .query("session.children", json!({ "session": id }))
+        .await)["children"][0]["activeSessionId"]
+        .clone();
+    let mut fed = match traffic.frame().await {
+        pa_types::wire2::ServerFrame::Event { event, .. } => event.event.payload,
+        other => panic!("expected the traffic entry, got {other:?}"),
+    };
+    let mut kept = ok(traffic.query("runtime.traffic", json!({})).await);
+    // The time is the delivery's.
+    fed["timestampMs"] = json!(0);
+    kept["entries"][0]["timestampMs"] = json!(0);
+    let entry = json!({
+        "rootActiveSessionId": id, "from": "kid", "fromActiveSessionId": kid, "to": id,
+        "toActiveSessionId": id, "relationship": "child", "kind": "direct",
+        "outcome": "delivered", "chars": 9, "preview": "kid reply", "timestampMs": 0,
+    });
+    assert_eq!((fed, kept), (entry.clone(), json!({ "entries": [entry] })));
     until(WAIT, "the parent's message turn", async || {
         transcript_text(&mut client, &id)
             .await
@@ -354,11 +378,12 @@ async fn waiting_for_idle_waits_for_the_subagents_to_settle() {
     };
     // The parent's task is done; its child's held turn runs on.
     assert_eq!(status(&mut client).await, json!("running"));
+    // The answer also carries the run's accounting; the wait is what counts.
     assert_eq!(
         ok(client
             .call("session.wait_idle", json!({ "session": id }))
-            .await),
-        json!({ "session": id })
+            .await)["session"],
+        json!(id)
     );
     assert_eq!(
         (
@@ -369,6 +394,35 @@ async fn waiting_for_idle_waits_for_the_subagents_to_settle() {
         ),
         (json!("completed"), true)
     );
+}
+
+/// The drain cuts off a subagent's running turn (the old worker closes its
+/// children at a daemon-wide stop): the daemon exits at once, not when the
+/// child's held turn would have ended.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_cuts_off_a_running_subagents_turn() {
+    let bed = Bed::new();
+    let records = bed.dir.path().join("records");
+    std::fs::create_dir_all(&records).unwrap();
+    let spawn = record(r#"(rlm-spawn "hold on" #:name "kid")"#, "spawn", &records);
+    let mut daemon = bed.runtime_daemon(&json!({
+        "responses": [cell("spawning", &spawn), "spawn turn done"],
+        "children": { "kid": { "responses": [{ "text": "kid done", "delayMs": 600_000 }] } },
+    }));
+    let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
+    let created = ok(client.call("session.create", json!({})).await);
+    let id = created["session"].as_str().unwrap().to_string();
+    client.subscribe(&format!("agent/{id}/#"), Since::Now).await;
+    run_turn(&mut client, &id, "spawn the kid").await;
+    recorded(&records, "spawn").await;
+    assert_eq!(
+        ok(client
+            .query("session.context_tree", json!({ "session": id }))
+            .await)["children"][0]["status"],
+        json!("running")
+    );
+    ok(client.call("daemon.shutdown", json!({})).await);
+    assert_eq!(super::lifecycle::exit_code(&mut daemon), Some(0));
 }
 
 #[tokio::test(flavor = "multi_thread")]

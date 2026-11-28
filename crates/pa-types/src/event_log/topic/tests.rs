@@ -2,9 +2,11 @@ use proptest::prelude::*;
 
 use super::{Topic, TopicError, TopicFilter, TopicTrie};
 
-/// Only a session's stream and tool topics are live only.
+/// Only a session's stream and tool topics, the agents view's roster and
+/// traffic feeds, the model catalog's changes, and a saved-session list
+/// request's rows are live only.
 #[test]
-fn only_agent_stream_and_tool_topics_are_live_only() {
+fn only_agent_stream_and_tool_topics_and_the_feeds_are_live_only() {
     assert_eq!(
         [
             "agent/3f2a/stream",
@@ -13,9 +15,24 @@ fn only_agent_stream_and_tool_topics_are_live_only() {
             "agent/3f2a/stream/more",
             "source/3f2a/stream",
             "agent/stream",
+            "runtime/roster",
+            "runtime/traffic",
+            "runtime/models",
+            "runtime/input",
+            "runtime/roster/more",
+            "runtime/session_list/tui-7",
+            "runtime/session_list",
+            "runtime/session_list/tui-7/more",
+            "system/closing",
+            "system/closing/more",
+            "system/history_import",
+            "system/route_failed",
         ]
         .map(|topic| Topic::new(topic).unwrap().is_live_only()),
-        [true, true, false, false, false, false]
+        [
+            true, true, false, false, false, false, true, true, true, false, false, true, false,
+            false, true, false, true, false
+        ]
     );
 }
 

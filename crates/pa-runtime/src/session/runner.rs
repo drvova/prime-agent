@@ -19,7 +19,7 @@ use crate::subagents::{
     Subagents, INBOX_SUBSCRIPTION, NOTICE_SUBSCRIPTION, SUBSCRIPTION_PREFIX as SUBAGENT_PREFIX,
 };
 use crate::subscriptions::MemorySessionTree;
-use crate::tasks::{Steered, TaskOutcome, TaskQueue, TaskRunner};
+use crate::tasks::{LaneState, Steered, TaskOutcome, TaskQueue, TaskRunner};
 
 /// The prefix of the subscriptions that hear a scheduled job's timer
 /// (`schedule:<job>`, routed to the job's session).
@@ -87,13 +87,13 @@ impl<B: SessionBuilder> SessionRunner<B> {
         SessionRunner { sessions }
     }
 
-    /// Cancels `session`'s running task: its turn is aborted and the task
-    /// ends `Cancelled`. The steers it took and had not read, queued again
-    /// for the caller to put back in the lane.
-    pub(crate) fn cancel_running(&self, session: &str) -> Vec<Task> {
-        self.sessions
-            .host(session)
-            .map_or_default(|host| host.cancel_running())
+    /// Cancels task `task`, the one `session`'s lane runs, also before it
+    /// reached the session's thread: its turn is aborted (or never starts)
+    /// and the task ends `Cancelled`. The steers it took and had not read,
+    /// queued again for the caller to put back in the lane, or `None` when it
+    /// has ended.
+    pub(crate) fn cancel_running_task(&self, session: &str, task: &str) -> Option<Vec<Task>> {
+        self.sessions.host(session)?.cancel_running_task(task)
     }
 }
 
@@ -132,10 +132,25 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
         end.outcome
     }
 
+    fn cancelled(&self, task: &Task) {
+        let Queued { cause, .. } = self.sessions.take_queued(task);
+        if let Ok(topics) = SessionTopics::of(&task.session) {
+            self.sessions
+                .outbox()
+                .send(done_event(&topics, task, &TaskEnd::CANCELLED, &cause));
+        }
+    }
+
     fn steer(&self, running: &Task, steer: &Task) -> Steered {
         self.sessions
             .host(&running.session)
             .map_or(Steered::Declined, |host| host.steer(running, steer))
+    }
+
+    fn lane_changed(&self, session: &str, lane: &LaneState) {
+        if let Some(stream) = self.sessions.subagents().stream(session) {
+            stream.lane_changed(lane);
+        }
     }
 }
 
@@ -226,6 +241,8 @@ impl<B: SessionBuilder> TaskSink for RuntimeTaskSink<B> {
                         env: std::collections::BTreeMap::new(),
                         subagent: None,
                         transcript: None,
+                        options: crate::SessionOptions::default(),
+                        ephemeral: false,
                     },
                     super::Opening::Fresh,
                 )?;

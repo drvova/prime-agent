@@ -1,6 +1,7 @@
 //! The once-runner: one model-turn attempt with its retry policy and the wire-shape serializers for stream events, tool
 //! results, and agent messages.
 use crate::engine::{session_wire_value, AssistantSnapshot};
+use pa_core::session_engine::wire_events::{stream_event_value, tool_result_wire_value};
 
 use super::{
     json, json_round_trip, AgentSessionEngine, EngineEvent, RunStart, TurnOnce, TurnPrompt, Value,
@@ -492,41 +493,4 @@ impl AgentSessionEngine {
         }
         Ok(TurnOnce::None)
     }
-}
-
-/// Wire form of one provider stream event: the event `type` plus the
-/// `delta` when the event carries one.
-fn stream_event_value(event: &pa_agent::stream::AssistantMessageEvent) -> Option<Value> {
-    use pa_agent::stream::AssistantMessageEvent;
-    let (kind, delta) = match event {
-        AssistantMessageEvent::Start { .. } => ("start", None),
-        AssistantMessageEvent::TextStart { .. } => ("text_start", None),
-        AssistantMessageEvent::TextDelta { delta, .. } => ("text_delta", Some(delta.as_str())),
-        AssistantMessageEvent::TextEnd { .. } => ("text_end", None),
-        AssistantMessageEvent::ThinkingStart { .. } => ("thinking_start", None),
-        AssistantMessageEvent::ThinkingDelta { delta, .. } => {
-            ("thinking_delta", Some(delta.as_str()))
-        }
-        AssistantMessageEvent::ThinkingEnd { .. } => ("thinking_end", None),
-        AssistantMessageEvent::ToolCallStart { .. } => ("toolcall_start", None),
-        AssistantMessageEvent::ToolCallDelta { delta, .. } => {
-            ("toolcall_delta", Some(delta.as_str()))
-        }
-        AssistantMessageEvent::ToolCallEnd { .. } => ("toolcall_end", None),
-        AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => return None,
-    };
-    match delta {
-        Some(delta) => Some(json!({ "type": kind, "delta": delta })),
-        None => Some(json!({ "type": kind })),
-    }
-}
-
-/// Wire form of one tool result (the TS tool-execution event payload).
-fn tool_result_wire_value(result: &pa_agent::types::AgentToolResult) -> Value {
-    let content: Vec<Value> = result
-        .content
-        .iter()
-        .map(|block| serde_json::to_value(block).unwrap_or(Value::Null))
-        .collect();
-    json!({ "content": content, "details": result.details })
 }

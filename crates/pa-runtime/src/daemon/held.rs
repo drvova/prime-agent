@@ -35,6 +35,7 @@ use crate::lock;
 use crate::runtime::Runtime;
 use crate::session::{Rebuild, SessionBuilder, SessionSpec};
 
+use super::handlers::UserBashes;
 use super::schedules::Schedules;
 
 /// The `kv` scope and key the held sessions are kept under.
@@ -86,6 +87,11 @@ pub(crate) struct Revival {
 pub(super) struct OpenSessions {
     log: std::sync::Arc<Log>,
     open: Mutex<HeldSessions>,
+    /// The open sessions' `!` commands.
+    pub(super) bashes: UserBashes,
+    /// The API keys the daemon's sessions were created with
+    /// (`handlers/create.rs`), held in memory only, for the daemon's life.
+    api_keys: Mutex<HashMap<String, pa_types::wire2::ApiKey>>,
 }
 
 #[derive(Default)]
@@ -98,7 +104,18 @@ struct HeldSessions {
 pub(super) struct OpenSession {
     pub(super) path: PathBuf,
     pub(super) cwd: PathBuf,
-    pub(super) _lease: SessionLease,
+    /// `None` for an ephemeral session, which has no transcript to lease.
+    pub(super) lease: Option<SessionLease>,
+    /// The client (its `hello` name) an ephemeral session ends with; `None`
+    /// for a session that keeps its transcript. An ephemeral session is not
+    /// kept in the database: no daemon revives it.
+    pub(super) owner: Option<String>,
+    /// The scoped model list its `session.cycle_model` steps through, empty
+    /// for the whole catalog: resolved at each open from the scope it was
+    /// created with (`daemon::model_scope`), and replaced by
+    /// `session.set_scoped_models` for the open's life, as the old worker
+    /// kept it.
+    pub(super) scoped_models: Vec<Value>,
 }
 
 impl OpenSessions {
@@ -106,6 +123,25 @@ impl OpenSessions {
         OpenSessions {
             log,
             open: Mutex::new(HeldSessions::default()),
+            bashes: UserBashes::default(),
+            api_keys: Mutex::default(),
+        }
+    }
+
+    /// The API key session `id` was created with in this process.
+    pub(super) fn api_key(&self, id: &str) -> Option<pa_types::wire2::ApiKey> {
+        lock(&self.api_keys).get(id).cloned()
+    }
+
+    /// Holds the API key `options` give session `id`, or gives `options` the
+    /// one it was created with in this process.
+    pub(super) fn keep_api_key(&self, id: &str, options: &mut crate::SessionOptions) {
+        let mut keys = lock(&self.api_keys);
+        match &options.api_key {
+            Some(key) => {
+                keys.insert(id.to_string(), key.clone());
+            }
+            None => options.api_key = keys.get(id).cloned(),
         }
     }
 
@@ -117,8 +153,62 @@ impl OpenSessions {
             .map(|session| session.path.clone())
     }
 
+    /// The open session whose transcript is `path`.
+    pub(super) fn id_of(&self, path: &Path) -> Option<String> {
+        lock(&self.open)
+            .open
+            .iter()
+            .find(|(_, session)| session.path == path)
+            .map(|(id, _)| id.clone())
+    }
+
+    /// The working directory of open session `id`.
+    pub(super) fn cwd(&self, id: &str) -> Option<PathBuf> {
+        lock(&self.open)
+            .open
+            .get(id)
+            .map(|session| session.cwd.clone())
+    }
+
     pub(super) fn contains(&self, id: &str) -> bool {
         lock(&self.open).open.contains_key(id)
+    }
+
+    /// Open session `id`'s scoped model list (empty when none is set).
+    pub(super) fn scoped_models(&self, id: &str) -> Vec<Value> {
+        lock(&self.open)
+            .open
+            .get(id)
+            .map_or_else(Vec::new, |session| session.scoped_models.clone())
+    }
+
+    /// Sets open session `id`'s scoped model list; `false` when it is not
+    /// open.
+    pub(super) fn set_scoped_models(&self, id: &str, scoped: Vec<Value>) -> bool {
+        lock(&self.open)
+            .open
+            .get_mut(id)
+            .map(|session| session.scoped_models = scoped)
+            .is_some()
+    }
+
+    /// The ephemeral sessions client `owner` created.
+    pub(super) fn owned_by(&self, owner: &str) -> Vec<String> {
+        lock(&self.open)
+            .open
+            .iter()
+            .filter(|(_, session)| session.owner.as_deref() == Some(owner))
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// The dormant sessions' transcripts.
+    pub(super) fn dormant_paths(&self) -> Vec<PathBuf> {
+        lock(&self.open)
+            .dormant
+            .values()
+            .map(|(path, _)| path.clone())
+            .collect()
     }
 
     /// Every open session's id and transcript.
@@ -141,6 +231,42 @@ impl OpenSessions {
         if let Err(error) = kept.wait().await {
             tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
         }
+    }
+
+    /// Whether open session `id` is ephemeral: it keeps no transcript.
+    pub(super) fn ephemeral(&self, id: &str) -> bool {
+        lock(&self.open)
+            .open
+            .get(id)
+            .is_some_and(|session| session.lease.is_none())
+    }
+
+    /// Open session `id` goes on from the transcript at `path` in `cwd`
+    /// (a replacement), held by `lease` (`None` keeps the one it holds,
+    /// for a transcript it holds already), kept in the database; the lease
+    /// it held before is released. `false` when it is not open.
+    pub(super) async fn replace(
+        &self,
+        id: &str,
+        path: PathBuf,
+        cwd: PathBuf,
+        lease: Option<SessionLease>,
+    ) -> bool {
+        let (replaced, kept) = {
+            let mut open = lock(&self.open);
+            let Some(session) = open.open.get_mut(id) else {
+                return false;
+            };
+            session.path = path;
+            session.cwd = cwd;
+            let replaced = lease.map(|lease| session.lease.replace(lease));
+            (replaced, self.keep(&open))
+        };
+        drop(replaced);
+        if let Err(error) = kept.wait().await {
+            tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
+        }
+        true
     }
 
     /// Holds session `id` dormant, down on `path` in `cwd`, kept in the
@@ -173,16 +299,20 @@ impl OpenSessions {
     /// Saves `open` as the held sessions; called under the lock, so the
     /// writes land in the order the changes were made.
     fn keep(&self, held: &HeldSessions) -> pa_log::Receipt<bool> {
-        let open = held.open.iter().map(|(id, session)| {
-            (
-                id.clone(),
-                json!({
-                    "path": session.path,
-                    "cwd": session.cwd,
-                    "daemonPid": std::process::id(),
-                }),
-            )
-        });
+        let open = held
+            .open
+            .iter()
+            .filter(|(_, session)| session.owner.is_none())
+            .map(|(id, session)| {
+                (
+                    id.clone(),
+                    json!({
+                        "path": session.path,
+                        "cwd": session.cwd,
+                        "daemonPid": std::process::id(),
+                    }),
+                )
+            });
         let dormant = held.dormant.iter().map(|(id, (path, cwd))| {
             (
                 id.clone(),
@@ -201,13 +331,14 @@ impl OpenSessions {
 }
 
 /// Revives the sessions a daemon that died held (see the module
-/// documentation); each one revived is held in `open`.
+/// documentation); each one revived is held in `open`. The ids of those
+/// opened again for unfinished tasks.
 pub(super) async fn revive<B: SessionBuilder>(
     runtime: &Runtime<B>,
     open: &OpenSessions,
     schedules: &Schedules<B>,
     agent_dir: &Path,
-) {
+) -> std::collections::HashSet<String> {
     let log = std::sync::Arc::clone(runtime.log());
     let held: BTreeMap<String, Held> = match log.value(SCOPE, KEY) {
         Ok(Some(held)) => serde_json::from_str::<serde_json::Map<String, Value>>(&held)
@@ -221,11 +352,14 @@ pub(super) async fn revive<B: SessionBuilder>(
             BTreeMap::new()
         }
     };
+    let mut revived = std::collections::HashSet::new();
     for (id, session) in held {
-        if let Err(error) =
-            revive_one(runtime, open, schedules, agent_dir, &log, &id, session).await
-        {
-            tracing::warn!("session {id} was not revived: {error:#}");
+        match revive_one(runtime, open, schedules, agent_dir, &log, &id, session).await {
+            Ok(true) => {
+                revived.insert(id);
+            }
+            Ok(false) => {}
+            Err(error) => tracing::warn!("session {id} was not revived: {error:#}"),
         }
     }
     // What is held now is what was revived.
@@ -233,9 +367,11 @@ pub(super) async fn revive<B: SessionBuilder>(
     if let Err(error) = kept.wait().await {
         tracing::warn!("the runtime daemon's held sessions were not saved: {error:#}");
     }
+    revived
 }
 
-/// Revives session `id`, which `session` says a dead daemon held.
+/// Revives session `id`, which `session` says a dead daemon held: whether it
+/// was opened again for its unfinished tasks.
 async fn revive_one<B: SessionBuilder>(
     runtime: &Runtime<B>,
     open: &OpenSessions,
@@ -244,7 +380,7 @@ async fn revive_one<B: SessionBuilder>(
     log: &std::sync::Arc<Log>,
     id: &str,
     session: Held,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let journal = orphan_journal(agent_dir, id);
     let owner = session.daemon_pid;
     let reaped_programs =
@@ -261,7 +397,7 @@ async fn revive_one<B: SessionBuilder>(
             open.insert_dormant(id.to_string(), session.path, session.cwd)
                 .await;
         }
-        return Ok(());
+        return Ok(false);
     }
     let lease = {
         let (path, agent_dir) = (session.path.clone(), agent_dir.to_path_buf());
@@ -271,6 +407,8 @@ async fn revive_one<B: SessionBuilder>(
     let running = tasks
         .into_iter()
         .find(|task| task.state == TaskState::Running);
+    let options = super::session_options(log, id);
+    let scope = super::model_scope::resolve(agent_dir, &session.cwd, &options, false).await;
     let spec = SessionSpec {
         id: Some(id.to_string()),
         name: None,
@@ -278,6 +416,8 @@ async fn revive_one<B: SessionBuilder>(
         env: super::session_env(agent_dir, id),
         subagent: None,
         transcript: Some(session.path.clone()),
+        options,
+        ephemeral: false,
     };
     match running {
         // Only queued work: the daemon died between turns.
@@ -315,9 +455,11 @@ async fn revive_one<B: SessionBuilder>(
         OpenSession {
             path: session.path,
             cwd: session.cwd,
-            _lease: lease,
+            lease: Some(lease),
+            owner: None,
+            scoped_models: scope.entries,
         },
     )
     .await;
-    Ok(())
+    Ok(true)
 }

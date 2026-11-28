@@ -1,0 +1,34 @@
+{
+  "prefix": "eval_",
+  "settings": {
+    "onboardingCompleted": true,
+    "onboardingShown": true,
+    "telemetry": {
+      "noticeShown": true
+    }
+  },
+  "script": {
+    "responses": [
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "name": "eval",
+            "arguments": {
+              "code": "(define answer (+ 40 2))\n(display answer)\nanswer"
+            }
+          }
+        ]
+      },
+      {
+        "text": "The cell computed 42."
+      }
+    ],
+    "contextWindow": 128000
+  },
+  "steps": [
+    {
+      "prompt": "compute it"
+    }
+  ]
+}

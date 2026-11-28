@@ -19,8 +19,13 @@
 //!   recovery), under its catch-up rule: a job whose time passed while
 //!   nothing ran fires once, and its next run counts from that fire. A
 //!   timer's own claim (`lastFiredMs`) is cleared whenever it is defined,
-//!   so it never holds back a run the store owes. A pass the store refuses
-//!   (its lock held) runs again shortly.
+//!   so it never holds back a run the store owes. A pass that fails (the
+//!   store's state lock a killed daemon left behind, until it is stale) is
+//!   run again after a backoff: its timer has fired, and nothing else would.
+//! - **Changes.** A job made, changed or cancelled (by the kernel, or by
+//!   `schedule.add` and `schedule.cancel`) publishes `agent/<id>/schedules`
+//!   (`{"active": <its active jobs>}`) at the lane's next pass: the old
+//!   daemon's `heartbeats_changed`, which an ACP client reports.
 //! - **Routing**, as the old daemon's: a plain job is a `follow_up` task
 //!   over its prompt; a heartbeat steers its `heartbeat_prompt` row onto the
 //!   session's agent (a running turn reads it at its next step) and queues
@@ -28,6 +33,14 @@
 //!   pa-core's (`should_defer_heartbeat_cron_job`). One fire waits for its
 //!   task's `done` before the lane's next, so a job never has two fires
 //!   queued: the old daemon's `heartbeat:<id>` queue key.
+//! - **Heartbeat commands** (8d-4c, pa-core's `cron::heartbeat_commands`):
+//!   `heartbeat_get`, `heartbeat_set`, `heartbeat_update` and
+//!   `heartbeat_manage` work on the session's store as the old worker's
+//!   arms do; a manage of a saved session's job works on its partition's
+//!   store (the old supervisor's passive path), and arms the session when it
+//!   resumes one. Every change but a resume, and a kernel mutation that asks
+//!   for it, withdraws the heartbeat's fire waiting on the session's agent
+//!   (the old `heartbeat:<id>` queue key).
 //! - **Waking.** A job due in a dormant session opens it under its lease
 //!   first: the old daemon's scheduled wake. A session stopped on purpose is
 //!   disarmed and not held, so nothing wakes it.
@@ -41,14 +54,21 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use anyhow::Context as _;
+use pa_core::cron::heartbeat_commands::{
+    no_active_heartbeat, withdraws_queued_fire, HeartbeatSet, HeartbeatUpdate,
+    HEARTBEATS_NEED_A_SESSION_FILE,
+};
 use pa_core::cron::scheduler::{
     AgentCronScheduler, AgentCronSchedulerHooks, FIRE_SETTLE_TIMEOUT_MS,
 };
 use pa_core::cron::store::{
-    AgentCronJobStore, CancelJobsFilter, CreateAgentCronJobInput, SessionBinding,
+    AgentCronJobStore, CancelJobsFilter, CreateAgentCronJobInput, HeartbeatManagementAction,
+    SessionBinding,
 };
 use pa_core::cron::{
     is_heartbeat_cron_job, should_defer_heartbeat_cron_job, AgentCronJob, HeartbeatSessionActivity,
@@ -77,8 +97,12 @@ const SKIPPED: &str = "skipped";
 /// The prefix of a job's timer source's name.
 const TIMER_PREFIX: &str = "schedule-";
 
-/// How long a lane waits to run a pass the store refused again.
-const PASS_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a lane waits to run a failed pass again, doubling with each
+/// failure in a row up to [`FAILED_PASS_RETRY_CAP`]. A pass fails when the
+/// store's state lock is not acquired: a daemon killed while it held it
+/// leaves it behind, and it is taken over once stale (30 s).
+const FAILED_PASS_RETRY: Duration = Duration::from_secs(1);
+const FAILED_PASS_RETRY_CAP: Duration = Duration::from_secs(10);
 
 /// Which jobs a listing shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,12 +134,24 @@ pub(super) struct Schedules<B: SessionBuilder> {
 /// One session's armed jobs.
 struct Armed {
     store: Arc<AgentCronJobStore>,
-    binding: SessionBinding,
+    /// The session's transcript and working directory its jobs are bound
+    /// to: the ones its engine was last built on.
+    binding: Mutex<SessionBinding>,
     /// Runs one pass of the session's lane.
     pass: Arc<Notify>,
     /// The timer each job has, by job id: the next run it fires at.
     timers: tokio::sync::Mutex<HashMap<String, String>>,
+    /// A job was made, changed or cancelled since the lane's last pass: the
+    /// pass publishes `agent/<id>/schedules`.
+    changed: Arc<AtomicBool>,
     lane: tokio::task::JoinHandle<()>,
+}
+
+impl Armed {
+    /// What the session's jobs are bound to now.
+    fn binding(&self) -> SessionBinding {
+        lock(&self.binding).clone()
+    }
 }
 
 /// How the session's lane runs a claimed job.
@@ -159,14 +195,28 @@ impl<B: SessionBuilder> Schedules<B> {
     fn arm(&self, id: &str, path: &Path, cwd: &Path) -> anyhow::Result<Arc<Armed>> {
         let mut armed = lock(&self.armed);
         if let Some(session) = armed.get(id) {
+            // A session that goes on from another transcript (a fork, an
+            // import) is armed again as its engine is rebuilt: its jobs move
+            // onto that transcript in place. Its lane and timers stay, so no
+            // removal of a timer of its past arming can race the timers its
+            // lane defines next.
+            let bound = session.binding();
+            let (file, cwd) = (
+                path.to_string_lossy().into_owned(),
+                cwd.to_string_lossy().into_owned(),
+            );
+            if bound.session_file != file || bound.cwd != cwd {
+                let binding = SessionBinding {
+                    session_file: file,
+                    cwd,
+                    ..bound
+                };
+                session.store.rebind_session_jobs(&binding)?;
+                *lock(&session.binding) = binding;
+            }
             return Ok(Arc::clone(session));
         }
-        // The old daemon's partition: `<sessions>/../session-artifacts/<id>`.
-        let partition = path
-            .parent()
-            .and_then(Path::parent)
-            .map(|root| root.join("session-artifacts").join(id))
-            .with_context(|| format!("{} is in no sessions dir", path.display()))?;
+        let partition = partition(path, id)?;
         std::fs::create_dir_all(&partition)?;
         let store = AgentCronJobStore::for_session_artifacts();
         store.register_session_artifact(id, &partition);
@@ -191,32 +241,42 @@ impl<B: SessionBuilder> Schedules<B> {
         let lane = self.handle.spawn({
             let (pass, jobs, id) = (Arc::clone(&pass), self.me.clone(), id.to_string());
             async move {
+                // After a pass that failed, how long until it is run again.
+                let mut retry: Option<Duration> = None;
                 loop {
-                    pass.notified().await;
-                    let ran = scheduler.run_due().await;
-                    if let Err(error) = &ran {
-                        tracing::warn!("session {id}'s scheduled jobs did not run: {error:#}");
+                    match retry {
+                        Some(delay) => {
+                            tokio::select! {
+                                () = pass.notified() => {}
+                                () = tokio::time::sleep(delay) => {}
+                            }
+                        }
+                        None => pass.notified().await,
                     }
+                    retry = match scheduler.run_due().await {
+                        Ok(_) => None,
+                        // Nothing else runs the pass again: its timer has
+                        // fired, and the job's next run did not move.
+                        Err(error) => {
+                            tracing::warn!("session {id}'s scheduled jobs did not run: {error:#}");
+                            Some(retry.map_or(FAILED_PASS_RETRY, |delay| {
+                                (delay * 2).min(FAILED_PASS_RETRY_CAP)
+                            }))
+                        }
+                    };
                     let Some(jobs) = jobs.upgrade() else {
                         return;
                     };
                     jobs.follow_store(&id).await;
-                    // A pass the store refused (its lock held, as a daemon
-                    // killed under it leaves it until it goes stale) runs
-                    // again: the timer that asked for it has fired, and
-                    // nothing else would.
-                    if ran.is_err() {
-                        tokio::time::sleep(PASS_RETRY).await;
-                        pass.notify_one();
-                    }
                 }
             }
         });
         let session = Arc::new(Armed {
             store,
-            binding,
+            binding: Mutex::new(binding),
             pass,
             timers: tokio::sync::Mutex::new(HashMap::new()),
+            changed: Arc::new(AtomicBool::new(false)),
             lane,
         });
         armed.insert(id.to_string(), Arc::clone(&session));
@@ -301,21 +361,19 @@ impl<B: SessionBuilder> Schedules<B> {
             .get(id)
             .cloned()
             .with_context(|| format!("session {id} is not open in the runtime daemon"))?;
-        let runtime_kind = if lock(&self.subagents).contains(id) {
-            "subagent"
-        } else {
-            "top-level"
-        };
+        let runtime_kind = self.runtime_kind(id);
+        let binding = armed.binding();
         let job = armed.store.create(&CreateAgentCronJobInput {
-            active_session_id: armed.binding.active_session_id.clone(),
-            session_id: armed.binding.session_id.clone(),
-            session_file: armed.binding.session_file.clone(),
-            cwd: armed.binding.cwd.clone(),
+            active_session_id: binding.active_session_id,
+            session_id: binding.session_id,
+            session_file: binding.session_file,
+            cwd: binding.cwd,
             runtime_kind: Some(runtime_kind.to_string()),
             prompt: prompt.to_string(),
             schedule_text: schedule.to_string(),
             ..Default::default()
         })?;
+        armed.changed.store(true, Ordering::Release);
         armed.pass.notify_one();
         Ok(job)
     }
@@ -332,11 +390,139 @@ impl<B: SessionBuilder> Schedules<B> {
         let sessions: Vec<Arc<Armed>> = lock(&self.armed).values().cloned().collect();
         for armed in sessions {
             if let Some(cancelled) = armed.store.cancel(job, pa_core::autonomous::now_millis())? {
+                armed.changed.store(true, Ordering::Release);
                 armed.pass.notify_one();
                 return Ok(cancelled);
             }
         }
         anyhow::bail!("No cron job found: {job}")
+    }
+
+    /// Session `id`'s armed jobs.
+    fn armed(&self, id: &str) -> Option<Arc<Armed>> {
+        lock(&self.armed).get(id).cloned()
+    }
+
+    /// A change to `armed`'s jobs: the lane's next pass moves their timers
+    /// and tells the session's clients.
+    fn changed(armed: &Armed) {
+        armed.changed.store(true, Ordering::Release);
+        armed.pass.notify_one();
+    }
+
+    /// Withdraws heartbeat `job`'s queued fire on session `id` when a change
+    /// by `action` does (pa-core's `withdraws_queued_fire`).
+    fn withdraw_fire(&self, id: &str, job: &AgentCronJob, action: HeartbeatManagementAction) {
+        if !(withdraws_queued_fire(action) && is_heartbeat_cron_job(job)) {
+            return;
+        }
+        if let Some(runtime) = self.runtime.upgrade() {
+            runtime.subagents().withdraw_heartbeat_fire(id, &job.id);
+        }
+    }
+
+    /// `heartbeat_get`: open session `id`'s live or paused heartbeat (none
+    /// for one that keeps no jobs).
+    pub(super) fn heartbeat(&self, id: &str) -> Option<AgentCronJob> {
+        self.armed(id)?.store.get_heartbeat(id)
+    }
+
+    /// `heartbeat_set`: replaces open session `id`'s heartbeat; the previous
+    /// one's queued fire is withdrawn.
+    ///
+    /// # Errors
+    ///
+    /// The session keeps no transcript (`Heartbeats require a persisted
+    /// session file`), or the store refused the heartbeat.
+    pub(super) fn set_heartbeat(
+        &self,
+        id: &str,
+        set: &HeartbeatSet,
+    ) -> anyhow::Result<AgentCronJob> {
+        let armed = self.armed(id).context(HEARTBEATS_NEED_A_SESSION_FILE)?;
+        let previous = armed.store.get_heartbeat(id);
+        let job = armed.store.create_heartbeat(&set.input(
+            armed.binding(),
+            self.runtime_kind(id),
+            previous.as_ref(),
+        ))?;
+        if let Some(previous) = &previous {
+            self.withdraw_fire(id, previous, HeartbeatManagementAction::Stop);
+        }
+        Self::changed(&armed);
+        Ok(job)
+    }
+
+    /// `heartbeat_update`: pauses, resumes or clears open session `id`'s
+    /// heartbeat; the job it changed (none for a session without one).
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written.
+    pub(super) fn update_heartbeat(
+        &self,
+        id: &str,
+        update: HeartbeatUpdate,
+    ) -> anyhow::Result<Option<AgentCronJob>> {
+        let Some(armed) = self.armed(id) else {
+            return Ok(None);
+        };
+        let job = update.apply(&armed.store, id, pa_core::autonomous::now_millis())?;
+        if let Some(job) = &job {
+            self.withdraw_fire(id, job, update.as_management());
+        }
+        Self::changed(&armed);
+        Ok(job)
+    }
+
+    /// `heartbeat_manage`: pauses, resumes or stops heartbeat `job` of
+    /// session `id`, open or saved at `path` (its partition's store, as the
+    /// old supervisor managed a passive job; one resumed is armed so it
+    /// fires).
+    ///
+    /// # Errors
+    ///
+    /// The session has no live heartbeat `job` (`No active heartbeat found:
+    /// <job>`), or the store could not be written.
+    pub(super) fn manage_heartbeat(
+        &self,
+        id: &str,
+        path: &Path,
+        job: &str,
+        action: HeartbeatManagementAction,
+    ) -> anyhow::Result<AgentCronJob> {
+        let now = pa_core::autonomous::now_millis();
+        let managed = if let Some(armed) = self.armed(id) {
+            let managed = armed.store.manage_heartbeat(id, job, action, now);
+            if matches!(managed, Ok(Some(_))) {
+                Self::changed(&armed);
+            }
+            managed
+        } else {
+            let store = AgentCronJobStore::for_session_artifacts();
+            store.register_session_artifact(id, &partition(path, id)?);
+            let managed = store.manage_heartbeat(id, job, action, now);
+            if let Ok(Some(job)) = &managed {
+                if job.status == JobStatus::Active {
+                    if let Some(header) = pa_core::session::manager::read_session_header(path) {
+                        self.arm_dormant(id, path, Path::new(&header.cwd));
+                    }
+                }
+            }
+            managed
+        };
+        let managed = managed?.with_context(|| no_active_heartbeat(job))?;
+        self.withdraw_fire(id, &managed, action);
+        Ok(managed)
+    }
+
+    /// The kind a job of session `id` records (`subagent` or `top-level`).
+    fn runtime_kind(&self, id: &str) -> &'static str {
+        if lock(&self.subagents).contains(id) {
+            "subagent"
+        } else {
+            "top-level"
+        }
     }
 
     /// Stops every session's lane, for the daemon's shutdown; the jobs and
@@ -363,6 +549,7 @@ impl<B: SessionBuilder> Schedules<B> {
             .filter(|job| job.status == JobStatus::Active)
             .filter_map(|job| Some((job.id, job.next_run_at?)))
             .collect();
+        let changed = armed.changed.swap(false, Ordering::AcqRel);
         let mut timers = armed.timers.lock().await;
         let moved: Vec<String> = timers
             .iter()
@@ -382,6 +569,26 @@ impl<B: SessionBuilder> Schedules<B> {
                     timers.insert(job, at);
                 }
                 Err(error) => tracing::warn!("job {job}'s timer was not defined: {error:#}"),
+            }
+        }
+        if changed {
+            // With its timers in place, the clients following the session
+            // learn its jobs changed (the old daemon's `heartbeats_changed`).
+            let changed = async {
+                runtime
+                    .publish(NewEvent {
+                        topic: Topic::new(format!("agent/{id}/schedules"))?,
+                        source: "schedules".to_string(),
+                        session: Some(id.to_string()),
+                        payload: json!({ "active": timers.len() }),
+                        trust: Trust::Owner,
+                        cause: None,
+                        reply: None,
+                    })
+                    .await
+            };
+            if let Err(error) = changed.await {
+                tracing::warn!("session {id}'s schedule change was not published: {error:#}");
             }
         }
     }
@@ -405,13 +612,14 @@ impl<B: SessionBuilder> Schedules<B> {
         };
         // A job of a session that no longer exists cancels the session's
         // jobs: a fire never brings a deleted session back.
-        let path = PathBuf::from(&armed.binding.session_file);
+        let binding = armed.binding();
+        let path = PathBuf::from(&binding.session_file);
         if !pa_core::session::store::store().exists(&path) {
             armed.store.cancel_jobs_for_session(
                 &CancelJobsFilter {
                     active_session_id: None,
                     session_id: None,
-                    session_file: Some(armed.binding.session_file.clone()),
+                    session_file: Some(binding.session_file.clone()),
                 },
                 pa_core::autonomous::now_millis(),
             )?;
@@ -423,7 +631,7 @@ impl<B: SessionBuilder> Schedules<B> {
             if lock(&self.subagents).contains(session) {
                 return Ok(Some(SKIPPED));
             }
-            self.wake(&runtime, session, &path, Path::new(&armed.binding.cwd))
+            self.wake(&runtime, session, &path, Path::new(&binding.cwd))
                 .await?;
         }
         let lane = runtime.lane(session);
@@ -470,7 +678,7 @@ impl<B: SessionBuilder> Schedules<B> {
             .context("the job's task was not accepted")?
             .task;
         match tokio::time::timeout(
-            std::time::Duration::from_millis(FIRE_SETTLE_TIMEOUT_MS),
+            Duration::from_millis(FIRE_SETTLE_TIMEOUT_MS),
             done_of(&runtime, &mut listener, session, &task),
         )
         .await
@@ -508,6 +716,9 @@ impl<B: SessionBuilder> Schedules<B> {
                 .await
                 .context("the lease's thread panicked")??
         };
+        let mut options = super::session_options(runtime.log(), id);
+        self.open.keep_api_key(id, &mut options);
+        let scope = super::model_scope::resolve(&self.agent_dir, cwd, &options, false).await;
         runtime
             .create_session(SessionSpec {
                 id: Some(id.to_string()),
@@ -516,6 +727,8 @@ impl<B: SessionBuilder> Schedules<B> {
                 env: super::session_env(&self.agent_dir, id),
                 subagent: None,
                 transcript: Some(path.to_path_buf()),
+                options,
+                ephemeral: false,
             })
             .await?;
         self.open
@@ -524,7 +737,9 @@ impl<B: SessionBuilder> Schedules<B> {
                 OpenSession {
                     path: path.to_path_buf(),
                     cwd: cwd.to_path_buf(),
-                    _lease: lease,
+                    lease: Some(lease),
+                    owner: None,
+                    scoped_models: scope.entries,
                 },
             )
             .await;
@@ -562,18 +777,28 @@ impl<B: SessionBuilder> SessionJobs for Schedules<B> {
                 return None;
             }
         };
-        let pass = Arc::clone(&armed.pass);
+        let (pass, changed) = (Arc::clone(&armed.pass), Arc::clone(&armed.changed));
+        let (runtime, session) = (self.runtime.clone(), id.to_string());
+        let binding = armed.binding();
         Some(KernelCronWiring {
             store: Arc::clone(&armed.store),
             binding: Some(KernelCronBinding {
-                active_session_id: armed.binding.active_session_id.clone(),
-                session_id: armed.binding.session_id.clone(),
-                session_file: armed.binding.session_file.clone(),
-                cwd: armed.binding.cwd.clone(),
+                active_session_id: binding.active_session_id,
+                session_id: binding.session_id,
+                session_file: binding.session_file,
+                cwd: binding.cwd,
             }),
             // A job made, changed or cancelled: the lane's next pass moves
-            // its timer.
-            mutation_hook: Some(Arc::new(move |_mutation| {
+            // its timer, and a heartbeat's change withdraws its queued fire.
+            mutation_hook: Some(Arc::new(move |mutation| {
+                if mutation.drop_queued && is_heartbeat_cron_job(&mutation.job) {
+                    if let Some(runtime) = runtime.upgrade() {
+                        runtime
+                            .subagents()
+                            .withdraw_heartbeat_fire(&session, &mutation.job.id);
+                    }
+                }
+                changed.store(true, Ordering::Release);
                 pass.notify_one();
                 Box::pin(std::future::ready(()))
             })),
@@ -585,6 +810,15 @@ impl<B: SessionBuilder> SessionJobs for Schedules<B> {
             armed.pass.notify_one();
         }
     }
+}
+
+/// The scheduled-jobs partition of session `id` (transcript `path`): the old
+/// daemon's `<sessions>/../session-artifacts/<id>`.
+fn partition(path: &Path, id: &str) -> anyhow::Result<PathBuf> {
+    path.parent()
+        .and_then(Path::parent)
+        .map(|root| root.join("session-artifacts").join(id))
+        .with_context(|| format!("{} is in no sessions dir", path.display()))
 }
 
 /// Defines job `job`'s timer at `at` for session `session`, with the

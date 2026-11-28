@@ -45,8 +45,14 @@ pub(super) struct Attached {
 impl Attached {
     /// Creates a session in `cwd` and subscribes to its topics.
     pub(super) async fn open(bed: &Bed, cwd: &std::path::Path) -> Self {
+        Self::create(bed, json!({ "cwd": cwd })).await
+    }
+
+    /// Creates (or opens) the session `session.create` `args` name and
+    /// subscribes to its topics.
+    pub(super) async fn create(bed: &Bed, args: Value) -> Self {
         let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
-        let created = ok(client.call("session.create", json!({ "cwd": cwd })).await);
+        let created = ok(client.call("session.create", args).await);
         let id = created["session"]
             .as_str()
             .expect("a session id")
@@ -105,6 +111,54 @@ impl Attached {
         ok(self.client.reply(&request, &mut self.frames).await)
     }
 
+    /// Sends `frame` (its id one of [`Self::request_id`]'s) and waits for
+    /// its reply, keeping the frames that arrive first.
+    pub(super) async fn request(&mut self, frame: &ClientFrame) -> pa_types::wire2::Outcome {
+        let id = match frame {
+            ClientFrame::Publish { id, .. }
+            | ClientFrame::Query { id, .. }
+            | ClientFrame::Call { id, .. } => id.clone(),
+            other => panic!("not a request: {other:?}"),
+        };
+        self.client.send(frame).await;
+        self.client.reply(&id, &mut self.frames).await
+    }
+
+    /// A fresh request id on this client's connection.
+    pub(super) fn request_id(&mut self) -> String {
+        self.client.id()
+    }
+
+    /// Follows a feed as the compat layer asks (`frames`: its subscription,
+    /// then its query): the query goes once the subscription's backfill is
+    /// done; the query's reply.
+    pub(super) async fn follow(&mut self, frames: &[ClientFrame]) -> pa_types::wire2::Outcome {
+        let [subscribe @ ClientFrame::Subscribe { sub_id, .. }, query] = frames else {
+            panic!("a feed is a subscription and a query: {frames:?}");
+        };
+        self.client.send(subscribe).await;
+        self.until(|session| {
+            session.frames.iter().any(|frame| {
+                matches!(frame, ServerFrame::Backfilled { sub_id: done, .. } if done == sub_id)
+            })
+        })
+        .await;
+        self.request(query).await
+    }
+
+    /// The events on topic `topic` so far.
+    pub(super) fn feed_events(&self, topic: &str) -> Vec<pa_types::event_log::Event> {
+        self.frames
+            .iter()
+            .filter_map(|frame| match frame {
+                ServerFrame::Event { event, .. } if event.event.topic.as_str() == topic => {
+                    Some(event.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) async fn query(&mut self, name: &str) -> Value {
         let request = self.client.id();
         self.client
@@ -119,12 +173,20 @@ impl Attached {
 
     /// The payloads of the events on the session's `kind` topic so far.
     pub(super) fn payloads(&self, kind: &str) -> Vec<Value> {
+        self.events(kind)
+            .into_iter()
+            .map(|event| event.event.payload)
+            .collect()
+    }
+
+    /// The events on the session's `kind` topic so far.
+    pub(super) fn events(&self, kind: &str) -> Vec<pa_types::event_log::Event> {
         let topic = format!("agent/{}/{kind}", self.id);
         self.frames
             .iter()
             .filter_map(|frame| match frame {
                 ServerFrame::Event { event, .. } if event.event.topic.as_str() == topic => {
-                    Some(event.event.payload.clone())
+                    Some(event.clone())
                 }
                 _ => None,
             })
@@ -400,10 +462,15 @@ async fn withdrawn_input_comes_back_in_order_and_restored_input_steers_the_turn(
     let mut session = Attached::open(&bed, &cwd).await;
     let first = session.publish("run the sleep", None).await;
     session.until_streamed("tool_execution_start").await;
-    session.publish("follow X", Some("follow_up")).await;
+    let follow_x = session.publish("follow X", Some("follow_up")).await;
     session.publish("follow Y", Some("follow_up")).await;
 
     let withdrawn = session.call("session.withdraw", json!({})).await;
+    // A withdrawn task ends with its `done`, as a prompt-and-wait waits for.
+    assert_eq!(
+        session.done(&follow_x["task"]).await["outcome"],
+        "cancelled"
+    );
     let texts: Vec<Value> = withdrawn["withdrawn"]
         .as_array()
         .unwrap()

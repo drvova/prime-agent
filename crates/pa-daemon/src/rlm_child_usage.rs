@@ -115,7 +115,7 @@ pub(crate) fn child_usage_batches(
         // branch summaries, and side calls bill at their own row's origin.
         let billed = late_attribution(entries, from, entry).or_else(|| {
             assistant_usage(entry)
-                .or_else(|| crate::session_usage::billed_store_row(entry).map(|row| row.usage))
+                .or_else(|| entry.billed_row().map(|row| row.usage))
                 .map(|usage| (usage, index))
         });
         let Some((usage, origin_row)) = billed else {

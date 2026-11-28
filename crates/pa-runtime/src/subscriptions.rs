@@ -164,6 +164,17 @@ impl Registry {
         Ok(())
     }
 
+    /// The subscriptions on the bus, in id order.
+    pub(crate) fn subscriptions(&self) -> Vec<Subscription> {
+        let mut subscriptions: Vec<Subscription> = self
+            .entries
+            .values()
+            .map(|entry| Subscription::clone(&entry.subscription))
+            .collect();
+        subscriptions.sort_by(|left, right| left.id.cmp(&right.id));
+        subscriptions
+    }
+
     pub(crate) fn remove(&mut self, id: &str) -> Option<Subscription> {
         let entry = self.entries.remove(id)?;
         self.trie

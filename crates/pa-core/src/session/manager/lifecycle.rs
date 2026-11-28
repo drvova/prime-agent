@@ -232,6 +232,7 @@ impl SessionManager {
             id: None,
             parent_session: Some(source_path.display().to_string()),
             rlm_depth: Some(rlm_depth),
+            ..NewSessionOptions::default()
         });
         let branch = forked_branch_entries(entries);
         // The copied rows' assistant entries keep the append path durable
@@ -350,6 +351,7 @@ impl SessionManager {
             id: None,
             parent_session: source_path.to_str().map(str::to_string),
             rlm_depth: Some(source_header.rlm_depth.unwrap_or(0)),
+            ..NewSessionOptions::default()
         });
         if leaf_id.is_none() {
             // The fork at the root records no git context.
@@ -527,19 +529,23 @@ impl SessionManager {
                 .map(|_| 0)
                 .or(Some(root_rlm_depth_from_env())),
         };
-        let header = FileEntry::Header {
-            header: SessionHeader {
-                id: self.session_id.clone(),
-                version: Some(CURRENT_SESSION_VERSION),
-                timestamp,
-                cwd: self.cwd.display().to_string(),
-                parent_session: options.parent_session.clone(),
-                rlm_depth,
-                git,
-                rest: pa_types::JsonMap::new(),
-            },
+        let mut header = SessionHeader {
+            id: self.session_id.clone(),
+            version: Some(CURRENT_SESSION_VERSION),
+            timestamp,
+            cwd: self.cwd.display().to_string(),
+            parent_session: options.parent_session.clone(),
+            rlm_depth,
+            git,
+            rest: pa_types::JsonMap::new(),
         };
-        self.file_entries = vec![header];
+        if let Some(pin) = &options.credential_pin {
+            header.set_credential_pin(pin);
+        }
+        if let Some(profile) = &options.profile {
+            header.set_profile(profile);
+        }
+        self.file_entries = vec![FileEntry::Header { header }];
         self.admitted_user_rows.clear();
         self.window = None;
         self.has_assistant_entry = false;

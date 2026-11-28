@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now answers the interactive TUI's queued-message edits (reorder, edit, delete) and its compaction and retry aborts as the default daemon does, and keeps a forked or imported session's scheduled jobs on its new transcript.

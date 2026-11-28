@@ -130,6 +130,7 @@ impl SessionBuilder for FauxBuilder {
             engine: Arc::new(engine),
             model: self.model.clone(),
             api_key: None,
+            provider_target: Arc::default(),
             agent_dir: self.agent_dir.clone(),
             events: DriverEvents::Stream,
             autonomous: None,
@@ -416,6 +417,87 @@ async fn an_input_runs_a_turn_that_streams_then_reports_done() {
     bed.runtime.shutdown().await;
 }
 
+/// What the agent's database holds of `session`: its events, whether its
+/// task `task` was saved, and its state under `note`.
+fn stored_of(bed: &Bed, session: &str, task: &str) -> (usize, bool, Option<String>) {
+    let log = bed.runtime.log();
+    let events = log
+        .events_since(0, 100_000)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.event.session.as_deref() == Some(session)
+                || event.event.topic.as_str().contains(session)
+        })
+        .count();
+    (
+        events,
+        log.task_saved_at(task).unwrap().is_some(),
+        log.value(&format!("state/{session}"), "note").unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn an_ephemeral_session_leaves_no_event_task_or_state_in_the_database() {
+    let mut bed = bed(json!([{ "text": "kept" }, { "text": "not kept" }])).await;
+    let ephemeral = bed
+        .runtime
+        .create_session(SessionSpec {
+            cwd: bed.cwd.clone(),
+            ephemeral: true,
+            ..SessionSpec::default()
+        })
+        .await
+        .unwrap();
+    let mut tasks = Vec::new();
+    for session in [bed.session.clone(), ephemeral.clone()] {
+        bed.runtime
+            .add_subscription(pa_types::event_log::Subscription {
+                id: format!("note/{session}"),
+                scope: pa_types::event_log::Scope::Local {
+                    session: session.clone(),
+                },
+                filter: pa_types::event_log::TopicFilter::new(format!("session/{session}/note"))
+                    .unwrap(),
+                when: None,
+                throttle_ms: 0,
+                debounce_ms: 0,
+                route: pa_types::event_log::Route::Set {
+                    key: "note".to_string(),
+                },
+                trust: Trust::Owner,
+            })
+            .unwrap();
+        bed.input_to(&session, "hello", None, Trust::Owner).await;
+        let (_, done) = bed.until_done_of(&session).await;
+        bed.runtime.idle(&session).await;
+        // Its route has written the state once the publish returns.
+        bed.runtime
+            .publish(NewEvent {
+                topic: Topic::new(format!("session/{session}/note")).unwrap(),
+                source: "test".to_string(),
+                session: Some(session.clone()),
+                payload: json!("noted"),
+                trust: Trust::Owner,
+                cause: None,
+                reply: None,
+            })
+            .await
+            .unwrap();
+        tasks.push(done.task);
+    }
+    let kept = stored_of(&bed, &bed.session, &tasks[0]);
+    assert_eq!(
+        (
+            kept.1,
+            kept.2.is_some(),
+            stored_of(&bed, &ephemeral, &tasks[1])
+        ),
+        (true, true, (0, false, None))
+    );
+    bed.runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_steer_during_a_turn_is_read_at_its_next_step() {
     // The first model call is held until the steer is queued: the turn is
@@ -467,6 +549,57 @@ async fn cancelling_a_running_task_aborts_its_turn() {
     let (_, done) = bed.until_done().await;
     assert_eq!(outcome(&done), (TaskState::Cancelled, None, None));
     bed.runtime.idle(&bed.session).await;
+    bed.runtime.shutdown().await;
+}
+
+/// Builds over the faux builder once the test opens the gate: the session's
+/// thread is still building when the lane hands it a task.
+struct GatedBuild(FauxBuilder, Arc<tokio::sync::Semaphore>);
+
+impl SessionBuilder for GatedBuild {
+    async fn build(
+        &self,
+        id: &str,
+        spec: &SessionSpec,
+        seams: SessionSeams,
+    ) -> anyhow::Result<BuiltSession> {
+        let _open = self.1.acquire().await?;
+        self.0.build(id, spec, seams).await
+    }
+}
+
+#[tokio::test]
+async fn a_task_cancelled_before_its_session_thread_starts_it_runs_nothing() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut bed = bed_with(
+        json!(["never sent"]),
+        json!({ "compaction": { "enabled": false } }),
+        |faux| GatedBuild(faux, Arc::clone(&gate)),
+    )
+    .await;
+    bed.input("never run", None).await;
+    // The lane runs the task while the session's thread still builds.
+    let running = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            if let Some(running) = bed.runtime.lane(&bed.session).running {
+                return running;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the lane runs the task");
+    let cancelled = bed
+        .runtime
+        .cancel_task(&bed.session, &running.id)
+        .await
+        .unwrap();
+    gate.add_permits(1);
+    let (_, done) = bed.until_done().await;
+    assert_eq!(
+        (cancelled, outcome(&done), bed.transcript()),
+        (true, (TaskState::Cancelled, None, None), Vec::new())
+    );
     bed.runtime.shutdown().await;
 }
 

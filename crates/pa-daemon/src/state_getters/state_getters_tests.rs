@@ -510,7 +510,7 @@ async fn get_context_tree_lists_persisted_children() {
     write_session(&deleted_dir, deleted_session, "stop");
     let ledger =
         pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions, |_| {})
-            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
     ledger
         .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
             child_id: "sub-deadbeef".to_string(),

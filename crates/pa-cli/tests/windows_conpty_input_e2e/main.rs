@@ -217,6 +217,9 @@ fn spawn_supervisor(agent_dir: &Path) -> Supervisor {
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])
+        // The supervisor (selected by name: the runtime daemon is the default), which this
+        // suite drives on the old wire.
+        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
         .arg(&socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env("PI_OFFLINE", "1")
@@ -725,6 +728,8 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         ("PRIME_AGENT_FAUX_SCRIPT", script.display().to_string()),
         ("PI_OFFLINE", "1".to_string()),
         ("DO_NOT_TRACK", "1".to_string()),
+        // The TUI talks to the supervisor this test spawned, on the old wire.
+        ("PRIME_AGENT_RUNTIME_DAEMON", "0".to_string()),
     ] {
         env.push((key.to_string(), value));
     }
@@ -1353,6 +1358,8 @@ fn a_pasted_image_renders_inline_without_escape_text_on_conpty() {
             ),
             ("PI_OFFLINE", "1".to_string()),
             ("DO_NOT_TRACK", "1".to_string()),
+            // The TUI talks to the supervisor this test spawned, on the old wire.
+            ("PRIME_AGENT_RUNTIME_DAEMON", "0".to_string()),
         ] {
             env.push((key.to_string(), value));
         }

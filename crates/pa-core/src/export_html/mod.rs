@@ -21,7 +21,8 @@ mod theme;
 pub mod tool_render;
 
 pub use self::tool_render::{
-    pre_render_custom_tools, RenderedToolHtml, RenderedToolResult, ToolHtmlRenderer,
+    pre_render_custom_tools, RegistryToolRenderer, RenderedToolHtml, RenderedToolResult,
+    ToolHtmlRenderer,
 };
 
 /// The app name in generated export file names.

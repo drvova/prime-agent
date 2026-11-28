@@ -7,10 +7,11 @@
 //! - a heartbeat fires as `heartbeat_prompt` rows, and keeps firing after
 //!   the daemon is killed and started again, with nobody opening its idle
 //!   session (the next daemon wakes it when the job is due);
-//! - a heartbeat whose store a killed daemon left locked fires once the lock
-//!   goes stale;
 //! - a heartbeat whose time passed while no daemon ran fires once at the next
 //!   boot, its next run counted from that fire;
+//! - a heartbeat still fires after a restart when the killed daemon left the
+//!   store's state lock held: the next daemon's lane runs its failed passes
+//!   again until the lock is stale;
 //! - a session stopped on purpose is never woken by its due job;
 //! - a plain scheduled job runs its prompt as a turn;
 //! - a runtime daemon the settings no longer select skips its jobs.
@@ -113,7 +114,7 @@ impl Session {
             .collect()
     }
 
-    /// Its scheduled-jobs partition's directory.
+    /// Its scheduled-jobs partition.
     fn partition(&self) -> PathBuf {
         self.path
             .parent()
@@ -121,11 +122,12 @@ impl Session {
             .expect("a sessions dir")
             .join("session-artifacts")
             .join(&self.id)
+            .join("scheduled-jobs.json")
     }
 
     /// Its only job, as the store keeps it.
     fn job(&self, bed: &Bed) -> pa_core::cron::AgentCronJob {
-        let partition = self.partition().join("scheduled-jobs.json");
+        let partition = self.partition();
         let state = pa_core::agent_state::StateDatabase::open(
             &pa_core::session::store::database_path(&bed.agent_dir()),
         )
@@ -140,7 +142,7 @@ impl Session {
         self.job(bed)
             .next_run_at
             .as_deref()
-            .and_then(pa_daemon::util::iso_to_unix_ms)
+            .and_then(pa_core::session::manager::iso_to_unix_ms)
     }
 }
 
@@ -173,7 +175,7 @@ async fn a_heartbeat_keeps_firing_across_a_daemon_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_heartbeat_whose_store_a_killed_daemon_left_locked_fires_once_the_lock_is_stale() {
+async fn a_heartbeat_fires_after_a_restart_once_the_killed_daemons_jobs_lock_is_stale() {
     let bed = Bed::new();
     let daemon = bed.runtime_daemon(&script(HEARTBEAT));
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
@@ -184,12 +186,14 @@ async fn a_heartbeat_whose_store_a_killed_daemon_left_locked_fires_once_the_lock
     })
     .await;
     drop(client);
-    // Killed the hard way while it held the session's jobs locked: the lock
-    // stays until it is stale (30 s), and every pass the next daemon runs
-    // before that is refused.
+    // Killed while it held the store's state lock (as a kill during a
+    // claim or a fire's record leaves it): the next daemon's passes fail
+    // until the lock is stale.
     drop(daemon);
-    std::fs::create_dir_all(session.partition().join("scheduled-jobs.json.lock"))
-        .expect("leave the jobs locked");
+    std::fs::create_dir_all(pa_core::platform::lock_dir::LockDir::path_for(
+        &session.partition(),
+    ))
+    .expect("the dead daemon's lock");
 
     let _daemon = bed.runtime_daemon(&plain());
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
@@ -349,8 +353,8 @@ async fn a_scheduled_job_runs_its_prompt_as_a_turn() {
 async fn a_runtime_daemon_the_settings_stop_selecting_skips_its_jobs() {
     let bed = Bed::new();
     let settings = bed.agent_dir().join("settings.json");
-    std::fs::write(&settings, json!({ "daemon": "runtime" }).to_string()).unwrap();
-    // Selected by the settings alone, not the environment.
+    std::fs::write(&settings, json!({}).to_string()).unwrap();
+    // Selected by the settings (the default), not the environment.
     let mut command = bed.runtime_daemon_command(&script(HEARTBEAT), &bed.old_socket());
     command.env_remove("PRIME_AGENT_RUNTIME_DAEMON");
     let mut child = command.spawn().expect("spawn the runtime daemon");
@@ -369,7 +373,7 @@ async fn a_runtime_daemon_the_settings_stop_selecting_skips_its_jobs() {
     })
     .await;
     // The old daemon is selected again: the next fire is a skip.
-    std::fs::write(&settings, json!({}).to_string()).unwrap();
+    std::fs::write(&settings, json!({ "daemon": "supervisor" }).to_string()).unwrap();
     let job = until(FIRE_WAIT, "the skipped fire", async || {
         let job = session.job(&bed);
         job.last_skipped_at.is_some().then_some(job)

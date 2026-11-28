@@ -270,6 +270,8 @@ pub(crate) async fn connect_direct(
                     continue;
                 };
                 message_deltas.decode(&mut payload);
+                #[cfg(debug_assertions)]
+                crate::inbound_recording::record(crate::inbound_recording::Via::Direct, &payload);
                 if header_type == "response" {
                     if let Ok(response) =
                         serde_json::from_value::<pa_types::daemon::DaemonResponse>(payload)

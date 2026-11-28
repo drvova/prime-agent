@@ -70,6 +70,7 @@ impl SessionBuilder for PrintSession {
                 return build_subagent(
                     &self.options,
                     self.faux.as_ref(),
+                    /*child_script*/ None,
                     id,
                     spec,
                     subagent,
@@ -86,7 +87,11 @@ impl SessionBuilder for PrintSession {
                     self.faux.as_ref(),
                     Some(manager),
                     self.options.app_mode.as_str(),
-                    &super::HeadlessEmbedding::Root { seams },
+                    &super::HeadlessEmbedding::Root {
+                        seams,
+                        faux_lane: None,
+                        rlm_depth: None,
+                    },
                 )
                 .await?;
                 let engine = Arc::new(headless.engine);
@@ -103,6 +108,7 @@ impl SessionBuilder for PrintSession {
                     engine,
                     model: headless.model,
                     api_key: headless.api_key,
+                    provider_target: headless.provider_target,
                     agent_dir: self.options.config.agent_dir.clone(),
                     events: if self.options.app_mode == AppMode::Json {
                         DriverEvents::Stream
@@ -142,6 +148,7 @@ impl SessionBuilder for PrintSession {
 pub(super) async fn build_subagent(
     options: &RunOptions,
     faux: Option<&serde_json::Value>,
+    child_script: Option<&serde_json::Value>,
     id: &str,
     spec: &SessionSpec,
     subagent: &pa_runtime::SubagentSpec,
@@ -164,9 +171,13 @@ pub(super) async fn build_subagent(
         .or(subagent.parent_thinking)
         .unwrap_or(pa_types::ai::ModelThinkingLevel::Medium);
     let (lane, thinking) = if let Some(script) = faux {
+        // Its `children.<name>` entry, else the script every child of the
+        // runtime daemon's scripted sessions runs
+        // (`PRIME_AGENT_FAUX_CHILD_SCRIPT`, the old worker's `childScript`).
         let queue = script
             .get("children")
             .and_then(|children| children.get(&name))
+            .or(child_script)
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "PRIME_AGENT_FAUX_SCRIPT has no \"children.{name}\" entry: a scripted print run \
@@ -256,6 +267,12 @@ pub(super) async fn build_subagent(
             id: Some(id.to_string()),
             parent_session: Some(parent_file.clone()),
             rlm_depth: Some(u64::from(subagent.depth)),
+            // A child runs on its parent's pinned credential, as the old daemon's children do.
+            credential_pin: pa_core::session::manager::read_session_header(std::path::Path::new(
+                parent_file,
+            ))
+            .and_then(|header| header.credential_pin()),
+            ..Default::default()
         });
         manager
     } else {
@@ -298,6 +315,7 @@ pub(super) async fn build_subagent(
         engine: Arc::new(headless.engine),
         model: headless.model,
         api_key: headless.api_key,
+        provider_target: headless.provider_target,
         agent_dir: config.agent_dir.clone(),
         events: DriverEvents::Quiet,
         autonomous: None,
@@ -422,6 +440,8 @@ pub(super) async fn print_mode_main(
                     env: std::collections::BTreeMap::new(),
                     subagent: None,
                     transcript: None,
+                    options: pa_runtime::SessionOptions::default(),
+                    ephemeral: false,
                 }],
             },
         )

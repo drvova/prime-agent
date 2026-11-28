@@ -222,7 +222,7 @@ pub fn record_stop_intent(agent_dir: &Path, socket_path: &Path) -> anyhow::Resul
 #[cfg(any(unix, test))]
 fn stop_intended(intent_path: &Path, born: u64) -> bool {
     std::fs::read_to_string(intent_path).is_ok_and(|recorded| {
-        crate::util::iso_to_unix_ms(recorded.trim()).is_none_or(|at| at >= born)
+        pa_core::session::manager::iso_to_unix_ms(recorded.trim()).is_none_or(|at| at >= born)
     })
 }
 

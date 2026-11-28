@@ -1,0 +1,30 @@
+                                                tmp  $—
+
+                  ▗▄▄█▀
+    ███▄       ▗▄███▀
+   ▗█▛▐█▙   ▗▄█▀▗█▀       prime agent v0.0.0
+  ▗█▛ ▟██▙▄██▛ ▟▛         model faux-1
+  ▗▟▌ ▐███▛▘▗▄█▖          cwd /tmp
+ ▟███▄  ▄▄▟███▀
+ ▜█▛▀▘  ▜█▛▀▘
+
+
+  compute it                                                                                 ##:##
+
+
+ ✓ scheme · (define answer (+ 40 2)) · ↑ 3 ↓ 2 lines · #
+
+ The cell computed 42.
+
+ Worked for # · 1 tool call · 27k tokens · 32% cached
+
+
+
+
+                                                                  Collapsed mode (Ctrl+O to expand)
+
+ >
+
+← manage (context tray)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ 0 subagents  ·  ◷ 0 heartbeats  ·  ▸ 0 shells

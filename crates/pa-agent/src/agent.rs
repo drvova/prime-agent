@@ -1074,6 +1074,28 @@ impl Agent {
             .collect()
     }
 
+    /// The queued steering batches, in queue order: the messages each
+    /// `steer` call queued, as a queue view lists them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `steering_queue` mutex is poisoned.
+    #[must_use]
+    pub fn steering_batches(&self) -> Vec<Vec<AgentMessage>> {
+        self.inner.steering_queue.lock().unwrap().batches.clone()
+    }
+
+    /// The queued follow-up batches, in queue order: the messages each
+    /// `follow_up` call queued.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `follow_up_queue` mutex is poisoned.
+    #[must_use]
+    pub fn follow_up_batches(&self) -> Vec<Vec<AgentMessage>> {
+        self.inner.follow_up_queue.lock().unwrap().batches.clone()
+    }
+
     /// # Panics
     ///
     /// Panics if the `steering_queue` or `follow_up_queue` mutex is poisoned.

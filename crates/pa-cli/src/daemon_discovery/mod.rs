@@ -1,7 +1,10 @@
 //! Daemon discovery: find every product daemon in this state root and probe
 //! it for identity and session count — the OS census of listening sockets
 //! plus a sweep of the default socket dir (orphaned files included).
-//! Everything is scoped to one [`DaemonStateRoot`].
+//! Everything is scoped to one [`DaemonStateRoot`]. Both daemons are found:
+//! the supervisor on its socket (the old wire) and the runtime daemon on
+//! `daemon2.sock` beside it (wire2), each probed on its own wire
+//! ([`socket_kind`]).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -11,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::daemon_client::DaemonClient;
+use crate::daemon_mode::DaemonKind;
 
 mod format;
 mod kill;
@@ -56,6 +60,22 @@ pub(crate) enum DaemonStatus {
 pub(crate) enum PidSource {
     Listener,
     Hello,
+}
+
+/// Which daemon listens on a socket, by its name: the runtime daemon's
+/// socket is `daemon2.sock` beside the supervisor's (`pa_runtime::daemon`),
+/// and on Windows the root's pipe name with `2` appended.
+pub(crate) fn socket_kind(socket_path: &Path) -> DaemonKind {
+    #[cfg(unix)]
+    let runtime = pa_runtime::daemon::socket_path(socket_path) == socket_path;
+    #[cfg(not(unix))]
+    let runtime =
+        socket_path == pa_runtime::daemon::socket_path(&config::resolve_daemon_socket_path(None));
+    if runtime {
+        DaemonKind::Runtime
+    } else {
+        DaemonKind::Supervisor
+    }
 }
 
 /// One discovered daemon, probed; field order matches the TS JSON shape.
@@ -105,8 +125,8 @@ pub(crate) fn current_state_root() -> DaemonStateRoot {
     }
 }
 
-/// A socket belongs to the root when it is the resolved default path, sits
-/// in the product-default socket dir (a pinned root has none), or anywhere
+/// A socket belongs to the root when it is the resolved default path or the
+/// runtime daemon's socket beside it, sits in the product-default socket dir (a pinned root has none), or anywhere
 /// inside the agent dir (TS ownership registry not ported).
 fn state_root_matches(root: &DaemonStateRoot, socket_path: &Path) -> bool {
     #[cfg(windows)]
@@ -119,6 +139,7 @@ fn state_root_matches(root: &DaemonStateRoot, socket_path: &Path) -> bool {
     #[cfg(not(windows))]
     {
         if socket_path == root.default_socket_path
+            || socket_path == pa_runtime::daemon::socket_path(&root.default_socket_path)
             || root
                 .socket_dir
                 .as_ref()
@@ -296,9 +317,57 @@ pub(crate) struct ProbeResult {
     reachable: bool,
 }
 
-/// Probe one socket: connect (300ms), read the hello (1500ms), and ask for the
-/// session count over `list` (30s when greeted, else 1500ms).
+/// Probe one socket on its daemon's wire ([`socket_kind`]).
 pub(crate) fn probe_daemon(socket_path: &Path) -> ProbeResult {
+    match socket_kind(socket_path) {
+        DaemonKind::Supervisor => probe_supervisor(socket_path),
+        DaemonKind::Runtime => probe_runtime_daemon(socket_path),
+    }
+}
+
+/// Probe the runtime daemon: say wire2's hello (the client's greeting
+/// budget), then ask `daemon.identity` (the hello's identity fields) and
+/// the open sessions' count over `sessions.list`.
+fn probe_runtime_daemon(socket_path: &Path) -> ProbeResult {
+    let Ok(mut client) = crate::runtime_daemon_client::RuntimeDaemonClient::connect(socket_path)
+    else {
+        return ProbeResult::default();
+    };
+    let mut probe = ProbeResult {
+        reachable: true,
+        protocol_version: Some(u64::from(pa_types::wire2::WIRE2_VERSION)),
+        ..ProbeResult::default()
+    };
+    if let Ok(identity) = client.query("daemon.identity", serde_json::json!({})) {
+        probe.version = identity
+            .get("appVersion")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        probe.schema_id = identity
+            .get("schemaId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        probe.supervisor_pid = identity
+            .get("supervisorPid")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok());
+        probe.supervisor_process_start_id = identity
+            .get("supervisorProcessStartId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+    }
+    if let Ok(list) = client.query("sessions.list", serde_json::json!({ "open": true })) {
+        probe.session_count = list
+            .get("sessions")
+            .and_then(serde_json::Value::as_array)
+            .map(|sessions| sessions.len() as u64);
+    }
+    probe
+}
+
+/// Probe the supervisor: connect (300ms), read the hello (1500ms), and ask
+/// for the session count over `list` (30s when greeted, else 1500ms).
+fn probe_supervisor(socket_path: &Path) -> ProbeResult {
     let Ok(mut client) = DaemonClient::connect_probe(socket_path) else {
         return ProbeResult::default();
     };
@@ -371,10 +440,14 @@ pub(crate) fn probe_daemon(socket_path: &Path) -> ProbeResult {
 const HELLO_TIMEOUT_MS: u64 = 1_500;
 const LIST_TIMEOUT_MS: u64 = 30_000;
 
-/// Reachable daemons are `current` only when the protocol, schema, and
-/// app version all match this build.
-fn classify_reachable(probe: &ProbeResult) -> DaemonStatus {
-    if probe.protocol_version == Some(pa_types::daemon::DAEMON_PROTOCOL_VERSION)
+/// Reachable daemons are `current` only when the protocol (its daemon's
+/// wire), schema, and app version all match this build.
+fn classify_reachable(probe: &ProbeResult, kind: DaemonKind) -> DaemonStatus {
+    let protocol = match kind {
+        DaemonKind::Supervisor => pa_types::daemon::DAEMON_PROTOCOL_VERSION,
+        DaemonKind::Runtime => u64::from(pa_types::wire2::WIRE2_VERSION),
+    };
+    if probe.protocol_version == Some(protocol)
         && probe.schema_id.as_deref() == Some(pa_types::daemon::DAEMON_SCHEMA_ID)
         && probe.version.as_deref() == Some(config::version())
     {
@@ -436,10 +509,15 @@ fn discover_daemons_with(root: &DaemonStateRoot, named_pipes: bool) -> Vec<Daemo
     // belong to their supervisors); a pinned root has no dir to sweep and
     // considers only its own socket file, so a dead pinned daemon's stale
     // file is still found and removable.
+    // The runtime daemon's socket beside the root's is the root's own as well.
+    let runtime_socket = pa_runtime::daemon::socket_path(&root.default_socket_path);
     #[cfg(unix)]
-    let pinned_socket_file = is_socket_file(&root.default_socket_path);
+    let (pinned_socket_file, pinned_runtime_file) = (
+        is_socket_file(&root.default_socket_path),
+        is_socket_file(&runtime_socket),
+    );
     #[cfg(not(unix))]
-    let pinned_socket_file = false;
+    let (pinned_socket_file, pinned_runtime_file) = (false, false);
     let orphan_files: Vec<PathBuf> = root.socket_dir.as_deref().map_or_default(|dir| {
         scan_socket_dir(Some(dir))
             .into_iter()
@@ -452,7 +530,9 @@ fn discover_daemons_with(root: &DaemonStateRoot, named_pipes: bool) -> Vec<Daemo
         .chain(orphan_files)
         .chain(worker_sockets.iter().cloned())
         .chain(named_pipes.then(|| root.default_socket_path.clone()))
+        .chain(named_pipes.then(|| runtime_socket.clone()))
         .chain(pinned_socket_file.then(|| root.default_socket_path.clone()))
+        .chain(pinned_runtime_file.then(|| runtime_socket.clone()))
         .collect();
     sockets.retain(|path| state_root_matches(root, path));
 
@@ -469,7 +549,7 @@ fn discover_daemons_with(root: &DaemonStateRoot, named_pipes: bool) -> Vec<Daemo
             });
             let has_tracked_workers = worker_sockets.contains(&socket_path);
             let status = if probe.reachable {
-                classify_reachable(&probe)
+                classify_reachable(&probe, socket_kind(&socket_path))
             } else if proc.is_some() || has_tracked_workers {
                 DaemonStatus::Unreachable
             } else if named_pipes {
@@ -485,7 +565,8 @@ fn discover_daemons_with(root: &DaemonStateRoot, named_pipes: bool) -> Vec<Daemo
                         PidSource::Hello
                     }
                 }),
-                is_default: socket_path == root.default_socket_path,
+                is_default: socket_path == root.default_socket_path
+                    || socket_path == runtime_socket,
                 socket_path,
                 pid,
                 uptime_seconds: proc.and_then(|daemon| daemon.uptime_seconds),

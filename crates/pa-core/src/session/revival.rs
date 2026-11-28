@@ -9,6 +9,10 @@
 //!   saved but no answer: it continues from the transcript behind one notice
 //!   ([`TURN_INTERRUPTED_NOTICE`]) and its prompt is not recorded again. Its
 //!   answer saved: it is over.
+//! - **A daemon stopped on purpose under the turn** (a `shutdown`, a
+//!   restart, an update's handoff): the turn is cut off and the session's
+//!   next daemon runs [`UPDATE_RESTART_CONTINUATION_PROMPT`] ahead of the
+//!   rest of its queue.
 //! - **A daemon that died under the turn** ([`host_death`]): the first time
 //!   the turn is run again (or continued); a second death in a row under the
 //!   same session's turn settles it as failed instead of taking the daemon
@@ -27,6 +31,11 @@ use std::io::BufRead as _;
 use std::path::Path;
 
 use serde_json::{json, Value};
+
+/// The prompt a turn cut off by a deliberate daemon stop continues with in
+/// the next daemon (TS `UPDATE_RESTART_CONTINUATION_PROMPT`, verbatim, spec
+/// §10.5): both daemons queue it at the front of the session's queue.
+pub const UPDATE_RESTART_CONTINUATION_PROMPT: &str = "Prime Agent restarted after an update. Continue the interrupted task from the saved transcript and restored tool/kernel state. Inspect current state before retrying commands when needed.";
 
 /// The custom type of the notice a continued turn opens with.
 pub const TURN_INTERRUPTED_CUSTOM_TYPE: &str = "turn_interrupted";

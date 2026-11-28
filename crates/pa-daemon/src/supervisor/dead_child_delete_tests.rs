@@ -253,7 +253,7 @@ async fn a_retried_delete_after_the_tombstone_is_gated_on_the_worker_process() {
         .expect("a dead worker no longer blocks the delete");
     assert!(!artifacts.exists(), "the retry finishes the artifact sweep");
     assert_eq!(
-        crate::session_store::read_session_info(std::path::Path::new(&child_file))
+        pa_core::session::catalog::read_session_info(std::path::Path::new(&child_file))
             .expect("session metadata")
             .state
             .as_deref(),

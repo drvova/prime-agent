@@ -95,13 +95,18 @@ impl TurnBoundary {
                 self.emit_json(&json!({ "type": "error", "message": error.to_string() }));
             }
         }
+        // A cancelled run says it was aborted and carries no message (the
+        // old daemon's automatic arms).
+        let cancelled = outcome == CompactionOutcomeKind::Cancelled;
         let mut event = json!({
             "type": "compaction_end",
             "reason": reason.wire(),
-            "aborted": false,
+            "aborted": cancelled,
             "willRetry": false,
-            "errorMessage": message,
         });
+        if !cancelled {
+            event["errorMessage"] = json!(message);
+        }
         if outcome == CompactionOutcomeKind::Skipped {
             event["errorSeverity"] = json!("warning");
         }

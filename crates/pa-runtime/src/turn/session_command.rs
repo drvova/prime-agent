@@ -102,6 +102,9 @@ pub async fn execute_prompt_session_command(
     goal.emit_row_pair(&session_command_echo_row(command));
     let is_compact = command.name == "compact";
     let custom_instructions = compact_custom_instructions(command);
+    // Armed before the start goes out: an `abort_compaction` sent on seeing
+    // it stops the run even when it lands before the run begins.
+    let _abort_armed = is_compact.then(|| engine.session.arm_compaction_abort());
     if is_compact {
         let mut event = json!({ "type": "compaction_start", "reason": "manual" });
         if let Some(instructions) = &custom_instructions {
@@ -131,6 +134,18 @@ pub async fn execute_prompt_session_command(
         }
         let end = if execution.compaction.is_some() {
             manual_compaction_end_success(&execution, custom_instructions.as_deref())
+        } else if execution.compaction_aborted {
+            let mut event = json!({
+                "type": "compaction_end",
+                "reason": "manual",
+                "aborted": true,
+                "willRetry": false,
+                "errorSeverity": "error",
+            });
+            if let Some(instructions) = &custom_instructions {
+                event["customInstructions"] = json!(instructions);
+            }
+            event
         } else if let Some(skipped) = execution.compaction_skipped {
             manual_compaction_end_unsuccessful(skipped, "warning", custom_instructions.as_deref())
         } else {
@@ -187,12 +202,27 @@ mod tests {
 
     type Frames = std::sync::Arc<std::sync::Mutex<Vec<Value>>>;
 
-    fn capture_sink() -> (Frames, crate::turn::goal::EventSink) {
+    /// The captured stream, and a client that sends `abort_compaction` to
+    /// `engine` the moment it sees `compaction_start` once `abort_at_start`
+    /// is set.
+    fn capture_sink(
+        engine: &Arc<SessionEngine>,
+        abort_at_start: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> (Frames, crate::turn::goal::EventSink) {
         let frames: Frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink: crate::turn::goal::EventSink = {
             let frames = Arc::clone(&frames);
+            let engine = Arc::downgrade(engine);
+            let abort_at_start = Arc::clone(abort_at_start);
             Arc::new(move |event: &Value| {
                 frames.lock().unwrap().push(event.clone());
+                if event["type"] == "compaction_start"
+                    && abort_at_start.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    if let Some(engine) = engine.upgrade() {
+                        engine.session.abort_compaction();
+                    }
+                }
             })
         };
         (frames, sink)
@@ -275,6 +305,8 @@ mod tests {
         goal: Arc<PrintGoalSurface>,
         autonomous: Arc<tokio::sync::Mutex<AutonomousRuntimeState>>,
         frames: Frames,
+        /// Set: the stream's client aborts each compaction it sees start.
+        abort_at_start: Arc<std::sync::atomic::AtomicBool>,
         harness_dir: std::path::PathBuf,
         /// Keeps the composed hook's autonomous arm alive for the bed's lifetime (the hook holds it
         /// weakly).
@@ -358,7 +390,8 @@ mod tests {
             .await
             .unwrap(),
         );
-        let (frames, sink) = capture_sink();
+        let abort_at_start = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (frames, sink) = capture_sink(&engine, &abort_at_start);
         let goal = Arc::new(PrintGoalSurface::with_sink(true, sink));
         goal.seed_publish_baseline(&engine).await;
         let _accounting = goal.wire_accounting(&engine, engine.session.agent()).await;
@@ -380,6 +413,7 @@ mod tests {
             goal,
             autonomous,
             frames,
+            abort_at_start,
             harness_dir: dir.path().join("harness"),
             _run: run,
             _dir: dir,
@@ -627,5 +661,55 @@ mod tests {
         let rows = custom_rows(&test.engine).await;
         assert_eq!(rows.last().unwrap().0, "session_slash_command_result");
         assert!(rows.last().unwrap().1.starts_with("Command failed:"));
+    }
+
+    /// An `abort_compaction` sent the moment a client sees `compaction_start`
+    /// lands before the summarizer starts (the start goes out ahead of the
+    /// echo row's write): it still stops the `/compact`, which ends aborted
+    /// with nothing compacted.
+    #[tokio::test]
+    async fn an_abort_sent_on_the_start_stops_the_compact() {
+        let settings = json!({
+            "compaction": {"enabled": true, "reserveTokens": 1, "keepRecentTokens": 10}
+        });
+        let test = bed_with_settings(
+            script(&json!([{"text": "r1"}, {"text": "r2"}, {"text": "a summary"}])),
+            settings,
+        )
+        .await;
+        for seed in ["seed turn one ", "seed turn two "] {
+            test.engine
+                .session
+                .prompt(
+                    &(seed.to_string() + &"x".repeat(15000)),
+                    pa_core::session_engine::PromptOptions::default(),
+                )
+                .await
+                .unwrap();
+            test.engine.session.agent().wait_for_idle().await;
+        }
+        test.abort_at_start
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            run_command(&test, "/compact").await.as_deref(),
+            Some("Compaction cancelled")
+        );
+        let end = test
+            .frames
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|event| event["type"] == "compaction_end")
+            .cloned();
+        assert_eq!(
+            end,
+            Some(json!({
+                "type": "compaction_end",
+                "reason": "manual",
+                "aborted": true,
+                "willRetry": false,
+                "errorSeverity": "error",
+            }))
+        );
     }
 }

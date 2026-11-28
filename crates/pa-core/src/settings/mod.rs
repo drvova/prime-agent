@@ -10,6 +10,7 @@ pub(crate) mod manager;
 pub(crate) mod merge;
 pub(crate) mod profiles;
 pub(crate) mod storage;
+pub mod switches;
 pub(crate) mod types;
 
 #[cfg(test)]

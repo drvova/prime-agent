@@ -256,8 +256,8 @@ impl AgentSessionEngine {
     pub(super) fn resolve_registry_model(&self) -> anyhow::Result<Model> {
         let model = self.resolve_registry_model_unchecked()?;
         let selector = format!("{}/{}", model.provider, model.id);
-        let allowlist = crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir);
-        if let Err(refusal) = crate::model_allowlist::assert_allowed(&allowlist, &selector) {
+        let allowlist = pa_core::models::load_model_allowlist(&self.cwd(), &self.config.agent_dir);
+        if let Err(refusal) = pa_core::models::assert_model_allowed(&allowlist, &selector) {
             if let Some(refusal) = refusal.downcast_ref::<pa_core::models::ModelAllowlistRefusal>()
             {
                 self.note_model_refused("session_start", &refusal.selector);

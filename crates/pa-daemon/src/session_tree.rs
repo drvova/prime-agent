@@ -81,51 +81,6 @@ pub fn flat_tree(store: &SessionFile) -> Vec<Value> {
         .collect()
 }
 
-/// `get_user_messages_for_forking`: user messages with their text, in file order.
-#[must_use]
-pub fn user_messages_for_forking(store: &SessionFile) -> Vec<Value> {
-    store
-        .entries()
-        .iter()
-        .filter(|entry| entry.type_ == "message")
-        .filter_map(|entry| entry.fields.get("message"))
-        .filter(|message| message_role(message) == Some("user"))
-        .filter_map(|message| {
-            let text = message_text(message);
-            (!text.is_empty())
-                .then_some(json!({ "entryId": entry_id_of(store, message), "text": text }))
-        })
-        .collect()
-}
-
-/// The durable entry id of one message value: messages persist as the only
-/// entry kind carrying a `message` field, so the owning entry matches by identity.
-fn entry_id_of(store: &SessionFile, message: &Value) -> String {
-    store
-        .entries()
-        .iter()
-        .find(|entry| entry.fields.get("message") == Some(message))
-        .map_or_default(|entry| entry.id.clone())
-}
-
-fn message_role(message: &Value) -> Option<&str> {
-    message.get("role").and_then(Value::as_str)
-}
-
-/// Concatenated text of a message's string or text-block content.
-fn message_text(message: &Value) -> String {
-    match message.get("content") {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(blocks)) => blocks
-            .iter()
-            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-            .filter_map(|block| block.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join(""),
-        _ => String::new(),
-    }
-}
-
 impl SessionFile {
     /// `branch`: move the leaf onto an existing entry; the next append
     /// parents from there.
@@ -359,14 +314,7 @@ fn parent_session_of(store: &SessionFile) -> Option<&str> {
 /// Extract the plain text of a user-message entry (string or text-block content).
 #[must_use]
 pub fn user_entry_text(entry: &SessionEntry) -> Option<String> {
-    if entry.type_ != "message" {
-        return None;
-    }
-    let message = entry.fields.get("message")?;
-    if message_role(message) != Some("user") {
-        return None;
-    }
-    Some(message_text(message))
+    pa_core::session::navigation::user_row_text(&entry_json(entry))
 }
 
 /// The typed-entry form of one store entry (None when it does not
@@ -429,21 +377,6 @@ mod tests {
         store.append_label_change(&a, None).unwrap();
         let state = LabelState::from_entries(store.entries());
         assert_eq!(state.labels.get(&a), None);
-    }
-
-    #[test]
-    fn user_messages_for_forking_lists_texted_user_messages() {
-        let (_dir, mut store) = temp_store();
-        let first = message_entry(&mut store, "user", "first prompt");
-        message_entry(&mut store, "assistant", "answer");
-        let second = message_entry(&mut store, "user", "second prompt");
-        let messages = user_messages_for_forking(&store);
-        let ids: Vec<&str> = messages
-            .iter()
-            .filter_map(|m| m.get("entryId").and_then(Value::as_str))
-            .collect();
-        assert_eq!(ids, vec![first.as_str(), second.as_str()]);
-        assert_eq!(messages[0]["text"], json!("first prompt"));
     }
 
     #[test]

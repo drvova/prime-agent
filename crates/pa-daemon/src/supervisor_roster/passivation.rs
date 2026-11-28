@@ -289,7 +289,7 @@ async fn stop_carries_the_deleted_childs_spend_to_its_parent() {
     // the flushed transcript.
     let ledger =
         pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
-            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
     ledger
         .append_delete(
             "sub-9",
@@ -485,7 +485,7 @@ async fn stop_removes_unanchored_children_and_passivates_the_top_level_row() {
     append_family_edge(&agent_dir, &sessions_dir, "sub-9", &root_file, &child_file);
     let ledger =
         pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(&agent_dir, &sessions_dir, |_| {})
-            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
     ledger
         .append_delete(
             "sub-9",

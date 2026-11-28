@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now streams the agents view's saved-session catalog the way the interactive TUI reads it today, page by page, and a session's summary carries its spend by billing mode, as on the default daemon.

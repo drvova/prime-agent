@@ -16,9 +16,12 @@
 //! or one per step).
 //!
 //! A lane can be suspended ([`TaskQueue::suspend`]): its queued tasks stay
-//! queued and none starts until it is resumed; the running one runs on.
+//! queued and none starts until it is resumed; the running one runs on. It
+//! can also be held ([`TaskQueue::hold`]) by any number of named holds, apart
+//! from its suspension: it starts nothing while it is suspended or any hold
+//! remains, so resuming a held lane leaves it held.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -53,13 +56,16 @@ pub enum Steered {
     Declined,
 }
 
-/// What a session's lane holds now ([`TaskQueue::lane`]).
+/// What a session's lane holds ([`TaskQueue::lane`],
+/// [`TaskRunner::lane_changed`]).
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct LaneState {
-    pub(crate) running: Option<Task>,
+pub struct LaneState {
+    pub running: Option<Task>,
     /// In the order they would run.
-    pub(crate) queued: Vec<Task>,
-    pub(crate) suspended: bool,
+    pub queued: Vec<Task>,
+    pub suspended: bool,
+    /// How many holds stop it ([`TaskQueue::hold`]).
+    pub holds: usize,
 }
 
 /// Runs a session's tasks; the later turn runner implements it.
@@ -76,12 +82,28 @@ pub(crate) struct LaneState {
 /// [`Steered::Taken`], or answers [`Steered::Declined`] when the turn will
 /// not read it, including when `running` has already ended. A taken task is
 /// the running turn's to honour; the queue marks it Done.
+///
+/// `cancelled` is told of each task the queue cancelled before it ran (taken
+/// out of its lane and saved `Cancelled`), which `run` is never called for:
+/// it reports that end as a run would have, and must not block or call into
+/// the queue.
+///
+/// `lane_changed` is told what a session's lane holds each time a task joins
+/// it, leaves it to run, ends there or is cancelled out of it, under the
+/// queue's lock, so the reports reach it in the order the changes happened.
+/// It must not block or call into the queue.
 pub trait TaskRunner: Send + Sync + 'static {
     /// Runs `task`.
     fn run(&self, task: Task) -> impl Future<Output = TaskOutcome> + Send;
 
     /// Offers the `Steer` task `steer` to the running `running`.
     fn steer(&self, running: &Task, steer: &Task) -> Steered;
+
+    /// Reports the end of `task`, cancelled while it was queued.
+    fn cancelled(&self, task: &Task);
+
+    /// Reports what `session`'s lane holds after a change.
+    fn lane_changed(&self, session: &str, lane: &LaneState);
 }
 
 /// The task queue; clones share it.
@@ -112,9 +134,35 @@ struct Lanes {
     next_order: u64,
     /// The sessions whose lanes start no task until they are resumed.
     suspended: HashSet<String>,
+    /// The holds on each session's lane: it starts no task while one remains.
+    holds: HashMap<String, BTreeSet<String>>,
 }
 
 impl Lanes {
+    /// Whether `session`'s lane starts nothing now: suspended or held.
+    fn stopped(&self, session: &str) -> bool {
+        self.suspended.contains(session)
+            || self
+                .holds
+                .get(session)
+                .is_some_and(|holds| !holds.is_empty())
+    }
+
+    /// What `session`'s lane holds now.
+    fn state(&self, session: &str) -> LaneState {
+        let lane = self.by_session.get(session);
+        LaneState {
+            running: lane
+                .and_then(|lane| lane.running.clone())
+                .filter(|running| {
+                    lane.and_then(|lane| lane.reported.as_deref()) != Some(&running.id)
+                }),
+            queued: lane.map_or_default(|lane| lane.queued.values().cloned().collect()),
+            suspended: self.suspended.contains(session),
+            holds: self.holds.get(session).map_or(0, BTreeSet::len),
+        }
+    }
+
     fn busy(&self) -> usize {
         self.by_session
             .values()
@@ -226,20 +274,214 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
     /// Resumes `session`'s lane, which starts its queued tasks again; whether
     /// it was suspended.
     pub(crate) fn resume(&self, session: &str) -> bool {
-        let (was, start) = {
+        let was = lock(&self.inner.lanes).suspended.remove(session);
+        self.restart(session);
+        was
+    }
+
+    /// Holds `session`'s lane under `hold`: its queued tasks, and those
+    /// queued after, wait until every hold on it is released (and it is not
+    /// suspended); a running one runs on. Whether the hold is new.
+    pub(crate) fn hold(&self, session: &str, hold: &str) -> bool {
+        lock(&self.inner.lanes)
+            .holds
+            .entry(session.to_string())
+            .or_default()
+            .insert(hold.to_string())
+    }
+
+    /// Releases `hold` on `session`'s lane, which starts its queued tasks
+    /// again once it is neither held nor suspended; whether it held it.
+    pub(crate) fn release(&self, session: &str, hold: &str) -> bool {
+        let released = {
             let mut lanes = lock(&self.inner.lanes);
-            let was = lanes.suspended.remove(session);
-            let start = lanes.by_session.get_mut(session).is_some_and(|lane| {
-                let start = !lane.served && !lane.queued.is_empty();
+            let released = lanes
+                .holds
+                .get_mut(session)
+                .is_some_and(|holds| holds.remove(hold));
+            if lanes.holds.get(session).is_some_and(BTreeSet::is_empty) {
+                lanes.holds.remove(session);
+            }
+            released
+        };
+        self.restart(session);
+        released
+    }
+
+    /// Starts `session`'s lane worker when the lane has queued tasks, no
+    /// worker and nothing stopping it.
+    fn restart(&self, session: &str) {
+        let start = {
+            let mut lanes = lock(&self.inner.lanes);
+            let stopped = lanes.stopped(session);
+            lanes.by_session.get_mut(session).is_some_and(|lane| {
+                let start = !stopped && !lane.served && !lane.queued.is_empty();
                 lane.served |= start;
                 start
-            });
-            (was, start)
+            })
         };
         if start {
             tokio::spawn(serve(Arc::clone(&self.inner), session.to_string()));
         }
-        was
+    }
+
+    /// Cancels task `id` of `session`'s lane: taken out of the lane when it
+    /// is queued (it ends `Cancelled`, and is returned), or `None` when the
+    /// lane does not queue it (it runs, ended, or was never queued here).
+    ///
+    /// # Errors
+    ///
+    /// The store failed to save the cancelled task.
+    pub(crate) async fn cancel_task(
+        &self,
+        session: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<Task>> {
+        let queued = {
+            let mut lanes = lock(&self.inner.lanes);
+            let taken = lanes.by_session.get_mut(session).and_then(|lane| {
+                let key = lane
+                    .queued
+                    .iter()
+                    .find(|(_, task)| task.id == id)
+                    .map(|(key, _)| *key)?;
+                lane.queued.remove(&key)
+            });
+            if taken.is_some() {
+                self.inner
+                    .runner
+                    .lane_changed(session, &lanes.state(session));
+            }
+            // A lane no worker serves (a stopped one) is left empty: gone,
+            // so the session reads idle.
+            if lanes.by_session.get(session).is_some_and(|lane| {
+                !lane.served && lane.running.is_none() && lane.queued.is_empty()
+            }) {
+                lanes.by_session.remove(session);
+            }
+            self.inner.busy.send_replace(lanes.busy());
+            taken
+        };
+        let Some(task) = queued else {
+            return Ok(None);
+        };
+        let task = Task {
+            state: TaskState::Cancelled,
+            ..task
+        };
+        self.inner.store.save(task.clone()).await?;
+        self.inner.runner.cancelled(&task);
+        Ok(Some(task))
+    }
+
+    /// Changes queued task `id` of `session`'s lane in place: `edit` gets it
+    /// and the queue saves the result, keeping its place in the lane (and
+    /// its priority, whatever `edit` sets). Whether the lane queued it.
+    ///
+    /// # Errors
+    ///
+    /// The store failed to save the edited task.
+    pub(crate) async fn edit_queued(
+        &self,
+        session: &str,
+        id: &str,
+        edit: impl FnOnce(&mut Task),
+    ) -> anyhow::Result<bool> {
+        let edited = {
+            let mut lanes = lock(&self.inner.lanes);
+            let edited = lanes.by_session.get_mut(session).and_then(|lane| {
+                let ((priority, _), task) =
+                    lane.queued.iter_mut().find(|(_, task)| task.id == id)?;
+                edit(task);
+                task.priority = *priority;
+                Some(task.clone())
+            });
+            if edited.is_some() {
+                self.inner
+                    .runner
+                    .lane_changed(session, &lanes.state(session));
+            }
+            edited
+        };
+        let Some(task) = edited else {
+            return Ok(false);
+        };
+        self.inner.store.save(task).await?;
+        Ok(true)
+    }
+
+    /// Swaps the places of queued tasks `a` and `b` of `session`'s lane:
+    /// each runs where the other would have. Whether the lane queued both.
+    /// The places are the lane's own: a lane restored from the store runs
+    /// its tasks in the order they were queued.
+    pub(crate) fn swap_queued(&self, session: &str, a: &str, b: &str) -> bool {
+        let mut lanes = lock(&self.inner.lanes);
+        let Some(lane) = lanes.by_session.get_mut(session) else {
+            return false;
+        };
+        let key = |id: &str| {
+            lane.queued
+                .iter()
+                .find(|(_, task)| task.id == id)
+                .map(|(key, _)| *key)
+        };
+        let (Some(at_a), Some(at_b)) = (key(a), key(b)) else {
+            return false;
+        };
+        if at_a == at_b {
+            return true;
+        }
+        // Each task keeps its own priority; the key only places it.
+        let (Some(task_a), Some(task_b)) = (lane.queued.remove(&at_a), lane.queued.remove(&at_b))
+        else {
+            return false;
+        };
+        lane.queued.insert(at_a, task_b);
+        lane.queued.insert(at_b, task_a);
+        self.inner
+            .runner
+            .lane_changed(session, &lanes.state(session));
+        true
+    }
+
+    /// Queues task `id` of `session`'s lane again as `edit` changes it (its
+    /// priority included): it leaves its place and arrives anew, as
+    /// [`TaskQueue::push`] admits it (a `Steer` is offered to the running
+    /// task). The admission, or `None` when the lane does not queue it.
+    ///
+    /// # Errors
+    ///
+    /// The store failed to save it.
+    pub(crate) async fn requeue(
+        &self,
+        session: &str,
+        id: &str,
+        edit: impl FnOnce(&mut Task),
+    ) -> anyhow::Result<Option<Admission>> {
+        // The busy count is left as it is: the task is counted again as it
+        // is pushed, so no wait reads the session idle in between.
+        let taken = {
+            let mut lanes = lock(&self.inner.lanes);
+            let taken = lanes.by_session.get_mut(session).and_then(|lane| {
+                let key = lane
+                    .queued
+                    .iter()
+                    .find(|(_, task)| task.id == id)
+                    .map(|(key, _)| *key)?;
+                lane.queued.remove(&key)
+            });
+            if taken.is_some() {
+                self.inner
+                    .runner
+                    .lane_changed(session, &lanes.state(session));
+            }
+            taken
+        };
+        let Some(mut task) = taken else {
+            return Ok(None);
+        };
+        edit(&mut task);
+        self.push(task).await.map(Some)
     }
 
     /// Marks `session`'s running task `task` as ended, ahead of its `done`
@@ -254,17 +496,7 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
 
     /// What `session`'s lane holds now.
     pub(crate) fn lane(&self, session: &str) -> LaneState {
-        let lanes = lock(&self.inner.lanes);
-        let lane = lanes.by_session.get(session);
-        LaneState {
-            running: lane
-                .and_then(|lane| lane.running.clone())
-                .filter(|running| {
-                    lane.and_then(|lane| lane.reported.as_deref()) != Some(&running.id)
-                }),
-            queued: lane.map_or_default(|lane| lane.queued.values().cloned().collect()),
-            suspended: lanes.suspended.contains(session),
-        }
+        lock(&self.inner.lanes).state(session)
     }
 
     /// Cancels every task queued in `session`'s lane; a running one runs on.
@@ -280,6 +512,20 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                 .by_session
                 .get_mut(session)
                 .map_or_default(|lane| std::mem::take(&mut lane.queued));
+            if !queued.is_empty() {
+                self.inner
+                    .runner
+                    .lane_changed(session, &lanes.state(session));
+            }
+            // A lane no worker serves (a parked or held one) is left empty:
+            // gone, so the session reads idle (as `cancel_task` leaves it).
+            if lanes
+                .by_session
+                .get(session)
+                .is_some_and(|lane| !lane.served && lane.running.is_none())
+            {
+                lanes.by_session.remove(session);
+            }
             self.inner.busy.send_replace(lanes.busy());
             queued
         };
@@ -290,6 +536,7 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
                 ..task
             };
             self.inner.store.save(task.clone()).await?;
+            self.inner.runner.cancelled(&task);
             cancelled.push(task);
         }
         Ok(cancelled)
@@ -305,6 +552,17 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
     /// Waits until no task of `session` is queued or running.
     pub async fn session_idle(&self, session: &str) {
         self.session_idle_and(session, || true).await;
+    }
+
+    /// Waits until no task of `session` runs; its queued ones may stay
+    /// queued (a held or parked lane starts none).
+    pub(crate) async fn session_not_running(&self, session: &str) {
+        // Subscribed before the lane is read, as in `session_idle_and`.
+        let mut busy = self.inner.busy.subscribe();
+        while lock(&self.inner.lanes).state(session).running.is_some() {
+            // The sender lives in `self`, so the wait cannot see it closed.
+            let _ = busy.changed().await;
+        }
     }
 
     /// Waits until no task of `session` is queued or running and `also`
@@ -335,11 +593,14 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
             let mut lanes = lock(&self.inner.lanes);
             let order = lanes.next_order;
             lanes.next_order += 1;
-            let suspended = lanes.suspended.contains(&session);
+            let suspended = lanes.stopped(&session);
             let lane = lanes.by_session.entry(session.clone()).or_default();
             lane.queued.insert((task.priority, order), task);
             let start = !lane.served && !suspended;
             lane.served |= start;
+            self.inner
+                .runner
+                .lane_changed(&session, &lanes.state(&session));
             self.inner.busy.send_replace(lanes.busy());
             let admitted = if suspended {
                 Admission::Parked
@@ -356,6 +617,10 @@ impl<R: TaskRunner, S: TaskStore> TaskQueue<R, S> {
 }
 
 /// Runs `session`'s lane until it is empty.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one loop: pick, save, offer the steers behind, run, save the end, each reported"
+)]
 async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: String) {
     loop {
         // The semaphore is never closed, so the permit always comes.
@@ -364,7 +629,7 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
         };
         let (task, behind) = {
             let mut lanes = lock(&inner.lanes);
-            let suspended = lanes.suspended.contains(&session);
+            let suspended = lanes.stopped(&session);
             let Some(lane) = lanes.by_session.get_mut(&session) else {
                 return;
             };
@@ -397,6 +662,7 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
                 behind.extend(lane.queued.pop_first());
             }
             lane.running = Some(task.clone());
+            inner.runner.lane_changed(&session, &lanes.state(&session));
             (task, behind)
         };
         if let Err(error) = inner.store.save(task.clone()).await {
@@ -428,6 +694,7 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
             if let Some(lane) = lanes.by_session.get_mut(&session) {
                 lane.queued.extend(declined);
             }
+            inner.runner.lane_changed(&session, &lanes.state(&session));
             inner.busy.send_replace(lanes.busy());
         }
         let runner = Arc::clone(&inner.runner);
@@ -456,6 +723,7 @@ async fn serve<R: TaskRunner, S: TaskStore>(inner: Arc<Inner<R, S>>, session: St
         if let Some(lane) = lanes.by_session.get_mut(&session) {
             lane.running = None;
         }
+        inner.runner.lane_changed(&session, &lanes.state(&session));
         inner.busy.send_replace(lanes.busy());
     }
 }

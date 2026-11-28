@@ -11,9 +11,10 @@ use serde_json::{json, Map, Value};
 use pa_types::daemon::DaemonCommand;
 
 use crate::protocol::{response_failure, response_line, response_success, DaemonResponse};
-use crate::session_store::{read_session_info, SessionFile};
+use crate::session_store::SessionFile;
 use crate::supervisor::Supervisor;
 use crate::worker::Worker;
+use pa_core::session::catalog::read_session_info;
 use pa_core::session::lease::canonical_session_path;
 
 pub(crate) fn name_unavailable_error(name: &str, depth: u32) -> String {
@@ -155,7 +156,7 @@ pub(crate) fn ledger_rename_by_child_path(
 ) {
     let ledger =
         pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(agent_dir, sessions_dir, |_| {})
-            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
     if let Err(error) = ledger.append_rename_by_child_path(child_path, name) {
         eprintln!("failed to append RLM ledger rename: {error:#}");
     }
@@ -204,7 +205,7 @@ pub(crate) fn capture_saved_session_delete(
         return SavedDeleteCapture::TopLevel;
     }
     let usage = if regular {
-        crate::session_usage::read_own_usage_summary(Path::new(session_path))
+        pa_core::session::usage_scan::read_own_usage_summary(Path::new(session_path))
     } else {
         None
     };
@@ -235,7 +236,7 @@ pub(crate) fn tombstone_saved_session_delete_captured(
     };
     let ledger =
         pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(agent_dir, sessions_dir, |_| {})
-            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
     match ledger.tombstone_child_path_with_usage(
         canonical_path,
         pa_core::session_engine::rlm_ledger::RlmLedgerDeleteReason::User,
@@ -291,7 +292,7 @@ impl Supervisor {
         if let Some(dir) = extra_sessions_dir {
             // The catalog scan takes depth-0 rows only: a parented file
             // without a recorded depth reads as -1 and stays out.
-            for info in crate::session_store::list_sessions(dir) {
+            for info in pa_core::session::catalog::list_sessions(dir) {
                 if info.rlm_depth != 0 || info.parent_session_path.is_some() {
                     continue;
                 }
@@ -1021,7 +1022,7 @@ mod tombstone_usage_tests {
             &sessions_dir,
             |_| {},
         )
-        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
             .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-1".to_string(),
@@ -1078,7 +1079,7 @@ mod tombstone_usage_tests {
             &sessions_dir,
             |_| {},
         )
-        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         assert!(
             ledger.edges(true).unwrap().is_empty(),
             "no edges, no tombstone"
@@ -1103,7 +1104,7 @@ mod tombstone_usage_tests {
             &sessions_dir,
             |_| {},
         )
-        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
             .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-9".into(),
@@ -1159,7 +1160,7 @@ mod tombstone_usage_tests {
             &sessions_dir,
             |_| {},
         )
-        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
             .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-9".into(),

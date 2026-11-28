@@ -1,25 +1,21 @@
-//! The update roster assembly: the durable snapshot of sessions, workers,
-//! subagents, and heartbeats written at `Snapshotted`, fsynced before the
-//! `Prepared` ack.
-//!
-//! The roster is a *projection*: the durable truth stays where it lives.
+//! The supervisor's update roster rows: each resident worker's session and
+//! worker row, from its durable descriptor and its live `update_snapshot`
+//! reply. The rest of the roster (subagents, heartbeats, the assembly) is
+//! pa-core's (`pa_core::update::restart::roster`), shared with the runtime
+//! daemon.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use pa_core::cron::store::read_scheduled_jobs_artifact;
+use pa_core::update::restart::roster::{assemble, file_stem, live_child_parents, RosterInputs};
 use pa_types::daemon::{
-    UpdateHeartbeatDeliveryMode, UpdateHeartbeatStatus, UpdateId, UpdateRoster, UpdateRosterBinary,
-    UpdateRosterHeartbeat, UpdateRosterInFlight, UpdateRosterQueue, UpdateRosterSession,
-    UpdateRosterSessionKind, UpdateRosterSubagent, UpdateRosterSubagentStatus, UpdateRosterWorker,
-    UpdateSupervisorIdentity, UPDATE_ROSTER_FORMAT_VERSION,
+    UpdateRoster, UpdateRosterInFlight, UpdateRosterQueue, UpdateRosterSession,
+    UpdateRosterSessionKind, UpdateRosterWorker,
 };
 use serde_json::{json, Map, Value};
 
-use crate::util::iso_from_unix_ms;
 use pa_core::session::lease::canonical_session_path;
-use pa_core::session_engine::rlm_ledger::{read_rlm_subagent_display, RlmSpawnLedger};
 
 /// One resident worker's collected data for the roster: its durable
 /// descriptor plus the live `update_snapshot` reply.
@@ -30,25 +26,8 @@ pub(crate) struct WorkerSnapshot {
     pub(crate) snapshot: Value,
 }
 
-/// The supervisor identity recorded into the roster and the prepared
-/// marker (pid + start id + generation, the TS `getProcessStartId` contract).
-pub(crate) fn supervisor_identity(generation: String) -> UpdateSupervisorIdentity {
-    let pid = std::process::id();
-    UpdateSupervisorIdentity {
-        pid: u64::from(pid),
-        process_start_id: crate::protocol::process_start_id(pid),
-        generation,
-    }
-}
-
 fn value_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
-}
-
-fn file_stem(path: &str) -> String {
-    Path::new(path)
-        .file_stem()
-        .map_or_default(|stem| stem.to_string_lossy().to_string())
 }
 
 /// One roster session row, assembled from the worker's snapshot and the descriptor.
@@ -159,182 +138,14 @@ fn worker_row(
     }
 }
 
-/// Subagent rows (spec §8): the ledger's live edges are the topology; the
-/// per-child display file carries the durable status. A child whose display
-/// is absent reports `running` when its session is resident, `completed`
-/// otherwise (the TS passive-hydration split).
-fn subagent_rows(
-    agent_dir: &Path,
-    ledger: &RlmSpawnLedger,
-    resident_files: &HashSet<PathBuf>,
-) -> Result<Vec<UpdateRosterSubagent>> {
-    let edges = ledger
-        .live_edges()
-        .with_context(|| "read the RLM spawn ledger for the update roster")?;
-    let mut rows = Vec::new();
-    for edge in edges {
-        let parent_stem = file_stem(&edge.parent);
-        let child_dir = agent_dir
-            .join("session-artifacts")
-            .join(&parent_stem)
-            .join(&edge.child_id);
-        let display = read_rlm_subagent_display(&child_dir);
-        let status = match display.as_ref().map(|entry| entry.status.as_str()) {
-            Some("completed") => UpdateRosterSubagentStatus::Completed,
-            Some("running") => UpdateRosterSubagentStatus::Running,
-            _ => {
-                if resident_files.contains(&canonical_session_path(Path::new(&edge.child))) {
-                    UpdateRosterSubagentStatus::Running
-                } else {
-                    UpdateRosterSubagentStatus::Completed
-                }
-            }
-        };
-        let session_file = display
-            .as_ref()
-            .map(|entry| entry.session_file.clone())
-            .filter(|file| !file.is_empty())
-            .unwrap_or_else(|| edge.child.clone());
-        rows.push(UpdateRosterSubagent {
-            child_id: edge.child_id.clone(),
-            session_id: file_stem(&session_file),
-            parent_session_id: parent_stem,
-            name: edge.name.clone(),
-            status,
-            depth: edge.depth,
-            session_file,
-            display_file: child_dir
-                .join("rlm-subagent.json")
-                .to_string_lossy()
-                .to_string(),
-            rest: Map::default(),
-        });
-    }
-    Ok(rows)
-}
-
-/// Heartbeat rows (spec §8): a read-only projection of every
-/// `scheduled-jobs.json`; only `active` and `paused` jobs project.
-fn heartbeat_rows(agent_dir: &Path) -> Vec<UpdateRosterHeartbeat> {
-    let mut rows = Vec::new();
-    for job in scan_scheduled_jobs(agent_dir) {
-        let status = match job.status {
-            pa_core::cron::JobStatus::Active => UpdateHeartbeatStatus::Active,
-            pa_core::cron::JobStatus::Paused => UpdateHeartbeatStatus::Paused,
-            pa_core::cron::JobStatus::Completed | pa_core::cron::JobStatus::Cancelled => continue,
-        };
-        let schedule = schedule_text(&job);
-        rows.push(UpdateRosterHeartbeat {
-            job_id: job.id,
-            session_id: job.session_id,
-            label: job.label,
-            schedule,
-            delivery_mode: match job.delivery_mode {
-                Some(pa_core::cron::DeliveryMode::FollowUp) => {
-                    UpdateHeartbeatDeliveryMode::FollowUp
-                }
-                Some(pa_core::cron::DeliveryMode::Steer) | None => {
-                    UpdateHeartbeatDeliveryMode::Steer
-                }
-            },
-            status,
-            next_run_at: job.next_run_at,
-            rest: Map::default(),
-        });
-    }
-    rows
-}
-
-/// Every scheduled job in the agent's session artifacts (spec §8: `scheduled-jobs.json` is the only
-/// write path). Shared by the roster projection and the boot re-arm pass.
-pub(crate) fn scan_scheduled_jobs(agent_dir: &Path) -> Vec<pa_core::cron::AgentCronJob> {
-    let artifacts_root = agent_dir.join("session-artifacts");
-    let Ok(entries) = std::fs::read_dir(&artifacts_root) else {
-        return Vec::new();
-    };
-    let mut jobs = Vec::new();
-    for partition in entries.flatten() {
-        for path in scheduled_job_files(&partition.path()) {
-            jobs.extend(read_scheduled_jobs_artifact(&path));
-        }
-    }
-    jobs
-}
-
-/// The `scheduled-jobs.json` files one level under an artifacts partition
-/// root entry (per-session and per-child partitions).
-fn scheduled_job_files(partition: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![partition.join("scheduled-jobs.json")];
-    if let Ok(children) = std::fs::read_dir(partition) {
-        for child in children.flatten() {
-            paths.push(child.path().join("scheduled-jobs.json"));
-        }
-    }
-    paths
-        .into_iter()
-        .filter(|path| pa_core::cron::store::scheduled_jobs_kept(path))
-        .collect()
-}
-
-/// The schedule's display text (a UX projection; the durable schedule
-/// object stays in `scheduled-jobs.json`).
-fn schedule_text(job: &pa_core::cron::AgentCronJob) -> String {
-    match job.schedule.kind {
-        pa_core::cron::ScheduleKind::Cron | pa_core::cron::ScheduleKind::Once => {
-            if job.schedule.expression.is_empty() {
-                "once".to_string()
-            } else {
-                job.schedule.expression.clone()
-            }
-        }
-        pa_core::cron::ScheduleKind::Interval => {
-            let millis = job.schedule.interval_ms.unwrap_or(0);
-            if millis >= 60_000 && millis.is_multiple_of(60_000) {
-                format!("every {}m", millis / 60_000)
-            } else if millis >= 1000 && millis.is_multiple_of(1000) {
-                format!("every {}s", millis / 1000)
-            } else {
-                format!("every {millis}ms")
-            }
-        }
-    }
-}
-
-/// The static inputs of one roster assembly: everything the supervisor
-/// knows before the worker snapshots arrive.
-pub(crate) struct UpdateRosterInputs<'a> {
-    pub(crate) update_id: &'a UpdateId,
-    pub(crate) socket_path: &'a str,
-    pub(crate) agent_dir: &'a Path,
-    pub(crate) supervisor: UpdateSupervisorIdentity,
-    pub(crate) from_version: &'a str,
-    pub(crate) to_version: &'a str,
-    pub(crate) created_at_ms: u64,
-    pub(crate) ledger: &'a RlmSpawnLedger,
-}
-
 /// Assemble the full update roster (spec §8) from the collected worker
 /// snapshots, the RLM ledger, and the scheduled-jobs scan.
 pub(crate) fn build_update_roster(
-    inputs: UpdateRosterInputs<'_>,
+    inputs: RosterInputs<'_>,
     workers: &[WorkerSnapshot],
 ) -> Result<UpdateRoster> {
-    let UpdateRosterInputs {
-        update_id,
-        socket_path,
-        agent_dir,
-        supervisor,
-        from_version,
-        to_version,
-        created_at_ms,
-        ledger,
-    } = inputs;
     // Live edges group by parent session file: one row's `rlm_children`.
-    let child_parents: HashSet<PathBuf> = ledger
-        .live_edges()?
-        .into_iter()
-        .map(|edge| canonical_session_path(Path::new(&edge.parent)))
-        .collect();
+    let child_parents = live_child_parents(inputs.ledger)?;
     let resident_files: HashSet<PathBuf> = workers
         .iter()
         .filter_map(|worker| {
@@ -350,35 +161,24 @@ pub(crate) fn build_update_roster(
     for snapshot in workers {
         let row = session_row(snapshot, &child_parents)?;
         rows.push(worker_row(
-            agent_dir,
-            socket_path,
+            inputs.agent_dir,
+            inputs.socket_path,
             snapshot,
             std::slice::from_ref(&row.session_id),
         ));
         sessions.push(row);
     }
-    Ok(UpdateRoster {
-        format_version: UPDATE_ROSTER_FORMAT_VERSION,
-        update_id: update_id.clone(),
-        socket_path: socket_path.to_string(),
-        created_at: iso_from_unix_ms(created_at_ms),
-        supervisor,
-        binary: UpdateRosterBinary {
-            from_version: from_version.to_string(),
-            to_version: to_version.to_string(),
-        },
-        sessions,
-        workers: rows,
-        subagents: subagent_rows(agent_dir, ledger, &resident_files)?,
-        heartbeats: heartbeat_rows(agent_dir),
-        rest: Map::default(),
-    })
+    assemble(inputs, sessions, rows, &resident_files)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pa_core::session_engine::rlm_ledger::RlmSpawnInput;
+    use pa_core::session_engine::rlm_ledger::{RlmSpawnInput, RlmSpawnLedger};
+    use pa_types::daemon::{
+        UpdateHeartbeatDeliveryMode, UpdateHeartbeatStatus, UpdateId, UpdateRosterSubagentStatus,
+        UpdateSupervisorIdentity,
+    };
 
     fn sessions_file(sessions_dir: &Path, session_id: &str) -> String {
         sessions_dir
@@ -488,7 +288,7 @@ mod tests {
             std::fs::write(sessions_dir.join(format!("{session_id}.jsonl")), "").unwrap();
         }
         let ledger = RlmSpawnLedger::new(agent_dir, &sessions_dir, |_| {})
-            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
             .append_spawn(&RlmSpawnInput {
                 parent: sessions_file(&sessions_dir, "p1"),
@@ -558,7 +358,7 @@ mod tests {
         ];
         let update_id = UpdateId::from("u1".to_string());
         let roster = build_update_roster(
-            UpdateRosterInputs {
+            RosterInputs {
                 update_id: &update_id,
                 socket_path: "/tmp/sup.sock",
                 agent_dir,
@@ -649,7 +449,7 @@ mod tests {
             .remove("sessionId");
         snapshot.descriptor.session_file = None;
         let error = build_update_roster(
-            UpdateRosterInputs {
+            RosterInputs {
                 update_id: &UpdateId::from("u1".to_string()),
                 socket_path: "/tmp/sup.sock",
                 agent_dir,

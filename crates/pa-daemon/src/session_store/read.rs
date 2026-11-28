@@ -35,20 +35,6 @@ pub fn parse_session_entries(content: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The bounded first-line read cap for header-only judgments: a session
-/// header line lands well inside 512 bytes.
-pub const SESSION_LIST_HEADER_READ_MAX_BYTES: usize = 512;
-
-/// Parse one session file line as the `session` header: a JSON object tagged
-/// `session` that deserializes into the typed header.
-pub(crate) fn parse_session_header_line(line: &str) -> Option<SessionHeader> {
-    let value: Value = serde_json::from_str(line.trim()).ok()?;
-    if value.get("type").and_then(Value::as_str) != Some("session") {
-        return None;
-    }
-    serde_json::from_value(value).ok()
-}
-
 /// Read the transcript's first line when it ends within `max_bytes` bytes
 /// ([`pa_core::session::store::read_first_line_bounded`] over a fresh open).
 pub(crate) fn read_first_line_bounded(path: &Path, max_bytes: usize) -> Option<Vec<u8>> {
@@ -57,13 +43,16 @@ pub(crate) fn read_first_line_bounded(path: &Path, max_bytes: usize) -> Option<V
 }
 
 /// The session file's header, read from the first line bounded to
-/// [`SESSION_LIST_HEADER_READ_MAX_BYTES`]: `None` also covers an over-long
+/// [`SESSION_LIST_HEADER_READ_MAX_BYTES`](pa_core::session::catalog::SESSION_LIST_HEADER_READ_MAX_BYTES): `None` also covers an over-long
 /// first line — the bounded read refuses to judge a truncated one.
 #[must_use]
 pub fn read_session_header_bounded(path: &Path) -> Option<SessionHeader> {
-    let line = read_first_line_bounded(path, SESSION_LIST_HEADER_READ_MAX_BYTES)?;
+    let line = read_first_line_bounded(
+        path,
+        pa_core::session::catalog::SESSION_LIST_HEADER_READ_MAX_BYTES,
+    )?;
     let text = std::str::from_utf8(&line).ok()?;
-    parse_session_header_line(text)
+    pa_core::session::catalog::parse_session_header_line(text)
 }
 
 /// Read the first line of a session file and parse it as a header.
@@ -72,7 +61,7 @@ pub fn read_session_header(path: &Path) -> Option<SessionHeader> {
     let file = transcripts().open(path).ok()?;
     let mut first = String::new();
     std::io::BufReader::new(file).read_line(&mut first).ok()?;
-    parse_session_header_line(&first)
+    pa_core::session::catalog::parse_session_header_line(&first)
 }
 
 /// A session file is valid when its first line is a `session` header, judged

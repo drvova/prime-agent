@@ -238,7 +238,8 @@ async fn kill_cancels_the_sessions_scheduled_jobs() {
     assert_eq!(cancelled.status, pa_core::cron::JobStatus::Cancelled);
     assert_eq!(cancelled.next_run_at, None);
     // The close archived the session file (the wake scan's state gate).
-    let info = crate::session_store::read_session_info(std::path::Path::new(session_file)).unwrap();
+    let info =
+        pa_core::session::catalog::read_session_info(std::path::Path::new(session_file)).unwrap();
     assert_eq!(info.state.as_deref(), Some("archived"));
 }
 

@@ -13,12 +13,34 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// The last level of a live-only topic `agent/<id>/<kind>`: the stream of a
-/// turn's deltas and its tool progress. Their events are fanned out to the
+/// turn's deltas, its tool progress, and the session's side runs (`/btw`,
+/// `/better`), which never enter its history. Their events are fanned out to the
 /// bus's listeners as they happen and never stored: they have no sequence
 /// number (`Event::seq` is 0), a subscription to them replays nothing, and
 /// a listener that falls behind loses the ones it missed. What a turn ends
 /// with is published on a stored topic (`agent/<id>/done`).
-const LIVE_ONLY_KINDS: &[&str] = &["stream", "tool"];
+const LIVE_ONLY_KINDS: &[&str] = &["stream", "tool", "side_question"];
+
+/// The live-only feeds `runtime/<feed>`: the agents view's roster row
+/// changes and agent traffic, and the model catalog's changes. A client reads
+/// their current state with a query and follows the feed from then on, as it
+/// follows a stream.
+const LIVE_ONLY_FEEDS: &[&str] = &["roster", "traffic", "models"];
+
+/// The topic the runtime announces its own end on, to every connection
+/// before it closes them (the old daemon's `daemon_closing` push): live only,
+/// so a client that connects to the next daemon never replays the last one's
+/// end. Its payload is `{"reason": "shutdown" | "update", ...}`; the wire
+/// server ends each connection with `closing` once it has delivered it.
+pub const SYSTEM_CLOSING: &str = "system/closing";
+
+/// The topic the runtime announces a distribution build's boot history
+/// import on (the old daemon's `history_import` push): live only, so a
+/// client never replays an import another boot ran. Its payload is the old
+/// frame without `type` (`{"phase": "started" | "finished", "sessions",
+/// ...}`); a client that connects mid-import reads the started one with the
+/// `system.history_import` query.
+pub const SYSTEM_HISTORY_IMPORT: &str = "system/history_import";
 
 /// Most levels in a topic or filter.
 pub const MAX_TOPIC_LEVELS: usize = 16;
@@ -105,14 +127,20 @@ impl Topic {
     }
 
     /// Whether events on this topic are live only, never stored: exactly
-    /// `agent/<id>/stream` or `agent/<id>/tool`.
+    /// `agent/<id>/stream`, `agent/<id>/tool`, `runtime/roster`,
+    /// `runtime/traffic`, `runtime/models`, `runtime/session_list/<request>`
+    /// (one saved-session list request's rows as it walks the store),
+    /// [`SYSTEM_CLOSING`] or [`SYSTEM_HISTORY_IMPORT`].
     #[must_use]
     pub fn is_live_only(&self) -> bool {
         let mut levels = self.levels();
-        matches!(
-            (levels.next(), levels.next(), levels.next(), levels.next()),
-            (Some("agent"), Some(_), Some(kind), None) if LIVE_ONLY_KINDS.contains(&kind)
-        )
+        match (levels.next(), levels.next(), levels.next(), levels.next()) {
+            (Some("agent"), Some(_), Some(kind), None) => LIVE_ONLY_KINDS.contains(&kind),
+            (Some("runtime"), Some(feed), None, None) => LIVE_ONLY_FEEDS.contains(&feed),
+            (Some("runtime"), Some("session_list"), Some(_), None)
+            | (Some("system"), Some("closing" | "history_import"), None, None) => true,
+            _ => false,
+        }
     }
 }
 

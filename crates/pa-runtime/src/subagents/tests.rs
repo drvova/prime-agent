@@ -144,6 +144,7 @@ impl SessionBuilder for TreeBuilder {
             engine: Arc::new(engine),
             model,
             api_key: None,
+            provider_target: Arc::default(),
             agent_dir: self.agent_dir.clone(),
             events: DriverEvents::Stream,
             autonomous: None,
@@ -372,6 +373,42 @@ async fn a_spawned_childs_done_delivers_its_notice_to_the_parent() {
             "[child-exited: no-reply child:kid]\n\nLast assistant text: kid finished"
         )]
     );
+}
+
+/// Each status a child reaches is published once on its parent's stream as
+/// the old worker's `rlm_child_update`, its roster row as the child.
+#[tokio::test]
+async fn a_childs_status_changes_reach_the_parents_stream_once_each() {
+    let mut bed = bed(json!({
+        "responses": [spawn_kid("run the task"), { "text": "WAITING" }, { "text": "PARENT DONE" }],
+        "children": { "kid": [{ "text": "kid finished" }] },
+    }))
+    .await;
+    let input = bed.input("delegate").await;
+    bed.runtime
+        .settle(&bed.parent, SettleAfter::Task(input))
+        .await
+        .unwrap();
+    let stream = format!("agent/{}/stream", bed.parent);
+    let mut updates = Vec::new();
+    while updates.last().map(|(_, status)| status) != Some(&json!("done")) {
+        let event = heard(&mut bed.listener).await;
+        let payload = &event.event.payload;
+        if event.event.topic.as_str() == stream && payload["type"] == "rlm_child_update" {
+            updates.push((
+                payload["child"]["sessionName"].clone(),
+                payload["child"]["status"].clone(),
+            ));
+        }
+    }
+    assert_eq!(
+        updates,
+        [
+            (json!("kid"), json!("running")),
+            (json!("kid"), json!("done"))
+        ]
+    );
+    bed.close().await;
 }
 
 /// A session at its depth bound refuses a spawn with the shared error.

@@ -6,19 +6,14 @@
 //! tooling read the same files.
 
 use anyhow::{anyhow, Context, Result};
-use pa_types::ai::Usage;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(test)]
 use std::fs;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
-#[path = "session_store_info_tests.rs"]
-mod info_tests;
 #[cfg(test)]
 #[path = "session_store_stream_tests.rs"]
 mod stream_tests;
@@ -40,10 +35,9 @@ pub(crate) use index::new_entry_id;
 // The read arm lives in session_store::read; the facade re-exports keep the crate paths stable.
 mod read;
 
-pub(crate) use read::parse_session_header_line;
 pub use read::{
     is_valid_session_file, parse_session_entries, read_session_header, read_session_header_bounded,
-    session_file_name, SESSION_LIST_HEADER_READ_MAX_BYTES,
+    session_file_name,
 };
 
 // The write arm lives in session_store::write; the facade re-export keeps the API path stable.
@@ -54,42 +48,7 @@ pub use write::session_header_line;
 // The loaded-session view lives in session_store::view; the facade bindings keep callers in scope.
 mod view;
 
-use view::{message_text, normalize_state_status};
-
-// The message-role helper's remaining bare-path callers are the test children; the binding
-// rides the test builds only.
-#[cfg(test)]
-use view::message_role;
-
-// The per-file info scan lives in session_store::info; the facade re-exports keep the paths stable.
-mod info;
-
-// The persisted scan-state sidecar.
-mod info_sidecar;
-
-pub(crate) use info::read_session_info_from;
-pub use info::{
-    find_most_recent_session_for_cwd, legacy_ledger_usage, read_session_info, SessionInfo,
-};
-#[cfg(test)]
-use info::{
-    message_content_text, raw_string, raw_u64, session_info_cache, SessionInfoEntry,
-    SessionInfoScanCache, SessionScanState, SESSION_SCAN_RESUME_TAIL_BYTES,
-};
-// Only the unix-only scan-cache cap test reads it.
-#[cfg(all(test, unix))]
-use info::SESSION_SCAN_MAX_CACHED_STATES;
-pub(crate) use info_sidecar::persist_info_sidecar;
-
-/// What a session lease this daemon holds writes beside its window snapshot
-/// (`SessionLease::with_info_sidecar`): the info scan state of the file at
-/// `path`, folded current (rows appended since the last read, the close's own
-/// final rows, fold here instead of at the next open) and persisted.
-/// Best-effort: a failed write costs the next open its warm resume.
-pub fn write_info_sidecar(path: &Path) {
-    let _ = read_session_info(path);
-    persist_info_sidecar(path);
-}
+use view::message_text;
 
 // The inline unit battery lives in session_store::tests.
 #[cfg(test)]
@@ -98,9 +57,6 @@ pub(crate) mod test_support;
 mod tests;
 
 pub use pa_types::session::SessionHeader;
-
-/// The roster scan lives in `session_scan`; re-exported for the listing call sites.
-pub use crate::session_scan::list_sessions;
 
 /// One stored entry: message lifecycle, bookkeeping, or a custom record.
 /// Fields beyond the entry envelope are preserved as raw JSON.
@@ -115,6 +71,14 @@ pub struct SessionEntry {
     pub timestamp: String,
     #[serde(flatten)]
     pub fields: Value,
+}
+
+impl SessionEntry {
+    /// The entry's [`BilledRow`](pa_core::session::billed_row::BilledRow): a model call made
+    /// outside the agent loop, if it is one.
+    pub(crate) fn billed_row(&self) -> Option<pa_core::session::billed_row::BilledRow> {
+        pa_core::session::billed_row::billed_fields(&self.type_, &self.fields)
+    }
 }
 
 /// One display-transcript page ([`SessionFile::transcript_page`]).

@@ -350,7 +350,7 @@ fn a_heartbeat_that_came_due_while_the_daemon_was_down_fires_once_at_the_next_bo
         common::scheduled_jobs(&jobs_file)
             .first()
             .and_then(|job| job.next_run_at.as_deref())
-            .and_then(pa_daemon::util::iso_to_unix_ms)
+            .and_then(pa_core::session::manager::iso_to_unix_ms)
     };
     // One fire has landed and the session is idle again, with its next run recorded.
     let rows_before = wait_until(Duration::from_secs(30), || {

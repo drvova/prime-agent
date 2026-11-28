@@ -106,7 +106,7 @@ async fn a_fire_at_a_killed_session_cancels_and_skips() {
     let hooks = QueueHooks {
         core: Arc::clone(&core),
         work_notify: Arc::new(Notify::new()),
-        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        user_bash: Arc::new(pa_core::user_bash::UserBash::new()),
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::new(std::sync::Mutex::new(None)),
     };
@@ -147,7 +147,7 @@ async fn heartbeat_fire_parks_the_labeled_preview_on_its_lane() {
     let hooks = Arc::new(QueueHooks {
         core: Arc::clone(&core),
         work_notify: Arc::new(Notify::new()),
-        user_bash: Arc::new(crate::user_bash::UserBash::new()),
+        user_bash: Arc::new(pa_core::user_bash::UserBash::new()),
         store: Arc::new(AgentCronJobStore::for_session_artifacts()),
         recovery: Arc::new(std::sync::Mutex::new(None)),
     });
@@ -254,7 +254,7 @@ async fn settles_classify_ran_failed_or_skipped() {
         let hooks = Arc::new(QueueHooks {
             core: Arc::clone(&core),
             work_notify: Arc::new(Notify::new()),
-            user_bash: Arc::new(crate::user_bash::UserBash::new()),
+            user_bash: Arc::new(pa_core::user_bash::UserBash::new()),
             store: Arc::new(AgentCronJobStore::for_session_artifacts()),
             recovery: Arc::new(std::sync::Mutex::new(None)),
         });

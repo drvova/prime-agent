@@ -60,7 +60,7 @@ fn live_feed_runner(
     scratch: &std::path::Path,
 ) -> TurnRunner {
     let core = Arc::new(Mutex::new(SessionCore::test_core(None, "/tmp".to_string())));
-    let user_bash = Arc::new(crate::user_bash::UserBash::new());
+    let user_bash = Arc::new(pa_core::user_bash::UserBash::new());
     let events = Arc::new(EventPump::new());
     let roster_pushes =
         crate::roster_activity::RosterPushQueue::spawn(crate::worker::RosterPushContext {
@@ -84,7 +84,7 @@ fn live_feed_runner(
         engine,
         active_session_id: "feed-session".to_string(),
         roster_pushes,
-        user_bash: std::sync::Arc::new(crate::user_bash::UserBash::new()),
+        user_bash: std::sync::Arc::new(pa_core::user_bash::UserBash::new()),
         passivation: crate::worker::turn::PassivationContext {
             agent_dir: scratch.to_path_buf(),
             link: Arc::new(crate::supervisor_link::SupervisorLink::new(
@@ -92,7 +92,6 @@ fn live_feed_runner(
             )),
             worker_token: "token".to_string(),
         },
-        herdr: std::sync::Arc::new(std::sync::Mutex::new(crate::herdr::HerdrReporter::default())),
         checkpoints: Arc::new(crate::workspace_checkpoints::WorkspaceCheckpoints::new(
             scratch.to_path_buf(),
         )),

@@ -83,7 +83,7 @@ async fn an_ended_worker_session_leaves_a_current_info_sidecar() {
     .await;
     // The scan prime the roster pushes make in production (the push queue
     // is off in this fixture; the orphan-exit e2e covers the push path).
-    let _ = crate::session_store::read_session_info(&session_file);
+    let _ = pa_core::session::catalog::read_session_info(&session_file);
     kill(&worker).await;
     assert_sidecar_current("fresh + turn + kill", &session_file);
 }
@@ -101,7 +101,7 @@ async fn a_reopened_session_ends_with_a_current_info_sidecar() {
     });
     let first = faux_worker(&dir, "first reply");
     let session_file = create_and_prompt(&first, &create, "first question").await;
-    let _ = crate::session_store::read_session_info(&session_file);
+    let _ = pa_core::session::catalog::read_session_info(&session_file);
     kill(&first).await;
     // The dead-version sidecar a newer build must not serve.
     let sidecar = session_file.with_extension("info-cache.json");

@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now answers the interactive TUI's `/btw` side questions and `/better` rewrites (start, abort, and the rewrite's outcome) and streams their answers as the default daemon does.

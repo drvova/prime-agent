@@ -13,6 +13,13 @@
 //! see it. Under the runtime daemon's supervision a panic on any of the
 //! session's threads, or a stuck cell, ends the lifetime the same way, and
 //! the crash is recorded and healed ([`super::faults`]).
+//!
+//! A session replaced by another transcript ([`SessionHost::replace`]: the
+//! runtime daemon's `fork` onto an entry and `import_jsonl`) goes the same
+//! way without a crash: once the work before it ends, the lifetime ends and
+//! the next one builds its engine (and a fresh kernel) from the new
+//! transcript in the new working directory. The session keeps its id, its
+//! topics and their subscribers, its stream and its tasks.
 
 use std::collections::BTreeSet;
 use std::panic::AssertUnwindSafe;
@@ -25,10 +32,9 @@ use pa_core::session::crash::{
     restart_backoff_ms, SessionCrash, MAX_CONSECUTIVE_FAILURES, STABLE_LIFETIME_MS,
 };
 use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
-use pa_core::session_engine::session_events::agent_event_json;
 use pa_types::ai::ImageContent;
 use pa_types::daemon::SessionFaultEvent;
-use pa_types::event_log::{Cause, EventId, NewEvent, Task, TaskFailure};
+use pa_types::event_log::{Cause, EventId, Task, TaskFailure};
 use pa_types::session_scope::{self, SessionScope};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -39,6 +45,7 @@ use pa_core::session_engine::agent_messaging::{
 };
 use pa_core::session_engine::event_bus_host::register_event_bus_host_handlers;
 
+use super::checkpoints::Checkpoints;
 use super::faults::{
     keep_fault, orphan_journal, publish_fault, reap_orphans, record_crash, LifetimeFaults, Rebuild,
     SessionFaults,
@@ -89,6 +96,41 @@ enum Work {
     Finish(oneshot::Sender<Result<Finished, String>>),
 }
 
+/// What the session's thread is sent: work for its lifetime, or the end of
+/// the lifetime in a replacement.
+enum Request {
+    Work(Work),
+    /// The session goes on from another transcript in a new lifetime.
+    Replace(Replacement),
+}
+
+impl From<Work> for Request {
+    fn from(work: Work) -> Self {
+        Request::Work(work)
+    }
+}
+
+impl Request {
+    /// Answers the request with `reason` as its failure, without running it.
+    fn fail(self, reason: &str) {
+        match self {
+            Request::Work(work) => work.fail(reason),
+            Request::Replace(replacement) => {
+                let _ = replacement.built.send(Err(reason.to_string()));
+            }
+        }
+    }
+}
+
+/// The transcript and working directory a replaced session goes on from,
+/// and where the answer goes once its new engine is built (or failed to
+/// be).
+pub(crate) struct Replacement {
+    pub(crate) transcript: PathBuf,
+    pub(crate) cwd: PathBuf,
+    built: oneshot::Sender<Result<(), String>>,
+}
+
 /// Where a settle's answer goes: how the run ended, or `None` when the task
 /// it was to follow stopped the run.
 type SettleAnswer = oneshot::Sender<Result<Option<Settled>, String>>;
@@ -113,7 +155,7 @@ impl TaskEnd {
         outcome: TaskOutcome::Done,
         failure: None,
     };
-    const CANCELLED: TaskEnd = TaskEnd {
+    pub(crate) const CANCELLED: TaskEnd = TaskEnd {
         outcome: TaskOutcome::Cancelled,
         failure: None,
     };
@@ -132,11 +174,19 @@ impl TaskEnd {
 pub(crate) struct LiveEngine {
     pub(crate) engine: Arc<pa_core::session_engine::engine::SessionEngine>,
     pub(crate) runtime: tokio::runtime::Handle,
+    /// The lifetime's autonomous run state, as its turns account it.
+    pub(crate) autonomous: Arc<tokio::sync::Mutex<pa_core::autonomous::AutonomousRuntimeState>>,
+    /// The slot its engine's stream reads its provider target from
+    /// ([`crate::BuiltSession::provider_target`]).
+    pub(crate) provider_target: pa_core::session_engine::provider_adapter::ProviderTargetSlot,
+    /// The lifetime's workspace checkpoints ([`Checkpoints`]); `None` for a
+    /// subagent or a session kept in memory.
+    pub(crate) checkpoints: Option<Arc<Checkpoints>>,
 }
 
 /// One session's host thread, as the runtime holds it.
 pub(crate) struct SessionHost {
-    work: Mutex<Option<mpsc::UnboundedSender<Work>>>,
+    work: Mutex<Option<mpsc::UnboundedSender<Request>>>,
     control: Arc<TurnControl>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -164,6 +214,9 @@ struct Turn {
     steerable: bool,
     /// Whether the running task was cancelled.
     cancelled: bool,
+    /// A task the lane runs that was cancelled before it reached this
+    /// thread: it starts cancelled and runs nothing.
+    cancelled_ahead: Option<String>,
     /// Whether the running task's turn took a steer.
     steered: bool,
     /// The steers the running task's turn took, each with the message it
@@ -217,7 +270,7 @@ impl SessionHost {
                 let control = Arc::clone(&control);
                 move || {
                     serve(
-                        &Lifetime {
+                        &mut Lifetime {
                             id,
                             spec,
                             node,
@@ -322,6 +375,29 @@ impl SessionHost {
             .unwrap_or_else(|_| Err("the session's host ended before the finish did".to_string()))
     }
 
+    /// Ends the session's lifetime once the work before it has, and goes on
+    /// from `transcript` in `cwd` in a new one (see the module
+    /// documentation); answers once its engine is built.
+    ///
+    /// # Errors
+    ///
+    /// The session is closed, or its new engine could not be built (the
+    /// session runs on from the new transcript all the same, building again
+    /// for its next work).
+    pub(crate) async fn replace(&self, transcript: PathBuf, cwd: PathBuf) -> Result<(), String> {
+        let (built, answer) = oneshot::channel();
+        if !self.send(Request::Replace(Replacement {
+            transcript,
+            cwd,
+            built,
+        })) {
+            return Err(self.closed_reason());
+        }
+        answer
+            .await
+            .unwrap_or_else(|_| Err("the session's host ended before its replacement".to_string()))
+    }
+
     /// Why work sent to the session's thread is refused.
     fn closed_reason(&self) -> String {
         lock(&self.control.turn)
@@ -330,11 +406,11 @@ impl SessionHost {
             .unwrap_or_else(|| "the session is closed".to_string())
     }
 
-    /// Queues `work` for the session's thread; whether it is still open.
-    fn send(&self, work: Work) -> bool {
+    /// Queues `request` for the session's thread; whether it is still open.
+    fn send(&self, request: impl Into<Request>) -> bool {
         lock(&self.work)
             .as_ref()
-            .is_some_and(|sender| sender.send(work).is_ok())
+            .is_some_and(|sender| sender.send(request.into()).is_ok())
     }
 
     /// Hands `steer`'s prompt to `running`'s turn while it still reads
@@ -379,7 +455,10 @@ impl SessionHost {
                 turn.taken.push((steer.clone(), message));
                 Steered::Taken
             }
-            (_, None) if turn.ended.as_deref() != Some(running.id.as_str()) => {
+            (_, None)
+                if turn.ended.as_deref() != Some(running.id.as_str())
+                    && turn.cancelled_ahead.as_deref() != Some(running.id.as_str()) =>
+            {
                 turn.pending
                     .push((running.id.clone(), steer.clone(), message));
                 Steered::Taken
@@ -388,32 +467,53 @@ impl SessionHost {
         }
     }
 
-    /// Cancels the running task: its turn is aborted and it ends
-    /// `Cancelled`. The steers its turn took and had not read yet are
-    /// withdrawn from it and returned, queued again, for the caller to put
-    /// back in the lane.
-    pub(crate) fn cancel_running(&self) -> Vec<Task> {
+    /// Cancels task `task`, the one the session's lane runs: its turn is
+    /// aborted and it ends `Cancelled`. The queue saves a task as running
+    /// before it hands it to this thread, so one that has not reached it yet
+    /// is marked to start cancelled and run nothing. The steers handed to the
+    /// task and not read yet are withdrawn from it and returned, queued
+    /// again, for the caller to put back in the lane; `None` when `task`
+    /// already ended here.
+    pub(crate) fn cancel_running_task(&self, task: &str) -> Option<Vec<Task>> {
         let mut turn = lock(&self.control.turn);
-        if turn.task.is_none() {
-            return Vec::new();
+        if turn.ended.as_deref() == Some(task) {
+            return None;
+        }
+        if turn.task.as_deref() != Some(task) {
+            let (pending, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut turn.pending)
+                .into_iter()
+                .partition(|(id, ..)| id == task);
+            turn.pending = kept;
+            turn.cancelled_ahead = Some(task.to_string());
+            return Some(
+                pending
+                    .into_iter()
+                    .map(|(_, steer, _)| Task {
+                        state: pa_types::event_log::TaskState::Queued,
+                        ..steer
+                    })
+                    .collect(),
+            );
         }
         turn.cancelled = true;
         turn.steerable = false;
         let taken = std::mem::take(&mut turn.taken);
         let Some(agent) = &turn.agent else {
-            return Vec::new();
+            return Some(Vec::new());
         };
         agent.abort();
         let unread = agent
             .remove_queued_messages(|message| taken.iter().any(|(_, handed)| handed == message));
-        taken
-            .into_iter()
-            .filter(|(_, handed)| unread.contains(handed))
-            .map(|(task, _)| Task {
-                state: pa_types::event_log::TaskState::Queued,
-                ..task
-            })
-            .collect()
+        Some(
+            taken
+                .into_iter()
+                .filter(|(_, handed)| unread.contains(handed))
+                .map(|(task, _)| Task {
+                    state: pa_types::event_log::TaskState::Queued,
+                    ..task
+                })
+                .collect(),
+        )
     }
 
     /// The engine of the session's current lifetime, once it is built.
@@ -456,6 +556,8 @@ struct Lifetime<B> {
 enum Ended {
     /// The session was closed.
     Closed,
+    /// It goes on from another transcript in a new lifetime.
+    Replaced(Replacement),
     /// It crashed; the session goes on in a new lifetime (or, supervised and
     /// crashing too often, is given up).
     Crashed(SessionCrash),
@@ -463,16 +565,29 @@ enum Ended {
 
 /// The host thread: one lifetime after another until the session closes
 /// (or, supervised, is given up).
+#[expect(
+    clippy::too_many_lines,
+    reason = "a lifetime's end reads in the order it is handled: closed, replaced, crashed, \
+              recorded, given up or rebuilt"
+)]
 fn serve<B: SessionBuilder>(
-    lifetime: &Lifetime<B>,
-    mut queued: mpsc::UnboundedReceiver<Work>,
+    lifetime: &mut Lifetime<B>,
+    mut queued: mpsc::UnboundedReceiver<Request>,
     opening: Opening,
 ) {
     let mut rebuild = match opening {
         Opening::Fresh => None,
-        Opening::Revived(rebuild) => Some(rebuild),
+        // The crash the daemon's death was, recorded as the session opened:
+        // mirrored as a live one is (a client that attaches later replays
+        // it from the stored topics).
+        Opening::Revived(rebuild) => {
+            lifetime.node.stream.crashed(&rebuild.crash);
+            Some(rebuild)
+        }
     };
     let mut failures = rebuild.as_ref().map_or(0, |rebuild| rebuild.failures);
+    // The replacement whose new engine the next lifetime answers.
+    let mut replaced = None;
     loop {
         let scope = lifetime.scope();
         let faults = Arc::new(LifetimeFaults::default());
@@ -504,7 +619,13 @@ fn serve<B: SessionBuilder>(
             }
         };
         let started = Instant::now();
-        let ended = lifetime.run(&runtime, &mut queued, &faults, rebuild.take());
+        let ended = lifetime.run(
+            &runtime,
+            &mut queued,
+            &faults,
+            rebuild.take(),
+            replaced.take(),
+        );
         {
             let mut turn = lock(&lifetime.control.turn);
             turn.agent = None;
@@ -516,6 +637,13 @@ fn serve<B: SessionBuilder>(
         runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
         let crash = match ended {
             Ended::Closed => return,
+            Ended::Replaced(replacement) => {
+                lifetime.spec.transcript = Some(replacement.transcript);
+                lifetime.node.set_cwd(&replacement.cwd);
+                lifetime.spec.cwd = replacement.cwd;
+                replaced = Some(replacement.built);
+                continue;
+            }
             Ended::Crashed(crash) => crash,
         };
         let supervision = match &lifetime.faults {
@@ -545,6 +673,7 @@ fn serve<B: SessionBuilder>(
             &lifetime.id,
             &crashed,
         );
+        lifetime.node.stream.crashed(&crashed.crash);
         if failures > MAX_CONSECUTIVE_FAILURES {
             let given_up = SessionFaultEvent::SessionFailed { failures };
             {
@@ -561,6 +690,7 @@ fn serve<B: SessionBuilder>(
                 &lifetime.id,
                 &given_up,
             );
+            lifetime.node.stream.fault(&given_up);
             let reason = format!(
                 "the session was given up after {failures} crashes in a row: {}",
                 crashed.crash.reason()
@@ -609,6 +739,9 @@ struct Hosted {
     /// it was capped by this run.
     goal_updated_at_start: Option<u64>,
     global_harness_dir: PathBuf,
+    /// The lifetime's workspace checkpoints; `None` for a subagent or a
+    /// session kept in memory.
+    checkpoints: Option<Arc<Checkpoints>>,
 }
 
 impl<B: SessionBuilder> Lifetime<B> {
@@ -625,13 +758,15 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// Serves work on `runtime` until the session closes or the lifetime
     /// crashes. A rebuild after a crash first keeps the fault in the
     /// transcript and answers the calls it cut off, then builds; once the
-    /// engine is built the session's clients hear it recovered.
+    /// engine is built the session's clients hear it recovered. A lifetime
+    /// that follows a replacement answers it (`replaced`) once it built.
     fn run(
         &self,
         runtime: &tokio::runtime::Runtime,
-        queued: &mut mpsc::UnboundedReceiver<Work>,
+        queued: &mut mpsc::UnboundedReceiver<Request>,
         faults: &LifetimeFaults,
         rebuild: Option<Rebuild>,
+        replaced: Option<oneshot::Sender<Result<(), String>>>,
     ) -> Ended {
         let mut recovering = rebuild.map(|rebuild| {
             let recovered = SessionFaultEvent::SessionRecovered {
@@ -642,10 +777,14 @@ impl<B: SessionBuilder> Lifetime<B> {
             recovered
         });
         let mut hosted = self.build(runtime);
+        if let Some(replaced) = replaced {
+            let _ = replaced.send(hosted.as_ref().map(|_| ()).map_err(Clone::clone));
+        }
         loop {
             if hosted.is_ok() {
                 if let Some(recovered) = recovering.take() {
                     publish_fault(&self.outbox, &self.topics.recovered, &self.id, &recovered);
+                    self.node.stream.fault(&recovered);
                 }
             }
             let next = runtime.block_on(async {
@@ -656,7 +795,12 @@ impl<B: SessionBuilder> Lifetime<B> {
                 }
             });
             let work = match next {
-                Ok(Some(work)) => work,
+                Ok(Some(Request::Work(work))) => work,
+                Ok(Some(Request::Replace(replacement))) => {
+                    // Dropped on its runtime, as a close drops it.
+                    runtime.block_on(async move { drop(hosted) });
+                    return Ended::Replaced(replacement);
+                }
                 Ok(None) => {
                     // Dropped on its runtime: what the engine spawns as it
                     // goes down still has one to run on.
@@ -748,8 +892,8 @@ impl<B: SessionBuilder> Lifetime<B> {
                 {
                     let mut turn = lock(&self.control.turn);
                     turn.task = Some(task.id.clone());
-                    turn.steerable = true;
-                    turn.cancelled = false;
+                    turn.cancelled = turn.cancelled_ahead.take().as_ref() == Some(&task.id);
+                    turn.steerable = !turn.cancelled;
                     turn.steered = false;
                     // The steers kept for this task: its run reads them as
                     // it starts. Any kept for another never reached here.
@@ -805,7 +949,9 @@ impl<B: SessionBuilder> Lifetime<B> {
                     }
                 };
                 // The `done` goes behind the turn's stream and ahead of
-                // anything a settle streams.
+                // anything a settle streams; the queue view's end of the
+                // task goes ahead of it.
+                self.node.stream.task_ended(&task.id);
                 self.outbox
                     .send(done_event(&self.topics, &task, &end, &cause));
                 let _ = outcome.send(Ran::Reported(end));
@@ -875,13 +1021,13 @@ impl<B: SessionBuilder> Lifetime<B> {
                 Arc::new(FamilyMessages(Arc::clone(&self.node))),
                 &mut host_handlers,
             );
-            // The runtime daemon's sessions observe their families.
-            if self
+            let in_daemon = self
                 .node
                 .tree
                 .upgrade()
-                .is_some_and(|tree| tree.daemon().is_some())
-            {
+                .is_some_and(|tree| tree.daemon().is_some());
+            // The runtime daemon's sessions observe their families.
+            if in_daemon {
                 register_agent_observe_host_handlers(
                     Arc::new(FamilyObserve(Arc::clone(&self.node))),
                     &mut host_handlers,
@@ -901,6 +1047,8 @@ impl<B: SessionBuilder> Lifetime<B> {
                     .jobs
                     .get()
                     .and_then(|jobs| jobs.wiring(&self.id, &self.spec)),
+                // The runtime daemon's sessions ask their attached clients.
+                interaction: in_daemon.then(|| self.node.interaction.lifetime_hub()),
             };
             runtime.block_on(self.builder.build(&self.id, &self.spec, seams))
         }));
@@ -917,22 +1065,57 @@ impl<B: SessionBuilder> Lifetime<B> {
             }
         };
         let agent = Arc::clone(built.engine.session.agent());
-        let json = built.events == DriverEvents::Stream;
+        let json = built.events != DriverEvents::Quiet;
         let hosted = runtime.block_on(async {
+            let stream = &self.node.stream;
+            stream.adopt(built.events, &built.engine).await;
             // The stream's listener first: on every agent event the stream
             // has it before the goal's accounting reports what it changed.
             agent
                 .subscribe({
-                    let publisher = self.publisher();
+                    let stream = Arc::clone(stream);
+                    let agent = Arc::downgrade(&agent);
                     move |event, _signal| {
-                        if let Some(payload) = agent_event_json(&event) {
-                            publisher(&payload);
+                        let stream = Arc::clone(&stream);
+                        let agent = agent.clone();
+                        Box::pin(async move {
+                            stream.agent_event(&event, &agent).await;
+                            Ok(())
+                        })
+                    }
+                })
+                .await;
+            // A cancel that lands after its task's last check and before the
+            // agent's run registers finds no run to abort (`Agent::abort`
+            // aborts only a live one): that run aborts as it starts.
+            agent
+                .subscribe({
+                    let control = Arc::clone(&self.control);
+                    move |event, _signal| {
+                        if matches!(event, pa_agent::types::AgentEvent::AgentStart) {
+                            let turn = lock(&control.turn);
+                            if let Some(agent) = turn.agent.as_ref().filter(|_| turn.cancelled) {
+                                agent.abort();
+                            }
                         }
                         Box::pin(std::future::ready(Ok(())))
                     }
                 })
                 .await;
             let engine = &built.engine;
+            // The summary's deltas while a compaction writes it, in the
+            // session-event shapes only (the json stream never had them).
+            if built.events == DriverEvents::SessionEvents {
+                let stream = Arc::clone(stream);
+                engine
+                    .session
+                    .set_compaction_summary_sink(Arc::new(move |delta: &str| {
+                        stream.publish(&serde_json::json!({
+                            "type": "compaction_summary_delta",
+                            "delta": delta,
+                        }));
+                    }));
+            }
             self.node
                 .adopt(engine, &built.model, &built.agent_dir)
                 .await;
@@ -968,12 +1151,21 @@ impl<B: SessionBuilder> Lifetime<B> {
             );
             let global_harness_dir =
                 pa_core::refinement::get_global_harness_state_dir(&built.agent_dir);
+            // A transcript kept on disk, of a root session: its workspace's
+            // checkpoints (a subagent's writes land in its parent's turn).
+            let checkpoints = (self.spec.subagent.is_none() && !self.spec.ephemeral).then(|| {
+                Arc::new(Checkpoints::new(
+                    built.agent_dir.clone(),
+                    self.spec.cwd.clone(),
+                ))
+            });
             Hosted {
                 boundary: TurnBoundary::with_sink(json, self.publisher()),
                 goal,
                 autonomous,
                 goal_updated_at_start,
                 global_harness_dir,
+                checkpoints,
                 built,
             }
         });
@@ -983,6 +1175,9 @@ impl<B: SessionBuilder> Lifetime<B> {
             turn.engine = Some(LiveEngine {
                 engine: Arc::clone(&hosted.built.engine),
                 runtime: runtime.handle().clone(),
+                autonomous: hosted.autonomous.state_handle(),
+                provider_target: Arc::clone(&hosted.built.provider_target),
+                checkpoints: hosted.checkpoints.clone(),
             });
         }
         self.node.built(Ok(()));
@@ -992,22 +1187,8 @@ impl<B: SessionBuilder> Lifetime<B> {
     /// Publishes one json payload on the session's stream, with the running
     /// task's trust.
     fn publisher(&self) -> Arc<dyn Fn(&Value) + Send + Sync> {
-        let outbox = self.outbox.clone();
-        let control = Arc::clone(&self.control);
-        let topic = self.topics.stream.clone();
-        let id = self.id.clone();
-        Arc::new(move |payload: &Value| {
-            let trust = control.trust.current();
-            outbox.send(NewEvent {
-                topic: topic.clone(),
-                source: id.clone(),
-                session: Some(id.clone()),
-                payload: payload.clone(),
-                trust,
-                cause: None,
-                reply: None,
-            });
-        })
+        let stream = Arc::clone(&self.node.stream);
+        Arc::new(move |payload: &Value| stream.publish(payload))
     }
 
     /// One task. A session command runs at the boundary instead of a turn
@@ -1027,13 +1208,24 @@ impl<B: SessionBuilder> Lifetime<B> {
         task: &Task,
         images: Vec<pa_agent::types::ImageContent>,
     ) -> TaskEnd {
+        // Cancelled before it started: nothing of it runs.
+        if lock(&self.control.turn).cancelled {
+            return TaskEnd::CANCELLED;
+        }
         let command = session
             .built
             .engine
             .session
             .classify_session_command(&task.prompt);
         if let Some(command) = command {
-            return Self::run_session_command(session, &command, &images).await;
+            self.node.stream.session_command_started();
+            let end = Self::run_session_command(session, &command, &images).await;
+            let error = match &end.outcome {
+                TaskOutcome::Failed(error) => Some(error.as_str()),
+                TaskOutcome::Done | TaskOutcome::Cancelled => None,
+            };
+            self.node.stream.session_command_ended(error);
+            return end;
         }
         let Hosted {
             built,
@@ -1041,14 +1233,16 @@ impl<B: SessionBuilder> Lifetime<B> {
             goal,
             autonomous,
             global_harness_dir,
+            checkpoints,
             ..
         } = session;
         let engine = &built.engine;
         let turn_failed = |reason: String| TaskEnd::failed(TaskFailure::Turn, reason);
         // An empty input wakes the session over the rows delivered to it
         // (a subagent's task, a message to it): they run as its quiescence
-        // drive runs them, below.
-        if !task.prompt.is_empty() {
+        // drive runs them, below. An input of images alone is a prompt.
+        let wake = task.prompt.is_empty() && images.is_empty();
+        if !wake {
             if let Err(error) = boundary
                 .run_pre_turn(engine, &built.model, built.api_key.clone())
                 .await
@@ -1077,6 +1271,12 @@ impl<B: SessionBuilder> Lifetime<B> {
                 }
             }
             let publish = self.publisher();
+            // The workspace before the turn, recorded with the workspace as
+            // it settled on the entries the turn appended.
+            let opening = match checkpoints {
+                Some(checkpoints) => checkpoints.begin(engine).await,
+                None => None,
+            };
             let prompted = engine
                 .session
                 .prompt_with_auto_retry(
@@ -1095,6 +1295,9 @@ impl<B: SessionBuilder> Lifetime<B> {
                 turn.steerable = false;
                 (turn.cancelled, turn.steered)
             };
+            if let Some(opening) = opening {
+                Checkpoints::settle(opening, engine).await;
+            }
             if cancelled {
                 return TaskEnd::CANCELLED;
             }
@@ -1147,7 +1350,7 @@ impl<B: SessionBuilder> Lifetime<B> {
         // subagents' settles run first, so its `done` follows its subtree. A
         // root's empty input (its wake in the runtime daemon) runs the rows
         // delivered to it and leaves its subagents to wake it again.
-        if task.prompt.is_empty() || self.node.is_subagent() {
+        if wake || self.node.is_subagent() {
             let rest = if self.node.is_subagent() {
                 Rest::Subtree
             } else {

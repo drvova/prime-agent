@@ -196,6 +196,90 @@ state has been adopted. A definitive preparation refusal with no new manifest
 must allow another attempt. Queued actions must remain paused while the resumed
 continuation is admitted, so follow-up input cannot run ahead of that turn.
 
+### The runtime daemon
+
+The runtime daemon (`daemon2.sock`) is the default daemon from this release:
+`prime-agent --mode daemon`, the interactive TUI, the session commands, ACP
+and the update run on it unless the global setting `"daemon": "supervisor"`
+or `PRIME_AGENT_RUNTIME_DAEMON=0` selects the supervisor (both kept for one
+release; `PRIME_AGENT_RUNTIME_DAEMON=1` selects the runtime daemon over the
+settings). It serves the same Rust update transaction as the supervisor; both run `pa_core::update::restart`. Its
+wire2 calls are `daemon.prepare_update_restart {updateId, toVersion?}` and
+`daemon.commit_update_restart {updateId}`, whose results and refusals are
+the supervisor's `prepare_update_restart` and `commit_update_restart`
+responses' `data`, message and `errorInfo`, verbatim:
+
+- The prepare drains the calls in flight and writes `roster.json` and
+  `marker.json` under `daemon2.sock`'s own update dir. Its session rows are
+  the open sessions that keep a transcript (a running turn is `streaming`;
+  queued input is `steering`/`followUps`); it has no worker rows, because
+  the runtime's sessions run in its own process. Subagent and heartbeat rows
+  are the same as the supervisor's.
+- While the transaction is active, every mutating call and every input
+  publish is refused with `Daemon is preparing an update restart`
+  (`update_restarting`). The abort family still passes while the prepare
+  drains.
+- The commit answers `stopping` and then stops the daemon as
+  `daemon.shutdown` does. Its `system/closing` carries the update's
+  `daemon_closing` payload, and the compat layer gives it to old clients
+  unchanged. Each running turn is cut off, with the continuation prompt
+  queued at the front of its session's queue. The held sessions stay in the
+  agent database for the next daemon. The runtime's stop never refuses, so
+  a commit is never abandoned.
+- The successor's boot restores the roster with the supervisor's restore
+  pass (`pa_core::update::restart::restore`). The roster is read from
+  `PRIME_AGENT_UPDATE_ROSTER` before the boot sweep. A session the revival
+  already opened for its queued continuation is not prompted a second time.
+  `daemon.update_restore_status` answers the `update_restore_status` body,
+  and a client that creates or attaches to a roster row waits for that row.
+- The update drives the daemons through `update_flow/endpoint.rs`:
+  - the Rust coordinator prepares and commits on the daemon it finds holding
+    the sessions (`Endpoint::running`): the selected daemon when it answers,
+    else the other one when only it answers. A user whose supervisor a
+    release from before this one started is therefore moved by the update:
+    the supervisor is prepared and stopped as before, its roster (session
+    rows only; the runtime daemon has no workers) is handed to the
+    successor, and the successor is the selected daemon, the runtime daemon,
+    which restores the rows with the shared restore pass;
+  - the successor's spawn, its greeting and the restore report go to the
+    selected daemon: on `daemon2.sock` greeted with `daemon.identity` (the
+    hello's identity fields), the successor spawned with
+    `PRIME_AGENT_RUNTIME_DAEMON=1`; with the supervisor selected, on its
+    socket, spawned with `PRIME_AGENT_DAEMON_SUPERVISOR=1`;
+  - a rollback starts the previous binary as the daemon the update stopped;
+  - the update's lock and status are keyed by the socket of the daemon the
+    invoking release selected (`daemon2.sock` from this release on), and the
+    coordinator adopts the staged status by that socket, so an update an
+    earlier release invokes, keyed by `daemon.sock`, still completes; the
+    prepared roster lives under the stopped daemon's own socket.
+- The TS handoff (`--internal-update-restart-coordinator` from a shipped
+  updater) still prepares and stops the TS daemon on its own socket. It then
+  restores the TS checkpoint on the selected daemon. On the runtime daemon
+  that replay works as follows:
+  - the input pause holds the session's queue;
+  - the update-complete notice is appended to the transcript;
+  - the next-turn rows are steered to the session's agent;
+  - queued `turn` actions are checked as the worker checks them and queued
+    as input, and an action carrying a custom message fails that row's
+    restore;
+  - the continuation is queued as a steer.
+- With both daemons running, the update restarts the selected one only. An
+  upgrade that did not go through the coordinator (an installer run by
+  hand) leaves the supervisor running on the old binary: the first launch
+  on the runtime daemon stops it once it is idle (no session running a
+  turn, none with a window attached), off the launch path, and the runtime
+  daemon opens its sessions from their transcripts; a busy supervisor is
+  left for a later launch to stop.
+- A session created with `--api-key` keeps its key in the runtime daemon's
+  memory only (the supervisor wrote it into its worker's durable create).
+  A session the runtime daemon revives after a death or an update, or wakes
+  for a scheduled job, without a client giving the key again fails its build
+  with the reason `session <id> was created with an API key, which the
+  daemon keeps in memory only: open it again from a client that gives the
+  key`; opening it again from a client that passes `--api-key` runs it on
+  that key. Keys from the auth store, the environment or a credential pin are
+  unaffected.
+
 ## Storage migration
 
 From this release, session transcripts are kept in one SQLite database,
@@ -204,7 +288,7 @@ per session. The JSONL files of earlier builds and of the TypeScript product
 are brought in without a migration step the user runs.
 
 - **Trigger.** Two paths, neither on a path a client waits on:
-  - **Background.** The daemon imports `<agent dir>/sessions/` and
+  - **Background.** The daemon (either one: `pa_core::session::boot_import`) imports `<agent dir>/sessions/` and
     `<agent dir>/sessions-archive/` (recursively; also a `sessionDir` that the
     global settings or `PRIME_AGENT_SESSION_DIR` name) on the blocking pool
     after its boot. This runs after a distribution build's own history import,

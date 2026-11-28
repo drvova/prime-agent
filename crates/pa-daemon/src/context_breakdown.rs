@@ -59,7 +59,7 @@ fn store_history(store: &SessionFile) -> (CacheTotals, CompactionHistory) {
         count: compactions.len() as u64,
         last: compactions.last().map(|entry| LastCompaction {
             tokens_before: u64_at(&entry.fields, "tokensBefore"),
-            at_ms: crate::util::iso_to_unix_ms(&entry.timestamp),
+            at_ms: pa_core::session::manager::iso_to_unix_ms(&entry.timestamp),
         }),
     };
     (cache, compaction)

@@ -87,9 +87,14 @@ const TRANSCRIPT_MODULES: &[&str] = &[
 const STORE_MODULE: &str = "pa-core/src/session/store/";
 
 /// Session modules whose own files are not transcripts: the session leases'
-/// ownership records under `<agent dir>/session-leases`. A line of theirs
-/// that names a transcript is still checked.
-const OWNERSHIP_RECORD_MODULES: &[&str] = &["pa-core/src/session/lease.rs"];
+/// ownership records under `<agent dir>/session-leases`, and the workspace
+/// checkpoints' shadow repository, indexes and record logs under
+/// `<agent dir>/checkpoints`. A line of theirs that names a transcript is
+/// still checked.
+const OWNERSHIP_RECORD_MODULES: &[&str] = &[
+    "pa-core/src/session/lease.rs",
+    "pa-core/src/session/checkpoints.rs",
+];
 
 /// Allowed raw I/O outside the store: (file, a substring of the line, reason).
 const ALLOWED: &[(&str, &str, &str)] = &[
@@ -104,12 +109,12 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "the window snapshot sidecar write",
     ),
     (
-        "pa-daemon/src/session_store/info_sidecar.rs",
+        "pa-core/src/session/catalog/info_sidecar.rs",
         "std::fs::read(sidecar_path(path))",
         "the session-info scan sidecar (a file-store cache, certified against the store's generation)",
     ),
     (
-        "pa-daemon/src/session_store/info_sidecar.rs",
+        "pa-core/src/session/catalog/info_sidecar.rs",
         "pa_types::platform::AtomicFile::create(",
         "the session-info scan sidecar write",
     ),

@@ -526,15 +526,6 @@ pub(super) async fn create_session(
     // The create consumes the path; a refusal needs it again for the
     // descriptive error.
     let refused_path = session_path.clone();
-    // The client's Herdr pane identity (the allowlisted `HERDR_*` env this
-    // process runs with, e.g. inside a Herdr-managed pane) travels on the
-    // create ONLY: the session it creates reports for THIS pane, whatever
-    // tab the daemon booted in (attach adopts-if-absent instead — never
-    // rebinds).
-    let client_env = {
-        let env = pa_types::daemon::herdr_env::collect_client_env(|key| std::env::var(key).ok());
-        (!env.is_empty()).then_some(env)
-    };
     // TS main.ts `launchEnv` (:1092): the client's own environment
     // travels on the create so the session's worker runs in the
     // environment of the terminal that opened it, not the daemon's
@@ -560,8 +551,7 @@ pub(super) async fn create_session(
             lifecycle: options
                 .no_session
                 .then_some(DaemonSessionLifecycle::ClientOwned),
-            // The client's Herdr pane identity travels on the create.
-            env: client_env,
+            env: None,
             launch_env,
             rest: Map::default(),
         })

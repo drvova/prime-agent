@@ -1,0 +1,30 @@
+                                                tmp  $—
+  ▗█▛ ▟██▙▄██▛ ▟▛         model faux-1
+  ▗▟▌ ▐███▛▘▗▄█▖          cwd /tmp
+ ▟███▄  ▄▄▟███▀
+ ▜█▛▀▘  ▜█▛▀▘
+
+
+  spawn a helper                                                                             ##:##
+
+
+ ✓ bash · (define marker "/tmp/pa-golden/subagent_roster.marker") · ↑ 6 lines · #
+    ╰─ /tmp/pa-golden/subagent_roster.marker +0 -0
+
+ alpha reported back.
+
+ Worked for # · 1 tool call · 27k tokens · 32% cached
+
+ ✉ Agent message · ↓ alpha
+
+ noted
+
+ Worked for # · 0 tool calls · 9.4k tokens · 94% cached
+
+                                                                  Collapsed mode (Ctrl+O to expand)
+
+ >
+
+← manage (context tray)
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◆ 0 subagents  ·  ◷ 0 heartbeats  ·  ▸ 0 shells

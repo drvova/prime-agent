@@ -1053,6 +1053,99 @@ async fn startup_flush_never_blocks_the_first_frame() {
     }
 }
 
+/// The runtime launch path under a hanging sink: with the startup batch stuck in the sink, the
+/// steps the runtime daemon (the default) adds before the UI's first frame (the runtime daemon ensured on
+/// `daemon2.sock`, its transport declared, the UI's wire2 connect and hello) all complete, and
+/// delivery is still pending when they have.
+#[cfg(unix)]
+#[test]
+fn the_startup_flush_never_blocks_the_runtime_launch() {
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(startup_flush_never_blocks_the_runtime_launch());
+}
+
+#[cfg(unix)]
+async fn startup_flush_never_blocks_the_runtime_launch() {
+    use pa_types::daemon::framing::{
+        encode_private_frame, PrivateFrameReader, DEFAULT_PRIVATE_FRAME_LIMITS,
+    };
+    use pa_types::wire2::{ClientFrame, Outcome, ServerFrame, WIRE2_VERSION};
+    use tokio::io::AsyncWriteExt as _;
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let daemon_socket = dir.path().join("daemon.sock");
+    let runtime_socket = pa_runtime::daemon::socket_path(&daemon_socket);
+    // A runtime daemon that welcomes each client and answers its queries with `{}`.
+    let listener = tokio::net::UnixListener::bind(&runtime_socket).expect("bind daemon2.sock");
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let (reader, mut writer) = stream.into_split();
+                let mut reader = PrivateFrameReader::new(reader, DEFAULT_PRIVATE_FRAME_LIMITS);
+                while let Ok(Some(frame)) = reader.read_frame().await {
+                    let answer = match serde_json::from_value::<ClientFrame>(frame.header) {
+                        Ok(ClientFrame::Hello { .. }) => ServerFrame::Welcome {
+                            version: WIRE2_VERSION,
+                            runtime_version: "0.0.0".to_string(),
+                            last_seq: 0,
+                        },
+                        Ok(ClientFrame::Query { id, .. }) => ServerFrame::Reply {
+                            id,
+                            outcome: Outcome::Ok {
+                                result: serde_json::json!({}),
+                            },
+                        },
+                        _ => continue,
+                    };
+                    let bytes = encode_private_frame(
+                        &serde_json::to_value(answer).expect("a frame"),
+                        &[],
+                        DEFAULT_PRIVATE_FRAME_LIMITS,
+                    )
+                    .expect("an encoded frame");
+                    if writer.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let sink = std::sync::Arc::new(GatedSink::default());
+    let mut config = pa_telemetry::TelemetryClientConfig::new("install-1");
+    config.batch_size = 20;
+    config.flush_interval = std::time::Duration::from_mins(10);
+    config.sinks = vec![sink.clone() as std::sync::Arc<dyn pa_telemetry::TelemetrySink>];
+    let client = pa_telemetry::TelemetryClient::spawn(config).expect("startup client");
+    client.track("startup", pa_telemetry::base_properties("interactive"));
+    let launched = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let flush = flush_startup_telemetry(client);
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            sink.wait_until_entered(),
+        )
+        .await
+        .expect("the tracked startup batch entered the gated sink");
+        let socket = ensure_runtime_daemon_running(&daemon_socket, dir.path())
+            .await
+            .expect("the runtime daemon answers");
+        pa_tui::daemon_client::use_transport(&socket, pa_tui::daemon_client::Transport::Wire2);
+        let (ui, _events) = pa_tui::daemon_client::DaemonClient::connect(&socket)
+            .await
+            .expect("the UI's wire2 connect");
+        let pending = sink.delivered_names().is_empty();
+        sink.release();
+        let _ = flush.await;
+        (socket, ui.hello()["type"].clone(), pending)
+    })
+    .await
+    .expect("the runtime launch completed while the sink still hung");
+    assert_eq!(
+        launched,
+        (runtime_socket, serde_json::json!("daemon_hello"), true)
+    );
+}
+
 #[test]
 fn interactive_resume_restores_saved_cwd_and_project_settings_unless_overridden() {
     let dir = tempfile::tempdir().unwrap();

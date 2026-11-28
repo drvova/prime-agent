@@ -2,13 +2,13 @@
 //! compacted message fold and its scalars, and the wire-shape message helpers.
 
 use super::{
-    json, HashMap, MessageWindowScalars, SessionEntry, SessionFile, SessionMessages,
-    TranscriptPageRows, Value,
+    HashMap, MessageWindowScalars, SessionEntry, SessionFile, SessionMessages, TranscriptPageRows,
+    Value,
+};
+use pa_core::session::display_transcript::{
+    continues_run, prompt_timestamp_ms, settle_cut, DisplayRow,
 };
 use pa_types::daemon::TranscriptPage;
-
-/// One display-transcript row: its entry id and wire message.
-type DisplayRow<'a> = (&'a str, std::borrow::Cow<'a, Value>);
 
 #[cfg(test)]
 thread_local! {
@@ -358,7 +358,7 @@ impl SessionFile {
             .and_then(|entry| entry.fields.get("state"))
             .and_then(|state| state.get("status"))
             .and_then(Value::as_str)
-            .map(normalize_state_status)
+            .map(pa_core::session::catalog::normalize_state_status)
     }
 
     /// The branch's conversation, compacted view first: a `compactionSummary`
@@ -854,92 +854,14 @@ pub(super) fn message_role(message: &Value) -> Option<&str> {
 fn entry_message(entry: &SessionEntry) -> Option<std::borrow::Cow<'_, Value>> {
     match entry.type_.as_str() {
         "message" => entry.fields.get("message").map(std::borrow::Cow::Borrowed),
-        "custom_message" => {
-            let mut message = entry.fields.clone();
-            if let Some(object) = message.as_object_mut() {
-                object.insert("role".to_string(), Value::String("custom".to_string()));
-                object.insert(
-                    "timestamp".to_string(),
-                    Value::String(entry.timestamp.clone()),
-                );
-            }
-            Some(std::borrow::Cow::Owned(message))
-        }
+        "custom_message" => Some(std::borrow::Cow::Owned(
+            pa_core::session::display_transcript::custom_message_row(
+                &entry.fields,
+                &entry.timestamp,
+            ),
+        )),
         _ => None,
     }
-}
-
-/// A user prompt's wall-clock time, mirroring the TUI's numeric/ISO timestamp contract.
-fn prompt_timestamp_ms(message: &Value) -> Option<u64> {
-    match message.get("timestamp") {
-        Some(Value::Number(number)) => number.as_u64().or_else(|| {
-            number
-                .as_f64()
-                .filter(|value| value.is_finite())
-                .map(|value| value.max(0.0) as u64)
-        }),
-        Some(Value::String(iso)) => pa_types::incident::timestamp_to_ms(iso)
-            .filter(|ms| *ms > 0)
-            .map(|ms| ms as u64),
-        _ => None,
-    }
-}
-
-/// Whether a row continues the run before it: a page never starts at one.
-fn continues_run(message: &Value) -> bool {
-    matches!(message_role(message), Some("toolResult" | "custom"))
-}
-
-/// Move a page boundary earlier until the page below it starts at neither a tool
-/// result nor a custom row, and no tool call is split from its result.
-///
-/// `rows` is a local slice of the branch around the cut, not the whole branch: the
-/// page, the run before its first row, and up to `limit` rows past each side, the
-/// side toward the request's other anchor stopping at that anchor row. Calls pair
-/// with results only inside the slice, so a call more than a page from its result
-/// does not move the cut (else an orphan or aborted call drags every page to the root).
-fn settle_cut(rows: &[DisplayRow<'_>], mut cut: usize) -> usize {
-    while cut > 0 && cut < rows.len() && continues_run(&rows[cut].1) {
-        cut -= 1;
-    }
-    // User bash and other message rows can land between a call and its
-    // result. Match the same last-pending call as transcript replay, then
-    // move only across pairs intersecting the cut. Reverse result order
-    // also catches an earlier pair exposed by moving the boundary back.
-    let mut pending: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
-    let mut pairs = Vec::new();
-    for (index, (_, message)) in rows.iter().enumerate() {
-        match message.get("role").and_then(Value::as_str) {
-            Some("assistant") => {
-                if let Some(content) = message.get("content").and_then(Value::as_array) {
-                    for block in content {
-                        if let Some(id) = block.get("id").and_then(Value::as_str).filter(|_| {
-                            block.get("type").and_then(Value::as_str) == Some("toolCall")
-                        }) {
-                            pending.entry(id).or_default().push(index);
-                        }
-                    }
-                }
-            }
-            Some("toolResult") => {
-                if let Some(call) = message
-                    .get("toolCallId")
-                    .and_then(Value::as_str)
-                    .and_then(|id| pending.get_mut(id))
-                    .and_then(Vec::pop)
-                {
-                    pairs.push((call, index));
-                }
-            }
-            _ => {}
-        }
-    }
-    for (call, result) in pairs.into_iter().rev() {
-        if call < cut && result >= cut {
-            cut = call;
-        }
-    }
-    cut
 }
 
 /// Whether one entry contributes a message to the fold: `message` rows need
@@ -956,38 +878,13 @@ fn entry_bears_message(entry: &SessionEntry) -> bool {
 /// The `compactionSummary` message of a compaction entry; the context walk's
 /// copy carries its retained count.
 fn compaction_summary_message(entry: &SessionEntry, retained_count: Option<usize>) -> Value {
-    let timestamp = crate::util::iso_to_unix_ms(&entry.timestamp).unwrap_or(0);
-    // The TS `compactionSummary` key order: role, summary, tokensBefore,
-    // retainedMessageCount, customInstructions?, harnessDigest?, timestamp —
-    // optional keys insert before `timestamp`.
-    let mut message = json!({
-        "role": "compactionSummary",
-        "summary": entry.fields.get("summary").cloned().unwrap_or_default(),
-        "tokensBefore": entry.fields.get("tokensBefore").cloned().unwrap_or(json!(0)),
-    });
-    if let Some(retained_count) = retained_count {
-        message["retainedMessageCount"] = json!(retained_count as u64);
-    }
-    if let Some(custom_instructions) = entry.fields.get("customInstructions") {
-        message["customInstructions"] = custom_instructions.clone();
-    }
-    if let Some(harness_digest) = entry.fields.get("harnessDigest") {
-        message["harnessDigest"] = harness_digest.clone();
-        if let Some(harness_state_fingerprint) = entry.fields.get("harnessStateFingerprint") {
-            message["harnessStateFingerprint"] = harness_state_fingerprint.clone();
-        }
-    }
-    message["timestamp"] = json!(timestamp);
-    message
+    pa_core::session::display_transcript::compaction_summary_message(
+        &entry.fields,
+        pa_core::session::manager::iso_to_unix_ms(&entry.timestamp).unwrap_or(0),
+        retained_count,
+    )
 }
 
 pub(super) fn message_text(message: &Value) -> String {
     crate::types::message_text(message)
-}
-
-pub(super) fn normalize_state_status(status: &str) -> String {
-    match status {
-        "hidden" | "sleep" => "archived".to_string(),
-        other => other.to_string(),
-    }
 }

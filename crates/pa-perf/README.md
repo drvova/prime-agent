@@ -109,6 +109,11 @@ pa-perf run --binary target/release/prime-agent --profile medium --out DIR [--ru
 pa-perf bench --binary target/release/prime-agent --corpus DIR --scenario S --runs 10 --json OUT
 ```
 
+Both take `--daemon runtime|supervisor` (default `runtime`, the product's default daemon): every
+run names its daemon to the product (`PRIME_AGENT_RUNTIME_DAEMON=1` or `0`), waits on that
+daemon's socket (`daemon2.sock` beside the run's socket for the runtime daemon) and stops it on
+its own wire, so the two daemons compare on the same corpus.
+
 Scenarios (timed from a triggering action to an observable needle — literal
 paints as byte needles, cell-diffed content through a vt100 screen model;
 the liveness deadline only fails broken runs):
@@ -131,8 +136,11 @@ the liveness deadline only fails broken runs):
 | `warm-first-eval` | cold | the same measurement on a daemon that reports a built spare engine (`spareKernels` above zero in its `list` answer): what a session started on a running daemon waits for |
 | `subagent-first-eval` | cold | daemon wire: a parent cell's `rlm-spawn` -> the child's first `eval` cell end (both stamps are the kernels' own wall clocks; the child's task is delivered when the spawning cell returns) |
 
-The kernel scenarios drive the daemon over its wire protocol with a
-faux-scripted session (`{"engine": "faux"}` create scripts: the real agent
+The kernel scenarios drive the daemon over its wire protocol (the supervisor's old wire, the
+runtime daemon's wire2: `session.create`, a publish on `agent/<id>/input`, the eval cell's events
+on `agent/<id>/stream`, `spareKernels` in `sessions.list`) with a faux-scripted session
+(`{"engine": "faux"}` scripts, on the create for the supervisor and in the runtime daemon's
+environment for the runtime daemon, which runs it per session: the real agent
 loop and the real kernel behind the `eval` tool, with only the provider
 scripted), so they stay offline and need no setup: the kernel is built into
 the binary. Each run starts its own daemon, which hosts the session in its

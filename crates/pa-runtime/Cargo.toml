@@ -20,6 +20,8 @@ pa-ai.workspace = true
 tokio.workspace = true
 # The RPC mode's signal exit cancels an in-flight session replacement.
 tokio-util = "0.7"
+# The ACP mode's wire types (initialize result, session updates, `_meta`).
+serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

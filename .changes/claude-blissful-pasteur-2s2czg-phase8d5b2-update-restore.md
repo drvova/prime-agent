@@ -1,0 +1,1 @@
+- With the opt-in runtime daemon selected, an update now restarts that daemon and brings its sessions back on the new release, the conversations that were mid-turn continuing where they stopped, including after an update from the TypeScript release.

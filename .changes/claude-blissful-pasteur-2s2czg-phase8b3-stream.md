@@ -1,0 +1,1 @@
+- The opt-in runtime daemon now shows each session's queue (waiting prompts, a subagent's status notice, and the phase of the turn that is starting) the way the interactive TUI shows it today, frames `/compact` and other session commands as a run, and lets a client that attaches after a crash see the crash.

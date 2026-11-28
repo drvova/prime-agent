@@ -355,7 +355,7 @@ fn walk_children(
     let sessions_dir = agent_dir.join("sessions");
     let ledger = crate::context_tree_children::ContextLedger::read(
         &pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(agent_dir, &sessions_dir, |_| {})
-            .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage)),
+            .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage)),
     );
     let mut skip_ids: HashSet<String> = snapshots
         .iter()
@@ -680,7 +680,7 @@ mod tests {
             &sessions_dir,
             |_| {},
         )
-        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         for (child_id, file) in [("sub-live", &live_file), ("sub-gone", &gone_file)] {
             ledger
                 .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
@@ -768,7 +768,7 @@ mod tests {
         let context_total =
             root_own["cost"]["total"].as_f64().unwrap() + persisted.iter().map(cost).sum::<f64>();
         let row_cost = |file: &Path| {
-            crate::session_store::read_session_info(file)
+            pa_core::session::catalog::read_session_info(file)
                 .and_then(|info| info.usage)
                 .map_or(0.0, |usage| usage.cost)
         };
@@ -798,7 +798,7 @@ mod tests {
             &agent_dir.join("sessions"),
             |_| {},
         )
-        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         ledger
             .append_spawn(&pa_core::session_engine::rlm_ledger::RlmSpawnInput {
                 child_id: "sub-old".into(),
@@ -879,7 +879,7 @@ mod tests {
             &agent_dir.join("sessions"),
             |_| {},
         )
-        .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+        .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
         for (id, cost) in [("first", 0.125), ("second", 0.25)] {
             let child = agent_dir.join(format!("session-artifacts/parent/{id}/{id}.jsonl"));
             write_session(&child, id, cost);

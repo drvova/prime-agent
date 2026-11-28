@@ -1,0 +1,1 @@
+- Removed the Herdr integration: sessions no longer read `HERDR_*` variables or report their state to a Herdr pane socket. An `env` map sent on a create, attach or reattach by an older client is still accepted and ignored.

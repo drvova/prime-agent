@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use pa_types::daemon::DaemonWorkerLifecycle;
 
@@ -93,7 +93,7 @@ impl Supervisor {
             vec![response_line(&response_success(
                 Some(command_id),
                 type_name,
-                Some(json!({ "paused": false, "limits": {} })),
+                Some(pa_core::session_engine::agent_controls::unscoped_agent_message_status()),
             ))],
             false,
         )

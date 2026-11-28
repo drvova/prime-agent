@@ -214,10 +214,98 @@ No session logic, no providers, no loop policy. The interactive UI renders daemo
 The client commands of the clipboard/auth/update group: `/copy` (the last assistant text through the platform clipboard tool chain with the OSC 52 fallback — `clipboard.rs` + `osc52.rs`, the same emitter the selection-copy work can reuse; the daemon `get_last_assistant_text` supplies the text), `/import` (the path argument parse, the TS confirm, the typed error surfaces — the missing file, the missing session cwd with its fallback-cwd retry — and the post-import transcript rebuild through the daemon's `import_jsonl`), `/login` + `/logout` (the TS providers selector — `provider_auth.rs`, the panel `showConfigurationMenu("providers")` mounts: the tab bar, the search, the status indicators, the in-panel API-key prompt — over the composition root's auth flows), `/traces` (the TS status block and settings writes; the upload subsystem stays unported, its arms keep the TS state shapes and report the unavailability), and `/update` (the TS busy guard, the split-CLI child mapping — packages then the binary — and the self-update relaunch through the composition root's hook).
 
 ## Public API
-`daemon_reconnect::{DaemonLauncher, install_daemon_launcher}` (how a window that lost its daemon, and found that nothing brought it back, gets one started: the composition root installs its launch path once; the reconnect driver asks at most once per lost connection, off the paint path; crash notices - a session crashing, recovering or being given up on, the daemon's own recorded death, the fault state on agents-view rows - render from the `pa_types::daemon` crash wire types and report `tui crash notice`), `custom_message::{custom_message_entries, AGENT_MESSAGE_CUSTOM_TYPE, skill_invocation::{SkillInvocationRow, skill_invocation_entries}, ...}` (the custom-type render dispatch shared by the live and replay paths; the user-message skill-invocation card decode; component row renderers are `pub(crate)`), `app::run_app` (replay), `interactive::{run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode, HeadlessPlan, InteractiveOutcome}` (daemon-attached), `daemon_client::{DaemonClient, DaemonClientEvent}` (wire client for the UI and the composition root), `session::SessionStream`, `agents_view::{run_agents_view, AgentsViewOptions, AgentsViewUiMode, AgentsViewOutcome, FolderScope, FolderFilter}` (the view and its headless verifier seam), `interactive::{OnboardingTask, OnboardingSink}` (first-run flow surface; the composition root implements the sink against the settings manager), `keybindings::{KeybindingsManager, KeybindingTakeover, migrate_keybindings_file, KEYBINDING_NAME_MIGRATIONS, format_key_text}` (the effective-binding surface, `get_takeovers` naming the default keys user bindings took: the composition root loads the user config and passes the manager in; `migrate_keybindings_file` is the startup rewrite), `queued::{QueuedMessages, QueueSelection, QueueSelectionItem, QueueLane, QueueBrowseKeys, render_queue, browse_header_text, mirror_lane_move}` (the strip and browse state; the session UI owns the selection), `prompt_stash::PromptStashStore` (the per-process draft store the composition root owns; entry semantics are crate-internal), `client_settings::{ClientSettings, ProfileChoices}` (the client-process settings seam the interactive commands persist through, `/profile` included: the stored profiles and the choices `/profile new` saves — the composition root implements it over the real store), `client_auth::{ClientAuthCommands, ClientAuthCommandsHandle, run_mcp_auth_command}` (the `/mcp login`/`/mcp logout` client surface: the TUI owns the command UX and mounts the inline auth panel — TS usage wording — while the composition root runs the login against it). `mcp_view::{McpView, McpViewAction, McpConnection, McpToolInfo}` (the `/mcp` inline connections view: the daemon `get_mcp_connections` roster rendered in the TS MCP-Connections-tab panel shape, with the per-connection status and tool detail; Enter resolves to the selected connection's login command, dispatched through the interactive loop's client-command seam). `traces::{TracesCommands, TracesCommandsHandle, traces_base_url}` (the `/traces` settings + credential seam), `provider_auth::{ProviderAuthCommands, ProviderAuthCommandsHandle, ProviderRow, AuthType, AuthCategory, AuthFlow, AuthStatusIndicator, AuthStatusStyle, AuthSelectorKind, PRIME_INFERENCE_PROVIDER_ID}` (the `/login`+`/logout` provider-auth seam: rows, status indicators, and the flow hook), `auth_panel::{AuthPanel, AuthPanelHandle, AuthPanelRequest, PrimeTeamOption, PrimeTeamPick, PasteStyle}` (the inline auth panel the login flows render through — TS `LoginDialogComponent` + `PrimeTeamSelectorComponent`: progress lines, the browser URL block, the paste prompts, and the Prime team picker, all over the run loop's request/reply channel), `update_command::{UpdateCommands, UpdateCommandsHandle, UpdateOutcome, UpdateRunFuture}` (the `/update` out-of-band runner seam: the TUI confirms, then spawns the composition root's funnel task and folds the landed outcome row), `confirm::{ConfirmPanel, ConfirmAction}` (the Yes/No confirm panel), `interactive::InlineImageCounts` (the `tui inline images rendered` counts `InteractionTelemetry::inline_images_rendered` reports at a run's exit), `interactive::TodoQuestionCounts` (the `tui todos and questions` counts `InteractionTelemetry::todos_and_questions` reports at a run's exit), `interactive::TranscriptSearchReport` (one closed transcript search as `InteractionTelemetry::transcript_searched` reports it: enums, a count and a flag), `chat::MessageImage` (a user message's image on `ChatEntry::User`), and `InteractiveOutcome::clipboard_emissions` (the headless OSC 52 capture the verifiers assert with). Component internals `pub(crate)`. `altscreen::{enter, leave}` is the process-wide alternate-screen ownership shared by the terminal surfaces: the first surface enters the screen, a real exit leaves it, and in-process view switches adopt the same buffer (no primary-screen flash between the agents view and a chat).
+`daemon_reconnect::{DaemonLauncher, install_daemon_launcher}` (how a window that lost its daemon, and found that nothing brought it back, gets one started: the composition root installs its launch path once; the reconnect driver asks at most once per lost connection, off the paint path; crash notices - a session crashing, recovering or being given up on, the daemon's own recorded death, the fault state on agents-view rows - render from the `pa_types::daemon` crash wire types and report `tui crash notice`), `custom_message::{custom_message_entries, AGENT_MESSAGE_CUSTOM_TYPE, skill_invocation::{SkillInvocationRow, skill_invocation_entries}, ...}` (the custom-type render dispatch shared by the live and replay paths; the user-message skill-invocation card decode; component row renderers are `pub(crate)`), `app::run_app` (replay), `interactive::{run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode, HeadlessPlan, InteractiveOutcome}` (daemon-attached), `daemon_client::{DaemonClient, DaemonClientEvent, Transport, use_transport, transport_for}` (wire client for the UI and the composition root, on the old wire or wire2 by the socket's declared transport), `session::SessionStream`, `agents_view::{run_agents_view, AgentsViewOptions, AgentsViewUiMode, AgentsViewOutcome, FolderScope, FolderFilter}` (the view and its headless verifier seam), `interactive::{OnboardingTask, OnboardingSink}` (first-run flow surface; the composition root implements the sink against the settings manager), `keybindings::{KeybindingsManager, KeybindingTakeover, migrate_keybindings_file, KEYBINDING_NAME_MIGRATIONS, format_key_text}` (the effective-binding surface, `get_takeovers` naming the default keys user bindings took: the composition root loads the user config and passes the manager in; `migrate_keybindings_file` is the startup rewrite), `queued::{QueuedMessages, QueueSelection, QueueSelectionItem, QueueLane, QueueBrowseKeys, render_queue, browse_header_text, mirror_lane_move}` (the strip and browse state; the session UI owns the selection), `prompt_stash::PromptStashStore` (the per-process draft store the composition root owns; entry semantics are crate-internal), `client_settings::{ClientSettings, ProfileChoices}` (the client-process settings seam the interactive commands persist through, `/profile` included: the stored profiles and the choices `/profile new` saves — the composition root implements it over the real store), `client_auth::{ClientAuthCommands, ClientAuthCommandsHandle, run_mcp_auth_command}` (the `/mcp login`/`/mcp logout` client surface: the TUI owns the command UX and mounts the inline auth panel — TS usage wording — while the composition root runs the login against it). `mcp_view::{McpView, McpViewAction, McpConnection, McpToolInfo}` (the `/mcp` inline connections view: the daemon `get_mcp_connections` roster rendered in the TS MCP-Connections-tab panel shape, with the per-connection status and tool detail; Enter resolves to the selected connection's login command, dispatched through the interactive loop's client-command seam). `traces::{TracesCommands, TracesCommandsHandle, traces_base_url}` (the `/traces` settings + credential seam), `provider_auth::{ProviderAuthCommands, ProviderAuthCommandsHandle, ProviderRow, AuthType, AuthCategory, AuthFlow, AuthStatusIndicator, AuthStatusStyle, AuthSelectorKind, PRIME_INFERENCE_PROVIDER_ID}` (the `/login`+`/logout` provider-auth seam: rows, status indicators, and the flow hook), `auth_panel::{AuthPanel, AuthPanelHandle, AuthPanelRequest, PrimeTeamOption, PrimeTeamPick, PasteStyle}` (the inline auth panel the login flows render through — TS `LoginDialogComponent` + `PrimeTeamSelectorComponent`: progress lines, the browser URL block, the paste prompts, and the Prime team picker, all over the run loop's request/reply channel), `update_command::{UpdateCommands, UpdateCommandsHandle, UpdateOutcome, UpdateRunFuture}` (the `/update` out-of-band runner seam: the TUI confirms, then spawns the composition root's funnel task and folds the landed outcome row), `confirm::{ConfirmPanel, ConfirmAction}` (the Yes/No confirm panel), `interactive::InlineImageCounts` (the `tui inline images rendered` counts `InteractionTelemetry::inline_images_rendered` reports at a run's exit), `interactive::TodoQuestionCounts` (the `tui todos and questions` counts `InteractionTelemetry::todos_and_questions` reports at a run's exit), `interactive::TranscriptSearchReport` (one closed transcript search as `InteractionTelemetry::transcript_searched` reports it: enums, a count and a flag), `chat::MessageImage` (a user message's image on `ChatEntry::User`), and `InteractiveOutcome::clipboard_emissions` (the headless OSC 52 capture the verifiers assert with). Component internals `pub(crate)`. `altscreen::{enter, leave}` is the process-wide alternate-screen ownership shared by the terminal surfaces: the first surface enters the screen, a real exit leaves it, and in-process view switches adopt the same buffer (no primary-screen flash between the agents view and a chat).
 
 ## Depends on
 pa-types only (the daemon wire protocol types live there). The headless `UiMode` is the verifier seam: it drives the identical attach/submit/stream/render path without a TTY and captures rendered frames.
+
+## The wire2 port (phase 8)
+
+`daemon_client::DaemonClient` has two transports (`daemon_client::Transport`): the old wire to
+the supervisor's `daemon.sock`, and wire2 to the runtime daemon's `daemon2.sock`
+(`src/daemon_client/wire2.rs`), which carries every command the TUI sends through the compat
+layer below and maps the runtime's topics back to `DaemonClientEvent`. A socket speaks the
+transport the composition root declared for it (`daemon_client::use_transport`; undeclared, the
+old wire; since phase 8f pa-cli declares the runtime daemon's socket unless the supervisor is
+selected), so the views, the reconnect driver and the agents view are the same on both. On wire2
+the hello is the runtime's `welcome` and `daemon.identity` (its `serverCapabilities`, never the
+direct worker link's); an attach follows the session's `agent/<id>/#` first (its stream live, its
+stored topics after the last stored event this process saw on the socket, so a reconnect replays a
+fault or close it missed), holds the session's events until the attach's snapshot and drops those
+the snapshot already holds (the old attach window); `prompt_and_wait` is a publish answered at its
+task's `agent/<id>/done`. `src/wire2_compat/guard_tests.rs` finds every command the crate's own
+code builds and fails on one with no wire2 form (the deliberate exception, the direct worker link's
+ticket, is listed with its reason). `tests/goldens/inbound/*.jsonl` are five streams recorded from
+the supervisor on the faux engine with a debug build's `PA_TUI_RECORD_INBOUND` tap
+(`src/inbound_recording.rs`, absent from release builds), each with the frame it ends on;
+`tests/inbound_goldens_headless.rs` replays them through the real client decode and event pump,
+on the old wire and again through the wire2 transport against a small wire2 mock that serves the
+same recording as the runtime would; both must end on the committed frame.
+`src/wire2_compat.rs` maps wire2 events (`agent/<id>/stream`, `side_question`, `closed`,
+`runtime/roster`, `runtime/traffic`, `runtime/session_list/<request>`, and the live-only
+`system/closing` as `daemon_closing` and `system/history_import` as `history_import`, with the
+`system.history_import` query a transport asks once connected for an import already running) to
+the `DaemonOutbound` frames they stand for, the daemon's
+own `shutdown` and `restart` to the `daemon.shutdown` and `daemon.restart` calls (answered without
+`data`), the update coordinator's `prepare_update_restart` and `commit_update_restart` to the
+`daemon.prepare_update_restart` and `daemon.commit_update_restart` calls and
+`update_restore_status` to the `daemon.update_restore_status` query (their results the old
+`data`, an update's `system/closing` the old `daemon_closing` with its `payload`), the input
+commands to a publish on `agent/<id>/input`, `attach` to the `session.attach` call (it attaches
+the connection's client, and one declaring `user_questions` makes the session's kernel questions
+wait for it) and the session reads (`get_state`, `get_messages`) to the `session.snapshot` and
+`transcript.page` queries, whose results are the old responses' `data`, and the agents view's feeds (`roster_subscribe`, `agent_traffic_subscribe`)
+to a subscription on their live-only topic and the `runtime.roster` / `runtime.traffic` query
+whose result is the old reply (their unsubscribes to an unsubscribe the layer answers itself),
+and `list_saved_sessions` to a subscription on its request's live-only topic, the `sessions.list
+{shape: "saved"}` query whose result is the old response, and an unsubscribe at its reply
+(`Outgoing::Stream`), and the setting switches (`cycle_model`, `cycle_thinking_level`,
+`set_scoped_models`, `set_service_tier`, `set_transport`, the queue modes, auto-compaction and
+auto-retry, and `reload` and `mark_anthropic_warning_shown`) to one `session.*` call each whose
+result is the old response's `data` (`Outgoing::Call`), the reads beside a session's turns
+(`get_commands`, `get_mcp_connections`, `get_model_catalog`, and the global `get_usage`) to the
+`session.commands`, `session.mcp_connections`, `session.model_catalog` and `usage` queries, and the
+live-only `runtime/models` back to `model_catalog_changed`, and the tree moves and reads
+(`get_user_messages_for_forking`, `get_last_assistant_text` as queries; `navigate_tree`,
+`abort_branch_summary`, `export_html` as calls), and the replacements (`fork` onto an entry and
+`import_jsonl` as the `session.fork_entry` and `session.import_jsonl` calls, an error reply's
+`info` becoming the response's `errorInfo`), and the queue edit and aborts
+(`mutate_queued_message`, `abort_compaction`, `abort_retry` as the
+`session.mutate_queued_message`, `session.abort_compaction` and `session.abort_retry` calls),
+and a session's `detach` and `answer_question` (the `session.detach` and
+`session.answer_question` calls),
+and the side runs (`start_side_question`, `abort_side_question`, `record_better_outcome` as the
+`session.start_side_question`, `session.abort_side_question` and `session.record_better_outcome`
+calls, their events coming back from `agent/<id>/side_question` as `side_question_event`),
+and the agents view's kernel activity (`list_kernel_bash`, `tail_kernel_bash`,
+`list_persistent_shells` and `tail_persistent_shell` as the queries `session.kernel_bash`,
+`session.kernel_bash_tail`, `persistent_shells` and `persistent_shells.tail`;
+`kill_kernel_bash`, `factory_activity` and `kill_persistent_shell` as the calls
+`session.kill_kernel_bash`, `session.factory_activity` and `persistent_shells.kill`),
+and the agents view's session controls (`agent_messages_status` and `get_rlm_max_depth_status`
+as the queries `agent_messages` and `session.rlm_max_depth`; `agent_messages_pause`,
+`agent_messages_resume`, `agent_messages_clear`, `set_rlm_max_depth` and `delete_rlm_subagent`
+as the calls `agent_messages.pause`, `agent_messages.resume`, `agent_messages.clear`,
+`session.set_rlm_max_depth` and `session.delete_child`, a pause, resume or status that names no
+session reaching every running one), and a session's heartbeat (`heartbeat_get` as the query
+`session.heartbeat`; `heartbeat_set`, `heartbeat_update` and `heartbeat_manage` as the calls
+`session.set_heartbeat`, `session.update_heartbeat` and `session.manage_heartbeat`);
+and the rest of what the TUI sends (`create`, `list`, `kill`, the renames, `delete_saved_session`,
+`set_model`, `set_thinking_level`, `set_session_entry_label`, `export_jsonl`, the aborts,
+`execute_bash`, `abort_bash`, `cancel_rlm_child`, the session reads, `heartbeats_list`) to the
+runtime's own calls and queries; its module docs state the contract the runtime honours (the
+stream is live only, so the session's event counter rides in the payload's `meta.sequence`), what
+of a create's config is left out and why (a create carries its API key, credential and profile
+pins, its model scope, a scoped child's parent, its telemetry opt-out, session dir and launch
+environment as `pa_types::wire2::SessionCreate`), and the commands not carried with their
+reasons. Every recorded frame round-trips through it. A session's stored fault topics
+(`agent/<id>/crashed`, `recovered`, `failed`) map to their `session_event` only when replayed, so a
+client that attaches after a fault (one a daemon's death left) sees it, while live the stream's
+copy is the frame. `wire2_live_frames`, `wire2_request_frames` and `wire2_response_frame`
+(`#[doc(hidden)]`) are the layer's test seams: pa-cli's `runtime_daemon_e2e` replays the five
+goldens' scripts against a real runtime daemon, sends their session reads and feed subscriptions
+through the layer, and compares what it makes of the events, the roster and the replies with the
+recordings.
 
 ## Transcript caching
 

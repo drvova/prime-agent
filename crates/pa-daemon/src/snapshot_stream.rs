@@ -65,50 +65,9 @@ pub(crate) fn wants_image_elision(capabilities: &[String]) -> bool {
         .any(|cap| cap == "elide_snapshot_images")
 }
 
-/// The attach snapshot's image-payload elision: a `toolResult` image block
-/// travels with its payload replaced by an empty string plus `elidedBytes` and
-/// `widthPx`/`heightPx`. The transcript's image rows are fallback-only metadata
-/// (TS mounts `Image` components with `fallbackOnly`), so an image-heavy session
-/// stops shipping megabytes of base64 per attach; the store keeps the payload.
-pub(crate) fn elide_snapshot_image_payloads(messages: &mut [Value]) {
-    for message in messages.iter_mut() {
-        if message.get("role").and_then(Value::as_str) != Some("toolResult") {
-            continue;
-        }
-        let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
-            continue;
-        };
-        for block in content.iter_mut() {
-            let is_image = block.get("type").and_then(Value::as_str) == Some("image");
-            // The immutable reads (payload length, the bounded-prefix dimension parse) end
-            // here; the marker writes below borrow the block mutably.
-            let (payload_chars, dimensions) = match (
-                is_image,
-                block.get("data").and_then(Value::as_str),
-                block.get("mimeType").and_then(Value::as_str),
-            ) {
-                (true, Some(data), Some(mime)) if !data.is_empty() => (
-                    data.len(),
-                    pa_core::get_image_dimensions_prefix(
-                        data,
-                        mime,
-                        pa_core::IMAGE_DIMENSIONS_PREFIX_BYTES,
-                    ),
-                ),
-                _ => continue,
-            };
-            let Some(object) = block.as_object_mut() else {
-                continue;
-            };
-            object.insert("elidedBytes".to_string(), json!(payload_chars));
-            if let Some(dimensions) = dimensions {
-                object.insert("widthPx".to_string(), json!(dimensions.width_px));
-                object.insert("heightPx".to_string(), json!(dimensions.height_px));
-            }
-            object.insert("data".to_string(), json!(""));
-        }
-    }
-}
+/// The attach snapshot's image-payload elision (shared with the runtime
+/// daemon's attach snapshot).
+pub(crate) use pa_core::session::display_transcript::elide_image_payloads as elide_snapshot_image_payloads;
 
 /// Snapshot id: `<activeSessionId>-<generation>-<sequence>` derived from
 /// the event cursor, so a regenerated snapshot never reuses an old id.

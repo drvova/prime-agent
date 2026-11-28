@@ -16,15 +16,104 @@
 //! - The restart owner and the boot reap (phase 7c-2): [`keeper`].
 //! - Scheduled jobs and heartbeats (phase 7d): [`schedules`].
 //! - Subagents, agent messages and the event bus (phase 7e): [`family`].
+//! - A TUI create's choices (its credential, profile and API key, its model
+//!   scope, a scoped child's parent, its session dir and launch environment),
+//!   built as the old daemon builds them (phase 8e2): [`create`]; `prime-agent
+//!   shutdown --force` stops a kept runtime daemon: [`keeper`].
+//! - What an ACP client needs (phase 7g-2): create options, model switches,
+//!   MCP servers, schedule changes and the bus queries: [`client_surface`].
+//! - The user's `!` commands (phase 7g-3): [`bash`].
+//! - The rest of what an ACP client needs (phase 7g-5): input holds, a
+//!   prompt's cancel, the settled wait, the model and level, and the
+//!   subagent roster: [`acp_calls`].
+//! - The old daemon's session-event payloads on the stream, numbered
+//!   (phase 8b-2), and the queue view on it (phase 8b-3): [`stream`].
+//! - pa-tui's five inbound goldens replayed through `wire2_compat`
+//!   (phase 8b-3), their replies (8c-1) and the agents view's feeds (8c-2):
+//!   [`goldens`].
+//! - The agents view's roster feed from a session's open to its stop
+//!   (phase 8c-2): [`agents_view`].
+//! - The agents view's saved-session catalog, streamed through
+//!   `wire2_compat` as the old daemon streams it (phase 8c-3):
+//!   [`saved_list`].
+//! - A session's setting switches, answered and written as the old daemon
+//!   answers and writes them (phase 8d-1), and retargeting the session's
+//!   next request (8d-1b): [`switches`].
+//! - What the TUI reads beside a session's turns (its commands, MCP page,
+//!   model catalog, the `/usage` page), its reload and the Anthropic
+//!   warning's marker, answered as the old daemon answers them (phase
+//!   8d-1b): [`info`].
+//! - A session's tree moves and the reads beside them (the fork list, the
+//!   copy text, `navigate_tree` with its branch summary, the HTML export),
+//!   answered and recorded as the old daemon answers and records them
+//!   (phase 8d-2): [`tree`].
+//! - A session's queue edits, and the aborts of its compaction and its
+//!   retry, answered and run as the old daemon answers and runs them (phase
+//!   8d-2c): [`queue_edit`].
+//! - A rewind's workspace checkpoints, restored as the old daemon restores
+//!   them (phase 8d-2d): [`checkpoints`].
+//! - A session's kernel questions, todo list and notifications, waiting for
+//!   an attached client that can answer and answered as on the old daemon
+//!   (phase 8d-2e): [`questions`].
+//! - A session's side runs (`/btw`, `/better` and its outcome), answered
+//!   and streamed as the old daemon answers and streams them (phase 8d-3):
+//!   [`side_questions`].
+//! - The agents view's kernel activity (a session's kernel shell commands,
+//!   its factory lane, the persistent shells and their catalog rows),
+//!   answered as the old daemon answers it (phase 8d-4a):
+//!   [`kernel_activity`].
+//! - The agents view's session controls (the agent-message ingest's status,
+//!   pause, resume and clear, the RLM depth bound, the subagent delete),
+//!   answered as the old daemon answers them (phase 8d-4b):
+//!   [`agent_controls`].
+//! - A session's heartbeat (its read, set, update and manage, and the
+//!   withdrawal of its queued fire), answered as the old daemon answers it
+//!   (phase 8d-4c): [`heartbeats`]; the saved catalog's passive subagents:
+//!   [`saved_list`].
+//! - The daemon's own end (`shutdown`, the stop signal, `restart` mid-turn
+//!   and the next daemon's continuation), as the old daemon ends (phase
+//!   8d-5a): [`lifecycle`]; a kept daemon's `shutdown` is not restarted:
+//!   [`keeper`].
+//! - The update restart's prepare and commit (the gate, the roster, the
+//!   update's closing), as the old daemon answers and writes them (phase
+//!   8d-5b), and the next daemon's restore of the roster (8d-5b2):
+//!   [`update`]; a TS updater's restart handoff restored on the selected
+//!   daemon (8d-5b2): [`legacy_update`].
+//! - A distribution build's boot import of the official build's chats, its
+//!   pushes, and what a client that connects mid-import sees, as on the old
+//!   daemon (phase 8d-5c): [`history_import`].
 #![cfg(unix)]
 
+mod acp_calls;
+mod agent_controls;
+mod agents_view;
+mod bash;
+mod checkpoints;
+mod client_surface;
+mod create;
 mod family;
+mod goldens;
+mod heartbeats;
+mod history_import;
+mod info;
 mod keeper;
+mod kernel_activity;
+mod legacy_update;
+mod lifecycle;
+mod questions;
+mod queue_edit;
 mod reliability;
+mod replace;
+mod saved_list;
 mod schedules;
+mod side_questions;
+mod stream;
 #[path = "../support/mod.rs"]
 mod support;
+mod switches;
+mod tree;
 mod turns;
+mod update;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -53,6 +142,17 @@ const SCRUB_ENV: [&str; 6] = [
     "PI_PACKAGE_DIR",
 ];
 
+/// Whether env var `key` can sign a provider in (pa-ai's env keys and its
+/// cloud credential variables).
+fn credential_env(key: &str) -> bool {
+    key.ends_with("_API_KEY")
+        || key.ends_with("_TOKEN")
+        || key.ends_with("_SECRET_KEY")
+        || ["AWS_", "GOOGLE_CLOUD_", "GCLOUD_"]
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
+
 /// A temp dir short enough for every socket under it (macOS's `$TMPDIR` is
 /// not), canonical so the paths the daemons report compare equal.
 fn fixture_dir() -> tempfile::TempDir {
@@ -75,17 +175,26 @@ impl Drop for Daemon {
 /// The isolated agent dir and sockets of one test.
 struct Bed {
     dir: tempfile::TempDir,
+    /// The agent dir, under `dir`.
+    agent: PathBuf,
 }
 
 impl Bed {
     fn new() -> Self {
-        let bed = Bed { dir: fixture_dir() };
-        std::fs::create_dir_all(bed.agent_dir()).unwrap();
-        bed
+        Bed::with_agent_dir(Path::new("agent"))
+    }
+
+    /// A bed whose agent dir is `agent`, relative to its dir (the bed's
+    /// dir is the daemons' home).
+    fn with_agent_dir(agent: &Path) -> Self {
+        let dir = fixture_dir();
+        let agent = dir.path().join(agent);
+        std::fs::create_dir_all(&agent).unwrap();
+        Bed { dir, agent }
     }
 
     fn agent_dir(&self) -> PathBuf {
-        self.dir.path().join("agent")
+        self.agent.clone()
     }
 
     fn old_socket(&self) -> PathBuf {
@@ -111,6 +220,13 @@ impl Bed {
             .stderr(Stdio::from(log));
         for key in SCRUB_ENV {
             command.env_remove(key);
+        }
+        // Provider credentials the machine carries (a CI runner has none) would
+        // make the daemons' signed-in providers depend on where the test runs.
+        for (key, _) in std::env::vars_os() {
+            if key.to_str().is_some_and(credential_env) {
+                command.env_remove(key);
+            }
         }
     }
 
@@ -160,6 +276,11 @@ impl Bed {
     /// The old daemon (the `pa-daemon` supervisor binary built beside
     /// `prime-agent`), listening on `daemon.sock`.
     fn old_daemon(&self) -> Daemon {
+        self.old_daemon_with(&[])
+    }
+
+    /// The old daemon with `env` over the bed's, listening.
+    fn old_daemon_with(&self, env: &[(&str, &str)]) -> Daemon {
         let binary = Path::new(env!("CARGO_BIN_EXE_prime-agent"))
             .parent()
             .expect("the profile dir")
@@ -176,7 +297,8 @@ impl Bed {
             .arg("--socket")
             .arg(self.old_socket())
             .arg("--agent-dir")
-            .arg(self.agent_dir());
+            .arg(self.agent_dir())
+            .envs(env.iter().copied());
         let mut child = command.spawn().expect("spawn the old daemon");
         support::await_listening(&self.old_socket(), &mut child);
         Daemon(child)
@@ -252,6 +374,16 @@ impl Client {
     }
 
     async fn call(&mut self, method: &str, args: Value) -> Outcome {
+        self.call_keeping(method, args, &mut Vec::new()).await
+    }
+
+    /// `call`, keeping in `events` the frames that arrive before its reply.
+    async fn call_keeping(
+        &mut self,
+        method: &str,
+        args: Value,
+        events: &mut Vec<ServerFrame>,
+    ) -> Outcome {
         let id = self.id();
         self.send(&ClientFrame::Call {
             id: id.clone(),
@@ -259,7 +391,7 @@ impl Client {
             args,
         })
         .await;
-        self.reply(&id, &mut Vec::new()).await
+        self.reply(&id, events).await
     }
 
     async fn query(&mut self, name: &str, args: Value) -> Outcome {
@@ -296,14 +428,14 @@ impl Client {
 fn ok(outcome: Outcome) -> Value {
     match outcome {
         Outcome::Ok { result } => result,
-        Outcome::Error { message } => panic!("expected ok, got the error {message}"),
+        Outcome::Error { message, .. } => panic!("expected ok, got the error {message}"),
     }
 }
 
 /// The message of an `error` outcome.
 fn refused(outcome: Outcome) -> String {
     match outcome {
-        Outcome::Error { message } => message,
+        Outcome::Error { message, .. } => message,
         Outcome::Ok { result } => panic!("expected a refusal, got {result}"),
     }
 }

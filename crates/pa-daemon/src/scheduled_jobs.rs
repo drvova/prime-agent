@@ -13,13 +13,11 @@ use pa_core::cron::scheduler::{
     AgentCronScheduler, AgentCronSchedulerHooks, FIRE_SETTLE_TIMEOUT_MS,
 };
 use pa_core::cron::store::{
-    AgentCronJobStore, CancelJobsFilter, CreateAgentCronJobInput, HeartbeatManagementAction,
-    SessionBinding,
+    AgentCronJobStore, CancelJobsFilter, CreateAgentCronJobInput, SessionBinding,
 };
 use pa_core::cron::{
-    is_heartbeat_cron_job, normalize_heartbeat_delivery_mode, normalize_heartbeat_schedule,
-    should_defer_heartbeat_cron_job, AgentCronJob, DeliveryMode, HeartbeatSessionActivity,
-    JobStatus,
+    is_heartbeat_cron_job, should_defer_heartbeat_cron_job, AgentCronJob, DeliveryMode,
+    HeartbeatSessionActivity, JobStatus,
 };
 
 use crate::protocol::{response_failure, response_success, DaemonResponse};
@@ -37,7 +35,7 @@ pub(crate) fn session_artifact_dir(session_file: &Path, session_id: &str) -> Opt
 pub(crate) struct QueueHooks {
     core: Arc<Mutex<SessionCore>>,
     work_notify: Arc<Notify>,
-    user_bash: Arc<crate::user_bash::UserBash>,
+    user_bash: Arc<pa_core::user_bash::UserBash>,
     store: Arc<AgentCronJobStore>,
     /// The worker recovery journal (the fire checkpoint's busy evidence).
     recovery: Arc<Mutex<Option<crate::journal::WorkerRecoveryJournal>>>,
@@ -70,7 +68,7 @@ impl QueueHooks {
         if job.session_file.is_empty() {
             return true;
         }
-        match crate::session_store::read_session_info(Path::new(&job.session_file)) {
+        match pa_core::session::catalog::read_session_info(Path::new(&job.session_file)) {
             None => true,
             Some(info) => info.id != job.session_id || info.state.as_deref() != Some("active"),
         }
@@ -225,7 +223,7 @@ impl ScheduledJobs {
     pub(crate) fn new(
         core: Arc<Mutex<SessionCore>>,
         work_notify: Arc<Notify>,
-        user_bash: Arc<crate::user_bash::UserBash>,
+        user_bash: Arc<pa_core::user_bash::UserBash>,
         events: Arc<crate::worker::EventPump>,
         recovery: Arc<Mutex<Option<crate::journal::WorkerRecoveryJournal>>>,
     ) -> Self {

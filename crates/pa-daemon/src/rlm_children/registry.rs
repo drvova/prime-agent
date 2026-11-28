@@ -542,7 +542,7 @@ fn ledger_child_records(
         Path::new(&sessions_dir),
         |_| {},
     )
-    .with_legacy_usage(Box::new(crate::session_store::legacy_ledger_usage));
+    .with_legacy_usage(Box::new(pa_core::session::catalog::legacy_ledger_usage));
     let edges = ledger
         .live_edges_of_parent(parent_file)
         .unwrap_or_else(|error| {

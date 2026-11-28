@@ -3525,6 +3525,7 @@ dependencies = [
  "pa-sources",
  "pa-telemetry",
  "pa-types",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",

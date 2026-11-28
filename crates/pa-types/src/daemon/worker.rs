@@ -283,6 +283,8 @@ pub struct DaemonUpdateRestartSession {
     pub config: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_metadata: Option<Value>,
+    /// Accepted from old rosters and ignored: it carried the pane identity
+    /// of the removed Herdr integration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_env: Option<std::collections::BTreeMap<String, String>>,
     pub queue: DaemonUpdateRestartQueue,

@@ -5,6 +5,33 @@ use super::{
     SessionAgentMessage, TrailingAssistantFilter,
 };
 
+/// `abort_compaction`'s hold on a compaction run under the session's own
+/// signal ([`AgentSession::compact`] with no caller signal), from before its
+/// start is announced until it ends: an abort that lands in between (after a
+/// client saw `compaction_start`, before the run began) still stops the run,
+/// which adopts the armed controller. Dropping the arm disarms it, so an
+/// abort never reaches a later compaction.
+pub struct CompactionAbortArm<'session> {
+    session: &'session AgentSession,
+    controller: std::sync::Arc<pa_agent::abort::AbortController>,
+}
+
+impl Drop for CompactionAbortArm<'_> {
+    fn drop(&mut self) {
+        let mut slot = self
+            .session
+            .compaction_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot
+            .as_ref()
+            .is_some_and(|current| std::sync::Arc::ptr_eq(current, &self.controller))
+        {
+            *slot = None;
+        }
+    }
+}
+
 impl AgentSession {
     pub(crate) fn refinement_signal(&self) -> pa_agent::abort::AbortSignal {
         self.refinement_cancel
@@ -171,93 +198,155 @@ impl AgentSession {
         api_key: Option<String>,
         abort: Option<&pa_agent::abort::AbortSignal>,
     ) -> anyhow::Result<CompactOutcome> {
-        compaction_trace::trace(
-            "compact.enter",
-            &serde_json::json!({
-                "customInstructions": custom_instructions.is_some(),
-            }),
-        );
-        let started_at = std::time::Instant::now();
-        let summary_delta = self
-            .compaction_summary_sink
-            .lock()
-            .expect("compaction summary sink lock")
-            .clone();
-        let options = crate::session_engine::compact_session::CompactOptions {
-            model: model.clone(),
-            api_key,
-            custom_instructions,
-            settings: self.compaction_settings(),
-            abort,
-            // Captured per attempt inside `compaction_attempts`: a
-            // conflict retry summarizes a new branch, and inputs captured
-            // here would rank the abandoned branch's terms.
-            harness_digest: None,
-            auxiliary: self.auxiliary_model.as_ref(),
-            summary_delta,
-            semantic_edges: self.semantic_edges(),
-        };
-        // The flight spans the attempts, the rebuilt-context replace, and
-        // the kernel-state notice: every path here REPLACES the live loop
-        // context, and the other replacers — `commit_refinement`'s
-        // outcome push and `record_compaction_outcome`'s failure row —
-        // take the same flight. A row pushed onto the context must not
-        // interleave with the replace: it would duplicate in the rebuilt
-        // view or vanish under it while staying durable either way.
-        let _flight = self.compaction_flight.lock().await;
-        let mut outcome = self.compaction_attempts(&options, started_at).await?;
-        if matches!(outcome, CompactOutcome::Skipped(_)) {
-            compaction_trace::trace("compact.skipped", &serde_json::Value::Null);
-            return Ok(outcome);
-        }
-        let rebuilt = {
-            let session = self.session.lock().await;
-            crate::session_engine::compact_session::rebuilt_context_after_compaction(&session)
-        };
-        let loop_messages: Vec<AgentMessage> = rebuilt_loop_messages(rebuilt);
-        let rebuilt_message_count = loop_messages.len();
-        self.agent.set_messages(loop_messages).await;
-        compaction_trace::trace(
-            "compact.rebuilt_context",
-            &serde_json::json!({ "messages": rebuilt_message_count }),
-        );
-        // A kernel that survived the compaction gets its persistence notice —
-        // a durable `ipython_state` row that also keeps a back-to-back second
-        // `/compact` preparing (update mode) instead of skipping.
-        let kernel_state = match self.kernel_state.as_ref() {
-            Some(probe) => {
-                kernel_state_notice::sync_after_compaction(
-                    probe.as_ref(),
+        // A run whose caller brings no signal runs under the session's own,
+        // which `abort_compaction` aborts: the summarizer request in flight
+        // is dropped and nothing commits. A caller that announced the run
+        // armed it first ([`Self::arm_compaction_abort`]): the run adopts
+        // that controller, so an abort sent after the announcement holds.
+        let own = abort.is_none().then(|| {
+            let mut slot = self.compaction_abort.lock().expect("compaction abort lock");
+            CompactionAbortArm {
+                session: self,
+                controller: std::sync::Arc::clone(slot.get_or_insert_with(Default::default)),
+            }
+        });
+        let own_signal = own.as_ref().map(|arm| arm.controller.signal());
+        let abort = abort.or(own_signal.as_ref());
+        // Boxed: the run is raced or awaited from one place, and the session
+        // command and turn futures that await `compact` stay small.
+        let run = Box::pin(async {
+            compaction_trace::trace(
+                "compact.enter",
+                &serde_json::json!({
+                    "customInstructions": custom_instructions.is_some(),
+                }),
+            );
+            let started_at = std::time::Instant::now();
+            let summary_delta = self
+                .compaction_summary_sink
+                .lock()
+                .expect("compaction summary sink lock")
+                .clone();
+            let options = crate::session_engine::compact_session::CompactOptions {
+                model: model.clone(),
+                api_key,
+                custom_instructions,
+                settings: self.compaction_settings(),
+                abort,
+                // Captured per attempt inside `compaction_attempts`: a
+                // conflict retry summarizes a new branch, and inputs captured
+                // here would rank the abandoned branch's terms.
+                harness_digest: None,
+                auxiliary: self.auxiliary_model.as_ref(),
+                summary_delta,
+                semantic_edges: self.semantic_edges(),
+            };
+            // The flight spans the attempts, the rebuilt-context replace, and
+            // the kernel-state notice: every path here REPLACES the live loop
+            // context, and the other replacers — `commit_refinement`'s
+            // outcome push and `record_compaction_outcome`'s failure row —
+            // take the same flight. A row pushed onto the context must not
+            // interleave with the replace: it would duplicate in the rebuilt
+            // view or vanish under it while staying durable either way.
+            let _flight = self.compaction_flight.lock().await;
+            let mut outcome = self.compaction_attempts(&options, started_at).await?;
+            if matches!(outcome, CompactOutcome::Skipped(_)) {
+                compaction_trace::trace("compact.skipped", &serde_json::Value::Null);
+                return Ok(outcome);
+            }
+            let rebuilt = {
+                let session = self.session.lock().await;
+                crate::session_engine::compact_session::rebuilt_context_after_compaction(&session)
+            };
+            let loop_messages: Vec<AgentMessage> = rebuilt_loop_messages(rebuilt);
+            let rebuilt_message_count = loop_messages.len();
+            self.agent.set_messages(loop_messages).await;
+            compaction_trace::trace(
+                "compact.rebuilt_context",
+                &serde_json::json!({ "messages": rebuilt_message_count }),
+            );
+            // A kernel that survived the compaction gets its persistence notice —
+            // a durable `ipython_state` row that also keeps a back-to-back second
+            // `/compact` preparing (update mode) instead of skipping.
+            let kernel_state = match self.kernel_state.as_ref() {
+                Some(probe) => {
+                    kernel_state_notice::sync_after_compaction(
+                        probe.as_ref(),
+                        &self.session,
+                        &self.agent,
+                    )
+                    .await?
+                }
+                None => None,
+            };
+            let notice_landed = kernel_state.is_some();
+            let mut recent_files = false;
+            if let CompactOutcome::Ran(run) = &mut outcome {
+                run.kernel_state = kernel_state;
+                // After the kernel notice, in the order the built context
+                // shows the two rows.
+                recent_files = super::compaction_files::sync_after_compaction(
                     &self.session,
                     &self.agent,
+                    &run.entry.first_kept_entry_id,
+                    model.context_window,
                 )
                 .await?
+                .is_some();
             }
-            None => None,
+            compaction_trace::trace(
+                "compact.returned",
+                &serde_json::json!({
+                    "notice": notice_landed,
+                    "recentFiles": recent_files,
+                }),
+            );
+            Ok(outcome)
+        });
+        let outcome = match &own_signal {
+            Some(signal) => pa_agent::abort::race_with_abort(run, signal)
+                .await
+                .and_then(|outcome| outcome),
+            None => run.await,
         };
-        let notice_landed = kernel_state.is_some();
-        let mut recent_files = false;
-        if let CompactOutcome::Ran(run) = &mut outcome {
-            run.kernel_state = kernel_state;
-            // After the kernel notice, in the order the built context
-            // shows the two rows.
-            recent_files = super::compaction_files::sync_after_compaction(
-                &self.session,
-                &self.agent,
-                &run.entry.first_kept_entry_id,
-                model.context_window,
-            )
-            .await?
-            .is_some();
+        // Disarmed as the run ends.
+        drop(own);
+        outcome
+    }
+
+    /// Arms [`Self::abort_compaction`] for the compaction the caller is about
+    /// to announce and run with no signal of its own ([`Self::compact`]):
+    /// call it before emitting `compaction_start` and hold the arm until the
+    /// run returns. An abort in between stops the run as it starts.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the compaction abort slot's mutex is poisoned.
+    pub fn arm_compaction_abort(&self) -> CompactionAbortArm<'_> {
+        let controller = std::sync::Arc::new(pa_agent::abort::AbortController::new());
+        *self.compaction_abort.lock().expect("compaction abort lock") =
+            Some(std::sync::Arc::clone(&controller));
+        CompactionAbortArm {
+            session: self,
+            controller,
         }
-        compaction_trace::trace(
-            "compact.returned",
-            &serde_json::json!({
-                "notice": notice_landed,
-                "recentFiles": recent_files,
-            }),
-        );
-        Ok(outcome)
+    }
+
+    /// Aborts the compaction the session runs under its own signal (one
+    /// whose caller brought none, [`Self::compact`]); nothing when none runs.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the compaction abort slot's mutex is poisoned.
+    pub fn abort_compaction(&self) {
+        let running = self
+            .compaction_abort
+            .lock()
+            .expect("compaction abort lock")
+            .clone();
+        if let Some(controller) = running {
+            controller.abort();
+        }
     }
 
     /// The PREPARE -> SUMMARIZE -> COMMIT loop: prepare under the session
@@ -429,6 +518,20 @@ impl AgentSession {
             .set_messages(rebuilt_loop_messages(rebuilt))
             .await;
         Ok(())
+    }
+
+    /// Rebuilds the loop's context from the session's active branch as its
+    /// leaf now stands: a tree move in place, which keeps the session's other
+    /// branches in its store (`rebuild_branch_context` adopts the branch it is
+    /// given as the whole store).
+    pub async fn rebuild_context_at_leaf(&self) {
+        let rebuilt = {
+            let session = self.session.lock().await;
+            crate::session_engine::compact_session::rebuilt_context_after_compaction(&session)
+        };
+        self.agent
+            .set_messages(rebuilt_loop_messages(rebuilt))
+            .await;
     }
 
     /// Start ephemeral background refinement; awaiting the returned task is

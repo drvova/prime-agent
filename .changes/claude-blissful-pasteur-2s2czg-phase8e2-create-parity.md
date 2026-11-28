@@ -1,0 +1,1 @@
+- With the runtime daemon opted in, new sessions from the TUI honour `--api-key`, `--credential`, `--profile`, `--models`, `--session-dir` and the agents view's new child session, run in the launching terminal's environment, `prime-agent shutdown` stops the runtime daemon too, and print mode honours `--api-key`.

@@ -337,7 +337,7 @@ pub(crate) fn emit_worker_event_locked(core: &mut SessionCore, events: &EventPum
 pub(crate) struct RosterPushContext {
     pub(crate) core: Arc<Mutex<SessionCore>>,
     pub(crate) engine: std::sync::Arc<dyn SessionEngine>,
-    pub(crate) user_bash: std::sync::Arc<crate::user_bash::UserBash>,
+    pub(crate) user_bash: std::sync::Arc<pa_core::user_bash::UserBash>,
     pub(crate) roster_link: std::sync::Arc<crate::supervisor_link::SupervisorLink>,
     pub(crate) worker_token: String,
     pub(crate) worker_instance_id: String,
@@ -443,7 +443,7 @@ impl SummaryInputs {
     fn lock<'a>(
         core: &'a Mutex<SessionCore>,
         engine: &dyn SessionEngine,
-        user_bash: &crate::user_bash::UserBash,
+        user_bash: &pa_core::user_bash::UserBash,
     ) -> (std::sync::MutexGuard<'a, SessionCore>, Self) {
         loop {
             let details = ModelDetails::read(engine, ModelDetailScope::Summary);
@@ -460,7 +460,7 @@ impl SummaryInputs {
 
     fn capture(
         engine: &dyn SessionEngine,
-        user_bash: &crate::user_bash::UserBash,
+        user_bash: &pa_core::user_bash::UserBash,
         model: Option<Value>,
     ) -> Self {
         Self {
@@ -496,7 +496,7 @@ impl ConnectionStateInputs {
     fn lock<'a>(
         core: &'a Mutex<SessionCore>,
         engine: &dyn SessionEngine,
-        user_bash: &crate::user_bash::UserBash,
+        user_bash: &pa_core::user_bash::UserBash,
     ) -> (std::sync::MutexGuard<'a, SessionCore>, Self) {
         loop {
             let details = ModelDetails::read(engine, ModelDetailScope::Connection);
@@ -513,7 +513,7 @@ impl ConnectionStateInputs {
 
     fn capture(
         engine: &dyn SessionEngine,
-        user_bash: &crate::user_bash::UserBash,
+        user_bash: &pa_core::user_bash::UserBash,
         details: ModelDetails,
     ) -> Self {
         Self {
@@ -544,7 +544,7 @@ pub(crate) fn session_summary(core: &SessionCore, inputs: SummaryInputs) -> Sess
         .and_then(|store| pa_core::session::store::store().stat(&store.path).ok())
         .and_then(|stat| stat.modified)
         .map(|time| {
-            crate::util::iso_from_unix_ms(
+            pa_core::session::manager::iso_from_unix_ms(
                 time.duration_since(std::time::UNIX_EPOCH)
                     .map_or_default(|d| d.as_millis() as u64),
             )
@@ -555,7 +555,7 @@ pub(crate) fn session_summary(core: &SessionCore, inputs: SummaryInputs) -> Sess
     let scalars = store.map_or_default(crate::session_store::SessionFile::scan_message_scalars);
     let last_activity_at = scalars
         .last_timestamp_ms
-        .map(crate::util::iso_from_unix_ms)
+        .map(pa_core::session::manager::iso_from_unix_ms)
         .or_else(|| modified.clone())
         .or_else(|| store.map(|store| store.header.timestamp.clone()));
     // Usage: the whole-file own-usage fold (TS `getOwnUsageSummary`);
@@ -563,9 +563,16 @@ pub(crate) fn session_summary(core: &SessionCore, inputs: SummaryInputs) -> Sess
     let usage = store
         .and_then(|store| {
             if store.path.as_os_str().is_empty() {
-                crate::session_usage::own_usage_summary_of(store.entries())
+                // The same fold over the store's in-memory entries (the pathless worker has
+                // no file to scan, but its live entries carry the rows a flush would write).
+                let mut scan = pa_core::session::usage_scan::UsageScan::default();
+                for entry in store.entries() {
+                    scan.fold_entry(&entry.type_, &entry.id, &entry.fields);
+                }
+                scan.summary()
             } else {
-                crate::session_store::read_session_info(&store.path).and_then(|info| info.usage)
+                pa_core::session::catalog::read_session_info(&store.path)
+                    .and_then(|info| info.usage)
             }
         })
         .map(|usage| json!(usage));

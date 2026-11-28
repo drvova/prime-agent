@@ -12,6 +12,22 @@ use super::{
 /// the turn.
 pub(super) const OVERFLOW_RECOVERY_FAILED_MESSAGE: &str = "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
 
+/// How a compaction that ended in `error` is recorded: cancelled when it
+/// was aborted (`session.abort_compaction`), else failed with `context`.
+fn failure(error: &anyhow::Error, context: &str) -> (CompactionOutcomeKind, String) {
+    if pa_agent::abort::is_abort_error(error) {
+        (
+            CompactionOutcomeKind::Cancelled,
+            "Compaction cancelled".to_string(),
+        )
+    } else {
+        (
+            CompactionOutcomeKind::Failed,
+            format!("{context}: {error:#}"),
+        )
+    }
+}
+
 /// One recovery attempt per overflow: "attempted" marks a compact-and-retry
 /// in flight; "reported" dedups the notice when the retry overflows too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -55,6 +71,12 @@ impl TurnBoundary {
     /// consumes the check (the start event carries the pending instructions
     /// before the summarizer runs), else the threshold arm compacts when the
     /// live context crossed the reserve headroom. The boundaries share the body.
+    /// Each arm arms `abort_compaction` before its start goes out, so an
+    /// abort sent on seeing the start stops a run that has not begun yet.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the requested and threshold arms share one body, each arming its abort before its start"
+    )]
     pub(super) async fn requested_and_threshold_arms(
         &mut self,
         engine: &SessionEngine,
@@ -62,12 +84,14 @@ impl TurnBoundary {
         api_key: Option<String>,
     ) -> Result<(), String> {
         let scheduled = engine.turn_boundary.scheduled_compaction().await;
-        if let Some(pending) = &scheduled {
+        let _abort_armed = scheduled.as_ref().map(|pending| {
+            let armed = engine.session.arm_compaction_abort();
             self.emit_json(&compaction_start_event(
                 CompactionOutcomeReason::Requested.wire(),
                 pending.instructions.as_deref(),
             ));
-        }
+            armed
+        });
         match engine
             .consume_pending_compaction(model, api_key.clone(), None)
             .await
@@ -106,11 +130,12 @@ impl TurnBoundary {
                 .await;
             }
             Some(Err(error)) => {
+                let (kind, message) = failure(&error, "Requested compaction failed");
                 self.end_unsuccessfully(
                     engine,
                     CompactionOutcomeReason::Requested,
-                    CompactionOutcomeKind::Failed,
-                    &format!("Requested compaction failed: {error:#}"),
+                    kind,
+                    &message,
                     scheduled
                         .as_ref()
                         .and_then(|pending| pending.instructions.as_deref()),
@@ -121,6 +146,7 @@ impl TurnBoundary {
                 // The threshold arm: the live context crossing the reserve headroom
                 // compacts before the next prompt; the pair streams in json mode.
                 if engine.session.auto_compaction_due(model).await {
+                    let _abort_armed = engine.session.arm_compaction_abort();
                     self.emit_json(&compaction_start_event(
                         CompactionOutcomeReason::Threshold.wire(),
                         None,
@@ -150,11 +176,12 @@ impl TurnBoundary {
                             .await;
                         }
                         Err(error) => {
+                            let (kind, message) = failure(&error, "Auto-compaction failed");
                             self.end_unsuccessfully(
                                 engine,
                                 CompactionOutcomeReason::Threshold,
-                                CompactionOutcomeKind::Failed,
-                                &format!("Auto-compaction failed: {error:#}"),
+                                kind,
+                                &message,
                                 None,
                             )
                             .await;
@@ -245,6 +272,7 @@ impl TurnBoundary {
             .take_compaction()
             .await
             .and_then(|pending| pending.instructions);
+        let _abort_armed = engine.session.arm_compaction_abort();
         self.emit_json(&compaction_start_event(
             CompactionOutcomeReason::Overflow.wire(),
             custom_instructions.as_deref(),
@@ -303,11 +331,12 @@ impl TurnBoundary {
                 Ok(OverflowOutcome::Finished)
             }
             Err(error) => {
+                let (kind, message) = failure(&error, "Context overflow recovery failed");
                 self.end_unsuccessfully(
                     engine,
                     CompactionOutcomeReason::Overflow,
-                    CompactionOutcomeKind::Failed,
-                    &format!("Context overflow recovery failed: {error:#}"),
+                    kind,
+                    &message,
                     custom_instructions.as_deref(),
                 )
                 .await;

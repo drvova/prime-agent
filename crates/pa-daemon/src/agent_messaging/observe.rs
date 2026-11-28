@@ -244,9 +244,11 @@ impl AgentObserveController for LinkAgentObserveController {
                         .unwrap_or_default()
                         .to_string(),
                     timestamp: message.get("timestamp").and_then(|value| {
-                        value
-                            .as_u64()
-                            .or_else(|| value.as_str().and_then(crate::util::iso_to_unix_ms))
+                        value.as_u64().or_else(|| {
+                            value
+                                .as_str()
+                                .and_then(pa_core::session::manager::iso_to_unix_ms)
+                        })
                     }),
                     text: truncate_chars(&full_text, max_chars),
                     truncated: full_text.chars().count() > max_chars,

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
-use pa_core::cron::store::{AgentCronJobStore, HeartbeatManagementAction};
+use pa_core::cron::store::AgentCronJobStore;
 use pa_core::cron::{is_heartbeat_cron_job, AgentCronJob, JobStatus};
 use pa_types::daemon::DaemonCommand;
 
@@ -20,8 +20,8 @@ use crate::protocol::{
 };
 use crate::registry::{canonical_session_file_string, ResidentWorker};
 use crate::scheduled_jobs::session_artifact_dir;
-use crate::session_store::read_session_info;
 use crate::supervisor::{client_command_payload, Supervisor};
+use pa_core::session::catalog::read_session_info;
 
 const CATALOG_FORWARD_TIMEOUT_MS: u64 = 5000;
 
@@ -29,7 +29,7 @@ const CATALOG_FORWARD_TIMEOUT_MS: u64 = 5000;
 #[derive(Clone)]
 pub(crate) struct PassiveJob {
     pub(crate) job: AgentCronJob,
-    pub(crate) info: crate::session_store::SessionInfo,
+    pub(crate) info: pa_core::session::catalog::SessionInfo,
     canonical_session_file: String,
 }
 
@@ -59,15 +59,6 @@ fn sort_cron_jobs(jobs: &mut [AgentCronJob]) {
     );
 }
 
-/// The TS vocabulary: pause/stop are explicit, anything else resumes.
-fn heartbeat_manage_action(action: &Value) -> HeartbeatManagementAction {
-    match action.as_str() {
-        Some("pause") => HeartbeatManagementAction::Pause,
-        Some("stop") => HeartbeatManagementAction::Stop,
-        _ => HeartbeatManagementAction::Resume,
-    }
-}
-
 impl Supervisor {
     /// Jobs stored under the session-artifacts tree whose session file exists, is
     /// active, and has no live worker: the supervisor only merges what no worker can list.
@@ -91,7 +82,7 @@ impl Supervisor {
     /// afterward, when workers registered during the scan are visible.
     fn scan_passive_candidates(agent_dir: &Path, include_inactive: bool) -> Vec<PassiveJob> {
         let mut out = Vec::new();
-        for job in crate::update_roster::scan_scheduled_jobs(agent_dir) {
+        for job in pa_core::update::restart::roster::scan_scheduled_jobs(agent_dir) {
             if !include_inactive && !matches!(job.status, JobStatus::Active | JobStatus::Paused) {
                 continue;
             }
@@ -290,7 +281,7 @@ impl Supervisor {
 
     /// A passive job's artifact store: the same partitioned store the owning worker
     /// uses, so a passive mutation is the durable write a woken worker would have made.
-    fn passive_job_store(info: &crate::session_store::SessionInfo) -> AgentCronJobStore {
+    fn passive_job_store(info: &pa_core::session::catalog::SessionInfo) -> AgentCronJobStore {
         let store = AgentCronJobStore::for_session_artifacts();
         if let Some(dir) = session_artifact_dir(&info.path, &info.id) {
             store.register_session_artifact(&info.id, &dir);
@@ -616,7 +607,7 @@ impl Supervisor {
                 if let Ok(Some(heartbeat)) = store.manage_heartbeat(
                     active_session_id,
                     job_id,
-                    heartbeat_manage_action(action),
+                    pa_core::cron::heartbeat_commands::heartbeat_manage_action(action.as_str()),
                     crate::util::now_ms(),
                 ) {
                     self.broadcast_heartbeats_changed();

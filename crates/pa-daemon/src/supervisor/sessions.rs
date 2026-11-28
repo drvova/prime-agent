@@ -8,7 +8,7 @@ use super::{
     ResidentWorker, Result, RosterFamilySeedOwner, RouteAdmission, Supervisor, Value,
     ROUTE_TIMEOUT_MS, SUMMARY_TIMEOUT_MS,
 };
-use crate::session_scan::list_sessions_with;
+use pa_core::session::catalog::{list_sessions_with, saved_session_row};
 
 /// One spawn-name reservation held across a fresh-launch create (TS #2396): the only
 /// cross-create serializer for a same-name admission.
@@ -218,9 +218,10 @@ impl Supervisor {
         let limit = limit.map(|limit| limit as usize);
         let scan = tokio::task::spawn_blocking(move || {
             let persistent_shells =
-                crate::persistent_shells::live_shell_rows_by_session(&agent_dir);
+                pa_core::kernel::persistent_shells::live_shell_rows_by_session(&agent_dir);
             // The factory is opt-in: while it stays off, no row counts stored specs.
-            let factory_lane = crate::factory_activity::factory_lane_enabled(&agent_dir);
+            let factory_lane =
+                pa_core::session_engine::kernel_activity::factory_lane_enabled(&agent_dir);
             let mut factory_specs = std::collections::HashMap::new();
             let mut file_total = 0usize;
             let page = list_sessions_with(&dir, cursor.as_deref(), limit, |index, total, info| {
@@ -230,7 +231,10 @@ impl Supervisor {
                     return true;
                 }
                 if factory_lane {
-                    count_factory_specs(info, &mut factory_specs);
+                    pa_core::session_engine::kernel_activity::count_factory_specs(
+                        info,
+                        &mut factory_specs,
+                    );
                 }
                 let row = saved_session_row(info, &persistent_shells, &factory_specs);
                 let mut item = json!({
@@ -294,7 +298,7 @@ impl Supervisor {
         // The scan's parse trees folded and freed inside the blocking task; return their
         // arena high-water to the OS at the phase boundary (live cache untouched).
         pa_types::memory_release::trim_freed_heap();
-        let crate::session_scan::SessionPage {
+        let pa_core::session::catalog::SessionPage {
             mut infos,
             remaining,
             next_cursor,
@@ -307,9 +311,9 @@ impl Supervisor {
         // The saved catalog scan never visits session-artifacts, where RLM children
         // persist: merge the passive ledger walk so a passivated descendant stays
         // catalog-visible.
-        let mut roots: Vec<crate::rlm_roster::RosterWalkRoot> = infos
+        let mut roots: Vec<pa_core::session_engine::rlm_roster::RosterWalkRoot> = infos
             .iter()
-            .map(|info| crate::rlm_roster::RosterWalkRoot {
+            .map(|info| pa_core::session_engine::rlm_roster::RosterWalkRoot {
                 session_file: info.path.clone(),
                 active_session_id: None,
             })
@@ -317,7 +321,7 @@ impl Supervisor {
         for resident in self.registry.list().await {
             let descriptor = resident.descriptor.lock().await;
             if let Some(session_file) = &descriptor.session_file {
-                roots.push(crate::rlm_roster::RosterWalkRoot {
+                roots.push(pa_core::session_engine::rlm_roster::RosterWalkRoot {
                     session_file: pa_core::session::lease::canonical_session_path(Path::new(
                         session_file,
                     )),
@@ -336,20 +340,21 @@ impl Supervisor {
                 ))];
             }
         };
-        let passive = match crate::rlm_roster::walk_passive_rlm_children(&ledger, &roots) {
-            Ok(children) => children,
-            Err(error) => {
-                self.log_line(&format!(
-                    "Could not merge passive RLM descendants: {error:#}"
-                ));
-                Vec::new()
-            }
-        };
+        let passive =
+            match pa_core::session_engine::rlm_roster::walk_passive_rlm_children(&ledger, &roots) {
+                Ok(children) => children,
+                Err(error) => {
+                    self.log_line(&format!(
+                        "Could not merge passive RLM descendants: {error:#}"
+                    ));
+                    Vec::new()
+                }
+            };
         // The passive ledger children stream too (items only, no progress - the
         // saved phase above owns the progress counts).
         let mut merged: Vec<_> = passive
             .iter()
-            .map(crate::rlm_roster::passive_child_info)
+            .map(pa_core::session_engine::rlm_roster::passive_child_info)
             .filter(|info| !scope_current || info.cwd == cwd)
             .collect();
         if factory_lane {
@@ -500,9 +505,10 @@ impl Supervisor {
                     });
                 }
                 let mut summaries = Vec::new();
-                let mut roots: Vec<crate::rlm_roster::RosterWalkRoot> = Vec::new();
+                let mut roots: Vec<pa_core::session_engine::rlm_roster::RosterWalkRoot> =
+                    Vec::new();
                 for info in &infos {
-                    roots.push(crate::rlm_roster::RosterWalkRoot {
+                    roots.push(pa_core::session_engine::rlm_roster::RosterWalkRoot {
                         session_file: info.path.clone(),
                         active_session_id: None,
                     });
@@ -522,16 +528,20 @@ impl Supervisor {
                 }
                 let mut resident_only = Vec::new();
                 for root in resident_by_file {
-                    roots.push(crate::rlm_roster::RosterWalkRoot {
+                    roots.push(pa_core::session_engine::rlm_roster::RosterWalkRoot {
                         session_file: root.session_file,
                         active_session_id: root.active_session_id,
                     });
                     resident_only.push(root.summary);
                 }
-                match crate::rlm_roster::walk_passive_rlm_children(&ledger, &roots) {
+                match pa_core::session_engine::rlm_roster::walk_passive_rlm_children(
+                    &ledger, &roots,
+                ) {
                     Ok(children) => {
                         for child in &children {
-                            summaries.push(crate::rlm_roster::passive_child_summary(child));
+                            summaries.push(
+                                pa_core::session_engine::rlm_roster::passive_child_summary(child),
+                            );
                         }
                     }
                     Err(error) => {
@@ -824,7 +834,7 @@ struct ResidentRoot {
     active_session_id: Option<String>,
 }
 
-pub(super) fn saved_session_summary(info: &crate::session_store::SessionInfo) -> Value {
+pub(super) fn saved_session_summary(info: &pa_core::session::catalog::SessionInfo) -> Value {
     let mut row = json!({
         "id": info.id,
         // TS `inactiveLifecycleForSession`: archived/crash markers stay archived;
@@ -892,92 +902,19 @@ fn offline_summary(worker_id: &str) -> Value {
     })
 }
 
-/// Read one session's stored factory specs (its local harness store's factory entries) into a
-/// listing's map: a listing reads each store once, and only sessions holding specs get an entry.
-fn count_factory_specs(
-    info: &crate::session_store::SessionInfo,
-    factory_specs: &mut std::collections::HashMap<String, usize>,
-) {
-    let specs = crate::scheduled_jobs::session_artifact_dir(&info.path, &info.id)
-        .map_or(0, |dir| {
-            crate::factory_activity::stored_factory_spec_count(&dir)
-        });
-    if specs > 0 {
-        factory_specs.insert(info.id.clone(), specs);
-    }
-}
-
 /// The sessions' stored factory specs, read off the async executor.
 pub(super) async fn stored_factory_specs(
-    infos: Vec<crate::session_store::SessionInfo>,
+    infos: Vec<pa_core::session::catalog::SessionInfo>,
 ) -> Result<std::collections::HashMap<String, usize>> {
     tokio::task::spawn_blocking(move || {
         let mut factory_specs = std::collections::HashMap::new();
         for info in &infos {
-            count_factory_specs(info, &mut factory_specs);
+            pa_core::session_engine::kernel_activity::count_factory_specs(info, &mut factory_specs);
         }
         factory_specs
     })
     .await
     .map_err(|error| anyhow!("saved-session factory spec reader failed: {error}"))
-}
-
-pub(super) fn saved_session_row(
-    info: &crate::session_store::SessionInfo,
-    persistent_shells: &std::collections::HashMap<String, Vec<Value>>,
-    factory_specs: &std::collections::HashMap<String, usize>,
-) -> Value {
-    let mut row = json!({
-        "path": info.path.to_string_lossy(),
-        "id": info.id,
-        "cwd": info.cwd,
-        "rlmDepth": info.rlm_depth,
-        "created": info.created,
-        "modified": info.modified,
-        "messageCount": info.message_count,
-        "firstMessage": info.first_message,
-        "state": info.state.as_ref().map(|state| json!({ "status": state })),
-    });
-    let object = row.as_object_mut().expect("row object");
-    if let Some(name) = &info.name {
-        object.insert("name".to_string(), json!(name));
-    }
-    if let Some(parent) = &info.parent_session_path {
-        object.insert("parentSessionPath".to_string(), json!(parent));
-    }
-    if let Some((provider, model_id)) = &info.model {
-        object.insert(
-            "model".to_string(),
-            json!({ "provider": provider, "modelId": model_id }),
-        );
-    }
-    // TS `serializeSavedSessionInfo` publishes the scan's own-usage summary:
-    // the spend columns and the archived-row keep-condition read
-    // `saved.usage.cost`, so rollups never double count.
-    if let Some(usage) = &info.usage {
-        object.insert("usage".to_string(), json!(usage));
-    }
-    // TS #2506 `serializeSavedSessionInfo`'s optional `deletedDescendantUsage`: the
-    // recursive spend of tombstoned descendants — the deleted child keeps no row anywhere,
-    // its spend bills here exactly once.
-    if let Some(deleted) = &info.deleted_descendant_usage {
-        object.insert("deletedDescendantUsage".to_string(), json!(deleted));
-    }
-    // The persisted thinking level rides the catalog row too: the TUI merges it into
-    // live summaries that lack one.
-    if let Some(level) = &info.thinking_level {
-        object.insert("thinkingLevel".to_string(), json!(level));
-    }
-    // Persistent `bash()` shells outlive the session's kernel: an inactive row still
-    // shows the live ones (kernel activity row shape). Its stored factory specs are
-    // durable harness entries, readable without a kernel too.
-    if let Some(shells) = persistent_shells.get(&info.id) {
-        object.insert("persistentShells".to_string(), json!(shells));
-    }
-    if let Some(specs) = factory_specs.get(&info.id) {
-        object.insert("factorySpecs".to_string(), json!(specs));
-    }
-    row
 }
 
 #[cfg(test)]

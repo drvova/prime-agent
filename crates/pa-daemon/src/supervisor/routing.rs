@@ -1029,7 +1029,7 @@ impl Supervisor {
                     )
                 })
         };
-        let cwd = crate::session_store::read_session_info(std::path::Path::new(&session_file))
+        let cwd = pa_core::session::catalog::read_session_info(std::path::Path::new(&session_file))
             .map_or_else(|| "/".to_string(), |info| info.cwd);
         // The identity rides `config.rlmDepth` + `runtime_metadata.rlmChildId` —
         // the keys launch_worker copies into the DURABLE create command's rest.

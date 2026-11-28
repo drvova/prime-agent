@@ -35,6 +35,10 @@ use crate::subscriptions::MemorySessionTree;
 use crate::tasks::TaskQueue;
 use crate::wire::{Handlers, WireConfig, WireServer};
 
+mod queue_edit;
+
+pub(crate) use queue_edit::QueueEdit;
+
 /// The id of the subscription that turns every session's input into its
 /// tasks.
 const INPUT_SUBSCRIPTION: &str = "runtime/input";
@@ -120,7 +124,9 @@ impl<B: SessionBuilder> SessionControl for Control<B> {
         let session = session.to_string();
         Box::pin(async move {
             self.queue.cancel_queued(&session).await?;
-            self.runner.cancel_running(&session);
+            if let Some(running) = self.queue.lane(&session).running {
+                self.runner.cancel_running_task(&session, &running.id);
+            }
             Ok(())
         })
     }
@@ -188,7 +194,7 @@ impl<B: SessionBuilder> Runtime<B> {
             let log = Arc::new(log.await.context("open the runtime's database")??);
             let queue = TaskQueue::new(
                 runner.clone(),
-                LogTaskStore::new(Arc::clone(&log)),
+                LogTaskStore::sparing(Arc::clone(&log), sessions.unstored().clone()),
                 options.max_concurrent_runs,
             );
             for id in &opened {
@@ -208,8 +214,8 @@ impl<B: SessionBuilder> Runtime<B> {
             }
         };
         let bus = Bus::new(BusParts {
-            events: LogEventStore::new(Arc::clone(&log)),
-            state: LogStateStore::new(Arc::clone(&log)),
+            events: LogEventStore::sparing(Arc::clone(&log), sessions.unstored().clone()),
+            state: LogStateStore::sparing(Arc::clone(&log), sessions.unstored().clone()),
             sessions: tree.clone(),
             model: NoModelCalls,
             tasks: RuntimeTaskSink {
@@ -323,6 +329,12 @@ impl<B: SessionBuilder> Runtime<B> {
     #[must_use]
     pub fn remove_subscription(&self, id: &str) -> Option<Subscription> {
         self.bus.remove_subscription(id)
+    }
+
+    /// The subscriptions on the bus, in id order (`Bus::subscriptions`).
+    #[must_use]
+    pub fn subscriptions(&self) -> Vec<Subscription> {
+        self.bus.subscriptions()
     }
 
     /// Defines a timer or folder-watch source, kept in the agent's
@@ -472,7 +484,9 @@ impl<B: SessionBuilder> Runtime<B> {
     /// The database failed to save a cancelled task.
     pub async fn cancel(&self, session: &str) -> anyhow::Result<()> {
         self.queue.cancel_queued(session).await?;
-        self.runner.cancel_running(session);
+        if let Some(running) = self.queue.lane(session).running {
+            self.runner.cancel_running_task(session, &running.id);
+        }
         Ok(())
     }
 
@@ -491,7 +505,12 @@ impl<B: SessionBuilder> Runtime<B> {
                 self.queue.resume(session);
             }
         }
-        let unread = self.runner.cancel_running(session);
+        let unread = self
+            .queue
+            .lane(session)
+            .running
+            .and_then(|running| self.runner.cancel_running_task(session, &running.id))
+            .unwrap_or_default();
         let count = unread.len();
         for steer in unread {
             self.queue.push(steer).await?;
@@ -518,6 +537,62 @@ impl<B: SessionBuilder> Runtime<B> {
         self.queue.cancel_queued(session).await
     }
 
+    /// Holds `session`'s input under `hold`: nothing queued in its lane
+    /// starts until every hold is released ([`crate::tasks::TaskQueue::hold`]);
+    /// whether the hold is new.
+    pub(crate) fn hold_input(&self, session: &str, hold: &str) -> bool {
+        self.queue.hold(session, hold)
+    }
+
+    /// Releases `hold` on `session`'s input; whether it held it.
+    pub(crate) fn release_input(&self, session: &str, hold: &str) -> bool {
+        self.queue.release(session, hold)
+    }
+
+    /// Cancels `session`'s task `task`: taken out of the lane when it is
+    /// queued, or its turn aborted when it runs (the steers it took and had
+    /// not read go back to the front of the lane, which is neither parked nor
+    /// resumed). Whether it was queued or running.
+    ///
+    /// # Errors
+    ///
+    /// The database failed to save the cancelled task or a steer put back.
+    pub(crate) async fn cancel_task(&self, session: &str, task: &str) -> anyhow::Result<bool> {
+        if self.queue.cancel_task(session, task).await?.is_some() {
+            return Ok(true);
+        }
+        let runs = self
+            .queue
+            .lane(session)
+            .running
+            .is_some_and(|running| running.id == task);
+        let Some(unread) = runs
+            .then(|| self.runner.cancel_running_task(session, task))
+            .flatten()
+        else {
+            return Ok(false);
+        };
+        for steer in unread {
+            self.queue.push(steer).await?;
+        }
+        Ok(true)
+    }
+
+    /// Aborts `session`'s running turn, if it has one, and waits until it
+    /// ended; nothing queued starts meanwhile only while the caller holds the
+    /// lane (the steers the turn took and had not read go back to its front).
+    ///
+    /// # Errors
+    ///
+    /// The database failed to save a steer put back.
+    pub(crate) async fn interrupt(&self, session: &str) -> anyhow::Result<()> {
+        if let Some(running) = self.queue.lane(session).running {
+            self.cancel_task(session, &running.id).await?;
+        }
+        self.queue.session_not_running(session).await;
+        Ok(())
+    }
+
     /// What `session`'s lane holds now.
     pub(crate) fn lane(&self, session: &str) -> crate::tasks::LaneState {
         self.queue.lane(session)
@@ -531,9 +606,80 @@ impl<B: SessionBuilder> Runtime<B> {
     /// The database failed to save a cancelled task; the session is closed
     /// all the same.
     pub(crate) async fn close_session(&self, session: &str) -> anyhow::Result<()> {
+        // A kernel question still waiting settles as cancelled: no client
+        // will answer a closing session (the old worker's close).
+        if let Some(interaction) = self.sessions.subagents().interaction(session) {
+            interaction.closing();
+        }
         let cancelled = self.cancel(session).await;
         self.sessions.close(session).await;
+        self.sessions.subagents().forget_root(session).await;
         cancelled
+    }
+
+    /// Open session `session` goes on from the transcript at `transcript` in
+    /// `cwd`: once the work before it has ended, its engine is built again
+    /// from that transcript in a new lifetime, as a crash's rebuild is but
+    /// without the crash (`crate::session::SessionHost::replace`); it keeps
+    /// its id, its topics' subscribers, its stream and its tasks. Answers
+    /// once the new engine is built. The caller holds its lane, so nothing
+    /// queued starts on the transcript being left.
+    ///
+    /// # Errors
+    ///
+    /// The session is not open, or its new engine could not be built (it
+    /// runs on from the new transcript all the same).
+    pub(crate) async fn replace_session(
+        &self,
+        session: &str,
+        transcript: PathBuf,
+        cwd: PathBuf,
+    ) -> anyhow::Result<()> {
+        let host = self
+            .sessions
+            .host(session)
+            .with_context(|| format!("session {session} is not open"))?;
+        host.replace(transcript, cwd)
+            .await
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Queues each payload it is given on `session`'s stream
+    /// (`agent/<id>/stream`, live only) as the owner's, in the stream's
+    /// shape: in order with what the session's turns stream.
+    ///
+    /// # Errors
+    ///
+    /// `session` is not open.
+    pub(crate) fn stream_sender(
+        &self,
+        session: &str,
+    ) -> anyhow::Result<Arc<dyn Fn(serde_json::Value) + Send + Sync>> {
+        let stream = self
+            .sessions
+            .subagents()
+            .stream(session)
+            .with_context(|| format!("session {session} is not open"))?;
+        Ok(Arc::new(move |payload| {
+            stream.publish_as(&payload, Trust::Owner);
+        }))
+    }
+
+    /// The last `meta.sequence` open session `session`'s stream consumed:
+    /// `session.snapshot`'s `lastEventSequence`.
+    pub(crate) fn last_event_sequence(&self, session: &str) -> Option<u64> {
+        self.sessions
+            .subagents()
+            .stream(session)
+            .map(|stream| stream.last_sequence())
+    }
+
+    /// Open session `session`'s stream cursor (its generation and last
+    /// `meta.sequence`) and its queue view, read from its stream: the attach
+    /// snapshot's `lastEventCursor` and `sessionActions`.
+    pub(crate) fn stream_view(&self, session: &str) -> Option<((String, u64), serde_json::Value)> {
+        let stream = self.sessions.subagents().stream(session)?;
+        Some((stream.cursor(), stream.actions()))
     }
 
     /// The engine of `session`'s current lifetime, once it is built.

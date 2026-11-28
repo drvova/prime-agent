@@ -841,10 +841,9 @@ impl AgentSessionEngine {
         );
         self.register_kernel_notice_host_handlers(&mut handlers);
         self.register_settings_host_handler(&mut handlers);
-        crate::usage_report::register_quota_host_handler(
+        pa_core::usage_report::register_quota_host_handler(
             &mut handlers,
             self.config.agent_dir.clone(),
-            crate::usage_report::quotas::QuotaFetchConfig::from_env(),
         );
         self.register_kernel_effort_handler(&mut handlers);
         // `checkpoint.*` on the worker's store (replacing the engine's refusing default); the

@@ -2,8 +2,8 @@
 
 Prime Agent's event-driven runtime: the bus every event goes through, the subscriptions that
 turn events into work, the per-session task lanes that run it, and the sessions that run each
-task as an agent turn. The print and json modes run on it, and the RPC mode (`rpc`) lives here
-beside them. Storage is behind the traits defined here, with
+task as an agent turn. The print and json modes run on it, and the RPC mode (`rpc`) and the ACP
+mode (`acp`) live here beside them. Storage is behind the traits defined here, with
 SQLite implementations over `pa-log`.
 
 ## Scope
@@ -44,7 +44,9 @@ SQLite implementations over `pa-log`.
   next. A `Steer` task that runs as its own is offered the `Steer` tasks queued behind it as it
   starts (the runner keeps them for that run), so steers that waited together are delivered
   together. `push` answers how the task was admitted (`pa_types::event_log::Admission`:
-  `queued`, `steered`, or `parked` in a suspended lane). A lane can be suspended: its queued tasks
+  `queued`, `steered`, or `parked` in a suspended lane). `TaskRunner::lane_changed` hears what
+  a lane holds (`LaneState`) after each task joins it, leaves it to run, ends there or is
+  cancelled out of it, under the queue's lock, so its reports arrive in order. A lane can be suspended: its queued tasks
   stay queued and none starts until it is resumed; the running one runs on. `cancel_queued`
   cancels a session's waiting tasks. `TaskQueue::restore(session)` requeues
   that session's stored queued tasks in order and fails each running one with
@@ -101,8 +103,10 @@ SQLite implementations over `pa-log`.
 - **Sessions**: each on its own OS thread and multi-threaded Tokio runtime (as the daemon's
   session host), entered with its `pa_types::session_scope` (id, cwd, environment). The
   embedder's `SessionBuilder` builds the engine there, so the composition root picks provider,
-  settings and session manager, what the turn driver reports (`DriverEvents`: its json events
-  on the stream, or quiet as the text print mode) and the autonomous run it starts with, and it
+  settings and session manager, what the turn driver reports and in which shapes the stream
+  carries it (`DriverEvents`: the json stream's shapes, quiet as the text print mode, or the old
+  daemon's session-event shapes for the runtime daemon's sessions) and the autonomous run it
+  starts with, and it
   installs the `SessionSeams` the runtime hands it; each build is a fresh engine whose kernel comes from the
   spare pool, never a copy. At build the stream's listener, the goal usage accounting, the
   autonomous accounting and the natural-turn-end continuation hook are wired on, in that
@@ -110,9 +114,34 @@ SQLite implementations over `pa-log`.
   `/better`) at the boundary with the continuation it schedules, or a turn: the pre-turn
   boundary, `prompt_with_auto_retry`, a steer the run took but did not read, the settled-turn
   boundary, then the goal's queued turns and, when the goal does not own the wake-up, the
-  autonomous run's held ones. Every agent event is published live on `agent/<id>/stream` as
-  `session_events::agent_event_json` gives it, with the driver's events and the auto-retry
-  events in the same json-stream shapes; then `agent/<id>/done` (stored, an `AgentDone`: task,
+  autonomous run's held ones. Every agent event is published live on `agent/<id>/stream` by the
+  session's `SessionStream` (`session/stream.rs`, every publish of the session's goes through
+  it): in the json stream's shapes as `session_events::agent_event_json` gives it, with the
+  driver's events and the auto-retry events verbatim; or, for `DriverEvents::SessionEvents`, as
+  the old worker's `session_event.event` payloads built with `pa_core::session_engine::wire_events`
+  (a reply's `message_start` with its `start`, the deltas coalesced per run with their live
+  `contextUsage`, a tool result as a `message_start`/`message_end` pair, the billing stamp on
+  settled assistant rows, `settled_context_usage` on every settled conversation row's
+  `message_end`, `compaction_summary_delta` while a summary is written; a tool's update and end
+  name no tool, as the old frames do not), each frame, driver events, `!` commands and child
+  updates included, numbered with the session's `meta.sequence`, a parked update consuming its
+  number as it parks. In those shapes the stream carries the old worker's queue view,
+  `session_action_update` (`session/stream/actions.rs`), built from the lane's reports and the
+  rows waiting on the agent: a task queued behind work (its lane running, holding a task or
+  stopped) is listed in its lane (`Steer` under `steering`, the rest under `followUps`), a
+  task that joined an idle lane never is, the waiting rows follow with `rlmChildStatus` marking
+  a child's status notice; the task leaving the lane is the active `turn`, `preparing` with its
+  row's text as label (a wake task's, its first waiting row's), `committing` once its first user
+  or custom row settles, `running` from its reply's first frame, and gone before its `done`; an
+  unchanged view, and the idle one a session starts from, is not sent. The turn driver's own
+  projection (the goal surface's frames) is not sent there, and a session command's task is
+  framed as a run (`agent_start`, `turn_start`, its rows, `turn_end` with its failure if it
+  failed, `agent_end`), as the old worker framed it. Goal-minted turns (a budget steer, a held
+  continuation) are not lane tasks and are not in the view yet. The update flush runs at the
+  fixed 50 ms the old pacer starts from, without its backlog feedback: the backpressure point
+  here is each connection's listener (16,384 events behind before it loses any and catches up
+  stored events from the log), a lost live update is superseded by the next (each carries the
+  whole message) and the snapshot covers the rest. Then `agent/<id>/done` (stored, an `AgentDone`: task,
   outcome, error, and the `TaskFailure`: a failed reply, command or turn), queued behind the
   stream, with the task's trust. A turn whose last reply is a failed model request fails its
   task as a failed reply.
@@ -202,7 +231,10 @@ SQLite implementations over `pa-log`.
   receiver in 10 minutes (pa-core's constants; past them the receipt is `wake_refused` with
   `retryAfterMs`, and nothing is delivered); the sending side keeps pa-core's message limit and
   rate bucket. A delivered row is steered onto the receiver, and a settled child is given its
-  next task over it; in the runtime daemon a root is woken for it (below). The spawn's and the retask's empty inputs carry no cause: the depth bound
+  next task over it; in the runtime daemon a root is woken for it (below), and the delivery,
+  once it landed, is the traffic pane's entry on `runtime/traffic` (live only: the old
+  `agent_traffic` entry with the receiver's root, the sender's relationship to it, the outcome
+  and a sanitized preview). The spawn's and the retask's empty inputs carry no cause: the depth bound
   and the wake budget bound them. The kernel's notices (a background command's end, loss or
   silence, a background cell's end, a factory milestone) are admitted by the session's notice
   sink as the daemon's worker admits them, at once: a `Steer` one steers its row onto the
@@ -288,9 +320,9 @@ SQLite implementations over `pa-log`.
   with the lease handed over.
 - **In-memory implementations** (`MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`,
   `MemoryTaskStore`) for tests and headless runs.
-- **Runtime daemon** (`daemon`, opt-in until phase 8: `PRIME_AGENT_RUNTIME_DAEMON=1` or the global
-  setting `"daemon": "runtime"` makes `prime-agent --mode daemon` start it instead of the
-  supervisor). `daemon::run(listener, DaemonOptions, shutdown)` opens a `Runtime` over the agent
+- **Runtime daemon** (`daemon`, the default daemon since phase 8f: `prime-agent --mode daemon`
+  starts it unless the global setting `"daemon": "supervisor"` or `PRIME_AGENT_RUNTIME_DAEMON=0`
+  selects the supervisor, kept for one release). `daemon::run(listener, DaemonOptions, shutdown)` opens a `Runtime` over the agent
   dir and serves one `WireServer::serve` per connection on the listener the embedder bound at
   `daemon::socket_path` (`daemon2.sock` beside the old daemon's socket; on Windows the old pipe
   name with `2` appended), through `pa_types::platform::transport` as the old daemon's socket is.
@@ -301,14 +333,55 @@ SQLite implementations over `pa-log`.
   A holder that does not answer a wire2 hello on the same socket within 3 s is a wedged
   predecessor: `take_lock` stops it (`RuntimeDaemonLock::reap_holder`) and then takes the lock. Its
   `Handlers`: `sessions.list` (the sessions dir's saved sessions and the open ones, or
-  `{"open": true}` the open ones only; each row in the old daemon's session-summary shape,
+  `{"open": true}` the open ones only, with the old `list`'s `spareKernels`; each row in the old daemon's session-summary shape,
   `daemon/handlers/summary.rs`: the session's id as `id`, `activeSessionId` and `sessionId`, its
   name, model, times and message count from its transcript, and for an open one its lane's
   activity, waiting prompts and `attachedClients`, the connections whose subscriptions match its
   `agent/<id>/done`, `wire::Attached`), `session.snapshot` (header, name, model, thinking level,
-  entry count, leaf, open) and
+  entry count, leaf, open, and while it is open the stream's last `meta.sequence` as
+  `lastEventSequence`) and
   `transcript.page` (`{session, before?, limit?}`: the stored rows before `before`, at most 500)
-  read the transcript store; `session.create` (`{session?}` to open or create by id, or `{path}` to
+  read the transcript store; with a `shape` they answer the old worker's replies, which pa-tui's
+  `wire2_compat` maps `attach`, `get_state` and `get_messages` to (`daemon/handlers/attach.rs`):
+  `session.snapshot {shape: "attach", clientId?, capabilities?, resumeCursor?}` the attach
+  result (summary, connection state, the display window of a `windowed_snapshot` client with
+  `historyBeforeEntryId` and `lastUserPromptMs`, `lastEventCursor` from the stream's generation
+  and counter, `replay`), `{shape: "state"}` the summary, and `transcript.page {shape:
+  "messages", page?, historyLeafId?}` the old cursor page (`firstEntryId`, `lastEntryId`,
+  `more`, `historyLeafId`; "History branch changed" for an anchor off the branch), the rows and
+  cuts from `pa_core::session::display_transcript`. One row differs from the old daemon's by
+  design: the harness digest (`[harness-digest]`, pa-core `session_engine::harness_digest`) is
+  stored as the engine writes it, at a session's open when its context is not empty (a stale
+  digest appended without events) and with the first turn's prompt otherwise, as the TS
+  product, print mode and RPC mode on the same engine store it. The old worker kept its engine's
+  session manager in memory and dropped the digest from what it saved, so on the runtime daemon
+  a reopened session's transcript holds one more row, and an attach window over it starts one
+  row later; `attach_paging.diff` pins that offset. The agents view's feeds, which
+  `wire2_compat` maps `roster_subscribe` and `agent_traffic_subscribe` to
+  (`daemon/handlers/feeds.rs`): `runtime.roster` answers `{roster}`, one old `AgentRosterEntry`
+  per open session and per subagent below one (`agentId`, the attach's summary without
+  `sessionActions` and with a subagent's `parentSessionPath`, `parentActiveSessionId`,
+  `rlmChildId` and `runtimeKind: "subagent"`, `status`, `workerId`), and the live-only
+  `runtime/roster` carries `{changed: [entry]}` when an entry composed again after its session's
+  stream events differs from the one published last, and `{changed: [], removed}` when a session
+  stops or is given up on, or a subagent is deleted, with the subagents below it;
+  `runtime.traffic` answers `{entries}`, each root's newest 200 traffic entries, roots in order.
+  Neither waits on a turn: one task hears the bus and marks entries due, another composes them;
+  the agents view's saved-session catalog, which `wire2_compat` maps `list_saved_sessions` to
+  (`daemon/handlers/saved.rs`, the old supervisor's handler over `pa_core::session::catalog`):
+  `sessions.list {shape: "saved", stream?, activeSessionId? | cwd, sessionDir?, scope?, limit?,
+  cursor?}` walks the sessions dir newest first and, with `stream`, publishes on the live-only
+  `runtime/session_list/<stream>` one old `session_list_item` (without its `type`) per row as
+  its file folds, each followed by its `session_list_progress`, then the walk's completion
+  (`loaded == total`); the walk never waits for the topic (a full queue drops the progress,
+  then the row), and the reply is the old response's `data` (`sessions`, each with its deleted
+  subagents' spend, `remaining`, `nextCursor`), the catalog. A summary's `usage` is the
+  catalog's own-usage fold of the transcript with its billing split, and its `modified` is the
+  session's creation before its transcript has a row, as the old worker's were. A row carries
+  its live persistent shells and, with the factory lane on, its stored factory specs (8d-4a).
+  Subagents only the spawn ledger keeps join it after the scan's rows (8d-4c, pa-core's
+  `rlm_roster`, walked from the rows and the sessions the runtime runs);
+  `session.create` (`{session?}` to open or create by id, or `{path}` to
   open a transcript by its file, and `cwd`) takes the session's `SessionLease` and holds it until
   `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
   (`session_already_active`) and the old daemon is refused one this daemon holds; a session it
@@ -316,9 +389,207 @@ SQLite implementations over `pa-log`.
   (`"reused": true`), the old daemon's create-open reuse;
   `session.rename`, `session.label` and `session.set_effort` change an open session through its
   engine (on the session's runtime, once its first build is done: `Runtime::built_engine`, which
-  the state queries wait on too) and a saved one under its lease; `session.set_model` and
-  `session.delete` change saved sessions only (a running session's model switch is not yet
-  there);
+  the state queries wait on too) and a saved one under its lease; `session.delete` changes saved
+  sessions only. `session.create`'s arguments are `pa_types::wire2::SessionCreate`
+  (`daemon/handlers/create.rs`). It also takes `options` (`SessionOptions`: `provider`, `model`,
+  `thinking`, `systemPrompt`, `appendSystemPrompt`, `skills`, `promptTemplates`, `autonomous`,
+  `goal: {objective, tokenBudget?}`, `executionMode`, `apiKey`, `credential`, `profile`,
+  `models`, `telemetryDisabled`, `parent: {path, rlmDepth}`; an unknown key is refused), the
+  launch choices a client forwards, handed to the builder on the `SessionSpec` and kept under
+  `kv` `runtime-daemon`/`options:<id>`, so the session's revival and scheduled wake build it the
+  same way and a create without options keeps them. An `apiKey` is never written: the daemon
+  holds it in memory (`OpenSessions::keep_api_key`, which a model switch's request auth reads
+  too), the stored options keep only `apiKeyGiven`, and a later daemon's build of such a session
+  fails rather than run on another key. `models` (else the settings' `enabledModels`) is the
+  session's scope, resolved at every open as the old worker resolves it (`daemon/model_scope.rs`):
+  the list `session.cycle_model` steps through, and a new session that chose no model starts on
+  its pick. `sessionDir` is where a new session's transcript is made, and `launchEnv` (the
+  client's environment, the old create's `launchEnv`) is the session scope's environment over the
+  daemon's, re-filtered and without `RLM_DEPTH`, held for its lifetimes in this process only. `session.create {"ephemeral": true}`
+  (`daemon/handlers/owned.rs`, `--no-session`) opens a new session kept in memory only (the
+  builder gets `SessionSpec::ephemeral`): no transcript file, options row, lease or held-session
+  record, owned by the creating connection's `hello` name and stopped on `session.stop` or 30 s
+  after that client's last connection ended (the old daemon's owned-worker grace). The runtime's
+  stores keep nothing of it or of the subagents it spawns (`log_stores.rs`, `Unstored`): its
+  events run their routes and reach live listeners but are not appended (`seq` 0, an
+  `unstored-` id, delivered by the wire feed as a live-only event is), its tasks are not saved
+  and no state is written for it. The list's
+  rows also carry the old summary's `name` and `firstMessage`. For the ACP client (`daemon/handlers/model.rs`,
+  `mcp.rs`, `bus.rs`): the `models` query lists the signed-in models; `session.set_model`
+  (`{session, provider, modelId}` or `{session, model}`) resolves through the model registry,
+  enforces the settings' `allowedModels` through pa-core's gate, the old daemon's too
+  (`pa_core::models::{load_model_allowlist, assert_model_allowed}`: unreadable global settings or a
+  malformed `allowedModels` refuse every model), and on an
+  open session switches the running agent, records the `model_change` row through its engine
+  and makes it the settings' default, the old daemon's `set_model`, and retargets the session's
+  next request: the slot its stream reads its provider target from (`BuiltSession::
+  provider_target`, which the embedder's build hands over) gets the model, its request auth
+  (through the session's credential pin; a model whose auth does not resolve is refused before
+  anything moves) and its active tier, and the turn boundary's model facts follow;
+  `session.set_mcp_servers`
+  (`{session, owner, servers}`) replaces the MCP servers one client supplies an open session in
+  its engine's MCP manager, fenced by the owner id (another owner's list is refused, its clear
+  changes nothing), refused while a turn runs, a failed replacement rolled back, the old daemon's
+  `replace_acp_mcp_servers`; the `sources` query lists the kept timer and watch sources (with
+  whether each runs) and the run-defined ones running, `subscriptions` the bus's subscriptions,
+  and `settings` (`{session?}`) the effective settings for a session's or the daemon's cwd with
+  what could not be read. A scheduled job made, changed or cancelled publishes
+  `agent/<id>/schedules` (`{"active": n}`) once its timer is in place, the old daemon's
+  `heartbeats_changed`. The user's `!` commands (`daemon/handlers/bash.rs`, over pa-core's
+  `pa_core::user_bash`, the old daemon's `execute_bash`/`abort_bash`): `session.bash`
+  (`{session, command, excludeFromContext?, transient?, runId?}`) answers `{session, started}`
+  as the command starts on the session's runtime, refused while another runs or the session
+  stops; the run streams `bash_start`, a `bash_output` per sanitized chunk and `bash_end` on
+  `agent/<id>/stream`, and unless `transient` its `bashExecution` row is saved and joins the
+  agent's messages (with no turn running, under the agent's idle reservation; a running turn
+  takes it as a steer). `session.abort_bash` (`{session}`) kills it (it ends `cancelled`), and
+  `session.stop` and the daemon's shutdown kill it and wait (bounded) for it to settle before
+  the session closes. The rest of what the ACP client asks (`daemon/handlers/input.rs`,
+  `children.rs`, `model.rs`, `queue.rs`): `session.pause_input` (`{session, key}`) holds the open
+  session's lane for the calling connection (`TaskQueue::hold`: nothing queued starts and input is
+  admitted `parked`, apart from the lane's park, so a resume leaves a held lane held) and answers
+  its `pauseId` (the same connection and key answer the same one); `session.release_input`
+  (`{session, pauseId}`) releases it, and the connection's end (`Handlers::disconnected`) and the
+  session's stop release all of theirs, the old daemon's `acquire_session_input_pause` and
+  `release_session_input_pause`; `session.cancel_task` (`{session, task}`) takes a queued task out
+  of the lane or aborts the running one's turn (the steers it took and had not read go back),
+  answering `cancelled`, the old daemon's `cancel_prompt_admission`; `session.wait_idle` takes
+  `"subagents": false` to wait for the session's own lane only and answers the autonomous run's
+  accounting (`autonomous`) and the kernel's live background jobs
+  (`outstandingBackgroundJobs`), the old daemon's `wait_for_headless_completion`;
+  `session.model` (`{session}`) answers the model in its wire shape, the thinking level and the
+  levels the model supports, and `session.set_effort` on an open session clamps the level to the
+  model, records the `thinking_level_change` row only when the level changes and lets the
+  settings' default follow (when the model thinks or the level is not `off`), the old daemon's
+  `get_connection_state` and `set_thinking_level`; `session.children` (`{session}`) answers the
+  direct subagents in the old daemon's `get_rlm_children` row shape and `session.cancel_child`
+  (`{session, child}`) cancels one's run (`cancelled: false` for an unknown or settled child),
+  its `cancel_rlm_child` (a cancelled child's row reads `cancelled`, as the old daemon's does);
+  `session.system_prompt` (`{session}`) answers an open session's system prompt, the old
+  `get_system_prompt`. A session's setting switches are the old worker's commands of the same
+  names (`daemon/handlers/switches.rs`, their rules `pa_core::settings::switches`), each a call
+  on an open session answering the old response's `data` (`null` for one that had none):
+  `session.cycle_model` (`{session, direction?}`: the scoped list's available entries, else the
+  available catalog; gated by `allowedModels`, switched with its pinned or clamped level, a
+  `model_change` row and the settings' default model; `{model, thinkingLevel, serviceTier,
+  isScoped}`, `null` with fewer than two), `session.set_scoped_models` (`{session,
+  scopedModels}`, kept for the session's open life and shown as the snapshot's
+  `scopedModels`), `session.cycle_effort` (`cycle_thinking_level`: the next supported level, as
+  `session.set_effort` sets it; `{level}`, `null` for a model that does not think),
+  `session.set_service_tier` (the requested tier as a `service_tier_change` row when the
+  preference changes, the settings' default when the model supports it), and
+  `session.set_transport`, `session.set_steering_mode`, `session.set_follow_up_mode`,
+  `session.set_auto_compaction`, `session.set_auto_retry` (the settings the next turn reads; the
+  queue modes and auto-compaction also switch the running session). A move of the active tier
+  (the preference clamped to the model) is the old `service_tier_changed` on the session's
+  stream; a cycled model or level reaches the roster feed. A cycled model retargets the next
+  request as `session.set_model` does, and a set tier becomes the active tier the next request
+  carries; a session's build starts it at its tier row's tier (else the settings' default)
+  clamped to its model, as the old worker's create. What the TUI reads beside a session's turns
+  (`daemon/handlers/info.rs`), the old worker's and supervisor's commands of the same names, each
+  answering the old response's `data`: `session.commands` (`get_commands`: `{commands}`, the
+  prompt templates then the skills, `ResourceReload::connection_commands`),
+  `session.mcp_connections` (`get_mcp_connections`: the `/mcp` page,
+  `McpManager::connections_view`), `session.model_catalog` (`get_model_catalog`: the picker's
+  catalog from the current snapshot with the session's accounts through its credential pin,
+  `pa_core::models::CatalogRefresh`, whose background refresh is coalesced across the daemon's
+  sessions; a refresh that changes the snapshot publishes `{}` on the live-only `runtime/models`,
+  the old `model_catalog_changed` broadcast), `usage` (`{section, forceRefresh?}`, no session: the
+  supervisor's `get_usage`, the quota cards with this process's request pacing or the spend
+  history of the daemon's sessions dir, `pa_core::usage_report`), `session.reload` (`reload`: the
+  MCP manager reads its auth store and settings again, a failed auth reload failing the call, then
+  the skills, prompt templates and context files) and `session.mark_anthropic_warning_shown`
+  (the marker row, written once, `SessionManager::mark_anthropic_warning_shown`). A session's
+  tree moves and the reads beside them (`daemon/handlers/tree.rs`, the old worker's commands,
+  pa-core's `session::navigation` rules): `session.fork_messages`
+  (`get_user_messages_for_forking`), `session.last_assistant_text` (`get_last_assistant_text`),
+  `session.navigate_tree` (`navigate_tree`: the lane held for the move and a running turn aborted
+  first, the abandoned branch summarized on the session's model when asked, the context rebuilt
+  onto the new branch and a changed goal published as `goal_update`; with `restoreFiles`, the
+  files rewound to the target's workspace checkpoint before the hold ends, `files: {restored,
+  conflicts}`), `session.abort_branch_summary` and `session.export_html`. Workspace checkpoints
+  (8d-2d, `session/checkpoints.rs`, over pa-core's `session::checkpoints::CheckpointStore`):
+  a root session on disk captures its workspace before each prompt's turn and records it, with
+  the workspace as the turn settled, on the entries the turn appended; the store is opened per
+  transcript (a fork or an import has its own) in the lifetime's working directory, and a
+  workspace that cannot be checkpointed turns them off for the lifetime.
+  The whole-session replacements (`daemon/handlers/replace.rs`, pa-core's
+  `session::replacement` rules): `session.fork_entry` (`fork {entryId, position}`: the path to the
+  entry copied into a new transcript beside the session's, `{cancelled, selectedText?}`; an
+  ephemeral session's context cut back in place) and `session.import_jsonl` (`import_jsonl`: the
+  file copied into the sessions dir, run in its own or the overridden working directory,
+  refusals with the old `errorInfo` as the reply's `info`). The lane is held and a running turn
+  aborted first, the new transcript's lease is taken before the old one goes, and the session
+  goes on under the same id (`Runtime::replace_session`: its host ends the lifetime and builds
+  the next from the new transcript, as a crash's rebuild does, keeping its subscribers, stream
+  and tasks); the session's scheduled jobs are rebound onto the new transcript in place as the
+  rebuilt engine arms them (their lane and timers stay). The queue edits and aborts
+  (8d-2c): `session.mutate_queued_message` (`mutate_queued_message`, `runtime/queue_edit.rs`:
+  a delete, move or rewrite of the task a queue view's row shows, addressed by lane, index and
+  the text the client saw, `{status: "applied" | "rejected"}`; a row waiting on the agent, a
+  steer the running turn took among them, is rejected, as the runtime's turn reads a steer at
+  once; an applied edit resumes a parked lane; a moved task's place is the lane's own and is not
+  restored after a restart), `session.abort_compaction` (aborts the compaction the session runs
+  under its own signal, `/compact` or automatic: `compaction_end` says `aborted`) and
+  `session.abort_retry` (ends the auto-retry wait of the running prompt: `Retry cancelled`).
+  User questions (8d-2e, `session/interaction.rs`, the old worker's `user_interaction.rs`): each
+  runtime-daemon session's lifetime gets an interaction hub (`SessionSeams::interaction`) whose
+  events go out on `agent/<id>/stream`, numbered, as the old `todo_update`, `question_open`,
+  `question_closed` and `kernel_notification` session events (a first build's adopted list is
+  not sent: no client of it is attached yet). `session.attach` (`daemon/handlers/questions.rs`:
+  the old attach, recording the connection's client and answering the attach snapshot) makes a
+  kernel `ask` wait while a client whose attach declared `user_questions` is attached, until its
+  `session.detach` or its connection's end; with none, it settles as `no_user` at once.
+  `session.answer_question` delivers the reply (`null`, or the old refusals), the attach
+  snapshot's `state.pendingQuestion` names a waiting question, and a stopped session's waiting
+  question settles as `cancelled`.
+  The side runs (8d-3, `daemon/handlers/side_runs.rs`, over pa-core's
+  `session_engine::side_runs`): `session.start_side_question` (`start_side_question`: a `/btw`
+  question or, with `kind: "better"`, a `/better` rewrite, admitted for the calling connection,
+  one per connection and session and each id once, with the old refusal texts; answered `null`
+  before the run answers, which runs on the session's own runtime and streams the old
+  `side_question_event` payloads on the live-only `agent/<id>/side_question`, its terminal event
+  sent as it leaves the registry), `session.abort_side_question` (`{aborted}`: the calling
+  connection's run only) and `session.record_better_outcome` (the composer's verdict on a
+  rewrite, counted and learned on the session's runtime). A connection's runs are aborted when it
+  ends, and a stopping session's first, its stop waiting (up to 3 s) for their cancelled events.
+  The agents view's kernel activity (8d-4a, `daemon/handlers/kernel_activity.rs`, over pa-core's
+  `session_engine::kernel_activity` and `kernel::persistent_shells`): `session.kernel_bash`
+  (`list_kernel_bash`: `{activities}`), `session.kernel_bash_tail` (`tail_kernel_bash`: `{id,
+  tail}`) and `session.kill_kernel_bash` (`kill_kernel_bash`: `{id, killed}`) on the open
+  session's kernel shell commands, never starting a kernel that is not running;
+  `session.factory_activity` (`factory_activity`: the kernel factory executor's reply, the
+  unscoped graph with the session's stored `factorySpecs`, and `{runs: []}` while the kernel is
+  not running); and, machine-wide, `persistent_shells` (`list_persistent_shells`),
+  `persistent_shells.tail` (`tail_persistent_shell`) and `persistent_shells.kill`
+  (`kill_persistent_shell`), off the runtime on a blocking thread. Each answers the old
+  response's `data` or refusal text. `sessions.list {shape: "saved"}` rows carry their live
+  persistent shells and, with the factory lane on, their stored factory specs.
+  The agents view's session controls (8d-4b, `daemon/handlers/agent_controls.rs` and
+  `subagents/controls.rs`, over pa-core's `session_engine::agent_controls`): `agent_messages`
+  (`agent_messages_status`: the safety status), `agent_messages.pause` and
+  `agent_messages.resume` (the pause, which refuses every inbox delivery to the session with
+  `Agent messaging is paused`; a pause also takes its waiting agent messages out) and
+  `agent_messages.clear` (`{steering, followUp}`, the taken rows' prompts, under the session's
+  delivery gate; client prompts stay), on any session the runtime runs, a subagent's included,
+  and without `session` on every running one (the status the first by id, `{paused: false,
+  limits: {}}` while none runs); `session.rlm_max_depth` (`{maxDepth, source}`) and
+  `session.set_rlm_max_depth` (a chat override of the node's bound, the session's
+  `rlm_max_depth_state` row on its runtime, the global settings write on a blocking thread,
+  `{maxDepth, source, globalSaved, globalError?}`); `session.delete_child {session, child}`
+  (`delete_rlm_subagent`: a settled subagent deleted as `rlm.delete_subagent` deletes it,
+  `{deleted: false, reason: "running"}` for one with live work, deleted again for a handle
+  deleted before, `{deleted: false}` for an unknown one). Each answers the old response's
+  `data` or refusal text. A session's heartbeat (8d-4c, `daemon/handlers/jobs.rs` and
+  `daemon/schedules.rs`, over pa-core's `cron::heartbeat_commands`): `session.heartbeat`
+  (`heartbeat_get`), `session.set_heartbeat` (`heartbeat_set`), `session.update_heartbeat`
+  (`heartbeat_update`) on an open session's store, and `session.manage_heartbeat`
+  (`heartbeat_manage`) on an open or saved one's (a saved session that resumes one is armed);
+  each answers `{heartbeat}`, and every change but a resume (a kernel mutation's too) withdraws
+  the heartbeat's fire waiting on the session's agent, the old `heartbeat:<id>` queue key.
+  A root session stopped and opened again waits for its new engine's
+  build (`Subagents::forget_root`), and `schedule.add` right after a create waits for the
+  build that arms its jobs;
   `session.fork` copies a transcript into a new session (`SessionManager::fork_from`);
   `session.export` writes it as JSONL (`export_jsonl`). An open session's turns and queue
   (`daemon/handlers/queue.rs`): `session.abort` aborts the running turn (its task ends
@@ -381,7 +652,10 @@ SQLite implementations over `pa-log`.
   `session.snapshot` reads back as `lastCrash` with its state), answers each call the crash cut
   off once as of unknown outcome (`pa_core::session::revival::interrupted_call_results`), builds
   a fresh engine (which tells the model once that its kernel definitions are gone) and stores
-  `agent/<id>/recovered`. After the sixth crash in a row it stores `agent/<id>/failed`, the work
+  `agent/<id>/recovered`. Each fault is also mirrored onto the session's stream, unnumbered, as
+  the supervisor sends it: `session_crashed`, then for a run the crash cut off (its
+  `agent_start` went out, its `agent_end` never will) a `turn_end` with the crash's reason and an
+  `agent_end`, then `session_recovered` or `session_failed`. After the sixth crash in a row it stores `agent/<id>/failed`, the work
   sent fails with the give-up's reason, and the daemon closes the session (its lease goes). The
   sessions the daemon holds are kept in the database (`kv` `runtime-daemon`/`sessions`: path,
   cwd, the daemon's pid); a daemon that starts after one that died reaps each one's orphans by
@@ -392,6 +666,61 @@ SQLite implementations over `pa-log`.
   as the same task behind `TURN_INTERRUPTED_NOTICE`, stored done when its answer was saved, or,
   on its second death in a row, stored failed with the crash's reason. A kept launch is kept by
   pa-daemon's restart owner (`keeper::KeptDaemon::Runtime`), its records under `daemon2.sock`.
+  **Its own end** (`daemon/handlers/lifecycle.rs`): `daemon.shutdown` and `daemon.restart` (the
+  old `shutdown` and `restart`, the same stop; `force` accepted and, as on the old supervisor,
+  unused) are answered without a result, then request the stop (`wire::after_reply`, so the
+  caller reads its reply first). The stop signal and the calls end the same way: every query and
+  call is refused (`Supervisor is shutting down`), `DaemonOptions::stopping` runs (the embedder
+  records the keeper's stop intent), `system/closing {reason: "shutdown"}` is published (live
+  only; each connection's feed delivers it to the subscriptions that follow it, then sends
+  `closing` and ends), every open session's lane is held and its running turn aborted with
+  `UPDATE_RESTART_CONTINUATION_PROMPT` queued as a steer for the next daemon (none for an
+  ephemeral one), every subagent below them is held and cut off the same way without a
+  continuation (the old worker closes its children at a daemon-wide stop; the close would
+  otherwise wait for a child's turn to end on its own), the connections get 5 s to send what they hold, then the sessions close and the
+  process exits 0. The held sessions stay in the database, so the next daemon revives a session
+  with that queued continuation as one the daemon died between turns of (no crash recorded).
+  **The update restart** (`daemon/handlers/update.rs`, on pa-core's `update::restart`, the old
+  supervisor's transaction): `daemon.prepare_update_restart {updateId, toVersion?}` and
+  `daemon.commit_update_restart {updateId}` answer the old `data` and refusals verbatim. The
+  prepare drains the calls in flight, then writes the roster of every open session that keeps a
+  transcript (its transcript and working directory, a running turn as `streaming`, its queued
+  tasks as `steering`/`followUps`, its live subagents; pa-core's subagent and heartbeat rows; no
+  worker rows) and the marker under `daemon2.sock`'s update dir. While a transaction is active the
+  gate refuses every mutating call (each call gated as the old command it is) and every input
+  publish (`Handlers::admit_publish`) with `Daemon is preparing an update restart` and
+  `update_restarting`, the abort family excepted while it drains; the watchdog aborts an expired
+  transaction. The commit answers `{updateId, state: "stopping", stopped}` and stops the daemon as
+  `daemon.shutdown` does, its `system/closing` carrying the old `daemon_closing`'s update payload
+  (`reason: "update"`, `payload: {updateId, resume, estSeconds, sessions}`); the runtime's stop
+  never refuses, so a commit is never abandoned.
+  **The update boot** (`daemon/handlers/restore.rs`, on pa-core's `update::restart::restore`):
+  the embedder reads the coordinator's roster (`PRIME_AGENT_UPDATE_ROSTER`) into
+  `DaemonOptions::update` before the boot sweeps this socket's update scratch; after the revival,
+  pa-core's restore pass walks the roster with the daemon as its `RestoreHost`. A row whose
+  transcript is open already is found; any other is opened as `session.create {path, cwd}`
+  opens it. A row mid-turn gets the continuation prompt, unless the revival opened its session
+  for unfinished tasks (the runtime predecessor's stop queued it). A TS roster's replay runs on
+  the session: the input pause is a lane hold, the update-complete notice an appended row, the
+  next-turn rows steered to its agent, the queued actions checked as the old worker checks them
+  (`validate_actions`) and published (`next_turn_boundary` a steer, else a follow-up; one
+  carrying a custom message is refused), the continuation a steer. `daemon.update_restore_status`
+  answers the old `update_restore_status` body; `session.create` and `session.attach` of a
+  roster row wait for its row to settle (and a failed one, not open, is refused with the old
+  typed message); `daemon.identity` answers the old hello's identity fields (`supervisorPid`,
+  its start id, `supervisorGeneration`, `keeperPid`, `appVersion`, `schemaId`,
+  `updateResume`), which the update coordinator greets the daemon with.
+  **Boot imports** (`daemon/handlers/history_import.rs`, the old supervisor's, shared through
+  `pa_core::session::boot_import`): once the daemon serves, on their own task and the blocking
+  pool, so neither readiness nor a client's first frame waits on them, a distribution build's
+  one-time history import (the official build's chats into its own agent dir), then the agent
+  dir's JSONL session files into the transcript store, then the agent's other state files with
+  this daemon's event bus and crash log. The history import's `history_import` frames, without
+  `type`, go out in order on the live-only `system/history_import` (started before the first
+  file is copied, finished after the marker); `system.history_import` answers the running one's
+  started frame (`null` while none runs) for a client that connects mid-import, as the old
+  supervisor sends it after the hello. The drain aborts an import still running; it resumes on
+  the next boot.
   **Scheduled jobs** (`daemon/schedules.rs`): a daemon session's kernel serves `schedule.*` and
   `rlm_heartbeat.*` on pa-core's job store (the session's `session-artifacts/<id>` partition,
   the old daemon's rows), bound through `SessionSeams::scheduled_jobs`. Each active job has a
@@ -410,6 +739,33 @@ SQLite implementations over `pa-log`.
   unparked). Under the print modes (`Runtime::open`) a panic still only fails its task and the
   next one runs on a fresh engine.
 
+- **ACP mode** (`acp`, `prime-agent --mode acp`): the Agent Client Protocol JSON-RPC surface on
+  stdio (initialize, session/new, session/load, session/list, session/prompt, session/cancel,
+  session/close, session/set_config_option, and the outgoing session/update notifications with
+  the namespaced `_meta` correlation), served over a session of the supervisor (`pa-daemon`),
+  which it reaches as a socket client on the old wire (`pa_types::daemon`): it links no daemon
+  code. Every daemon request goes through a command-level transport (`acp/transport.rs`:
+  `DaemonTransport`, the old wire's `DaemonLink`), whose one frame stream delivers each response
+  after the events sent before it. The TS capture corpus it is checked against is
+  `testdata/acp/`. On the runtime daemon (the default) it drives that daemon on wire2 instead
+  (`acp/wire2_link.rs`, `Wire2Link`): `create` is `session.create {path, cwd, sessionDir,
+  launchEnv, options}` (the command's telemetry opt-out among the options; `--no-session` an
+  `ephemeral` one), `attach`/`detach` subscribe to and unsubscribe from
+  `agent/<id>/#` (an attach answers at its `backfilled`), `prompt_and_wait` publishes on
+  `agent/<id>/input` as a follow-up and answers at that task's `agent/<id>/done` (the task kept
+  under the prompt's admission id for `cancel_prompt_admission`, `session.cancel_task`, also
+  when the cancel came before the publish's reply), `abort_and_clear_queue` is `session.abort` +
+  `session.withdraw` + `session.resume_queue`, the waits are `session.wait_idle`, and the rest
+  map one to one (`sessions.list`, `session.context`, `session.model`, `models`,
+  `session.set_model`, `session.set_effort`, `session.children`, `session.cancel_child`,
+  `session.pause_input`/`release_input`, `session.set_mcp_servers`, `session.stop`). Stream
+  events become `session_event` frames (their payloads the old worker's, `meta` taken off) and `agent/<id>/schedules` `heartbeats_changed`; a
+  subagent's status change reaches its parent's stream as the old worker's `rlm_child_update`
+  (its `session.children` row, once per status, with `parentId` under a subagent parent; its
+  `label` is the task's one-line label, `pa_core::session_engine::rlm_notices::rlm_child_label`).
+  `rlm.collect` reports a child's `tool_use_count` (the tool calls on its branch) and
+  `queued_ms` (how long its spawn waited for its engine), as the old daemon's collect does.
+
 ## Non-goals
 No storage engine (the SQLite log is `pa-log`'s, behind `EventStore`, `StateStore` and
 `TaskStore`). No engine assembly (the embedder's `SessionBuilder`). No model calls for `Call`
@@ -425,12 +781,13 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
 ## Public API
 - `Bus`, `BusParts`, `Published`, `Listener`, `Heard`, `Intake`, `BusClosed`,
   `DuplicateSubscription`.
-- `WireServer`, `WireConfig`, `Handlers`, `Query`, `Call`, `UnknownOperation`,
+- `WireServer`, `WireConfig`, `Handlers` (`call` names the `ConnectionId` it came on;
+  `disconnected` when a connection ends), `ConnectionId`, `Query`, `Call`, `UnknownOperation`,
   `CLIENT_TOPICS`, `IN_FLIGHT`, `MAX_TAIL`.
 - `EventStore` (`append`, `since`, `before`), `StateStore`, `StateKey`, `StateWrite`,
   `SessionTree`, `ModelCaller`, `ModelCall`, `TaskSink`, `TaskRequest`, `Announced`.
 - `TaskQueue` (`push` answers a `pa_types::event_log::Admission`), `TaskRunner`, `TaskOutcome`,
-  `Steered`, `TaskStore`, `INTERRUPTED_BY_RESTART`.
+  `Steered`, `LaneState`, `TaskStore`, `INTERRUPTED_BY_RESTART`.
 - `MemoryEventStore`, `MemoryStateStore`, `MemorySessionTree`, `MemoryTaskStore`.
 - `LogEventStore`, `LogTaskStore`, `LogStateStore` (each `new(Arc<pa_log::Log>)`;
   `LogStateStore::get`).
@@ -441,15 +798,47 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   family's `agent_message.*` - its `rlm.*` subagents, the late-receipt sink, the
   background-settle wake and the kernel-notice sink, all of which the engine must install, and
   `scheduled_jobs`, the cron wiring a runtime-daemon session's kernel binds `schedule.*` and
-  `rlm_heartbeat.*` to, `None` elsewhere),
-  `SessionSpec` (`transcript`: the file a daemon session opens), `SubagentSpec`,
+  `rlm_heartbeat.*` to, `None` elsewhere, and `interaction`, a runtime-daemon session's
+  todo/question hub, `None` elsewhere),
+  `SessionSpec` (`transcript`: the file a daemon session opens; `ephemeral`: a session kept in
+  memory only), `SubagentSpec`,
   `BuiltSession` (`queue_modes`: `QueueModes`), `DriverEvents`, `SettleAfter`, `Settled`, `Finished`;
   `TaskQueue::session_idle`.
+- `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions, AcpDaemon}` (pa-cli
+  dispatches `--mode acp` through it; `AcpDaemon` picks the supervisor or the runtime daemon).
 - `daemon::{run, DaemonOptions, socket_path}` (`DaemonOptions::selected`: whether the daemon
   is the selected one, asked before each scheduled job). On the wire (strings, not Rust surface): the
   queries `tasks`, `session.context`, `session.usage`, `session.tree`, `session.context_tree`,
-  `session.breakdown`, and the calls `session.abort`, `session.abort_and_send_queued`,
-  `session.resume_queue`, `session.withdraw`, `session.restore`, `session.compact`.
+  `session.breakdown`, `session.model`, `session.system_prompt`, `session.children`,
+  `runtime.roster`, `runtime.traffic`, `sessions.list {shape: "saved"}`, `session.commands`,
+  `session.mcp_connections`, `session.model_catalog`, `usage`, the live-only topics
+  `runtime/roster`, `runtime/traffic`, `runtime/models` and `runtime/session_list/<request>`,
+  and the calls
+  `session.abort`,
+  `session.abort_and_send_queued`, `session.resume_queue`, `session.withdraw`,
+  `session.restore`, `session.compact`, `session.pause_input`, `session.release_input`,
+  `session.cancel_task`, `session.cancel_child`, `session.cycle_model`,
+  `session.set_scoped_models`, `session.cycle_effort`, `session.set_service_tier`,
+  `session.set_transport`, `session.set_steering_mode`, `session.set_follow_up_mode`,
+  `session.set_auto_compaction`, `session.set_auto_retry`, `session.reload`,
+  `session.mark_anthropic_warning_shown`, and (8d-2) the queries `session.fork_messages` and
+  `session.last_assistant_text` and the calls `session.navigate_tree`,
+  `session.abort_branch_summary` and `session.export_html`, and (8d-2b) the calls
+  `session.fork_entry` and `session.import_jsonl`. pa-types `wire2::Outcome::Error` gains
+  `info` (the old `errorInfo`). (8d-2c) the calls `session.mutate_queued_message`,
+  `session.abort_compaction` and `session.abort_retry`. (8d-2e) the calls `session.attach`,
+  `session.detach` and `session.answer_question`. (8d-3) the calls
+  `session.start_side_question`, `session.abort_side_question` and
+  `session.record_better_outcome`, and the live-only topic `agent/<id>/side_question`. (8d-4a)
+  the queries `session.kernel_bash`, `session.kernel_bash_tail`, `persistent_shells` and
+  `persistent_shells.tail`, and the calls `session.kill_kernel_bash`,
+  `session.factory_activity` and `persistent_shells.kill`. (8d-4b) the queries
+  `agent_messages` and `session.rlm_max_depth`, and the calls `agent_messages.pause`,
+  `agent_messages.resume`, `agent_messages.clear`, `session.set_rlm_max_depth` and
+  `session.delete_child`. (8d-4c) the query `session.heartbeat` and the calls
+  `session.set_heartbeat`, `session.update_heartbeat` and `session.manage_heartbeat`.
+- `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
+  engine streams from, which the runtime daemon's model and tier switches write.
 
 Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-sources` (the timer and watch
 sources it starts and stops), `pa-core` (the session engine, the
