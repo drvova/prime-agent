@@ -130,14 +130,19 @@ impl SessionManager {
             self.file_entries[index],
             FileEntry::SessionState { .. } | FileEntry::SessionInfo { .. }
         );
-        if !self.has_assistant_entry && !is_session_state_or_info {
-            self.flushed = false;
-            return Ok(());
-        }
         let file_exists = self
             .session_file
             .as_ref()
             .is_some_and(|path| crate::session::store::store().exists(path));
+        // A new transcript waits for its first answer before it is written
+        // (an empty session leaves nothing behind); one the store already
+        // holds in full (its header written at create, or opened from the
+        // store) takes every row as it is appended.
+        let held_in_full = self.flushed && file_exists;
+        if !self.has_assistant_entry && !is_session_state_or_info && !held_in_full {
+            self.flushed = false;
+            return Ok(());
+        }
         if self.window.is_none() && (!self.flushed || !file_exists) {
             // Recover from the session file disappearing under a live session:
             // append would recreate a headerless stub.

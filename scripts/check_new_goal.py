@@ -132,8 +132,7 @@ def new_case(binary, root, observation):
         observation['daemon_hello'] = probe.hello
         terminal = Terminal([str(binary), '--daemon-socket', str(path), '--provider', 'parity-local',
                              '--model', 'parity-1'], root, env)
-        # The runtime daemon writes a new session's transcript with its first
-        # row: the initial session is the one the daemon holds open.
+        # The initial session is the one the daemon holds open.
         terminal.wait('initial session attached', lambda: len(probe.query('sessions.list', open=True)['sessions']) == 1
                       and bool(terminal.screen.text().strip()), provider)
         initial, = [row['session'] for row in probe.query('sessions.list', open=True)['sessions']]
@@ -149,10 +148,12 @@ def new_case(binary, root, observation):
                            sessions=rows, requests=provider.requests)
         named = [r for r in rows if any(e.get('type') == 'session_info' and e.get('name') == NAME
                                        for e in r['rows'])]
-        # The initial session never got a row, so it has no transcript: the one
-        # saved session is the new, named one.
+        # The runtime daemon writes a session's header at create, so both the
+        # initial session and the new, named one are saved.
         ids = [r['rows'][0]['id'] for r in rows]
-        assert len(rows) == 1 and len(named) == 1 and initial not in ids, 'new session/name did not persist'
+        named_ids = [r['rows'][0]['id'] for r in named]
+        assert (len(rows) == 2 and len(named) == 1 and initial in ids
+                and initial not in named_ids), 'new session/name did not persist'
         assert len(provider.requests) == 1, 'initial prompt did not execute exactly once'
         messages = provider.requests[0]['messages']
         content = [m['content'] for m in messages if m.get('role') == 'user'
