@@ -151,14 +151,28 @@ impl PendingMessageQueue {
     }
 
     fn enqueue(&mut self, message: AgentMessageBatch) {
-        match message {
-            AgentMessageBatch::Single(message) => self.batches.push(vec![message]),
-            AgentMessageBatch::Batch(messages) => {
-                if !messages.is_empty() {
-                    self.batches.push(messages);
-                }
-            }
+        self.enqueue_ahead_of(message, |_| false);
+    }
+
+    /// Queues `message` at the end, but ahead of the run of batches at the
+    /// end that `behind` matches.
+    fn enqueue_ahead_of(
+        &mut self,
+        message: AgentMessageBatch,
+        behind: impl Fn(&[AgentMessage]) -> bool,
+    ) {
+        let messages = match message {
+            AgentMessageBatch::Single(message) => vec![message],
+            AgentMessageBatch::Batch(messages) => messages,
+        };
+        if messages.is_empty() {
+            return;
         }
+        let mut index = self.batches.len();
+        while index > 0 && behind(&self.batches[index - 1]) {
+            index -= 1;
+        }
+        self.batches.insert(index, messages);
     }
 
     fn has_items(&self) -> bool {
@@ -1009,6 +1023,25 @@ impl Agent {
             .lock()
             .unwrap()
             .enqueue(message.into());
+    }
+
+    /// Queue a steering batch like [`Agent::steer`], but ahead of the run of
+    /// queued batches at the queue's end that `behind` matches: a batch of
+    /// higher priority than those overtakes them, not the batches before.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `steering_queue` mutex is poisoned.
+    pub fn steer_ahead_of(
+        &self,
+        message: impl Into<AgentMessageBatch>,
+        behind: impl Fn(&[AgentMessage]) -> bool,
+    ) {
+        self.inner
+            .steering_queue
+            .lock()
+            .unwrap()
+            .enqueue_ahead_of(message.into(), behind);
     }
 
     /// Queue a message batch to run only after the agent would otherwise stop.

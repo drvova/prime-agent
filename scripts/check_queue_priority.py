@@ -2,7 +2,10 @@
 """Actual protocol-7 daemon check for a follow-up edited into steering.
 
 The re-laned item keeps its existing admission priority, ahead of a later agent
-message; the reverse move into a plain-user lane restores it. No model is external.
+message. On the runtime daemon a steer is the running turn's once it is offered
+(AGENTS.md: a row waiting on the agent is the running turn's and is rejected),
+so the reverse move back into the follow-ups is rejected and changes nothing.
+No model is external.
 """
 import argparse
 import json
@@ -13,8 +16,8 @@ import sys
 import tempfile
 import threading
 
-from check_agent_bounce import Client, Provider
-from lifecycle_lib import digest, supervisor_env_for
+from check_agent_bounce import Provider
+from lifecycle_lib import Wire2Client, digest, env_for
 from lifecycle_lib import OwnedProcesses, TAG, finish
 
 EARLIER, DRAFT, EDITED = 'QUEUE_PRIORITY_EARLIER', 'QUEUE_PRIORITY_DRAFT', 'QUEUE_PRIORITY_EDITED'
@@ -26,10 +29,7 @@ def check_order(queue, agent_preview):
 
 
 def observe(binary, root, observed):
-    # On the supervisor's wire (`check_agent_bounce.Client`):
-    # a follow-up the runtime daemon re-lanes into steering is listed after
-    # an agent message that arrived before the edit, not ahead of it.
-    env = supervisor_env_for(root)
+    env = env_for(root)
     env[TAG] = str(root)
     provider = Provider()
     threading.Thread(target=provider.serve_forever, daemon=True).start()
@@ -45,8 +45,8 @@ def observe(binary, root, observed):
         command = [str(binary), '--mode', 'daemon', '--daemon-socket', str(path)]
         daemon = subprocess.Popen(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         scope.register(daemon, command)
-        control = Client(path, daemon)
-        receiver = Client(path, daemon)
+        control = Wire2Client(path, daemon)
+        receiver = Wire2Client(path, daemon)
         config = {'cwd': str(root), 'agentDir': str(root / 'agent'), 'provider': 'parity-local',
             'model': 'parity-1', 'noExtensions': True, 'noSkills': True, 'noTools': True,
             'noContextFiles': True, 'telemetryDisabled': True}
@@ -80,18 +80,16 @@ def observe(binary, root, observed):
         after = receiver.call('get_queue', activeSessionId=target)
         observed['after'] = after
         check_order(after, agent_preview)
-        # Reverse direction retains existing users; internal target-lane admission
-        # in BOTH directions remains covered by the worker integration regression.
         receiver.call('follow_up', activeSessionId=target, message='QUEUE_REVERSE_EARLIER')
         index = after['steering'].index(EDITED)
         reverse = {'lane': 'steering', 'index': index, 'expectedText': EDITED,
             'mutation': {'type': 'replace', 'text': 'QUEUE_REVERSE_EDITED', 'lane': 'followUp'}}
         observed['reverse_mutation'] = reverse
-        assert receiver.call('mutate_queued_message', activeSessionId=target, **reverse) == {'status': 'applied'}
+        assert receiver.call('mutate_queued_message', activeSessionId=target, **reverse) == {'status': 'rejected'}
         reverse_queue = receiver.call('get_queue', activeSessionId=target)
         observed['reverse_after'] = reverse_queue
-        assert reverse_queue == {'steering': [EARLIER, agent_preview],
-            'followUp': ['QUEUE_REVERSE_EARLIER', 'QUEUE_REVERSE_EDITED']}, reverse_queue
+        assert reverse_queue == {'steering': after['steering'],
+            'followUp': ['QUEUE_REVERSE_EARLIER']}, reverse_queue
         assert not provider.release.is_set(), 'held turn was released before observations'
         observed['behavior_verified'] = True
     finally:

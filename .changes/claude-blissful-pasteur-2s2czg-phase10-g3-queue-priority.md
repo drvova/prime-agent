@@ -1,0 +1,1 @@
+- Fixed the runtime daemon listing a client's steer (or a follow-up edited into steering) behind an agent message that was already waiting; it now goes ahead, as on the supervisor.
