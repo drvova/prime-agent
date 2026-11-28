@@ -405,6 +405,7 @@ mod tests {
             &goal,
             &run,
             /*unsettled_work*/ None,
+            /*queued_input*/ None,
         );
         let autonomous = run.state_handle();
         Bed {

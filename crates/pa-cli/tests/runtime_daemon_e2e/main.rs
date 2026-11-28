@@ -89,6 +89,8 @@
 //!   crash count of a revived session's lifetime (phase 10): [`leases`].
 //! - A subagent spawn's gates: its `#:cwd`, the recursion bound and a name
 //!   admitted once (phase 10): [`spawn_gates`].
+//! - A goal rehydrated after its session's rebuild, and a prompt queued
+//!   behind the goal's continuations (phase 10): [`goal_recovery`].
 //! - A session pinned to its own provider when the retry budget is spent
 //!   ([`provider_pinning`]), an unsuccessful auto-compaction's outcome row
 //!   ([`compaction_outcome`]), an imported session's compaction
@@ -105,6 +107,7 @@ mod client_surface;
 mod compaction_outcome;
 mod create;
 mod family;
+mod goal_recovery;
 mod goldens;
 mod heartbeats;
 mod history_import;
