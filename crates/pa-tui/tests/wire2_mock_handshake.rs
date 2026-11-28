@@ -2,6 +2,7 @@
 //! the first frame the client reads, whenever the scenario writes its `daemon_hello`. The TUI's
 //! handshake refuses a reply that comes before the welcome, and a refused first connection used
 //! up the one connection a scenario serves, so its retries found the socket closed.
+#![cfg(unix)]
 
 mod support;
 
