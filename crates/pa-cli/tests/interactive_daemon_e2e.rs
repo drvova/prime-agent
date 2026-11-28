@@ -12,19 +12,12 @@
         reason = "each TUI scenario in this suite reads top to bottom"
     )
 )]
-#![cfg_attr(
-    unix,
-    expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "the pids read back from the wire and passed to `kill` are kernel-bounded"
-    )
-)]
 
-//! End-to-end verifier for the interactive TUI: spawn the real supervisor
-//! (`prime-agent --mode daemon`), drive the TUI headlessly against a scripted
-//! daemon session, and assert on rendered frames plus daemon-side state. The
-//! `script` seam is the faux provider contract; the product never sets it.
+//! End-to-end verifier for the interactive TUI: spawn the real runtime daemon
+//! (`prime-agent --mode daemon`, the default), drive the TUI headlessly
+//! against a scripted daemon session, and assert on rendered frames plus
+//! daemon-side state. The script (`PRIME_AGENT_FAUX_SCRIPT`, which the daemon
+//! reads as it starts) is the faux provider contract; the product never sets it.
 #![cfg(unix)]
 
 mod support;
@@ -33,10 +26,10 @@ use std::fmt::Write as _;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use pa_types::daemon::DaemonCommand;
+use support::runtime_daemon::RuntimeDaemon;
 
 /// A one-pixel PNG (the clipboard seam fixture image).
 const MINIMAL_PNG: &[u8] = &[
@@ -45,197 +38,32 @@ const MINIMAL_PNG: &[u8] = &[
     5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
 
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-/// Stop the daemon on `socket` by protocol so it can shut its workers down;
-/// kill the child when the protocol path fails.
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        graceful_shutdown(&self.socket);
-        // Freeze the whole tree before any kill: a worker's grandchildren (the
-        // commands its session started) outlive a worker-only kill and
-        // keep writing into the test's temp dir after its removal. A stopped
-        // process cannot fork, so the walk settles once every member is stopped.
-        let root = self.child.id();
-        unsafe {
-            libc::kill(root as i32, libc::SIGSTOP);
-        }
-        let mut tree = Vec::new();
-        loop {
-            let mut walked = descendants_of(root);
-            walked.sort_unstable();
-            if walked == tree {
-                break;
-            }
-            for &pid in &walked {
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGSTOP);
-                }
-            }
-            tree = walked;
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        for pid in tree {
-            kill_worker(pid);
-        }
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-/// Every process below `root`, following parent links.
-fn descendants_of(root: u32) -> Vec<u32> {
-    let mut tree = Vec::new();
-    let mut frontier = vec![root];
-    while let Some(pid) = frontier.pop() {
-        for child in child_pids_of(pid) {
-            tree.push(child);
-            frontier.push(child);
-        }
-    }
-    tree
-}
-
-/// Kill a leaked worker process (SIGKILL) and wait briefly for it to disappear.
-fn kill_worker(pid: u32) {
-    // The worker pid is not our child, so poll /proc liveness. Best effort by
-    // design: an assert in `Drop` would abort the process and orphan the parallel
-    // tests; the contract lives in `assert_daemon_stops_clean`.
-    for round in 0..2 {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGKILL);
-        }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while process_alive(pid) {
-            if Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        if !process_alive(pid) {
-            return;
-        }
-        eprintln!("worker {pid} survived teardown kill round {round}; re-killing");
-    }
-    eprintln!("worker {pid} still alive after two teardown kills");
-}
-
-/// RAII guard for a detached supervisor: shuts the daemon down on scope exit.
+/// Cleanup for a runtime daemon the interactive launcher spawned (under its
+/// restart owner) rather than this test: its restart owner is sent the
+/// deliberate stop and the test waits for both to be gone.
 struct DetachedDaemon {
-    socket: PathBuf,
+    agent_dir: PathBuf,
 }
 
 impl Drop for DetachedDaemon {
     fn drop(&mut self) {
         // Best effort by design: this runs inside `Drop`, where an assert would
         // ABORT the process and orphan every other parallel test's daemons.
-        let supervisor_pid = graceful_shutdown(&self.socket);
-        if let Some(pid) = supervisor_pid {
-            // Snapshot the supervisor's whole live tree before it goes: the
-            // workers are detached, so they survive its death, and their
-            // kernels survive a worker-only kill.
-            let worker_pids = descendants_of(pid);
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while process_alive(pid) {
-                if Instant::now() >= deadline {
-                    eprintln!("spawned supervisor {pid} missed the shutdown deadline; killing");
-                    unsafe {
-                        libc::kill(pid as i32, libc::SIGKILL);
-                    }
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            for worker in worker_pids {
-                kill_worker(worker);
-            }
-        }
-        let _ = std::fs::remove_file(&self.socket);
-        // The spawned daemon inherits this process's TMPDIR, so its workers'
-        // sockets land in the shared socket dir there, and a worker the stop
-        // races out can leave its socket behind. Only this daemon's sockets go
-        // (they share its key prefix), then the dir while empty: `remove_dir`
-        // never takes it from a live daemon.
-        let own = pa_core::platform::daemon_endpoint::worker_socket_path(&self.socket, "");
-        let prefix = own
-            .file_name()
-            .map(|name| name.to_string_lossy().trim_end_matches(".sock").to_string());
-        if let (Some(socket_dir), Some(prefix)) = (own.parent(), prefix) {
-            for entry in std::fs::read_dir(socket_dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-            {
-                if entry.file_name().to_string_lossy().starts_with(&prefix) {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-            let _ = std::fs::remove_dir(socket_dir);
-        }
+        support::stop_runtime_daemon(&self.agent_dir);
     }
 }
 
-#[cfg(target_os = "linux")]
-fn child_pids_of(ppid: u32) -> Vec<u32> {
-    let mut pids = Vec::new();
-    let entries = std::fs::read_dir("/proc").expect("read /proc");
-    for entry in entries.flatten() {
-        let Ok(entry_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{entry_pid}/stat")) else {
-            continue;
-        };
-        // `comm` can contain spaces and parens, so parse after the last ')'.
-        let Some((_, rest)) = stat.rsplit_once(')') else {
-            continue;
-        };
-        let mut fields = rest.split_whitespace();
-        fields.next(); // process state
-        let Ok(parent) = fields.next().unwrap_or_default().parse::<u32>() else {
-            continue;
-        };
-        if parent == ppid {
-            pids.push(entry_pid);
-        }
-    }
-    pids
-}
-
-/// Liveness that ignores zombies: a detached child nobody reaps keeps its
-/// `/proc` entry, so path existence alone would call an exited process alive.
+/// Whether `pid` is a live process (a zombie is not).
 #[cfg(target_os = "linux")]
 fn process_alive(pid: u32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
     };
-    // `comm` can contain spaces and parens, so parse after the last ')'.
     let Some((_, rest)) = stat.rsplit_once(')') else {
         return false;
     };
     let state = rest.split_whitespace().next().unwrap_or_default();
     !state.starts_with('Z') && !state.starts_with('X')
-}
-
-/// The children of `ppid` without `/proc`: one `ps` listing of every pid's parent.
-#[cfg(not(target_os = "linux"))]
-fn child_pids_of(parent_pid: u32) -> Vec<u32> {
-    let output = Command::new("ps")
-        .args(["-A", "-o", "pid=,ppid="])
-        .output()
-        .expect("run ps");
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse().ok()?;
-            let parent: u32 = fields.next()?.parse().ok()?;
-            (parent == parent_pid).then_some(pid)
-        })
-        .collect()
 }
 
 /// Liveness without `/proc`: the platform probe, which also reads zombies as dead.
@@ -244,105 +72,41 @@ fn process_alive(pid: u32) -> bool {
     pa_types::platform::process::is_process_alive(pid).unwrap_or(false)
 }
 
-/// Shut the supervisor down by protocol and assert it, its workers, and its
+/// Shut the runtime daemon on `socket` (agent dir `agent_dir`) down by
+/// protocol (`daemon.shutdown`) and assert it, its restart owner, and its
 /// socket all went away.
-fn assert_daemon_stops_clean(socket: &Path) {
-    // Sync JSONL exchange (called from the sync guard path).
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-
-    let stream = UnixStream::connect(socket).expect("connect the spawned daemon");
-    let write_half = stream.try_clone().expect("clone socket");
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    reader.read_line(&mut hello).expect("read daemon_hello");
-    let hello: serde_json::Value = serde_json::from_str(hello.trim()).expect("parse hello");
-    let supervisor_pid = hello["supervisorPid"].as_u64().expect("supervisorPid") as u32;
-    // The worker processes the supervisor spawned for live sessions, captured
-    // before the shutdown so reparented workers can still be tracked.
-    let worker_pids = child_pids_of(supervisor_pid);
-
-    let command = serde_json::json!({
-        "type": "command",
-        "id": "stop-assert",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let mut line = serde_json::to_string(&command).expect("serialize");
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("send shutdown");
-    writer.flush().expect("flush");
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while process_alive(supervisor_pid) {
-        assert!(
-            Instant::now() < deadline,
-            "the spawned supervisor {supervisor_pid} did not exit after shutdown"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+fn assert_daemon_stops_clean(agent_dir: &Path, socket: &Path) {
+    let holder: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(agent_dir.join("runtime-daemon.lock"))
+            .expect("the runtime-daemon lock"),
+    )
+    .expect("the lock's record");
+    let pids: Vec<u32> = [&holder["keeper"], &holder["pid"]]
+        .into_iter()
+        .filter_map(serde_json::Value::as_u64)
+        .map(|pid| u32::try_from(pid).expect("a pid"))
+        .collect();
+    assert!(!pids.is_empty(), "the lock names the daemon: {holder}");
+    support::runtime_daemon::Wire2::connect(socket)
+        .call("daemon.shutdown", &serde_json::json!({}))
+        .expect("daemon.shutdown");
+    for pid in pids {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while process_alive(pid) {
+            assert!(
+                Instant::now() < deadline,
+                "the spawned daemon's process {pid} did not exit after the shutdown"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
     // Only Linux can prove the listener closed (`unix_listener_definitely_closed`);
     // elsewhere the exit cleanup keeps the file for the next bind to reclaim.
     #[cfg(target_os = "linux")]
     assert!(
         !socket.exists(),
-        "the spawned supervisor removed its socket file"
+        "the spawned daemon removed its socket file"
     );
-    for pid in worker_pids {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while process_alive(pid) {
-            assert!(
-                Instant::now() < deadline,
-                "worker {pid} leaked after shutdown"
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-}
-
-/// Sync JSONL shutdown request (Drop runs inside the async test runtime, so
-/// no nested runtime). Returns the supervisor pid from the hello.
-fn graceful_shutdown(socket: &Path) -> Option<u32> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-
-    let Ok(stream) = UnixStream::connect(socket) else {
-        return None;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return None;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    let _ = reader.read_line(&mut hello); // daemon_hello
-    let supervisor_pid = serde_json::from_str::<serde_json::Value>(hello.trim())
-        .ok()
-        .and_then(|hello| hello["supervisorPid"].as_u64())
-        .map(|pid| pid as u32);
-
-    let command = serde_json::json!({
-        "type": "command",
-        "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let Ok(mut line) = serde_json::to_string(&command) else {
-        return None;
-    };
-    line.push('\n');
-    if writer.write_all(line.as_bytes()).is_err() {
-        return None;
-    }
-    let _ = writer.flush();
-    // The response is the sync point: the supervisor stops every worker before exiting.
-    let _ = reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)));
-    let mut response = String::new();
-    let _ = reader.read_line(&mut response);
-    supervisor_pid
 }
 
 /// The headless run's wall: a turn that never settles holds the idle gate
@@ -369,148 +133,52 @@ async fn run_headless_bounded(
     }
 }
 
-/// Kill supervisors leaked by earlier runs (a dead binary runs no `Drop`, so
-/// its daemons are reparented to init): a daemon matches when its socket dir
-/// is a `tempfile`-created `.tmpXXXXXX` dir and its parent is dead.
-/// Linux only: it walks `/proc`, and pairs with the Linux-only parent-death signal.
-#[cfg(target_os = "linux")]
-fn sweep_orphan_test_daemons() {
-    static SWEEPED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    if SWEEPED.set(()).is_err() {
-        return; // a later test's spawn: the first spawn already swept
-    }
-    let mut swept = 0;
-    for entry in std::fs::read_dir("/proc").expect("read /proc").flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
-            continue;
-        };
-        // /proc cmdline is NUL-separated.
-        let args: Vec<String> = cmdline
-            .split(|b| *b == 0)
-            .map(|b| String::from_utf8_lossy(b).into_owned())
-            .collect();
-        let flag = |needle: &str| args.iter().any(|a| a == needle);
-        let arg_after = |needle: &str| {
-            args.iter()
-                .position(|a| a == needle)
-                .and_then(|idx| args.get(idx + 1))
-                .cloned()
-        };
-        if !flag("--mode") || arg_after("--mode").as_deref() != Some("daemon") {
-            continue;
-        }
-        let Some(socket) = arg_after("--daemon-socket") else {
-            continue;
-        };
-        // A live run's daemon keeps its owning test binary as the parent, and
-        // the user's product daemons fail the socket-dir test, so neither is swept.
-        let orphan_socket_dir = Path::new(&socket)
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(".tmp"));
-        if !orphan_socket_dir {
-            continue;
-        }
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            continue;
-        };
-        let Some((_, rest)) = stat.rsplit_once(')') else {
-            continue;
-        };
-        let Ok(parsed_ppid) = rest
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or_default()
-            .parse::<u32>()
-        else {
-            continue;
-        };
-        if parsed_ppid != 1 && process_alive(parsed_ppid) {
-            continue; // a live run's daemon: its test binary is still up
-        }
-        unsafe {
-            libc::kill(pid as i32, libc::SIGKILL);
-        }
-        swept += 1;
-    }
-    if swept > 0 {
-        eprintln!("swept {swept} orphan test daemon(s) (socket dir gone) before spawning");
-    }
+/// The runtime daemon for `dir` (its agent dir `<dir>/agent`), its sessions'
+/// turns answered by `script`, written to `<dir>/script.json` first: the
+/// daemon reads its script as it starts.
+fn spawn_daemon(dir: &Path, script: &serde_json::Value) -> RuntimeDaemon {
+    let script_path = dir.join("script.json");
+    std::fs::write(&script_path, script.to_string()).expect("write script");
+    spawn_daemon_with(dir, Some(&script_path))
 }
 
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    support::scrub_ambient_provider_credentials();
-    #[cfg(target_os = "linux")]
-    sweep_orphan_test_daemons();
-    let socket = dir.join("daemon.sock");
-    let agent_dir = dir.join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in the
-        // test's temp dir, which a SIGKILLed worker never cleans up after.
-        .env("TMPDIR", dir)
-        // The daemon's startup catalog refresh must never reach the network
-        // from a test: PI_OFFLINE keeps it on the bundled/models.json snapshot.
-        .env("PI_OFFLINE", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // The launcher strips inherited worker role env vars before spawning the
-    // supervisor; a CLI running inside a daemon worker must not leak them.
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    // Ambient provider credentials must not leak into the daemon's catalog:
-    // every spawned supervisor here serves models.json fixtures only.
-    for provider in pa_ai::models_generated::get_providers() {
-        if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
-            for var in vars {
-                command.env_remove(var);
+/// [`spawn_daemon`] without a script: its sessions run the models the agent
+/// dir's `models.json` and credentials resolve.
+fn spawn_daemon_unscripted(dir: &Path) -> RuntimeDaemon {
+    spawn_daemon_with(dir, None)
+}
+
+fn spawn_daemon_with(dir: &Path, script: Option<&Path>) -> RuntimeDaemon {
+    RuntimeDaemon::spawn_with(dir, |command| {
+        command
+            // The daemon's startup catalog refresh must never reach the network
+            // from a test: PI_OFFLINE keeps it on the bundled/models.json snapshot.
+            .env("PI_OFFLINE", "1")
+            .env("TMPDIR", dir);
+        match script {
+            Some(script) => command.env("PRIME_AGENT_FAUX_SCRIPT", script),
+            None => command.env_remove("PRIME_AGENT_FAUX_SCRIPT"),
+        };
+        // Ambient provider credentials must not leak into the daemon's catalog:
+        // every spawned daemon here serves models.json fixtures only.
+        for provider in pa_ai::models_generated::get_providers() {
+            if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
+                for var in vars {
+                    command.env_remove(var);
+                }
             }
         }
-    }
-    command.env_remove("PRIME_TEAM_ID");
-    // A supervisor killed by a failing test must not leak its session workers:
-    // the supervisor-lost exit runs on this short window, not the 5-minute default.
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    // A full workspace run can starve a session worker's boot far past the
-    // 30s default connect budget; this keeps session creates deterministic.
-    command.env("PA_DAEMON_WORKER_CONNECT_TIMEOUT_MS", "90000");
-    // Die with this test binary: the kernel SIGKILLs a supervisor that gets
-    // reparented to init; the guard's protocol teardown stays the exit path.
-    #[cfg(target_os = "linux")]
-    unsafe {
-        command.pre_exec(move || {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-            Ok(())
-        });
-    }
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(&socket, &mut child);
-    Supervisor { child, socket }
+        command.env_remove("PRIME_TEAM_ID");
+        // Die with this test binary: the kernel SIGKILLs a daemon that gets
+        // reparented to init; the guard's protocol teardown stays the exit path.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            command.pre_exec(move || {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+    })
 }
 
 /// Create a live session through the daemon protocol, writing the scripted engine config first.
@@ -524,7 +192,7 @@ async fn create_session_via_daemon(
     std::fs::write(script_path, script.to_string()).expect("write script");
     let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let data = client
         .request_ok(DaemonCommand::Create {
             id: None,
@@ -560,15 +228,15 @@ async fn tui_attaches_prompts_streams_lists_and_switches() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // A second live session via the daemon protocol, so the switch target is known by id.
     let script = serde_json::json!({ "responses": [
         { "text": "hello from scripted", "delayMs": 20 },
         { "text": "second turn" },
     ] });
+    let daemon = spawn_daemon(dir.path(), &script);
     let second = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &dir.path().join("script.json"),
         &script,
         dir.path(),
@@ -578,7 +246,7 @@ async fn tui_attaches_prompts_streams_lists_and_switches() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(dir.path().join("script.json")),
@@ -672,9 +340,9 @@ async fn tui_attaches_prompts_streams_lists_and_switches() {
         "the switched session produced its first scripted turn"
     );
 
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let last = client
         .request_ok(DaemonCommand::GetLastAssistantText {
             id: None,
@@ -704,7 +372,7 @@ async fn tui_attaches_prompts_streams_lists_and_switches() {
 
     let persisted = support::session_texts(&session_dir).len();
     assert_eq!(persisted, 2, "two session files persisted");
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The product's settings-backed onboarding persistence (`SettingsOnboardingSink` glue).
@@ -782,7 +450,6 @@ async fn fresh_home_asks_the_trace_question_once_and_completes() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     let script = serde_json::json!({ "responses": [
         { "text": "hello fresh home", "delayMs": 20 },
@@ -794,7 +461,8 @@ async fn fresh_home_asks_the_trace_question_once_and_completes() {
     .expect("script.json");
 
     // The task mounts exactly as the product's model-ready gate builds it.
-    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let mut options = base_options(&daemon, dir.path(), &session_dir);
     options.onboarding = Some(pa_tui::interactive::OnboardingTask {
         sink: std::sync::Arc::new(FreshHomeOnboardingSink {
             cwd: dir.path().to_path_buf(),
@@ -838,7 +506,7 @@ async fn fresh_home_asks_the_trace_question_once_and_completes() {
         settings.get_agent_traces_enabled(),
         "the pre-selected Share answer persisted"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// A provisioned home (sharing explicitly opted out) never sees the question
@@ -854,7 +522,6 @@ async fn provisioned_opt_out_home_completes_silently_without_the_question() {
         r#"{ "agentTraces": { "enabled": false } }"#,
     )
     .expect("provisioned settings");
-    let supervisor = spawn_supervisor(dir.path());
 
     let script = serde_json::json!({ "responses": [
         { "text": "hello provisioned home", "delayMs": 20 },
@@ -865,7 +532,8 @@ async fn provisioned_opt_out_home_completes_silently_without_the_question() {
     )
     .expect("script.json");
 
-    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let mut options = base_options(&daemon, dir.path(), &session_dir);
     options.onboarding = Some(pa_tui::interactive::OnboardingTask {
         sink: std::sync::Arc::new(FreshHomeOnboardingSink {
             cwd: dir.path().to_path_buf(),
@@ -907,302 +575,7 @@ async fn provisioned_opt_out_home_completes_silently_without_the_question() {
         settings.get_onboarding_shown(),
         "the silent flow marked onboarding shown"
     );
-    drop(supervisor);
-}
-
-/// The scripted provider-auth surface the full-flow verifier drives: the
-/// Prime Inference row, one api-key provider row, one `mcp:` service row.
-struct FullFlowProviderAuth {
-    agent_dir: PathBuf,
-}
-
-impl FullFlowProviderAuth {
-    fn stored(&self, provider: &str) -> bool {
-        pa_core::auth::AuthStorage::create(&self.agent_dir)
-            .get_all()
-            .credential(provider)
-            .is_some()
-    }
-}
-
-impl pa_tui::provider_auth::ProviderAuthCommands for FullFlowProviderAuth {
-    fn login_options(&self) -> pa_tui::provider_auth::ProviderRowsFuture {
-        let rows = vec![
-            pa_tui::provider_auth::ProviderRow {
-                id: pa_tui::provider_auth::PRIME_INFERENCE_PROVIDER_ID.to_string(),
-                name: "Prime Inference".to_string(),
-                auth_type: pa_tui::provider_auth::AuthType::ApiKey,
-                status: Some(pa_tui::provider_auth::AuthStatusIndicator {
-                    style: pa_tui::provider_auth::AuthStatusStyle::Success,
-                    label: "configured".to_string(),
-                }),
-                flow: pa_tui::provider_auth::AuthFlow::TerminalFlow,
-                configured: self.stored(pa_tui::provider_auth::PRIME_INFERENCE_PROVIDER_ID),
-                available: true,
-                credential: pa_tui::provider_auth::RowCredential::Default,
-            },
-            pa_tui::provider_auth::ProviderRow {
-                id: "faux-key".to_string(),
-                name: "Faux Key".to_string(),
-                auth_type: pa_tui::provider_auth::AuthType::ApiKey,
-                status: None,
-                flow: pa_tui::provider_auth::AuthFlow::ApiKeyPrompt,
-                configured: self.stored("faux-key"),
-                available: true,
-                credential: pa_tui::provider_auth::RowCredential::Default,
-            },
-            pa_tui::provider_auth::ProviderRow {
-                id: "mcp:faux".to_string(),
-                name: "Faux MCP".to_string(),
-                auth_type: pa_tui::provider_auth::AuthType::Oauth,
-                status: None,
-                flow: pa_tui::provider_auth::AuthFlow::TerminalFlow,
-                configured: false,
-                available: true,
-                credential: pa_tui::provider_auth::RowCredential::Default,
-            },
-        ];
-        Box::pin(async move { rows })
-    }
-
-    fn logout_options(&self) -> pa_tui::provider_auth::ProviderRowsFuture {
-        Box::pin(async move { Vec::new() })
-    }
-
-    fn login(
-        &self,
-        provider: &pa_tui::provider_auth::ProviderRow,
-        api_key: Option<&str>,
-        _target: &pa_tui::provider_auth::LoginTarget,
-    ) -> pa_tui::provider_auth::ProviderAuthFuture {
-        let agent_dir = self.agent_dir.clone();
-        let provider_id = provider.id.clone();
-        let provider_name = provider.name.clone();
-        let key = api_key.map(str::to_string);
-        Box::pin(async move {
-            let mut auth = pa_core::auth::AuthStorage::create(&agent_dir);
-            auth.set(
-                &provider_id,
-                pa_core::auth::AuthCredential::ApiKey {
-                    key: key.unwrap_or_default(),
-                    prime_team: None,
-                },
-            );
-            if auth.drain_errors().pop().is_some() {
-                return pa_tui::provider_auth::ProviderAuthOutcome::Error(format!(
-                    "Failed to save API key for {provider_name}"
-                ));
-            }
-            pa_tui::provider_auth::ProviderAuthOutcome::Status(format!(
-                "Saved API key for {provider_name}"
-            ))
-        })
-    }
-
-    fn login_on_panel(
-        &self,
-        provider: &pa_tui::provider_auth::ProviderRow,
-        panel: pa_tui::auth_panel::AuthPanelHandle,
-        _target: &pa_tui::provider_auth::LoginTarget,
-    ) -> pa_tui::provider_auth::ProviderAuthFuture {
-        let agent_dir = self.agent_dir.clone();
-        let provider_id = provider.id.clone();
-        let provider_name = provider.name.clone();
-        Box::pin(async move {
-            // Only the Prime row runs here; anything else cancels.
-            if provider_id != pa_tui::provider_auth::PRIME_INFERENCE_PROVIDER_ID {
-                return pa_tui::provider_auth::ProviderAuthOutcome::Cancelled;
-            }
-            panel.progress("Checking Prime Inference access...");
-            let Some(api_key) = panel
-                .paste_prompt(
-                    "Paste a Prime API key below:",
-                    pa_tui::auth_panel::PastePromptTone::Muted,
-                    pa_tui::auth_panel::PasteStyle::Visible,
-                )
-                .await
-            else {
-                return pa_tui::provider_auth::ProviderAuthOutcome::Cancelled;
-            };
-            let mut auth = pa_core::auth::AuthStorage::create(&agent_dir);
-            auth.set(
-                &provider_id,
-                pa_core::auth::AuthCredential::ApiKey {
-                    key: api_key,
-                    prime_team: None,
-                },
-            );
-            if auth.drain_errors().pop().is_some() {
-                return pa_tui::provider_auth::ProviderAuthOutcome::Error(format!(
-                    "Failed to login to {provider_name}"
-                ));
-            }
-            pa_tui::provider_auth::ProviderAuthOutcome::Status(format!(
-                "Saved API key for {provider_name}. Credentials saved to {}.",
-                agent_dir.join("auth.json").display()
-            ))
-        })
-    }
-
-    fn logout(
-        &self,
-        _provider: &pa_tui::provider_auth::ProviderRow,
-    ) -> pa_tui::provider_auth::ProviderAuthFuture {
-        Box::pin(async move { pa_tui::provider_auth::ProviderAuthOutcome::Cancelled })
-    }
-
-    fn anthropic_subscription_warning(&self) -> pa_tui::provider_auth::ProviderWarningFuture {
-        // The faux full-flow drives no Anthropic subscription auth.
-        Box::pin(async move { None })
-    }
-}
-
-/// The full first-run flow with no usable model (TS `runOnboardingFlow`'s
-/// not-ready branch): every answer, both credentials, and the flag persist.
-#[tokio::test]
-async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let agent_dir = dir.path().join("agent");
-    let session_dir = agent_dir.join("sessions");
-    std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
-
-    let script = serde_json::json!({ "responses": [
-        { "text": "hello full flow", "delayMs": 20 },
-    ] });
-    std::fs::write(
-        dir.path().join("script.json"),
-        serde_json::to_string(&script).expect("script json"),
-    )
-    .expect("script.json");
-
-    let mut options = base_options(&supervisor, dir.path(), &session_dir);
-    // The readiness probe mirrors the flow's contract: not ready until the
-    // sign-in stores its credential (the model-ready gate at flow end).
-    let probe_agent_dir = agent_dir.clone();
-    let model_ready = std::sync::Arc::new(move || {
-        pa_core::auth::AuthStorage::create(&probe_agent_dir)
-            .get_all()
-            .credential(pa_tui::provider_auth::PRIME_INFERENCE_PROVIDER_ID)
-            .is_some()
-    });
-    options.onboarding = Some(pa_tui::interactive::OnboardingTask {
-        sink: std::sync::Arc::new(FreshHomeOnboardingSink {
-            cwd: dir.path().to_path_buf(),
-            agent_dir: agent_dir.clone(),
-        }),
-        model_ready,
-        current_model: None,
-        provider_auth: Some(pa_tui::provider_auth::ProviderAuthCommandsHandle(
-            std::sync::Arc::new(FullFlowProviderAuth {
-                agent_dir: agent_dir.clone(),
-            }),
-        )),
-    });
-    let enter = || {
-        pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
-        ))
-    };
-    let down = || {
-        pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Down,
-            crossterm::event::KeyModifiers::NONE,
-        ))
-    };
-    // The plan waits on observable readiness, not fixed sleeps: each barrier
-    // holds the queued batch until a rendered frame contains the condition.
-    let wait_render = |needle: &str| pa_tui::interactive::HeadlessStep::WaitRender {
-        needle: needle.to_string(),
-        timeout_ms: 5_000,
-    };
-    let plan = pa_tui::interactive::HeadlessPlan {
-        steps: vec![
-            enter(),
-            wait_render("Paste a Prime API key below:"),
-            pa_tui::interactive::HeadlessStep::Type("faux-prime-key".to_string()),
-            enter(),
-            wait_render("Prime Inference is your default. Connect other providers, or continue."),
-            down(),
-            enter(),
-            wait_render("Enter API key"),
-            pa_tui::interactive::HeadlessStep::Type("faux-key".to_string()),
-            enter(),
-            wait_render("\u{2713}"),
-            enter(),
-            wait_render("Share agent traces"),
-            enter(),
-            pa_tui::interactive::HeadlessStep::Submit("hi".to_string()),
-            pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 30_000 },
-        ],
-        width: 100,
-        height: 30,
-    };
-    let outcome = run_headless_bounded(options, plan)
-        .await
-        .expect("interactive run");
-
-    let rendered = outcome.frames.join("\n");
-    assert!(
-        rendered.contains("Log in with Prime Intellect"),
-        "the welcome screen's action rendered:\n{rendered}"
-    );
-    assert!(
-        outcome.frames.iter().any(|frame| {
-            frame.contains("Log in with Prime Intellect")
-                && frame.contains("Paste a Prime API key below:")
-        }),
-        "the login dialog's heading replaced the brand line:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("Paste a Prime API key below:"),
-        "the paste prompt mounted inside the pane:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("Prime Inference is your default. Connect other providers, or continue."),
-        "the providers picker rendered:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("Share agent traces"),
-        "the trace question ended the flow:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("hello full flow"),
-        "the completed flow released the pane and the first turn ran:\n{rendered}"
-    );
-    // The scripted engine refuses live model switches by design, so the
-    // refusal row is the proof the apply REQUEST reached it.
-    assert!(
-        rendered.contains("This session does not support model switching"),
-        "the apply round-tripped and the scripted engine's refusal surfaced:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("Saved API key for Faux Key"),
-        "the provider login's status row applied:\n{rendered}"
-    );
-
-    let settings = pa_core::settings::SettingsManager::create(dir.path(), &agent_dir);
-    assert!(
-        settings.get_onboarding_shown(),
-        "the completed flow marked onboarding shown"
-    );
-    assert!(
-        settings.get_agent_traces_enabled(),
-        "the Share answer persisted"
-    );
-    let auth = pa_core::auth::AuthStorage::create(&agent_dir);
-    assert!(
-        auth.get_all()
-            .credential(pa_tui::provider_auth::PRIME_INFERENCE_PROVIDER_ID)
-            .is_some(),
-        "the Prime sign-in stored its credential"
-    );
-    assert!(
-        auth.get_all().credential("faux-key").is_some(),
-        "the provider login stored its key"
-    );
-    drop(supervisor);
+    drop(daemon);
 }
 
 #[tokio::test]
@@ -1216,7 +589,6 @@ async fn a_failed_completion_write_surfaces_a_warning_and_never_kills_the_run() 
         r#"{ "agentTraces": { "enabled": false } }"#,
     )
     .expect("provisioned settings");
-    let supervisor = spawn_supervisor(dir.path());
 
     let script = serde_json::json!({ "responses": [
         { "text": "hello despite the write failure", "delayMs": 20 },
@@ -1227,7 +599,8 @@ async fn a_failed_completion_write_surfaces_a_warning_and_never_kills_the_run() 
     )
     .expect("script.json");
 
-    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let mut options = base_options(&daemon, dir.path(), &session_dir);
     options.onboarding = Some(pa_tui::interactive::OnboardingTask {
         sink: std::sync::Arc::new(FailingMarkOnboardingSink {
             cwd: dir.path().to_path_buf(),
@@ -1267,7 +640,7 @@ async fn a_failed_completion_write_surfaces_a_warning_and_never_kills_the_run() 
         !settings.get_onboarding_shown(),
         "the failed write left the marker unset"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The re-show regression: the agents-view flow re-runs the onboarding phase
@@ -1278,7 +651,6 @@ async fn a_completed_flow_never_reopens_the_question_for_a_later_session() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // The faux queue spans one session (each created session replays from the top).
     let script = serde_json::json!({ "responses": [
@@ -1291,7 +663,8 @@ async fn a_completed_flow_never_reopens_the_question_for_a_later_session() {
     .expect("script.json");
 
     // The SAME options object backs both session runs, as the agents-view flow clones `base`.
-    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let mut options = base_options(&daemon, dir.path(), &session_dir);
     options.onboarding = Some(pa_tui::interactive::OnboardingTask {
         sink: std::sync::Arc::new(FreshHomeOnboardingSink {
             cwd: dir.path().to_path_buf(),
@@ -1361,24 +734,16 @@ async fn a_completed_flow_never_reopens_the_question_for_a_later_session() {
         !second_rendered.contains("Share agent traces"),
         "the completed flow never reopened the question:\n{second_rendered}"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 #[tokio::test]
-async fn ensure_daemon_running_spawns_supervisor_and_tui_attaches() {
+async fn ensure_daemon_running_spawns_the_runtime_daemon_and_tui_attaches() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
     let socket = dir.path().join("spawned.sock");
-    std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir);
-    // The internally-spawned supervisor inherits this process's env: the short
-    // supervisor-lost window keeps a killed supervisor from leaking workers.
-    std::env::set_var(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-
     let script_path = dir.path().join("script.json");
     std::fs::write(
         &script_path,
@@ -1386,12 +751,12 @@ async fn ensure_daemon_running_spawns_supervisor_and_tui_attaches() {
     )
     .expect("write script");
 
-    let options = pa_tui::interactive::InteractiveOptions {
+    let mut options = pa_tui::interactive::InteractiveOptions {
         models: None,
         socket_path: socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
-        script_path: Some(script_path),
+        script_path: Some(script_path.clone()),
         model_selection: pa_tui::interactive::ModelSelection::default(),
         model_catalog: Vec::new(),
         model_configured_providers: std::collections::HashSet::default(),
@@ -1422,16 +787,22 @@ async fn ensure_daemon_running_spawns_supervisor_and_tui_attaches() {
         restore_dock_focus: false,
         client_settings: None,
     };
-    // The interactive runtime's launch sequence, minus the TTY: spawn detached, wait for hello.
+    // The interactive runtime's launch sequence, minus the TTY: spawn detached, wait for the
+    // runtime socket. The spawned daemon inherits this process's env: its agent dir, its
+    // script, and no ambient provider keys.
     let _guard = DetachedDaemon {
-        socket: socket.clone(),
+        agent_dir: agent_dir.clone(),
     };
-    // The spawned daemon inherits this process's env: no ambient provider keys.
     support::scrub_ambient_provider_credentials();
     let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
-    pa_cli::ensure_daemon_running_with(&exe, &socket, dir.path())
-        .await
-        .expect("spawn the daemon");
+    std::env::set_var("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir);
+    std::env::set_var("PRIME_AGENT_FAUX_SCRIPT", &script_path);
+    let launched = pa_cli::ensure_runtime_daemon_running_with(&exe, &socket, dir.path()).await;
+    std::env::remove_var("PRIME_AGENT_FAUX_SCRIPT");
+    let runtime_socket = launched.expect("spawn the daemon");
+    // The composition root declares the runtime socket wire2 and hands the window that socket.
+    pa_tui::daemon_client::use_transport(&runtime_socket, pa_tui::daemon_client::Transport::Wire2);
+    options.socket_path.clone_from(&runtime_socket);
     let plan = pa_tui::interactive::HeadlessPlan {
         steps: vec![pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 30_000 }],
         width: 80,
@@ -1453,7 +824,7 @@ async fn ensure_daemon_running_spawns_supervisor_and_tui_attaches() {
         Some("spawned hello")
     );
 
-    assert_daemon_stops_clean(&socket);
+    assert_daemon_stops_clean(&agent_dir, &runtime_socket);
 }
 
 #[tokio::test]
@@ -1462,7 +833,6 @@ async fn tui_dispatches_slash_commands_menu_and_suggestions() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // The faux engine drives the real agent engine over the scripted faux
     // provider, so the session-command admission path runs as in the product.
@@ -1470,9 +840,10 @@ async fn tui_dispatches_slash_commands_menu_and_suggestions() {
         { "text": "scripted reply" },
     ] });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
+    let daemon = spawn_daemon(dir.path(), &script);
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(dir.path().join("script.json")),
@@ -1625,7 +996,7 @@ async fn tui_dispatches_slash_commands_menu_and_suggestions() {
         saw_result,
         "the session file persisted the session_slash_command_result rows"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// `/model` + `/effort` through the daemon: a models.json custom model lists
@@ -1661,7 +1032,6 @@ async fn tui_model_picker_applies_and_effort_reports() {
         { "text": "scripted reply" },
     ] });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
-    let supervisor = spawn_supervisor(dir.path());
     // The catalog snapshot the composition root injects, pinned hermetically:
     // ambient credentials (PRIME_API_KEY on the dev box) cannot leak in.
     let auth = pa_core::auth::AuthStorage::in_memory_without_env(
@@ -1676,9 +1046,10 @@ async fn tui_model_picker_applies_and_effort_reports() {
         "the one available model is the models.json mock"
     );
 
+    let daemon = spawn_daemon(dir.path(), &script);
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(dir.path().join("script.json")),
@@ -1772,7 +1143,7 @@ async fn tui_model_picker_applies_and_effort_reports() {
         last.contains("keep me"),
         "the ctrl+l pick kept the editor's own text:\n{last}"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The `thinkingLevelMap` (not the `reasoning` flag) is the capability signal:
@@ -1803,7 +1174,6 @@ async fn tui_effort_applies_on_a_map_addressable_model_without_the_reasoning_fla
         .to_string(),
     )
     .expect("write models.json");
-    let supervisor = spawn_supervisor(dir.path());
     let auth = pa_core::auth::AuthStorage::in_memory_without_env(
         &pa_core::auth::AuthStorageData::default(),
         std::sync::Arc::new(pa_core::auth::NoOAuth),
@@ -1813,9 +1183,10 @@ async fn tui_effort_applies_on_a_map_addressable_model_without_the_reasoning_fla
     assert_eq!(catalog.len(), 1, "the models.json model resolves available");
     assert_eq!(catalog[0].id, "chat-plus");
 
+    let daemon = spawn_daemon_unscripted(dir.path());
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: None,
@@ -1888,7 +1259,7 @@ async fn tui_effort_applies_on_a_map_addressable_model_without_the_reasoning_fla
         level_changes >= 1,
         "the thinking_level_change row persisted at xhigh (saw {level_changes})"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The skip (TS `CompactionSkippedError`) reaches the transcript through the
@@ -1899,14 +1270,14 @@ async fn tui_compact_on_a_short_session_warns_nothing_to_compact() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // The real agent engine over the faux provider: the skip path never reaches it.
     let script = serde_json::json!({ "engine": "faux", "responses": [] });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
+    let daemon = spawn_daemon(dir.path(), &script);
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(dir.path().join("script.json")),
@@ -1982,7 +1353,7 @@ async fn tui_compact_on_a_short_session_warns_nothing_to_compact() {
         !saw_result_row,
         "a skipped compaction persisted no result row"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The loader row is a soft capture: a loaded box can batch the delayMs-paced
@@ -1999,7 +1370,6 @@ async fn tui_compact_shows_the_loader_then_the_summary_and_rebuilds() {
         serde_json::json!({ "compaction": { "keepRecentTokens": 10 } }).to_string(),
     )
     .expect("write settings");
-    let supervisor = spawn_supervisor(dir.path());
 
     // The session shape (TS-binary-verified): the second turn crosses the
     // budget at its user message, the third response is the summary, and its
@@ -2015,9 +1385,10 @@ async fn tui_compact_shows_the_loader_then_the_summary_and_rebuilds() {
         ],
     });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
+    let daemon = spawn_daemon(dir.path(), &script);
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(dir.path().join("script.json")),
@@ -2160,168 +1531,7 @@ async fn tui_compact_shows_the_loader_then_the_summary_and_rebuilds() {
         saw_compaction_entry,
         "the compaction entry persisted to the session file"
     );
-    drop(supervisor);
-}
-
-#[tokio::test]
-async fn tui_session_tree_navigates_forks_and_clones() {
-    use crossterm::event::{KeyCode, KeyModifiers};
-
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let agent_dir = dir.path().join("agent");
-    let session_dir = agent_dir.join("sessions");
-    std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
-    let script = serde_json::json!({
-        "engine": "faux",
-        "responses": [
-            { "text": "first answer", "delayMs": 10 },
-            { "text": "second answer", "delayMs": 10 },
-            { "text": "post-fork answer", "delayMs": 10 },
-        ],
-    });
-    std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
-    let options = pa_tui::interactive::InteractiveOptions {
-        models: None,
-        socket_path: supervisor.socket.clone(),
-        cwd: dir.path().to_path_buf(),
-        session_dir: Some(session_dir.clone()),
-        script_path: Some(dir.path().join("script.json")),
-        model_selection: pa_tui::interactive::ModelSelection::default(),
-        model_catalog: Vec::new(),
-        model_configured_providers: std::collections::HashSet::default(),
-        model_recent_models: Vec::new(),
-        default_thinking_level: None,
-        no_session: false,
-        session: pa_tui::interactive::SessionSelection::New,
-        initial_message: None,
-        theme: "prime".to_string(),
-        code_block_indent: "  ".to_string(),
-        // The default tree filter keeps every message row visible, and the
-        // branch-summary prompt is skipped (TS `branchSummary.skipPrompt`).
-        tree_filter_mode: "default".to_string(),
-        branch_summary_skip_prompt: true,
-        show_images: true,
-        fullscreen_mouse: true,
-        version: "0.0.0".to_string(),
-        onboarding: None,
-        telemetry_disabled: None,
-        client_auth: None,
-        traces: None,
-        provider_auth: None,
-        update_commands: None,
-        telemetry: None,
-        keybindings: pa_tui::keybindings::KeybindingsManager::new(),
-        session_rlm_depth: None,
-        prompt_stash: std::sync::Arc::default(),
-        session_has_children: false,
-        restore_dock_focus: false,
-        client_settings: None,
-    };
-    let key = |code: KeyCode| {
-        pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
-            code,
-            KeyModifiers::NONE,
-        ))
-    };
-    let enter = key(KeyCode::Enter);
-    let up = key(KeyCode::Up);
-    let plan = pa_tui::interactive::HeadlessPlan {
-        steps: vec![
-            pa_tui::interactive::HeadlessStep::Submit("first question".to_string()),
-            pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 30_000 },
-            pa_tui::interactive::HeadlessStep::Submit("second question".to_string()),
-            pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 30_000 },
-            // `/tree` opens the selector; Enter on the leaf is the TS no-op.
-            pa_tui::interactive::HeadlessStep::Submit("/tree".to_string()),
-            pa_tui::interactive::HeadlessStep::SettleIdle,
-            enter.clone(),
-            pa_tui::interactive::HeadlessStep::SettleIdle,
-            // `/fork` opens the selector; Enter forks before the selected (latest) user message.
-            pa_tui::interactive::HeadlessStep::Submit("/fork".to_string()),
-            pa_tui::interactive::HeadlessStep::SettleIdle,
-            enter.clone(),
-            pa_tui::interactive::HeadlessStep::SettleIdle,
-            // The fork re-entered the user message; submit runs it on the forked session.
-            enter.clone(),
-            pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 30_000 },
-            // `/tree` again, then two rows up (the first answer) cuts the branch back.
-            pa_tui::interactive::HeadlessStep::Submit("/tree".to_string()),
-            pa_tui::interactive::HeadlessStep::SettleIdle,
-            up.clone(),
-            up.clone(),
-            enter.clone(),
-            pa_tui::interactive::HeadlessStep::SettleIdle,
-        ],
-        width: 100,
-        height: 34,
-    };
-    let outcome = run_headless_bounded(options, plan)
-        .await
-        .expect("interactive run");
-    if let Ok(dump) = std::env::var("PA_TUI_DUMP_FRAMES") {
-        for (index, frame) in outcome.frames.iter().enumerate() {
-            let _ = std::fs::write(
-                std::path::Path::new(&dump).join(format!("tree-frame-{index:03}.txt")),
-                frame,
-            );
-        }
-    }
-    let rendered = outcome.frames.join("\n");
-    assert!(
-        rendered.contains("Session tree"),
-        "the tree pane rendered:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("Search entries"),
-        "the search line rendered:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("user: first question") && rendered.contains("user: second question"),
-        "the entry rows rendered:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("Already at this point"),
-        "the leaf selection was a no-op:\n{rendered}"
-    );
-    assert!(
-        rendered.lines().any(|row| row.trim() == "Fork"),
-        "the fork selector rendered:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("Forked to new session"),
-        "the fork note rendered:\n{rendered}"
-    );
-    assert!(
-        rendered.contains("post-fork answer"),
-        "the forked session ran a turn:\n{rendered}"
-    );
-    // The transcript rebuilt on the moved branch (the abandoned turn drops).
-    assert!(
-        rendered.contains("Navigated to selected point"),
-        "the navigation note rendered:\n{rendered}"
-    );
-    let settled = outcome
-        .frames
-        .iter()
-        .rev()
-        .find(|frame| frame.contains("Navigated to selected point"))
-        .expect("the navigation frame");
-    assert!(
-        !settled.contains("post-fork answer"),
-        "the abandoned branch dropped from the rebuilt transcript:\n{settled}"
-    );
-    assert!(
-        settled.contains("first answer"),
-        "the moved branch kept the target path:\n{settled}"
-    );
-    let session_files: Vec<_> = support::session_texts(&session_dir).into_iter().collect();
-    assert!(
-        session_files.len() >= 2,
-        "the fork wrote a new session file: {} files",
-        session_files.len()
-    );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// Two ~12k-token unpaced turns must render at the producer's rate, not a frame-rate ceiling.
@@ -2331,7 +1541,6 @@ async fn tui_big_streamed_turns_render_at_the_producer_rate() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // Two ~12k-token fillers; each segment carries a MARK-nn marker for the mid-turn progression.
     let mut filler = String::new();
@@ -2351,9 +1560,10 @@ async fn tui_big_streamed_turns_render_at_the_producer_rate() {
         ],
     });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
+    let daemon = spawn_daemon(dir.path(), &script);
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(dir.path().join("script.json")),
@@ -2444,7 +1654,7 @@ async fn tui_big_streamed_turns_render_at_the_producer_rate() {
         wall < Duration::from_secs(100),
         "the whole run took {wall:?}; the turn render must keep up with the producer"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// A settings fixture rebinding `app.tools.expand` to `ctrl+alt+x` drives the surface.
@@ -2462,16 +1672,16 @@ async fn tui_renders_and_fires_user_keybindings_from_settings() {
         r#"{ "app.tools.expand": "ctrl+alt+x" }"#,
     )
     .expect("write keybindings.json");
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
         "responses": [{ "text": "scripted reply", "delayMs": 10 }],
     });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
 
+    let daemon = spawn_daemon(dir.path(), &script);
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(dir.path().join("script.json")),
@@ -2600,7 +1810,7 @@ async fn tui_renders_and_fires_user_keybindings_from_settings() {
         last.contains(&format!("Details mode ({override_key} to expand)")),
         "the dock returned after the panel closed:\n{last}"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The visible follow-up queue (the steering composer's pending strip): prompts submitted while a
@@ -2612,7 +1822,6 @@ async fn tui_prompts_queued_behind_a_turn_render_the_queue_strip() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // The first turn holds for 1.5s (`delayMs`): the parked submissions land
     // inside that window (the runner flips `busy` long before the 750ms barrier).
@@ -2624,9 +1833,10 @@ async fn tui_prompts_queued_behind_a_turn_render_the_queue_strip() {
     ]});
     std::fs::write(&script_path, script.to_string()).expect("write script");
 
+    let daemon = spawn_daemon(dir.path(), &script);
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path.clone()),
@@ -2708,109 +1918,7 @@ async fn tui_prompts_queued_behind_a_turn_render_the_queue_strip() {
             && !last.contains("Follow-up: "),
         "the queue strip cleared after delivery:\n{last}"
     );
-    drop(supervisor);
-}
-
-/// The live-dogfood failure pair (Kevin's repro, 2026-09-21): the flagged
-/// model resolves from the full catalog and fails at run-start auth
-/// validation with the TS login-guidance message — never "Model not found".
-#[tokio::test]
-async fn tui_flagged_model_turn_reports_the_ts_preflight_error_without_credentials() {
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let agent_dir = dir.path().join("agent");
-    let session_dir = agent_dir.join("sessions");
-    std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
-    // No models.json and no credentials (ambient keys stripped), so the
-    // auth-scoped catalog is empty but the bundled catalog carries the model.
-    let glm: pa_types::ai::Model = serde_json::from_value(serde_json::json!({
-        "id": "z-ai/glm-5.3", "name": "GLM 5.3", "api": "openai-completions",
-        "provider": "prime-inference", "baseUrl": "https://inference.example/v1",
-        "reasoning": true, "input": ["text"],
-        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-        "contextWindow": 128_000, "maxTokens": 8192
-    }))
-    .expect("catalog entry");
-    let options = pa_tui::interactive::InteractiveOptions {
-        models: None,
-        socket_path: supervisor.socket.clone(),
-        cwd: dir.path().to_path_buf(),
-        session_dir: Some(session_dir.clone()),
-        script_path: None,
-        model_selection: pa_tui::interactive::ModelSelection {
-            provider: Some("prime-inference".to_string()),
-            model: Some("z-ai/glm-5.3".to_string()),
-            ..Default::default()
-        },
-        model_catalog: vec![glm],
-        model_configured_providers: std::collections::HashSet::default(),
-        model_recent_models: Vec::new(),
-        default_thinking_level: None,
-        no_session: false,
-        session: pa_tui::interactive::SessionSelection::New,
-        show_images: true,
-        client_settings: None,
-        fullscreen_mouse: true,
-        initial_message: None,
-        theme: "prime".to_string(),
-        code_block_indent: "  ".to_string(),
-        tree_filter_mode: String::new(),
-        branch_summary_skip_prompt: false,
-        version: "0.0.0".to_string(),
-        onboarding: None,
-        telemetry_disabled: None,
-        client_auth: None,
-        traces: None,
-        provider_auth: None,
-        update_commands: None,
-        telemetry: None,
-        keybindings: pa_tui::keybindings::KeybindingsManager::new(),
-        session_rlm_depth: None,
-        prompt_stash: std::sync::Arc::default(),
-        session_has_children: false,
-        restore_dock_focus: false,
-    };
-    let plan = pa_tui::interactive::HeadlessPlan {
-        steps: vec![
-            pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 30_000 },
-            pa_tui::interactive::HeadlessStep::Submit("/model".to_string()),
-            pa_tui::interactive::HeadlessStep::Type("glm".to_string()),
-            pa_tui::interactive::HeadlessStep::Type("\n".to_string()),
-            pa_tui::interactive::HeadlessStep::Submit("hello".to_string()),
-            pa_tui::interactive::HeadlessStep::WaitIdle { timeout_ms: 60_000 },
-        ],
-        width: 120,
-        height: 36,
-    };
-    let outcome = run_headless_bounded(options, plan)
-        .await
-        .expect("interactive run");
-    let rendered = outcome.frames.join("\n");
-    assert!(
-        rendered.contains("must be configured externally") && rendered.contains("prime-inference"),
-        "the pick against the empty auth-scoped catalog routes the sign-in flow (no provider-auth hook in this composition, so the TS external-config error):\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("Model not found: "),
-        "the not-signed-in pick never surfaces the dead-end refusal (the typed sign-in class):\n{rendered}"
-    );
-    assert!(
-        rendered.contains("No API key found for prime-inference"),
-        "the turn resolves the flagged model from the full catalog and fails at the run-start auth validation with the TS message:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("No models available"),
-        "the auth-blind turn resolution must not report the resolver's empty-catalog error:\n{rendered}"
-    );
-    let last = outcome.frames.last().expect("a final frame");
-    // The failed pick must hold the `model:effort` label with glm-5.3's effective level: the
-    // tray row ends on it (whatever badge the tray puts in front).
-    assert!(
-        last.lines()
-            .any(|row| row.trim_end().ends_with(" z-ai/glm-5.3:high")),
-        "the footer label holds the resolved flagged model (the failed pick switched nothing):\n{last}"
-    );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The dogfood acceptance: a `/model` pick must move the footer label immediately
@@ -2850,7 +1958,6 @@ async fn tui_model_pick_refreshes_the_label_and_the_next_turn_resolves() {
         serde_json::json!({ "retry": { "enabled": false } }).to_string(),
     )
     .expect("write settings.json");
-    let supervisor = spawn_supervisor(dir.path());
     // The client-side snapshot over the same registry scope as the daemon's (hermetic auth).
     let auth = pa_core::auth::AuthStorage::in_memory_without_env(
         &pa_core::auth::AuthStorageData::default(),
@@ -2863,9 +1970,10 @@ async fn tui_model_pick_refreshes_the_label_and_the_next_turn_resolves() {
         2,
         "both models.json models resolve available"
     );
+    let daemon = spawn_daemon_unscripted(dir.path());
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: None,
@@ -2931,7 +2039,7 @@ async fn tui_model_pick_refreshes_the_label_and_the_next_turn_resolves() {
         last.lines().any(|row| row.trim_end().ends_with(" mock-2")),
         "the footer label refreshed to the picked model:\n{last}"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// `--models` scope end to end: the cycle keys walk the session's scope
@@ -2969,8 +2077,8 @@ async fn tui_scoped_models_cycle_through_the_session_scope() {
         .to_string(),
     )
     .expect("write models.json");
-    let supervisor = spawn_supervisor(dir.path());
-    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon_unscripted(dir.path());
+    let mut options = base_options(&daemon, dir.path(), &session_dir);
     // No scripted engine: the real startup chain resolves the session's model
     // (the scripted engine answers none and the cycle would refuse to switch).
     options.script_path = None;
@@ -3015,18 +2123,18 @@ async fn tui_scoped_models_cycle_through_the_session_scope() {
         rendered.contains("Model: test-provider/mock-1"),
         "shift+alt+m cycled backward through the scope:\n{rendered}"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The base options every utility-command verifier shares.
 fn base_options(
-    supervisor: &Supervisor,
+    daemon: &RuntimeDaemon,
     dir: &Path,
     session_dir: &Path,
 ) -> pa_tui::interactive::InteractiveOptions {
     pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.to_path_buf(),
         session_dir: Some(session_dir.to_path_buf()),
         script_path: Some(dir.join("script.json")),
@@ -3067,12 +2175,12 @@ async fn tui_renames_session_through_slash_command() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({ "engine": "faux", "responses": [
         { "text": "scripted reply" },
     ] });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
-    let options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let options = base_options(&daemon, dir.path(), &session_dir);
     let plan = pa_tui::interactive::HeadlessPlan {
         steps: vec![
             // Set through the alias: /rename resolves to /name.
@@ -3120,7 +2228,7 @@ async fn tui_renames_session_through_slash_command() {
         "the session_info entry persisted (the /name arm reaches the rename machinery)"
     );
     // The daemon state reports the name (the summary the roster and agents view read).
-    let (client, _client_events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let (client, _client_events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
         .expect("connect");
     let state = client
@@ -3143,14 +2251,14 @@ async fn tui_new_command_honors_name_and_prompt() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
     // Each created session replays the script from its first response, so one
     // shared reply serves both prompt-bearing runs.
     let script = serde_json::json!({ "engine": "faux", "responses": [
         { "text": "scripted reply" },
     ] });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
-    let options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let options = base_options(&daemon, dir.path(), &session_dir);
     let plan = pa_tui::interactive::HeadlessPlan {
         steps: vec![
             // A parse error must not create a session.
@@ -3261,7 +2369,7 @@ async fn tui_new_command_honors_name_and_prompt() {
         "the name-only run submitted no prompt"
     );
     // The daemon state reports the names (the roster summary's field).
-    let (client, _client_events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let (client, _client_events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
         .expect("connect");
     let state = client
@@ -3290,13 +2398,13 @@ async fn tui_side_question_pane_flow() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({ "engine": "faux", "responses": [
         { "text": "Paris, obviously" },
         { "text": "Second answer" },
     ] });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
-    let options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let options = base_options(&daemon, dir.path(), &session_dir);
     let escape = pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Esc,
         crossterm::event::KeyModifiers::NONE,
@@ -3406,10 +2514,10 @@ async fn tui_settings_menu_cycles_rows() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({ "engine": "faux", "responses": [] });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
-    let options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let options = base_options(&daemon, dir.path(), &session_dir);
     let enter = || {
         pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Enter,
@@ -3490,8 +2598,8 @@ async fn tui_esc_closes_the_completion_menu_without_interrupting_the_turn() {
         ],
     });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
-    let supervisor = spawn_supervisor(dir.path());
-    let options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let options = base_options(&daemon, dir.path(), &session_dir);
     let key = |code: KeyCode| {
         pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
             code,
@@ -3540,7 +2648,7 @@ async fn tui_esc_closes_the_completion_menu_without_interrupting_the_turn() {
         rendered.contains("the final answer streams after the menu check"),
         "Esc closed the menu and the turn ran to its final answer (no leaked abort):\n{rendered}"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// Prompt-stash verifier: a draft in the editor belongs to the session it was typed in.
@@ -3552,14 +2660,14 @@ async fn tui_prompt_stash_round_trips_across_in_place_switch() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
         "responses": [{ "text": "stash switch reply", "delayMs": 10 }],
     });
     let script_path = dir.path().join("script.json");
+    let daemon = spawn_daemon(dir.path(), &script);
     let first = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -3567,7 +2675,7 @@ async fn tui_prompt_stash_round_trips_across_in_place_switch() {
     )
     .await;
     let second = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -3580,7 +2688,7 @@ async fn tui_prompt_stash_round_trips_across_in_place_switch() {
         provider_auth: None,
         traces: None,
         update_commands: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path.clone()),
@@ -3637,9 +2745,9 @@ async fn tui_prompt_stash_round_trips_across_in_place_switch() {
     );
 
     // Daemon-side: the restored draft ran on session A; B never received it.
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let last_first = client
         .request_ok(DaemonCommand::GetLastAssistantText {
             id: None,
@@ -3666,7 +2774,7 @@ async fn tui_prompt_stash_round_trips_across_in_place_switch() {
         "the stashed draft never leaked into the switched-to session"
     );
     client.close();
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// Prompt-stash verifier, the agents-view handoff arm: the (user-rebound)
@@ -3689,14 +2797,14 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
         r#"{ "app.session.resume": "f2" }"#,
     )
     .expect("write keybindings.json");
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
         "responses": [{ "text": "handoff restore reply", "delayMs": 10 }],
     });
     let script_path = dir.path().join("script.json");
+    let daemon = spawn_daemon(dir.path(), &script);
     let first = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -3716,7 +2824,7 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
         provider_auth: None,
         traces: None,
         update_commands: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path.clone()),
@@ -3807,9 +2915,9 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
         "the restored draft attached the stashed image bytes on submit"
     );
 
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let last = client
         .request_ok(DaemonCommand::GetLastAssistantText {
             id: None,
@@ -3823,7 +2931,7 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
         "the restored draft submitted after the handoff"
     );
     client.close();
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// Prompt-stash verifier, the pasted-image arm: the stashed draft round-trips its image bytes.
@@ -3841,14 +2949,14 @@ async fn tui_prompt_stash_restores_a_pasted_image_with_the_draft() {
     // The seam only applies to the paste path (ctrl+v). The var stays set for
     // the whole process: a cross-test remove would race the parallel stash tests.
     std::env::set_var("PRIME_AGENT_TEST_CLIPBOARD_IMAGE", &png_path);
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
         "responses": [{ "text": "image stash reply", "delayMs": 10 }],
     });
     let script_path = dir.path().join("script.json");
+    let daemon = spawn_daemon(dir.path(), &script);
     let first = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -3856,7 +2964,7 @@ async fn tui_prompt_stash_restores_a_pasted_image_with_the_draft() {
     )
     .await;
     let second = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -3869,7 +2977,7 @@ async fn tui_prompt_stash_restores_a_pasted_image_with_the_draft() {
         provider_auth: None,
         traces: None,
         update_commands: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path.clone()),
@@ -3949,7 +3057,7 @@ async fn tui_prompt_stash_restores_a_pasted_image_with_the_draft() {
         !persisted_with_image.is_empty(),
         "the submitted restored draft attached the pasted image: no session file carries image content"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// TS `handlePromptStash` — `app.prompt.stash` on its DEFAULT key (ctrl+s):
@@ -3966,14 +3074,14 @@ async fn tui_ctrl_s_stashes_and_restores_the_prompt_draft() {
     let png_path = dir.path().join("fixture.png");
     std::fs::write(&png_path, MINIMAL_PNG).expect("write fixture image");
     std::env::set_var("PRIME_AGENT_TEST_CLIPBOARD_IMAGE", &png_path);
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
         "responses": [{ "text": "ctrl s stash reply", "delayMs": 10 }],
     });
     let script_path = dir.path().join("script.json");
+    let daemon = spawn_daemon(dir.path(), &script);
     let session = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -3986,7 +3094,7 @@ async fn tui_ctrl_s_stashes_and_restores_the_prompt_draft() {
         provider_auth: None,
         traces: None,
         update_commands: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path.clone()),
@@ -4075,9 +3183,9 @@ async fn tui_ctrl_s_stashes_and_restores_the_prompt_draft() {
     );
 
     // Daemon-side: exactly the restored draft's turn ran, and its image bytes persisted.
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let last = client
         .request_ok(DaemonCommand::GetLastAssistantText {
             id: None,
@@ -4099,7 +3207,7 @@ async fn tui_ctrl_s_stashes_and_restores_the_prompt_draft() {
         persisted_with_image,
         "the restored draft attached the stashed image bytes on submit"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// TS `handlePromptStash`'s two status guards: the key on an empty editor
@@ -4117,14 +3225,14 @@ async fn tui_ctrl_s_stash_keeps_a_held_draft_and_reports_the_empty_editor() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
         "responses": [{ "text": "guard stash reply", "delayMs": 10 }],
     });
     let script_path = dir.path().join("script.json");
+    let daemon = spawn_daemon(dir.path(), &script);
     let session = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -4137,7 +3245,7 @@ async fn tui_ctrl_s_stash_keeps_a_held_draft_and_reports_the_empty_editor() {
         provider_auth: None,
         traces: None,
         update_commands: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path.clone()),
@@ -4227,9 +3335,9 @@ async fn tui_ctrl_s_stash_keeps_a_held_draft_and_reports_the_empty_editor() {
         "the admitted send restored the held draft into the editor"
     );
 
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let last = client
         .request_ok(DaemonCommand::GetLastAssistantText {
             id: None,
@@ -4243,7 +3351,7 @@ async fn tui_ctrl_s_stash_keeps_a_held_draft_and_reports_the_empty_editor() {
         "the fresh draft submitted while the stash held the first one"
     );
     client.close();
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// `app.prompt.stash` is remappable: a user binding replaces the default outright.
@@ -4261,14 +3369,14 @@ async fn tui_ctrl_s_stash_is_remappable_via_keybindings_json() {
         r#"{ "app.prompt.stash": "f3" }"#,
     )
     .expect("write keybindings.json");
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
         "responses": [{ "text": "remap stash reply", "delayMs": 10 }],
     });
     let script_path = dir.path().join("script.json");
+    let daemon = spawn_daemon(dir.path(), &script);
     let session = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -4281,7 +3389,7 @@ async fn tui_ctrl_s_stash_is_remappable_via_keybindings_json() {
         provider_auth: None,
         traces: None,
         update_commands: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path.clone()),
@@ -4369,9 +3477,9 @@ async fn tui_ctrl_s_stash_is_remappable_via_keybindings_json() {
         "the restored draft returned to the editor"
     );
 
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let last = client
         .request_ok(DaemonCommand::GetLastAssistantText {
             id: None,
@@ -4385,7 +3493,7 @@ async fn tui_ctrl_s_stash_is_remappable_via_keybindings_json() {
         "the restored draft submitted after the remap"
     );
     client.close();
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// Ctrl+s during a queue browse (Bugbot 79739005): the browse parks the real
@@ -4401,7 +3509,6 @@ async fn tui_ctrl_s_during_queue_browse_stashes_the_draft_and_keeps_the_parked_m
     std::fs::create_dir_all(&session_dir).expect("session dir");
     // The first turn holds for 8s: the whole queue dance runs inside the
     // busy window, deterministically.
-    let supervisor = spawn_supervisor(dir.path());
     let script = serde_json::json!({
         "engine": "faux",
         "responses": [
@@ -4412,8 +3519,9 @@ async fn tui_ctrl_s_during_queue_browse_stashes_the_draft_and_keeps_the_parked_m
         ],
     });
     let script_path = dir.path().join("script.json");
+    let daemon = spawn_daemon(dir.path(), &script);
     let session = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -4426,7 +3534,7 @@ async fn tui_ctrl_s_during_queue_browse_stashes_the_draft_and_keeps_the_parked_m
         provider_auth: None,
         traces: None,
         update_commands: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path.clone()),
@@ -4546,9 +3654,9 @@ async fn tui_ctrl_s_during_queue_browse_stashes_the_draft_and_keeps_the_parked_m
             .any(|frame| frame.contains("f24 browse draft")),
         "the restored draft is the pre-browse draft, not the parked text"
     );
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
+    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let last = client
         .request_ok(DaemonCommand::GetLastAssistantText {
             id: None,
@@ -4562,7 +3670,7 @@ async fn tui_ctrl_s_during_queue_browse_stashes_the_draft_and_keeps_the_parked_m
         "the restored draft submitted after the browse round-trip"
     );
     client.close();
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// Declared chat-editor keybindings dispatch: ctrl+l opens the picker, and
@@ -4580,7 +3688,6 @@ async fn tui_dispatches_declared_editor_keybindings() {
         r#"{ "app.session.new": "ctrl+alt+n", "app.interrupt": "ctrl+alt+i" }"#,
     )
     .expect("write keybindings.json");
-    let supervisor = spawn_supervisor(dir.path());
     // The second response keeps the turn alive while the interrupt key lands.
     let script = serde_json::json!({
         "engine": "faux",
@@ -4596,7 +3703,8 @@ async fn tui_dispatches_declared_editor_keybindings() {
         ],
     });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
-    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let mut options = base_options(&daemon, dir.path(), &session_dir);
     // The exact load path the CLI uses: the fixture binds the two no-default-key actions.
     options.keybindings = pa_tui::keybindings::KeybindingsManager::create(&agent_dir);
     let key = |code: KeyCode, modifiers: KeyModifiers| {
@@ -4657,7 +3765,7 @@ async fn tui_dispatches_declared_editor_keybindings() {
         !last.contains("stale draft"),
         "the new session discarded the editor draft:\n{last}"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The empty `prompt`/`prompt_and_wait` payload: every optional field stays absent on the wire.
@@ -4691,7 +3799,7 @@ async fn create_idle_session_with_settled_turn(
     let session = create_session_via_daemon(socket, script_path, script, cwd, session_dir).await;
     let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     client
         .request_ok(DaemonCommand::PromptAndWait {
             id: None,
@@ -4715,13 +3823,13 @@ async fn tui_attach_to_idle_session_renders_without_input() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     let script = serde_json::json!({ "responses": [
         { "text": "idle session fixture reply" },
     ] });
+    let daemon = spawn_daemon(dir.path(), &script);
     let session = create_idle_session_with_settled_turn(
-        &supervisor.socket,
+        &daemon.socket,
         &dir.path().join("script.json"),
         &script,
         dir.path(),
@@ -4730,7 +3838,7 @@ async fn tui_attach_to_idle_session_renders_without_input() {
     )
     .await;
 
-    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    let mut options = base_options(&daemon, dir.path(), &session_dir);
     options.session = pa_tui::interactive::SessionSelection::Attach(session.clone());
     let plan = pa_tui::interactive::HeadlessPlan {
         steps: vec![pa_tui::interactive::HeadlessStep::WaitMs(1_500)],
@@ -4757,209 +3865,7 @@ async fn tui_attach_to_idle_session_renders_without_input() {
         outcome.active_session_id, session,
         "the run attached to the idle session by id"
     );
-    drop(supervisor);
-}
-
-/// The Anthropic subscription ban-risk warning's detection text: the fake
-/// auth resolves it for the e2e (the product text the login-completed arm
-/// draws is the `ANTHROPIC_SUBSCRIPTION_AUTH_WARNING` constant; the two
-/// stay distinguishable).
-const E2E_SUBSCRIPTION_WARNING: &str = "E2E anthropic subscription ban-risk warning";
-
-/// The e2e's fake auth surface: the credential-detection arm resolves a
-/// subscription warning (the product's `getAnthropicSubscriptionAuthWarning`
-/// seam — a stored OAuth credential answers the warning text).
-struct E2ESubscriptionAuth;
-
-impl pa_tui::provider_auth::ProviderAuthCommands for E2ESubscriptionAuth {
-    fn login_options(&self) -> pa_tui::provider_auth::ProviderRowsFuture {
-        Box::pin(async move { Vec::new() })
-    }
-
-    fn logout_options(&self) -> pa_tui::provider_auth::ProviderRowsFuture {
-        Box::pin(async move { Vec::new() })
-    }
-
-    fn login(
-        &self,
-        _provider: &pa_tui::provider_auth::ProviderRow,
-        _api_key: Option<&str>,
-        _target: &pa_tui::provider_auth::LoginTarget,
-    ) -> pa_tui::provider_auth::ProviderAuthFuture {
-        Box::pin(async move { pa_tui::provider_auth::ProviderAuthOutcome::Cancelled })
-    }
-
-    fn login_on_panel(
-        &self,
-        _provider: &pa_tui::provider_auth::ProviderRow,
-        _panel: pa_tui::auth_panel::AuthPanelHandle,
-        _target: &pa_tui::provider_auth::LoginTarget,
-    ) -> pa_tui::provider_auth::ProviderAuthFuture {
-        Box::pin(async move { pa_tui::provider_auth::ProviderAuthOutcome::Cancelled })
-    }
-
-    fn logout(
-        &self,
-        _provider: &pa_tui::provider_auth::ProviderRow,
-    ) -> pa_tui::provider_auth::ProviderAuthFuture {
-        Box::pin(async move { pa_tui::provider_auth::ProviderAuthOutcome::Cancelled })
-    }
-
-    fn anthropic_subscription_warning(&self) -> pa_tui::provider_auth::ProviderWarningFuture {
-        Box::pin(async move { Some(E2E_SUBSCRIPTION_WARNING) })
-    }
-}
-
-/// The interactive options for a session on an Anthropic model with the
-/// fake subscription credential surface (the detection arm's two inputs).
-fn subscription_options(
-    supervisor: &Supervisor,
-    dir: &Path,
-    session_dir: &Path,
-    session: pa_tui::interactive::SessionSelection,
-) -> pa_tui::interactive::InteractiveOptions {
-    let mut options = base_options(supervisor, dir, session_dir);
-    options.model_selection = pa_tui::interactive::ModelSelection {
-        provider: Some("anthropic".to_string()),
-        model: Some("claude-test".to_string()),
-        api_key: None,
-        credential: None,
-        profile: None,
-        thinking: None,
-    };
-    options.provider_auth = Some(pa_tui::provider_auth::ProviderAuthCommandsHandle(
-        std::sync::Arc::new(E2ESubscriptionAuth),
-    ));
-    options.session = session;
-    options
-}
-
-/// The Anthropic subscription warning fires once per session LIFECYCLE,
-/// not on every open (operator directive 2026-09-29): a new session on an
-/// Anthropic subscription credential draws the ban-risk warning once and
-/// marks the session's persisted gate with the daemon — the marker row is
-/// durable in the session file and `get_state` serves it — and a FRESH
-/// TUI process attaching to that session draws NO warning: the reattach
-/// reads the gate. This is the end-to-end composition of the client gate
-/// and the daemon's marker (the supervisor routes the new
-/// `mark_anthropic_warning_shown` frame to the worker).
-#[tokio::test]
-async fn tui_anthropic_warning_warns_once_then_a_fresh_process_reattaches_silently() {
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let agent_dir = dir.path().join("agent");
-    let session_dir = agent_dir.join("sessions");
-    std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
-
-    // The scripted model fixture (the harness's opt-in `model` knob): the
-    // session reports an Anthropic model, so the startup detection arm's
-    // provider gate passes and the fake credential resolves the warning.
-    let script = serde_json::json!({
-        "responses": [],
-        "model": { "id": "claude-test", "provider": "anthropic", "reasoning": false },
-    });
-    std::fs::write(
-        dir.path().join("script.json"),
-        serde_json::to_string(&script).expect("script json"),
-    )
-    .expect("script.json");
-
-    // Run one: the fresh session warns once and marks the gate.
-    let options = subscription_options(
-        &supervisor,
-        dir.path(),
-        &session_dir,
-        pa_tui::interactive::SessionSelection::New,
-    );
-    let plan = pa_tui::interactive::HeadlessPlan {
-        // The exit gate holds the run until the fire-and-forget mark's
-        // write resolves (the worker persists the marker row before its
-        // ack), so the durable-row assertions below read completed state —
-        // no timing window guards them.
-        steps: vec![pa_tui::interactive::HeadlessStep::WaitRender {
-            needle: E2E_SUBSCRIPTION_WARNING.to_string(),
-            timeout_ms: 15_000,
-        }],
-        width: 100,
-        height: 30,
-    };
-    let outcome = run_headless_bounded(options, plan)
-        .await
-        .expect("interactive run one");
-    let rendered = outcome.frames.join("\n");
-    assert!(
-        rendered.contains(E2E_SUBSCRIPTION_WARNING),
-        "the new session drew the ban-risk warning:\n{rendered}"
-    );
-    let session = outcome.active_session_id.clone();
-
-    // The gate is durable: the marker row landed in the session file, and
-    // the daemon's `get_state` serves it open.
-    let file = session_dir.join(format!("{}.jsonl", outcome.session_id));
-    let persisted = support::session_texts(&session_dir)
-        .into_iter()
-        .find(|(locator, _)| locator.file_name() == file.file_name())
-        .map_or_else(
-            || panic!("the session file {} is not saved", file.display()),
-            |(_, text)| text,
-        );
-    assert!(
-        persisted.contains("anthropic_subscription_warning_shown"),
-        "the marker row reached the session file:\n{persisted}"
-    );
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
-        .await
-        .expect("connect supervisor");
-    let state = client
-        .request_ok(DaemonCommand::GetState {
-            id: None,
-            active_session_id: session.clone(),
-            rest: serde_json::Map::default(),
-        })
-        .await
-        .expect("get_state");
-    client.close();
-    assert_eq!(
-        state.get("anthropicWarningShown"),
-        Some(&serde_json::json!(true)),
-        "the daemon serves the open gate: {state}"
-    );
-
-    // Run two: a FRESH TUI process attaches to the same session — the
-    // gate holds, no warning renders anywhere in the run.
-    let options = subscription_options(
-        &supervisor,
-        dir.path(),
-        &session_dir,
-        pa_tui::interactive::SessionSelection::Attach(session.clone()),
-    );
-    let plan = pa_tui::interactive::HeadlessPlan {
-        // The detection arm is awaited at open, so the first dock frame
-        // proves its decision baked in — the reattach's negative reads
-        // completed state, not a timing window (a late warning cannot
-        // miss the window: the open either warned or skipped before the
-        // frame painted).
-        steps: vec![pa_tui::interactive::HeadlessStep::WaitRender {
-            needle: "subagents".to_string(),
-            timeout_ms: 15_000,
-        }],
-        width: 100,
-        height: 30,
-    };
-    let outcome = run_headless_bounded(options, plan)
-        .await
-        .expect("interactive run two");
-    let rendered = outcome.frames.join("\n");
-    assert!(
-        !rendered.contains(E2E_SUBSCRIPTION_WARNING),
-        "the reattaching process did not re-render the warning:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("Anthropic subscription auth is active"),
-        "neither arm re-warned on the reattach:\n{rendered}"
-    );
-    assert_eq!(outcome.active_session_id, session, "run two attached by id");
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The idle-session event repaint regression: a daemon event that lands on
@@ -4974,13 +3880,13 @@ async fn tui_idle_session_event_repaints_without_input() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     let script = serde_json::json!({ "responses": [
         { "text": "idle rename fixture reply" },
     ] });
+    let daemon = spawn_daemon(dir.path(), &script);
     let session = create_idle_session_with_settled_turn(
-        &supervisor.socket,
+        &daemon.socket,
         &dir.path().join("script.json"),
         &script,
         dir.path(),
@@ -4989,9 +3895,9 @@ async fn tui_idle_session_event_repaints_without_input() {
     )
     .await;
 
-    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    let mut options = base_options(&daemon, dir.path(), &session_dir);
     options.session = pa_tui::interactive::SessionSelection::Attach(session.clone());
-    let socket = supervisor.socket.clone();
+    let socket = daemon.socket.clone();
     let run = tokio::spawn(async move {
         let plan = pa_tui::interactive::HeadlessPlan {
             steps: vec![pa_tui::interactive::HeadlessStep::WaitMs(4_000)],
@@ -5007,7 +3913,7 @@ async fn tui_idle_session_event_repaints_without_input() {
     tokio::time::sleep(std::time::Duration::from_millis(750)).await;
     let (renamer, _events) = pa_tui::daemon_client::DaemonClient::connect(&socket)
         .await
-        .expect("connect supervisor for the rename");
+        .expect("connect daemon for the rename");
     renamer
         .request_ok(DaemonCommand::Rename {
             id: None,
@@ -5026,7 +3932,7 @@ async fn tui_idle_session_event_repaints_without_input() {
         rendered.contains("renamed-while-attached"),
         "the session_info_changed rename repainted the idle pane without any input:\n{rendered}"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The bare-launch safety regression (the P6 continue-recent trap): a plain
@@ -5038,7 +3944,6 @@ async fn tui_bare_launch_opens_a_fresh_session_when_a_newer_saved_one_exists_for
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // A saved session a blind continue-recent would pick: valid header,
     // poisoned exchange. Its bytes must stay as written — a resume would append.
@@ -5054,7 +3959,8 @@ async fn tui_bare_launch_opens_a_fresh_session_when_a_newer_saved_one_exists_for
         { "text": "fresh session reply" },
     ] });
     std::fs::write(dir.path().join("script.json"), script.to_string()).expect("write script");
-    let mut options = base_options(&supervisor, dir.path(), &session_dir);
+    let daemon = spawn_daemon(dir.path(), &script);
+    let mut options = base_options(&daemon, dir.path(), &session_dir);
     options.session = pa_tui::interactive::SessionSelection::New;
     let plan = pa_tui::interactive::HeadlessPlan {
         steps: vec![
@@ -5111,7 +4017,7 @@ async fn tui_bare_launch_opens_a_fresh_session_when_a_newer_saved_one_exists_for
         "the created file belongs to the opened session ({})",
         new_files[0].display()
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// The backgrounded submit keeps the WIRE in submit order: two back-to-back
@@ -5123,7 +4029,6 @@ async fn tui_two_back_to_back_submits_reach_the_daemon_in_order() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     let script = serde_json::json!({ "responses": [
         { "text": "first scripted reply", "delayMs": 20 },
@@ -5132,9 +4037,10 @@ async fn tui_two_back_to_back_submits_reach_the_daemon_in_order() {
     let script_path = dir.path().join("script.json");
     std::fs::write(&script_path, script.to_string()).expect("write script");
 
+    let daemon = spawn_daemon(dir.path(), &script);
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path),
@@ -5186,25 +4092,49 @@ async fn tui_two_back_to_back_submits_reach_the_daemon_in_order() {
         rendered.contains("first scripted reply"),
         "the first turn rendered:\n{rendered}"
     );
-    assert!(
-        rendered.contains("second scripted reply"),
-        "the queued second turn rendered:\n{rendered}"
-    );
-    // The daemon received the prompts in order: "first submit" before "second submit".
-    let mut first_index = None;
-    let mut second_index = None;
-    for (_path, content) in support::session_texts(&session_dir) {
-        first_index = first_index.or_else(|| content.find("first submit"));
-        second_index = second_index.or_else(|| content.find("second submit"));
-    }
-    let (Some(first_index), Some(second_index)) = (first_index, second_index) else {
-        panic!("the session file persisted both prompts:\n{rendered}");
+    // The daemon received the prompts in submit order, and the settled run
+    // answered the second. Enter submits a steer, and a steer is read at the
+    // turn's next steering point: one that lands before the first turn's
+    // opening read joins that turn (one reply answers both), a later one
+    // starts the scripted second reply. Either way the transcript's last
+    // message is a reply that follows both prompts.
+    let messages: Vec<(String, String)> = support::session_texts(&session_dir)
+        .iter()
+        .flat_map(|(_path, content)| content.lines().map(str::to_string).collect::<Vec<_>>())
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
+        .filter(|row| row["type"] == "message")
+        .map(|row| {
+            let message = &row["message"];
+            let text = match &message["content"] {
+                serde_json::Value::String(text) => text.clone(),
+                content => content
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|block| block["text"].as_str())
+                    .collect(),
+            };
+            (message["role"].as_str().unwrap_or_default().to_string(), text)
+        })
+        .collect();
+    let position = |text: &str| {
+        messages
+            .iter()
+            .position(|(role, said)| role == "user" && said == text)
+            .unwrap_or_else(|| panic!("the session persisted {text:?}: {messages:?}"))
     };
     assert!(
-        first_index < second_index,
-        "the daemon received the prompts in submit order"
+        position("first submit") < position("second submit"),
+        "the daemon received the prompts in submit order: {messages:?}"
     );
-    drop(supervisor);
+    let last = messages.last().expect("the session persisted its messages");
+    assert!(
+        last.0 == "assistant"
+            && ["first scripted reply", "second scripted reply"].contains(&last.1.as_str())
+            && rendered.contains(&last.1),
+        "the run settled with a rendered reply after both prompts: {messages:?}\n{rendered}"
+    );
+    drop(daemon);
 }
 
 /// A submit that outlived its session (the round trip straddled a `/switch`):
@@ -5216,30 +4146,32 @@ async fn tui_submit_outlived_by_switch_stays_silent_on_the_new_session() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // The reply lands after the switch completes (provably post-switch), so
-    // a stale-outcome leak would render it on the new session.
+    // a stale-outcome leak would render it on the new session. The daemon's
+    // one script answers each session from a queue of its own, so the
+    // sessions' places in it tell their replies apart: session a settles a
+    // turn first and answers its outlived submit with the second entry,
+    // while fresh session b answers with the first.
     let script = serde_json::json!({ "responses": [
+        { "text": "fresh session reply" },
         { "text": "a turn reply", "delayMs": 400 },
     ] });
     let script_path = dir.path().join("script.json");
-    let first = create_session_via_daemon(
-        &supervisor.socket,
+    let daemon = spawn_daemon(dir.path(), &script);
+    let first = create_idle_session_with_settled_turn(
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
         &session_dir,
+        "settle a",
     )
     .await;
-    let second_script = serde_json::json!({ "responses": [
-        { "text": "b turn reply" },
-    ] });
-    let second_script_path = dir.path().join("script-b.json");
     let second = create_session_via_daemon(
-        &supervisor.socket,
-        &second_script_path,
-        &second_script,
+        &daemon.socket,
+        &script_path,
+        &script,
         dir.path(),
         &session_dir,
     )
@@ -5247,7 +4179,7 @@ async fn tui_submit_outlived_by_switch_stays_silent_on_the_new_session() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path),
@@ -5301,9 +4233,10 @@ async fn tui_submit_outlived_by_switch_stays_silent_on_the_new_session() {
         outcome.active_session_id, second,
         "the run ended attached to the switched session"
     );
+    let last = outcome.frames.last().expect("a final frame");
     assert!(
-        rendered.contains("b turn reply"),
-        "the post-switch prompt ran on the new session:\n{rendered}"
+        last.contains("for b") && last.contains("fresh session reply"),
+        "the post-switch prompt ran on the new session:\n{last}"
     );
     assert!(
         !rendered.contains("a turn reply"),
@@ -5313,25 +4246,29 @@ async fn tui_submit_outlived_by_switch_stays_silent_on_the_new_session() {
         !rendered.contains("\u{26a0} Error"),
         "a stale succeeded submit stays silent:\n{rendered}"
     );
-    // The daemon still ran the outlived submit's turn (the prompt was never
-    // lost); the reply lands ~400ms in, so poll the session file.
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut ran = false;
-    while Instant::now() < deadline {
-        let mut content = String::new();
-        for (_path, text) in support::session_texts(&session_dir) {
-            content.push_str(&text);
-        }
-        if content.contains("for a") && content.contains("a turn reply") {
-            ran = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let transcript = |id: &str| {
+        support::session_texts(&session_dir)
+            .into_iter()
+            .find(|(path, _)| path.to_string_lossy().contains(id))
+            .map_or_else(String::new, |(_, text)| text)
+    };
+    let b = transcript(&second);
     assert!(
-        ran,
-        "the daemon ran the outlived submit's turn for the switched-away session"
+        b.contains("for b") && b.contains("fresh session reply") && !b.contains("for a"),
+        "the new session ran only its own prompt:\n{b}"
     );
+    // The daemon still ran the outlived submit's turn for the switched-away
+    // session (the prompt was never lost); its reply lands ~400ms in.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut a = transcript(&first);
+    while !(a.contains("for a") && a.contains("a turn reply")) {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon ran the outlived submit's turn for the switched-away session:\n{a}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        a = transcript(&first);
+    }
 }
 
 /// A headless run whose plan completes while the turn still settles: the
@@ -5343,7 +4280,6 @@ async fn tui_headless_done_with_a_turn_settling_parks_the_closed_input_channel()
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     // The reply lands well after the plan's only step, so `HeadlessDone` arrives mid-turn.
     let script = serde_json::json!({ "responses": [
@@ -5352,9 +4288,10 @@ async fn tui_headless_done_with_a_turn_settling_parks_the_closed_input_channel()
     let script_path = dir.path().join("script.json");
     std::fs::write(&script_path, script.to_string()).expect("write script");
 
+    let daemon = spawn_daemon(dir.path(), &script);
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path),
@@ -5414,7 +4351,7 @@ async fn tui_headless_done_with_a_turn_settling_parks_the_closed_input_channel()
         elapsed < Duration::from_secs(30),
         "the parked closed channel never hot-spins the loop: {elapsed:?}"
     );
-    drop(supervisor);
+    drop(daemon);
 }
 
 /// A refused submit restores the draft through the backgrounded outcome:
@@ -5426,14 +4363,14 @@ async fn tui_refused_submit_restores_the_draft_after_the_round_trip() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     let script = serde_json::json!({ "responses": [
         { "text": "never runs" },
     ] });
     let script_path = dir.path().join("script.json");
+    let daemon = spawn_daemon(dir.path(), &script);
     let session_id = create_session_via_daemon(
-        &supervisor.socket,
+        &daemon.socket,
         &script_path,
         &script,
         dir.path(),
@@ -5443,14 +4380,14 @@ async fn tui_refused_submit_restores_the_draft_after_the_round_trip() {
 
     // Kill the worker after the attach but before the submit: WaitMs(900)
     // holds the submit until long after the kill resolves — a refusal, not a turn.
-    let kill_socket = supervisor.socket.clone();
+    let kill_socket = daemon.socket.clone();
     let kill_session_dir = session_dir.clone();
     let kill_session_id = session_id.clone();
     let kill_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(400)).await;
         let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&kill_socket)
             .await
-            .expect("connect supervisor");
+            .expect("connect the daemon");
         client
             .request_ok(DaemonCommand::Kill {
                 id: None,
@@ -5476,7 +4413,7 @@ async fn tui_refused_submit_restores_the_draft_after_the_round_trip() {
 
     let options = pa_tui::interactive::InteractiveOptions {
         models: None,
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         script_path: Some(script_path),
@@ -5537,305 +4474,5 @@ async fn tui_refused_submit_restores_the_draft_after_the_round_trip() {
         !rendered.contains("never runs"),
         "the refused prompt never ran:\n{rendered}"
     );
-    drop(supervisor);
-}
-
-/// A prompt accepted before the worker is killed must surface the TS
-/// connection-closed error row, not a quiet status note. The killer waits
-/// for the worker's `isStreaming` state (an external admission condition),
-/// so I/O stalls cannot move a fixed submit/kill clock across the edge.
-#[tokio::test]
-async fn tui_accepted_then_killed_turn_renders_closed_error() {
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let session_dir = dir.path().join("agent/sessions");
-    std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
-    let script = serde_json::json!({ "responses": [
-        { "text": "reply must not arrive", "delayMs": 60_000 },
-    ] });
-    let script_path = dir.path().join("script.json");
-    let session_id = create_session_via_daemon(
-        &supervisor.socket,
-        &script_path,
-        &script,
-        dir.path(),
-        &session_dir,
-    )
-    .await;
-    let kill_socket = supervisor.socket.clone();
-    let kill_session_id = session_id.clone();
-    let kill_task = tokio::spawn(async move {
-        let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&kill_socket)
-            .await
-            .expect("connect supervisor for kill");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let state = client
-                .request_ok(DaemonCommand::GetConnectionState {
-                    id: None,
-                    active_session_id: kill_session_id.clone(),
-                    rest: serde_json::Map::default(),
-                })
-                .await
-                .expect("get worker connection state");
-            if state["isStreaming"] == true {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "worker never began the accepted turn: {state}"
-            );
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        client
-            .request_ok(DaemonCommand::Kill {
-                id: None,
-                active_session_id: kill_session_id,
-                rest: serde_json::Map::default(),
-            })
-            .await
-            .expect("kill admitted session");
-        client.close();
-    });
-    let options = pa_tui::interactive::InteractiveOptions {
-        models: None,
-        socket_path: supervisor.socket.clone(),
-        cwd: dir.path().to_path_buf(),
-        session_dir: Some(session_dir),
-        script_path: Some(script_path),
-        model_selection: pa_tui::interactive::ModelSelection::default(),
-        model_catalog: Vec::new(),
-        model_configured_providers: std::collections::HashSet::default(),
-        model_recent_models: Vec::new(),
-        default_thinking_level: None,
-        no_session: false,
-        session: pa_tui::interactive::SessionSelection::Attach(session_id),
-        show_images: true,
-        fullscreen_mouse: true,
-        initial_message: None,
-        theme: "prime".to_string(),
-        code_block_indent: "  ".to_string(),
-        tree_filter_mode: String::new(),
-        branch_summary_skip_prompt: false,
-        version: "0.0.0".to_string(),
-        onboarding: None,
-        telemetry_disabled: None,
-        client_auth: None,
-        traces: None,
-        provider_auth: None,
-        update_commands: None,
-        telemetry: None,
-        keybindings: pa_tui::keybindings::KeybindingsManager::new(),
-        session_rlm_depth: None,
-        prompt_stash: std::sync::Arc::default(),
-        session_has_children: false,
-        restore_dock_focus: false,
-        client_settings: None,
-    };
-    let error_row = "⚠ Error: The daemon stopped this agent session. Its transcript remains saved and can be reopened from Agents View.";
-    let plan = pa_tui::interactive::HeadlessPlan {
-        steps: vec![
-            pa_tui::interactive::HeadlessStep::Submit("held accepted prompt".to_string()),
-            // The cancellation status is a later, replaceable note. Require
-            // it first so the error assertion covers the end state after
-            // the status that used to overwrite `session closed (killed)`.
-            pa_tui::interactive::HeadlessStep::WaitRender {
-                needle: "turn failed: prompt cancelled".to_string(),
-                timeout_ms: 30_000,
-            },
-            pa_tui::interactive::HeadlessStep::WaitRender {
-                needle: error_row.to_string(),
-                timeout_ms: 30_000,
-            },
-        ],
-        width: 180,
-        height: 30,
-    };
-    let outcome = run_headless_bounded(options, plan)
-        .await
-        .expect("interactive run");
-    kill_task.await.expect("the kill task");
-    let rendered = outcome.frames.join("\n");
-    assert!(
-        rendered.contains(error_row),
-        "killed turn had {} frames without the TS error row; old_info={}; final={}",
-        outcome.frames.len(),
-        rendered.contains("session closed (killed)"),
-        outcome.frames.last().expect("final frame")
-    );
-    assert!(
-        !rendered.contains("reply must not arrive"),
-        "held response leaked:\n{rendered}"
-    );
-    let last = outcome.frames.last().expect("final frame");
-    assert!(
-        last.contains("turn failed: prompt cancelled"),
-        "the post-close cancellation must reach the frame:\n{last}"
-    );
-    assert!(
-        last.contains(error_row),
-        "close error row must persist after cancellation:\n{last}"
-    );
-    assert!(
-        !last.contains("session closed (killed)"),
-        "info downgrade remains:\n{last}"
-    );
-    drop(supervisor);
-}
-
-/// Both terminal close reasons remain visible after a later, replaceable turn status.
-#[tokio::test]
-async fn tui_close_reason_rows_survive_late_turn_status() {
-    for (reason, explanation) in [
-        ("shutdown", "The Prime Agent daemon shut down while this window was attached. The session transcript remains saved; restart Prime Agent and reopen it from Agents View."),
-        ("replaced", "The daemon replaced this agent session with another session. Reopen the current session from Agents View."),
-    ] {
-        assert_close_reason_survives_late_turn_status(reason, explanation).await;
-    }
-}
-
-async fn assert_close_reason_survives_late_turn_status(reason: &str, explanation: &str) {
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let session_dir = dir.path().join("agent/sessions");
-    std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
-    let script = serde_json::json!({ "responses": [
-        { "text": "reply must not arrive", "delayMs": 60_000 },
-    ] });
-    let script_path = dir.path().join("script.json");
-    let session_id = create_session_via_daemon(
-        &supervisor.socket,
-        &script_path,
-        &script,
-        dir.path(),
-        &session_dir,
-    )
-    .await;
-    let kill_socket = supervisor.socket.clone();
-    let reason_owned = reason.to_string();
-    let kill_session_id = session_id.clone();
-    let kill_task = tokio::spawn(async move {
-        let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&kill_socket)
-            .await
-            .expect("connect supervisor for kill");
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let state = client
-                .request_ok(DaemonCommand::GetConnectionState {
-                    id: None,
-                    active_session_id: kill_session_id.clone(),
-                    rest: serde_json::Map::default(),
-                })
-                .await
-                .expect("get worker connection state");
-            if state["isStreaming"] == true {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "worker never began the accepted turn: {state}"
-            );
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        client
-            .request_ok(DaemonCommand::Kill {
-                id: None,
-                active_session_id: kill_session_id,
-                rest: serde_json::Map::from_iter([(
-                    "rlmCloseReason".to_string(),
-                    serde_json::Value::String(reason_owned),
-                )]),
-            })
-            .await
-            .expect("kill admitted session");
-        client.close();
-    });
-    let options = pa_tui::interactive::InteractiveOptions {
-        models: None,
-        socket_path: supervisor.socket.clone(),
-        cwd: dir.path().to_path_buf(),
-        session_dir: Some(session_dir),
-        script_path: Some(script_path),
-        model_selection: pa_tui::interactive::ModelSelection::default(),
-        model_catalog: Vec::new(),
-        model_configured_providers: std::collections::HashSet::default(),
-        model_recent_models: Vec::new(),
-        default_thinking_level: None,
-        no_session: false,
-        session: pa_tui::interactive::SessionSelection::Attach(session_id),
-        show_images: true,
-        fullscreen_mouse: true,
-        initial_message: None,
-        theme: "prime".to_string(),
-        code_block_indent: "  ".to_string(),
-        tree_filter_mode: String::new(),
-        branch_summary_skip_prompt: false,
-        version: "0.0.0".to_string(),
-        onboarding: None,
-        telemetry_disabled: None,
-        client_auth: None,
-        traces: None,
-        provider_auth: None,
-        update_commands: None,
-        telemetry: None,
-        keybindings: pa_tui::keybindings::KeybindingsManager::new(),
-        session_rlm_depth: None,
-        prompt_stash: std::sync::Arc::default(),
-        session_has_children: false,
-        restore_dock_focus: false,
-        client_settings: None,
-    };
-    let error_row = format!("⚠ Error: {explanation}");
-    let plan = pa_tui::interactive::HeadlessPlan {
-        steps: vec![
-            pa_tui::interactive::HeadlessStep::Submit("held accepted prompt".to_string()),
-            // The cancellation status is a later, replaceable note. Require
-            // it first so the error assertion covers the end state after
-            // the status that used to overwrite `session closed (killed)`.
-            pa_tui::interactive::HeadlessStep::WaitRender {
-                needle: "turn failed: prompt cancelled".to_string(),
-                timeout_ms: 30_000,
-            },
-            pa_tui::interactive::HeadlessStep::WaitRender {
-                needle: error_row.clone(),
-                timeout_ms: 30_000,
-            },
-        ],
-        width: 180,
-        height: 30,
-    };
-    let outcome = run_headless_bounded(options, plan)
-        .await
-        .expect("interactive run");
-    kill_task.await.expect("the kill task");
-    let rendered = outcome.frames.join("\n");
-    assert!(
-        rendered.contains(&error_row),
-        "{reason} turn had {} frames without the TS error row; old_info={}; final={}",
-        outcome.frames.len(),
-        rendered.contains(&format!("session closed ({reason})")),
-        outcome.frames.last().expect("final frame")
-    );
-    assert!(
-        !rendered.contains("reply must not arrive"),
-        "held response leaked:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("timed out waiting for the headless render condition"),
-        "the close/cancellation render barrier must complete:\n{rendered}"
-    );
-    // Verify coexistence after the cancellation status in one observed frame.
-    // A later successful reconnect may resync the transcript again.
-    let checkpoint = outcome
-        .frames
-        .iter()
-        .find(|frame| frame.contains("turn failed: prompt cancelled") && frame.contains(&error_row))
-        .unwrap_or_else(|| {
-            panic!("the close error and cancellation must share a frame:\n{rendered}")
-        });
-    assert!(
-        !checkpoint.contains(&format!("session closed ({reason})")),
-        "info downgrade remains:\n{checkpoint}"
-    );
-    drop(supervisor);
+    drop(daemon);
 }
