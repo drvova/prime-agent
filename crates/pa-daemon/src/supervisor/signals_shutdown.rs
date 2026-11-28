@@ -29,12 +29,13 @@ impl Supervisor {
     /// shutdown's escalation, a second signal). An intent that cannot be written is logged; the
     /// exit status of a stop that completes says the same thing.
     pub(super) fn note_deliberate_stop(&self) {
-        if crate::keeper::keeper_pid().is_none() {
+        if pa_runtime::daemon::keeper::keeper_pid().is_none() {
             return;
         }
-        if let Err(error) =
-            crate::keeper::record_stop_intent(&self.options.agent_dir, &self.options.socket_path)
-        {
+        if let Err(error) = pa_runtime::daemon::keeper::record_stop_intent(
+            &self.options.agent_dir,
+            &self.options.socket_path,
+        ) {
             self.log_line(&format!(
                 "the stop intent for the restart owner could not be recorded: {error:#}"
             ));

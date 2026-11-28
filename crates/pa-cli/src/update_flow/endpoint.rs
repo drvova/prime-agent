@@ -64,8 +64,8 @@ impl Endpoint {
             },
             Endpoint::Runtime { .. } => Endpoint::Supervisor(daemon_socket.to_path_buf()),
         };
-        if pa_daemon::socket::can_connect(selected.socket(), ANSWER_PROBE).await
-            || !pa_daemon::socket::can_connect(other.socket(), ANSWER_PROBE).await
+        if pa_core::platform::daemon_socket::can_connect(selected.socket(), ANSWER_PROBE).await
+            || !pa_core::platform::daemon_socket::can_connect(other.socket(), ANSWER_PROBE).await
         {
             selected
         } else {

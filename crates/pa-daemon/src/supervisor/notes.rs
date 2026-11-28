@@ -195,10 +195,12 @@ impl Supervisor {
             None => default_dir.clone(),
         };
         if requested != default_dir {
-            let log = paths::RotatingLog::new(paths::daemon_log_path(
-                &self.options.socket_path,
-                &self.options.agent_dir,
-            ));
+            let log = pa_core::platform::daemon_endpoint::RotatingLog::new(
+                pa_core::platform::daemon_endpoint::daemon_log_path(
+                    &self.options.socket_path,
+                    &self.options.agent_dir,
+                ),
+            );
             return Ok(std::sync::Arc::new(
                 pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
                     &self.options.agent_dir,
@@ -214,10 +216,12 @@ impl Supervisor {
         if let Some(ledger) = cached.as_ref() {
             return Ok(std::sync::Arc::clone(ledger));
         }
-        let log = paths::RotatingLog::new(paths::daemon_log_path(
-            &self.options.socket_path,
-            &self.options.agent_dir,
-        ));
+        let log = pa_core::platform::daemon_endpoint::RotatingLog::new(
+            pa_core::platform::daemon_endpoint::daemon_log_path(
+                &self.options.socket_path,
+                &self.options.agent_dir,
+            ),
+        );
         let ledger = std::sync::Arc::new(
             pa_core::session_engine::rlm_ledger::RlmSpawnLedger::new(
                 &self.options.agent_dir,

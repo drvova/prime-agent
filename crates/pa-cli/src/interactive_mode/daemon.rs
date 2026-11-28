@@ -128,14 +128,14 @@ pub async fn ensure_runtime_daemon_running(
     // Off the launch path: nothing here waits for it.
     tokio::spawn(retire_idle_supervisor(daemon_socket.to_path_buf()));
     let probe = Duration::from_millis(250);
-    if pa_daemon::socket::can_connect(&socket, probe).await {
+    if pa_core::platform::daemon_socket::can_connect(&socket, probe).await {
         return Ok(socket);
     }
     let exe = std::env::current_exe().context("resolve the prime-agent executable")?;
     spawn_daemon_detached(daemon_socket, spawn_cwd, &exe, DaemonKind::Runtime)?;
     let deadline = Instant::now() + Duration::from_millis(DAEMON_STARTUP_TIMEOUT_MS);
     loop {
-        if pa_daemon::socket::can_connect(&socket, probe).await {
+        if pa_core::platform::daemon_socket::can_connect(&socket, probe).await {
             return Ok(socket);
         }
         if Instant::now() > deadline {
@@ -244,7 +244,9 @@ async fn shutdown_stale_daemon(
 async fn wait_for_socket_gone(socket_path: &Path) -> bool {
     let deadline = Instant::now() + Duration::from_millis(DAEMON_SHUTDOWN_WAIT_MS);
     while Instant::now() < deadline {
-        if !pa_daemon::socket::can_connect(socket_path, Duration::from_millis(250)).await {
+        if !pa_core::platform::daemon_socket::can_connect(socket_path, Duration::from_millis(250))
+            .await
+        {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -306,7 +308,7 @@ fn spawn_daemon_detached(
     // signals and reads the daemon's terminating signal, neither of which exists on Windows,
     // where the daemon is started unkept as before.
     #[cfg(unix)]
-    command.env(pa_daemon::keeper::KEEPER_ENV, "1");
+    command.env(pa_runtime::daemon::keeper::KEEPER_ENV, "1");
     // The binary entry strips any inherited worker handshake env, so the
     // spawned supervisor never starts in worker mode. A daemon must also not
     // share the launching TUI's terminal session: a session-wide terminal

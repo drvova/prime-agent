@@ -14,8 +14,8 @@
 
 mod support;
 
-use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
+use support::UnixListener;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

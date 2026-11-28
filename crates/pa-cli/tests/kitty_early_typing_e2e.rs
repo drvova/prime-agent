@@ -13,7 +13,10 @@
 //! ~250ms settle.
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
+#[path = "support/mock_runtime.rs"]
+mod mock_runtime;
+
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -24,6 +27,7 @@ use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
 
+use mock_runtime::MockRuntime;
 use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
 };
@@ -46,12 +50,13 @@ const EARLY_KEY_BOUND: Duration = Duration::from_millis(150);
 const CHILD_SOCKET_ENV: &str = "PA_EARLY_TYPING_CHILD_SOCKET";
 
 /// The child half of the e2e: runs the real chat surface against the harness's
-/// mock supervisor (a plain `cargo test` run passes trivially).
+/// mock runtime (a plain `cargo test` run passes trivially).
 #[test]
 fn early_typing_child_mode() {
     let Ok(socket) = std::env::var(CHILD_SOCKET_ENV) else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = child_options(PathBuf::from(socket));
     // A current-thread runtime keeps the child's thread count down.
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -166,11 +171,11 @@ fn a_kitty_terminal_upgrades_and_a_da1_terminal_settles_without_flags() {
     da1.finish();
 }
 
-/// One pty-backed product child plus its mock supervisor, with a
+/// One pty-backed product child plus its mock runtime, with a
 /// chunk-accurate timing ledger over the raw byte stream.
 struct EarlyTypingHarness {
     child: Child,
-    /// The mock-supervisor server thread's join handle (exits with the child's connection).
+    /// The mock-runtime server thread's join handle (exits with the child's connection).
     _server: std::thread::JoinHandle<()>,
     master: LedgerReader,
     /// The socket's temp dir, declared last so it drops after the child is
@@ -182,8 +187,9 @@ impl EarlyTypingHarness {
     fn start() -> EarlyTypingHarness {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let socket = dir.path().join("tui.sock");
-        let supervisor = MockSupervisor::bind(&socket);
-        let server = std::thread::spawn(move || supervisor.serve());
+        let mock = MockRuntime::bind(&socket);
+        let server =
+            std::thread::spawn(move || mock.serve_all(mock_runtime::session(attach_data())));
 
         let pty = openpty(
             Some(&Winsize {
@@ -458,104 +464,7 @@ fn child_options(socket: PathBuf) -> InteractiveOptions {
     }
 }
 
-/// One attached session behind a mock supervisor socket (the family's frame contract).
-struct MockSupervisor {
-    listener: std::os::unix::net::UnixListener,
-}
-
-impl MockSupervisor {
-    fn bind(socket: &std::path::Path) -> Self {
-        MockSupervisor {
-            listener: std::os::unix::net::UnixListener::bind(socket).expect("bind mock socket"),
-        }
-    }
-
-    /// One listener, every connection served in turn.
-    fn serve(self) {
-        for stream in self.listener.incoming() {
-            match stream {
-                Ok(stream) => Self::serve_connection(stream),
-                Err(_) => return,
-            }
-        }
-    }
-
-    fn serve_connection(stream: std::os::unix::net::UnixStream) {
-        let write_stream = stream.try_clone().expect("clone mock socket");
-        let mut writer = write_stream;
-        let mut reader = std::io::BufReader::new(stream);
-        write_json(
-            &mut writer,
-            &json!({
-                "type": "daemon_hello",
-                "protocol": { "name": "prime-agent.daemon", "version": 7 },
-                "serverCapabilities": [],
-                "clientId": "mock",
-            }),
-        );
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let Ok(envelope) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            let id = envelope.get("id").and_then(Value::as_str).unwrap_or("");
-            let command = envelope.get("command").cloned().unwrap_or(Value::Null);
-            let command_type = command
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            match command_type.as_str() {
-                "create" => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "create",
-                            "success": true,
-                            "data": {
-                                "activeSessionId": "s1",
-                                "id": "s1",
-                                "sessionId": "sess-1",
-                                "sessionFile": "/tmp/sess-1.jsonl",
-                            },
-                        }),
-                    );
-                }
-                "attach" => {
-                    write_json(&mut writer, &attach_data(id));
-                }
-                _ => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": command_type,
-                            "success": true,
-                            "data": {},
-                        }),
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn write_json(writer: &mut std::os::unix::net::UnixStream, value: &Value) {
-    let mut line = serde_json::to_string(value).expect("serialize mock frame");
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("write mock frame");
-    writer.flush().expect("flush mock frame");
-}
-
-fn attach_data(id: &str) -> Value {
+fn attach_data() -> Value {
     let messages: Vec<Value> = (0..4)
         .map(|index| {
             json!({
@@ -564,36 +473,7 @@ fn attach_data(id: &str) -> Value {
             })
         })
         .collect();
-    json!({
-        "type": "response",
-        "id": id,
-        "command": "attach",
-        "success": true,
-        "data": {
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "activeSessionId": "s1",
-            "snapshot": {
-                "activeSessionId": "s1",
-                "summary": { "id": "s1", "cwd": "/tmp" },
-                "state": {
-                    "activeSessionId": "s1",
-                    "cwd": "/tmp",
-                    "sessionId": "sess-1",
-                    "sessionName": "kitty early typing",
-                    "model": null,
-                    "isStreaming": false,
-                    "isCompacting": false,
-                    "sessionActions": { "queuedCount": 0, "steering": [], "followUps": [] },
-                },
-                "messages": messages,
-                "lastEventSequence": 0,
-                "lastEventCursor": null,
-            },
-            "client": { "id": "mock", "capabilities": [] },
-            "lastEventSequence": 0,
-            "lastEventCursor": null,
-        },
-    })
+    mock_runtime::attached("kitty early typing", None, &messages)
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {

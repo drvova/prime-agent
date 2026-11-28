@@ -21,106 +21,15 @@
 
 mod support;
 
+use support::runtime_daemon::RuntimeDaemon;
+
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
 
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewUiMode};
 use pa_tui::interactive::SessionSelection;
 use pa_tui::interactive::UiMode;
-
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        graceful_shutdown(&self.socket);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-/// Stop the daemon on `socket` by protocol; kill the child when it fails.
-fn graceful_shutdown(socket: &Path) {
-    let Ok(stream) = UnixStream::connect(socket) else {
-        return;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    let _ = reader.read_line(&mut hello); // daemon_hello
-    let command = serde_json::json!({
-        "type": "command",
-        "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let Ok(mut line) = serde_json::to_string(&command) else {
-        return;
-    };
-    line.push('\n');
-    if writer.write_all(line.as_bytes()).is_err() {
-        return;
-    }
-    let _ = writer.flush();
-    let _ = reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)));
-    let mut response = String::new();
-    let _ = reader.read_line(&mut response);
-}
-
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    // The in-process client forwards this process's env to the worker.
-    support::scrub_ambient_provider_credentials();
-    let socket = dir.join("daemon.sock");
-    let agent_dir = dir.join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    // The daemon's default sessions dir must stay the agent dir under the
-    // tempdir: an ambient `PRIME_AGENT_SESSION_DIR` would resolve the family
-    // ledger against the foreign dir, so the seeded family never registers.
-    command.env_remove("PRIME_AGENT_SESSION_DIR");
-    command.env_remove("PRIME_AGENT_CODING_AGENT_SESSION_DIR");
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(&socket, &mut child);
-    Supervisor { child, socket }
-}
 
 /// One saved-session fixture: a header with the subagent linkage
 /// (`parentSession`, `rlmDepth`), a display name, and an exchange.
@@ -154,7 +63,7 @@ fn write_fixture(
             index * 1000 + 1
         );
     }
-    std::fs::write(&path, content).expect("write fixture");
+    std::fs::write(&path, support::valid_transcript(&content)).expect("write fixture");
     path
 }
 
@@ -258,7 +167,7 @@ async fn down_arrow_focuses_the_dock_and_enter_opens_the_scoped_agents_view() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
 
     // The family fixture: a parent with a transcript, and a child under
     // it (the linkage the ledger edge carries).
@@ -296,7 +205,7 @@ async fn down_arrow_focuses_the_dock_and_enter_opens_the_scoped_agents_view() {
     // Run 1 — the attached parent: Down focuses the dock, and Enter
     // opens the scoped agents view directly (no grouped panel).
     let parent_options = session_options(
-        &supervisor.socket,
+        &daemon.socket,
         &session_dir,
         SessionSelection::Resume(parent_path.clone()),
         None,
@@ -350,7 +259,7 @@ async fn down_arrow_focuses_the_dock_and_enter_opens_the_scoped_agents_view() {
 
     // Run 2 — the scoped agents view: Enter drills into the child.
     let view_options = AgentsViewOptions {
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: PathBuf::from("/tmp"),
         session_dir: Some(session_dir.clone()),
         theme: "prime".to_string(),
@@ -405,7 +314,7 @@ async fn down_arrow_focuses_the_dock_and_enter_opens_the_scoped_agents_view() {
 
     // Run 3 — the child's transcript: the agents-back key returns to the agents view.
     let child_options = session_options(
-        &supervisor.socket,
+        &daemon.socket,
         &session_dir,
         SessionSelection::Resume(child_path.clone()),
         view.opened_rlm_depth,
@@ -451,7 +360,7 @@ async fn the_title_bills_a_passive_subagents_spend() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
 
     // The family fixture: the parent and its ledger-linked child, each
     // with one billed turn ($1.00 / $0.30).
@@ -494,7 +403,7 @@ async fn the_title_bills_a_passive_subagents_spend() {
         .expect("append spawn edge");
 
     let options = session_options(
-        &supervisor.socket,
+        &daemon.socket,
         &session_dir,
         SessionSelection::Resume(parent_path.clone()),
         None,
@@ -543,7 +452,7 @@ async fn the_title_bills_a_deleted_subagents_spend() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
 
     // The parent ($1.00 own) and its child, whose transcript lives under
     // the parent's session-artifacts tree (the real RLM child location:
@@ -604,7 +513,7 @@ async fn the_title_bills_a_deleted_subagents_spend() {
         .expect("append delete tombstone");
 
     let options = session_options(
-        &supervisor.socket,
+        &daemon.socket,
         &session_dir,
         SessionSelection::Resume(parent_path.clone()),
         None,

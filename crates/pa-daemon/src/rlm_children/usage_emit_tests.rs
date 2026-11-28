@@ -305,7 +305,7 @@ async fn reseed_lists_live_ledger_children_settled_and_bills_only_after_a_delive
     let sessions = registry(&agent, tmp.path());
     let supervisor_socket = sessions.inner.link.socket_path().clone();
     crate::descriptor::persist_supervisor_config(
-        &crate::descriptor::descriptor_dir(&agent, &supervisor_socket)
+        &pa_core::platform::daemon_endpoint::daemon_state_dir(&agent, &supervisor_socket)
             .join(crate::descriptor::SUPERVISOR_CONFIG_FILE_NAME),
         &crate::descriptor::PersistedSupervisorConfig {
             version: 1,

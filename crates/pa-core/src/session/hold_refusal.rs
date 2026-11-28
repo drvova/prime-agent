@@ -3,9 +3,10 @@
 //!
 //! The holder is usually the other product (named best-effort from its
 //! pid); the refusal stays actionable and every refused create is logged.
+//! Both daemons answer with it: the supervisor's create and the runtime
+//! daemon's session open (moved from pa-daemon).
 
-use crate::protocol::{response_failure, DaemonResponse};
-use pa_core::session::lease::SessionAlreadyActiveError;
+use crate::session::lease::SessionAlreadyActiveError;
 use std::path::Path;
 
 /// The live holder of a refused session file, as the lease record names it:
@@ -18,7 +19,8 @@ pub struct HoldIdentity {
 
 impl HoldIdentity {
     /// From the typed lease rejection.
-    fn from_error(error: &SessionAlreadyActiveError) -> Self {
+    #[must_use]
+    pub fn from_error(error: &SessionAlreadyActiveError) -> Self {
         Self {
             pid: error.holder_pid,
             active_session_id: error.active_session_id.clone(),
@@ -46,7 +48,7 @@ impl HoldIdentity {
 /// *what to tell the user*, not a security boundary: it errs toward the
 /// generic wording whenever the executable cannot be resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HolderFlavor {
+pub(crate) enum HolderFlavor {
     /// This Rust build (another window/daemon of this binary, the takeover
     /// or pre-takeover install dirs, or a cargo dev build).
     ThisBuild,
@@ -179,7 +181,7 @@ fn session_label(hold: &HoldIdentity, session_path: Option<&Path>) -> String {
 fn session_name_of(session_path: Option<&Path>) -> Option<String> {
     use std::io::BufRead;
     let path = session_path?;
-    let file = pa_core::session::store::store().open(path).ok()?;
+    let file = crate::session::store::store().open(path).ok()?;
     let mut name = None;
     for line in std::io::BufReader::new(file).lines() {
         let Ok(line) = line else {
@@ -267,7 +269,7 @@ fn session_footer(hold: &HoldIdentity, session_path: Option<&Path>) -> String {
 /// then the paths out (continue in the holder's product, or take the
 /// session over on this daemon). Split from [`refusal_message`] so the
 /// exact wording stays testable against a synthetic classification.
-pub fn refusal_for_flavor(
+pub(crate) fn refusal_for_flavor(
     flavor: HolderFlavor,
     hold: &HoldIdentity,
     session_path: Option<&Path>,
@@ -365,27 +367,9 @@ runtime lease."
     lines.join("\n")
 }
 
-/// The create response for a refused create: the typed rejection answers
-/// with the refusal and its wire info; other failures keep their raw text.
-pub(crate) fn create_failure_response(error: &anyhow::Error) -> DaemonResponse {
-    match error.downcast_ref::<SessionAlreadyActiveError>() {
-        Some(active) => response_failure(
-            None,
-            "create",
-            &refusal_message(
-                &HoldIdentity::from_error(active),
-                Some(Path::new(&active.session_path)),
-            ),
-            Some(active.error_info()),
-        ),
-        None => response_failure(None, "create", &error.to_string(), None),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pa_types::daemon::DaemonErrorInfo;
 
     /// No third "open a different session" option: the user is already
     /// in the picker (operator-directed, 2026-09-24).
@@ -714,35 +698,5 @@ Session: ts01ab";
         // The own-exe equality wins even under the prime-agent substring.
         let dev = Path::new("/w/repo/target/debug/prime-agent");
         assert_eq!(classify_from(Some(dev), Some(dev)), HolderFlavor::ThisBuild);
-    }
-
-    #[test]
-    fn the_create_failure_response_splits_typed_and_untyped() {
-        let hold = SessionAlreadyActiveError {
-            session_path: "/tmp/s.jsonl".to_string(),
-            active_session_id: Some("ts01ab".to_string()),
-            owner: "ts01ab".to_string(),
-            holder_pid: Some(4242),
-        };
-        let response = create_failure_response(&hold.into());
-        assert!(!response.success);
-        assert_eq!(response.command, "create");
-        assert_eq!(
-            response.error_info,
-            Some(DaemonErrorInfo::SessionAlreadyActive {
-                session_path: "/tmp/s.jsonl".to_string(),
-                active_session_id: Some("ts01ab".to_string()),
-            })
-        );
-        let message = response.error.expect("refusal text");
-        assert!(
-            message.starts_with("This session is currently open"),
-            "{message}"
-        );
-
-        let raw = anyhow::anyhow!("corrupt session file");
-        let response = create_failure_response(&raw);
-        assert_eq!(response.error.as_deref(), Some("corrupt session file"));
-        assert_eq!(response.error_info, None);
     }
 }

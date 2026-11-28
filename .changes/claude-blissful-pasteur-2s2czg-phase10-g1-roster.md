@@ -1,0 +1,1 @@
+- On the default daemon the agents view now keeps a stopped session's row as inactive, lists a reopened session's finished subagents (opened by their transcript), nests a subagent opened on its own under its parent, and bills finished and deleted subagents' spend to the parent's title, as the old daemon did.

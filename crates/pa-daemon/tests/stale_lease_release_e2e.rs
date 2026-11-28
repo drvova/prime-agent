@@ -77,7 +77,7 @@ fn process_alive(pid: u32) -> bool {
 /// SIGKILL by pid (the target is a worker process the test does not own
 /// as a `std` child).
 fn daemon_log(socket: &Path, agent_dir: &Path) -> PathBuf {
-    pa_daemon::paths::daemon_log_path(socket, agent_dir)
+    pa_core::platform::daemon_endpoint::daemon_log_path(socket, agent_dir)
 }
 
 fn log_contains(socket: &Path, agent_dir: &Path, needle: &str) -> bool {

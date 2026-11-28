@@ -1,6 +1,7 @@
 //! What the TUI's agents view follows on the runtime daemon (phase 8c-2):
 //! the roster feed lists a session from its open to its stop, in the old
-//! supervisor's entry shape, and `runtime.roster` reads the same entry. The
+//! supervisor's entry shape, and `runtime.roster` reads the same entry; the
+//! stop passivates the row in place, as the supervisor's does. The
 //! traffic feed is checked where a family sends a message
 //! ([`super::family`]), and both feeds against the recordings in
 //! [`super::goldens`].
@@ -48,6 +49,8 @@ async fn the_roster_lists_a_session_from_its_open_to_its_stop() {
         stopped.push(client.frame().await);
     }
     let after = ok(client.query("runtime.roster", json!({})).await);
+    let updates = roster_updates(&stopped);
+    let passivated = &updates[0]["changed"][0];
     assert_eq!(
         (
             [&entry["agentId"], &entry["workerId"], &entry["status"]],
@@ -58,7 +61,14 @@ async fn the_roster_lists_a_session_from_its_open_to_its_stop() {
             ],
             entry["summary"].get("sessionActions"),
             read,
-            roster_updates(&stopped),
+            updates.len(),
+            [
+                &passivated["agentId"],
+                &passivated["status"],
+                &passivated["workerId"],
+                &passivated["summary"]["activeSessionId"],
+                &passivated["summary"]["lifecycle"],
+            ],
             after,
         ),
         (
@@ -66,8 +76,15 @@ async fn the_roster_lists_a_session_from_its_open_to_its_stop() {
             [&json!(id), &json!("draft"), &json!("top-level")],
             None,
             json!({ "roster": [entry] }),
-            vec![json!({ "changed": [], "removed": [id] })],
-            json!({ "roster": [] }),
+            1,
+            [
+                &json!(id),
+                &json!("inactive"),
+                &Value::Null,
+                &Value::Null,
+                &json!("draft")
+            ],
+            json!({ "roster": [passivated] }),
         )
     );
 }

@@ -152,7 +152,10 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> ProcessGuard {
         // agent dir; point every fallback at the test sandbox instead.
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env_remove("PA_API_KEY")
-        .env(pa_daemon::socket::BIND_CAPTURE_GAP_ENV, BIND_CAPTURE_GAP_MS)
+        .env(
+            pa_core::platform::daemon_socket::BIND_CAPTURE_GAP_ENV,
+            BIND_CAPTURE_GAP_MS,
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -184,7 +187,10 @@ fn spawn_worker(dir: &Path, socket: &Path, supervisor_socket: &Path, token: &str
             dir.join("recovery.jsonl"),
         )
         .env("PRIME_AGENT_CODING_AGENT_DIR", dir.join("agent"))
-        .env(pa_daemon::socket::BIND_CAPTURE_GAP_ENV, BIND_CAPTURE_GAP_MS)
+        .env(
+            pa_core::platform::daemon_socket::BIND_CAPTURE_GAP_ENV,
+            BIND_CAPTURE_GAP_MS,
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

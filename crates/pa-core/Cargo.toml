@@ -97,6 +97,10 @@ tokio = { workspace = true, features = ["test-util"] }
 # their threads (`src/kernel/scheme/interleavings.rs`). Tests only: it never
 # ships.
 loom = "0.7"
+# The daemon socket tests (`platform/daemon_socket.rs`) age a crashed holder's
+# cleanup lock and hold a successor listener with a backlog of one.
+filetime = "0.2"
+socket2 = "0.6"
 
 [lints.clippy]
 # pa-core keeps its OWN lints table (not `workspace = true`): the

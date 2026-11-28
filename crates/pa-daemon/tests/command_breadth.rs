@@ -2,7 +2,6 @@
 //! keep its wire `type`, and route by selector.
 
 use pa_daemon::protocol::command_active_session_id;
-use pa_daemon::protocol::command_type_name;
 use pa_daemon::protocol::parse_daemon_command_line;
 
 /// Minimal wire fixture per command type: the fields the `DaemonCommand` union
@@ -440,7 +439,7 @@ fn every_command_type_parses_and_routes() {
         let envelope = parse_daemon_command_line(&line)
             .unwrap_or_else(|e| panic!("{type_name} must parse: {e}"));
         assert_eq!(
-            command_type_name(&envelope.command),
+            envelope.command.type_name(),
             *type_name,
             "router must preserve the wire type"
         );

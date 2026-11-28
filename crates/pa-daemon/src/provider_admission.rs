@@ -260,10 +260,7 @@ pub(crate) async fn handle_admission_command(
             observation,
             ..
         } => Ok(json!({ "decreased": service.release(*lease_id, *observation) })),
-        other => anyhow::bail!(
-            "not an admission command: {}",
-            crate::protocol::command_type_name(other)
-        ),
+        other => anyhow::bail!("not an admission command: {}", other.type_name()),
     }
 }
 

@@ -7,8 +7,8 @@
 
 mod support;
 
-use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
+use support::UnixListener;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pa_tui::interactive::{HeadlessPlan, HeadlessStep, InteractiveOptions};

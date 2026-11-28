@@ -27,7 +27,7 @@
 //!   reader makes of that frame.
 //! - **End.** The connection's end fails every pending request with a transport error and wakes
 //!   [`super::DaemonClient::reader_dead`]; the event channel stays open until the client closes,
-//!   as on the old wire.
+//!   as on the old wire. A client dropped without closing ends its connection, as on the old wire.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -268,15 +268,20 @@ impl Wire2Link {
             reader_dead: dead_rx.clone(),
         });
         {
-            let link = Arc::clone(&link);
+            // The reader holds the link weakly: a client dropped without `close` drops the link,
+            // whose writer then ends the connection, as the old wire's dropped writer does.
+            let link = Arc::downgrade(&link);
             tokio::spawn(async move {
                 while let Ok(Some(frame)) = reader.read_frame().await {
+                    let Some(link) = link.upgrade() else { break };
                     if let Ok(frame) = serde_json::from_value::<ServerFrame>(frame.header) {
                         link.receive(frame);
                     }
                 }
                 let _ = dead_tx.send(true);
-                link.fail_pending("the daemon connection closed");
+                if let Some(link) = link.upgrade() {
+                    link.fail_pending("the daemon connection closed");
+                }
             });
         }
         link.follow_connection_feeds()?;
