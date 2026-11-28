@@ -15,8 +15,8 @@ const READ_ONLY_RULES: &str = "\
 This helper is read-only, and the host enforces it. `eval` accepts only file reads with literal \
 arguments, one call per form: `(displayln (hash-ref (fs-read \"src/lib.rs\" (hash 'start 1 'end \
 80)) 'text))` reads a file, `(fs-grep \"fn parse\" (hash 'path \"src\" 'glob \"*.rs\"))` searches, \
-`(fs-glob \"**/*.toml\")` and `(fs-find (hash 'name \"Makefile\"))` list files, `(fs-symbol \
-\"parse\")` finds where a name is defined and used. Definitions, variables, `bash`, `edit`, \
+`(fs-find (hash 'glob \"**/*.toml\"))` and `(fs-find (hash 'name \"Makefile\"))` list files, \
+`(fs-symbol \"parse\")` finds where a name is defined and used. Definitions, variables, `bash`, \
 `fs-edit`, `fs-write` and every other function are refused. Do not carry out the task.";
 
 /// The acceptance-check block every rewrite and brief ends with (see [`super::checks`]).

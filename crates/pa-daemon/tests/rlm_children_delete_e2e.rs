@@ -267,7 +267,7 @@ fn semantic_delete_cell(
   (with-handler
     (lambda (e) (record {delete_error:?} (to-string e)) (error (to-string e)))
     (let* ([spawned (hash-ref (bash (string-append "cat " {spawn_receipt:?})) 'output)]
-           [deleted (rlm-delete-subagent (hash-ref (string->jsexpr spawned) 'rlm_child_id))])
+           [deleted (rlm-delete (hash-ref (string->jsexpr spawned) 'rlm_child_id))])
       (record {delete_receipt:?} (value->jsexpr-string deleted))
       (displayln (hash-ref deleted 'status)))))
 "#,

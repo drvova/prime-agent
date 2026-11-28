@@ -210,12 +210,12 @@ async fn a_call_its_function_does_not_declare_is_refused_before_the_function_run
         ),
         (
             "(fs-find (hash 'max-result 1))",
-            "fs-find: unknown option 'max-result. Did you mean 'max-results? fs-find accepts 'path 'name 'kind 'ignore-case 'max-depth 'hidden 'gitignore 'max-results",
+            "fs-find: unknown option 'max-result. Did you mean 'max-results? fs-find accepts 'path 'glob 'name 'kind 'ignore-case 'max-depth 'hidden 'gitignore 'max-results",
             CallRefusal::UnknownOption,
         ),
         (
-            r#"(agent-observe-recent "worker" #:limit 1 #:limit 2)"#,
-            "agent-observe-recent: option #:limit is given twice: pass it once",
+            r#"(agent-roster "worker" #:recent #t #:limit 1 #:limit 2)"#,
+            "agent-roster: option #:limit is given twice: pass it once",
             CallRefusal::RepeatedOption,
         ),
         (
@@ -321,9 +321,8 @@ async fn every_kernel_function_refuses_an_option_it_does_not_declare() {
         .collect();
     assert_eq!(
         (not_refused, variadic),
-        // A topic that may be a symbol, which Steel drops from an optional
-        // argument; any number of image paths.
-        (Vec::new(), vec!["api-help", "attach-image"])
+        // Any number of image paths.
+        (Vec::new(), vec!["attach-image"])
     );
 }
 

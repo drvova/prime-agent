@@ -1076,7 +1076,7 @@ async fn a_factory_entry_is_stored_only_validated_and_only_while_the_factory_is_
     let dag = r#"(hash 'nodes (list (hash 'id "a" 'subagent "worker")))"#;
     let create = |id: &str, spec: &str| {
         format!(
-            r#"(hash-ref (harness-create-factory "Factory" "Factory content" #:id "{id}" {spec}) 'id)"#
+            r#"(hash-ref (harness-put "factory" "{id}" "Factory content" #:title "Factory" {spec}) 'id)"#
         )
     };
     let stored = displayed(kernel, &create("sw", &format!("#:dag {dag}"))).await;
@@ -1090,7 +1090,7 @@ async fn a_factory_entry_is_stored_only_validated_and_only_while_the_factory_is_
     let neither = displayed(kernel, &create("none", "")).await;
     let updated = displayed(
         kernel,
-        r#"(hash-ref (harness-update-factory "sw" "Factory" "Factory content" #:machine (hash 'states (list (hash 'id "b" 'entry #t 'subagent "worker")))) 'version)"#,
+        r#"(hash-ref (harness-put "factory" "sw" "Factory content" #:machine (hash 'states (list (hash 'id "b" 'entry #t 'subagent "worker")))) 'version)"#,
     )
     .await;
     fixture.settings(&json!({"factory": {"enabled": false}}));
@@ -1098,18 +1098,14 @@ async fn a_factory_entry_is_stored_only_validated_and_only_while_the_factory_is_
         displayed(kernel, &create("off", &format!("#:dag {dag}"))).await,
         // The refusal comes before the spec is looked at.
         displayed(kernel, &create("off-bad", "#:dag (hash 'nodes (list))")).await,
-        displayed(
-            kernel,
-            r#"(harness-update-factory "sw" "Factory" "content updated")"#,
-        )
-        .await,
+        displayed(kernel, r#"(harness-put "factory" "sw" "content updated")"#).await,
     ];
     let kept = displayed(
         kernel,
-        "(hash-ref (hash-ref (hash-ref (hash-ref (harness-state) (quote entries)) (quote factory)) (quote sw)) (quote content))",
+        "(hash-ref (hash-ref (hash-ref (hash-ref (harness-query #:view \"state\") (quote entries)) (quote factory)) (quote sw)) (quote content))",
     )
     .await;
-    let deleted = displayed(kernel, r#"(harness-delete-factory "sw")"#).await;
+    let deleted = displayed(kernel, r#"(harness-delete "factory" "sw")"#).await;
     let refused = |outcome: &Result<Value, String>| {
         outcome
             .as_ref()

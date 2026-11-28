@@ -134,7 +134,7 @@ async fn a_background_cell_is_live_work_until_its_notice_is_handed_over() {
         ..SchemeKernelOptions::default()
     });
     let idle = provisioner.background_job_count();
-    let long = run(&provisioner, r#"(host-request "gate.wait" (hash))"#).await;
+    let long = run(&provisioner, r#"(%host-request "gate.wait" (hash))"#).await;
     let while_running = (
         long.backgrounded_cell.is_some(),
         provisioner.background_job_count(),

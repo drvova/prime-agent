@@ -81,7 +81,7 @@ pub fn create_scheme_tool_definition(options: KernelToolOptions) -> ToolDefiniti
     ToolDefinition {
         name: pa_types::ai::SCHEME_TOOL_NAME.to_string(),
         label: pa_types::ai::SCHEME_TOOL_NAME.to_string(),
-        description: "Evaluate Scheme (Steel, mostly R5RS) in the session's persistent kernel. The forms run in order and definitions persist across calls; the result is the value of the last form, after whatever `display`/`displayln` printed. Every other tool (`bash`, `edit`, the `fs-*` file tools, subagents, memory) is a Scheme function called from here: the system prompt lists them, and `(api-help)` prints their reference.".to_string(),
+        description: "Evaluate Scheme (Steel, mostly R5RS) in the session's persistent kernel. The forms run in order and definitions persist across calls; the result is the value of the last form, after whatever `display`/`displayln` printed. Every other tool (`bash`, the `fs-*` file tools, subagents, memory) is a Scheme function called from here: the system prompt lists them, and `(api-help)` prints their reference.".to_string(),
         prompt_snippet: "eval - evaluate Scheme inside the running agent; definitions persist".to_string(),
         // One engine per session: its cells run one at a time.
         execution_mode: Some(ExecutionMode::Sequential),
@@ -144,7 +144,7 @@ mod tests {
         });
         (tool.execute)(
             "call-1",
-            json!({"code": "(display \"one \") (host-request \"update-shown\" (hash)) (display \"two\")"}),
+            json!({"code": "(display \"one \") (%host-request \"update-shown\" (hash)) (display \"two\")"}),
             None,
             Some(on_update),
         )
@@ -191,7 +191,7 @@ mod tests {
         });
         let result = (tool.execute)(
             "call-1",
-            json!({"code": "(display \"started\") (host-request \"gate-wait\" (hash))"}),
+            json!({"code": "(display \"started\") (%host-request \"gate-wait\" (hash))"}),
             None,
             None,
         )

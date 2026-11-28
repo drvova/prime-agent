@@ -76,7 +76,7 @@ async fn a_cell_past_its_window_continues_in_the_background_and_its_end_wakes_th
     let long_cell = format!(
         "(displayln \"before\")
          (let wait ()
-           (when (null? (hash-ref (fs-glob \"go\" (hash 'path {dir:?})) 'entries))
+           (when (null? (hash-ref (fs-find (hash 'glob \"go\" 'path {dir:?})) 'entries))
              (time/sleep-ms 20)
              (wait)))
          (displayln \"after\")

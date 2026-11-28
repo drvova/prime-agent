@@ -250,8 +250,8 @@ SQLite implementations over `pa-log`.
   and which otherwise runs as its own task; a root's empty-input task runs the rows on its own
   agent (`Rest::OwnRows`) and ends without waiting for its children, whose settles wake it
   again. A headless root queues no wake: its settle drives the rows. `rlm-collect` waits on the parent's activity (each settle fires
-  it) to its deadline, and ends with its cell when the kernel stops it; `rlm-list-subagents`,
-  `rlm-delete-subagent` (the child and its subtree cancelled, their kernels disposed and
+  it) to its deadline, and ends with its cell when the kernel stops it; `agent-roster #:children`,
+  `rlm-delete` (the child and its subtree cancelled, their kernels disposed and
   sessions closed) and `rlm-rename` read and change the roster. A session is at rest when no
   child is unsettled, no late receipt is pending, no row waits on its agent and no background
   command runs: the settle drives it there, the goal and autonomous continuations wait for it,
@@ -283,8 +283,8 @@ SQLite implementations over `pa-log`.
   `shutdown` stops every source and stores the last claims first; nothing else waits on a source,
   so a run's settle does not. A definition's `SourceLifetime` says whether it is stored: `Kept`
   is the row above, `Run` (the kernel's) is held in memory for the run and never written.
-  `undefine` (the kernel's `event-source-remove`) stops a running source before it answers.
-- **Kernel timer and watch sources** (`events.rs`): `event-source-define` with `#:timer` or
+  `undefine` (the kernel's `event-remove`) stops a running source before it answers.
+- **Kernel timer and watch sources** (`events.rs`): `event-define` with `#:timer` or
   `#:watch` is a bus source record under pa-core's rules (`SourceKinds::Accepted`: one namespace
   and the 32-source limit across kinds, owner-only removal, its kind's fixed payload schema, no
   `event-publish`), and also a `Run` definition of the sources above, owned by the defining

@@ -17,7 +17,7 @@
 //! count; lines matching a learned noise pattern (`super::noise`) collapse
 //! into one marker per run. The kept lines print in their original order,
 //! with a `[… N lines …]` gap marker where lines were left out. The whole
-//! output stays one `(ctx-page handle)` or `(ctx-grep handle pattern)` away:
+//! output stays one `(output-read handle)` or `(output-grep handle pattern)` away:
 //! the output's handle follows its preview.
 //!
 //! Selection is a pure function of the text and the noise snapshot (ties

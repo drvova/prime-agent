@@ -10,7 +10,7 @@
 //!   stderr together, in the order written), `'truncated`, `'timed-out`,
 //!   `'duration-ms`, `'cached`, `'job`, `'pid`, `'handle` (the output's
 //!   `out:<id>` spill handle when it is large and the session keeps a store,
-//!   for the `ctx-*` readers), and `'tests` (a test run's summary, also
+//!   for the `output-*` readers), and `'tests` (a test run's summary, also
 //!   printed). A failing command is a result, not an error.
 //!
 //!   In a session that delivers `[bash-done]` notices the wait has a window
@@ -32,16 +32,17 @@
 //!   user consents through the system's prompt, see `bash_elevated.rs`).
 //! - `(bash-wait job [seconds])` waits for a job, for `seconds` or the
 //!   session's window, and returns its result or a snapshot.
-//! - `(bash-poll job)` returns a finished job's result, or `#f`.
-//! - `(bash-tail job [lines])` and `(bash-output job)` return what a job has
-//!   written so far (50 lines by default), output after its result included.
+//! - `(bash-output job #:tail)` returns where a job stands and what it has
+//!   written so far (its last `#:tail` lines when given), output after its
+//!   result included: a finished job's result with `'output` replaced by
+//!   that text, or the job's handle with `'exit-code` `#f` and `'output`.
+//!   `'running` is whether anything of the job still runs.
 //! - `(bash-kill job [options])` signals the job's whole process group and
 //!   returns whether it was still running. Options: `'signal` (`'term`, the
 //!   default, or `'kill`), `'grace-ms` (how long after a `'term` the group is
 //!   killed; default 5000).
-//! - `(bash-running? job)` is whether anything of the job still runs.
-//! - `(bash-jobs)` lists the kernel's jobs, and `(bash-persistent-shells)`
-//!   its persistent shells, re-attached ones included.
+//! - `(bash-jobs #:persistent)` lists the kernel's jobs, or with
+//!   `#:persistent #t` its persistent shells, re-attached ones included.
 //!
 //! A job argument is a job id or any hash these functions return.
 //!
@@ -128,15 +129,15 @@ pub(super) const SCHEME: &str = r#"
   (%bash-settled (%native "bash" (hash-insert options 'command command))))
 (define (bash-wait job [seconds #f])
   (%bash-settled (%native "bash-wait" (hash 'job (%bash-job "bash-wait" job) 'seconds seconds))))
-(define (bash-poll job) (%native "bash-poll" (hash 'job (%bash-job "bash-poll" job))))
-(define (bash-tail job [lines 50])
-  (%native "bash-tail" (hash 'job (%bash-job "bash-tail" job) 'lines lines)))
-(define (bash-output job) (%native "bash-output" (hash 'job (%bash-job "bash-output" job))))
+(define (bash-output job #:tail [lines #f])
+  (%bash-settled
+   (%native "bash-output"
+            (let ([named (hash 'job (%bash-job "bash-output" job))])
+              (if lines (hash-insert named 'lines lines) named)))))
 (define (bash-kill job [options (hash)])
   (%native "bash-kill" (hash-insert options 'job (%bash-job "bash-kill" job))))
-(define (bash-running? job) (%native "bash-running" (hash 'job (%bash-job "bash-running?" job))))
-(define (bash-jobs) (%native "bash-jobs" (hash)))
-(define (bash-persistent-shells) (%native "bash-persistent-shells" (hash)))
+(define (bash-jobs #:persistent [persistent #f])
+  (%native (if persistent "bash-persistent-shells" "bash-jobs") (hash)))
 
 ;; Wait inside the turn until `check` holds: {status, value, checks,
 ;; waited-ms}. `check` is a procedure of no arguments (it holds when it
@@ -773,7 +774,7 @@ async fn announce(session: Arc<Session>, job: Arc<Job>, _live: LiveWork) {
     .await;
     if accepted.is_err() {
         // A refused notice loses nothing: the result stays on the job for
-        // `bash-poll`.
+        // `bash-output` and `bash-wait`.
         return;
     }
     // Marked sent only now, so a withdrawal can never overtake its notice;
@@ -981,11 +982,9 @@ pub(super) fn call(
             "elevated",
         ],
         "bash-wait" => &["seconds"],
-        "bash-tail" => &["lines"],
+        "bash-output" => &["lines"],
         "bash-kill" => &["signal", "grace-ms"],
-        "bash-poll" | "bash-output" | "bash-running" | "bash-jobs" | "bash-persistent-shells" => {
-            &[]
-        }
+        "bash-jobs" | "bash-persistent-shells" => &[],
         unknown => bail!("unknown native tool: {unknown}"),
     };
     if let Some(unknown) = fields
@@ -1156,26 +1155,28 @@ pub(super) fn call(
                 Ownership::Shared,
             )
         }
-        "bash-poll" => {
+        "bash-output" => {
             let job = session.job(fields)?;
+            let mut text = job.text()?;
             session.consume(&job);
-            Ok(settled(&job)?.unwrap_or(Value::Null))
-        }
-        "bash-tail" | "bash-output" => {
-            let job = session.job(fields)?;
-            let text = job.text()?;
-            session.consume(&job);
-            let Some(lines) = fields.get("lines") else {
-                return Ok(Value::String(text));
+            if let Some(lines) = fields.get("lines") {
+                let wanted = lines
+                    .as_u64()
+                    .and_then(|lines| usize::try_from(lines).ok())
+                    .ok_or_else(|| anyhow!("#:tail must be a non-negative integer"))?;
+                let all: Vec<&str> = text.lines().collect();
+                text = all[all.len().saturating_sub(wanted)..].join("\n");
+            }
+            let mut standing = if let Some(result) = settled(&job)? {
+                result
+            } else {
+                let mut snapshot = handle(&job);
+                snapshot["exit-code"] = Value::Null;
+                snapshot
             };
-            let wanted = lines
-                .as_u64()
-                .and_then(|lines| usize::try_from(lines).ok())
-                .ok_or_else(|| anyhow!("the lines must be a non-negative integer"))?;
-            let all: Vec<&str> = text.lines().collect();
-            Ok(Value::String(
-                all[all.len().saturating_sub(wanted)..].join("\n"),
-            ))
+            standing["running"] = Value::Bool(!lock(&job.state).reaped);
+            standing["output"] = Value::String(text);
+            Ok(standing)
         }
         "bash-kill" => {
             let job = session.job(fields)?;
@@ -1196,7 +1197,6 @@ pub(super) fn call(
             job.kill(&session.runtime, signal, grace);
             Ok(Value::Bool(running))
         }
-        "bash-running" => Ok(Value::Bool(!lock(&session.job(fields)?.state).reaped)),
         "bash-jobs" | "bash-persistent-shells" => {
             let table = lock(&session.table);
             let jobs = table.order.iter().filter_map(|id| table.jobs.get(id));

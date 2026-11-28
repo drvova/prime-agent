@@ -73,8 +73,8 @@ async fn every_documented_function_is_defined_in_a_session_kernel() {
     assert_eq!(undefined, Vec::<&str>::new());
 }
 
-/// `(api-help)` prints the topics, a topic's name its doc file, a function's name (a string or a
-/// symbol) that function's entry with its nested bullets, and an unknown name says so.
+/// `(api-help)` prints the topics, a topic's name its doc file, a function's name that function's
+/// entry with its nested bullets, and an unknown name says so.
 #[tokio::test(flavor = "multi_thread")]
 async fn api_help_prints_the_topics_a_topic_and_one_function() {
     let dir = tempfile::tempdir().unwrap();
@@ -89,7 +89,7 @@ async fn api_help_prints_the_topics_a_topic_and_one_function() {
     for cell in [
         "(api-help)",
         "(api-help \"cells\")",
-        "(api-help 'cell-id)",
+        "(api-help \"cell-id\")",
         "(api-help \"bash\")",
         "(api-help \"nope\")",
     ] {
@@ -121,12 +121,12 @@ async fn api_help_prints_the_topics_a_topic_and_one_function() {
     );
 }
 
-/// `(api-search query)` ranks the reference: a function's name puts its entry first, a
+/// `(api-help #:search query)` ranks the reference: a function's name puts its entry first, a
 /// description of what a function does finds it, a query no passage shares a word with says so
 /// and lists the topics, and a limit below 1 is refused. The session's observer hears each search
 /// that ran and whether it found a passage.
 #[tokio::test(flavor = "multi_thread")]
-async fn api_search_ranks_the_reference_by_the_querys_words() {
+async fn api_help_search_ranks_the_reference_by_the_querys_words() {
     let dir = tempfile::tempdir().unwrap();
     let heard = Arc::new(Mutex::new(Vec::new()));
     let observer = Arc::clone(&heard);
@@ -140,10 +140,10 @@ async fn api_search_ranks_the_reference_by_the_querys_words() {
     .unwrap();
     let mut printed = Vec::new();
     for cell in [
-        "(api-search \"fs-read\" #:limit 1)",
-        "(api-search \"kill a background job\")",
-        "(api-search \"xyzzy\")",
-        "(api-search \"fs-read\" #:limit 0)",
+        "(api-help #:search \"fs-read\" #:limit 1)",
+        "(api-help #:search \"kill a background job\")",
+        "(api-help #:search \"xyzzy\")",
+        "(api-help #:search \"fs-read\" #:limit 0)",
     ] {
         let result = kernel.execute(cell, NO_OPTIONS).await.unwrap();
         printed.push((result.status, result.stdout));
@@ -159,7 +159,7 @@ async fn api_search_ranks_the_reference_by_the_querys_words() {
                 (
                     ExecuteStatus::Ok,
                     format!(
-                        "api-search: 1 passage of the reference for \"fs-read\", best first. \
+                        "api-help: 1 passage of the reference for \"fs-read\", best first. \
                          (api-help \"<function>\") prints an entry, (api-help \"<topic>\") a \
                          topic.\n\n[fs]\n{}",
                         api_help("fs-read")
@@ -169,7 +169,7 @@ async fn api_search_ranks_the_reference_by_the_querys_words() {
                 (
                     ExecuteStatus::Ok,
                     format!(
-                        "api-search: nothing in the reference matches \"xyzzy\".\n{}",
+                        "api-help: nothing in the reference matches \"xyzzy\".\n{}",
                         api_help("")
                     )
                 ),

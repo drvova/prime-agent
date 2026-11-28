@@ -32,8 +32,8 @@
 //! engine, and its end is announced by a `cell.completed` host request (the
 //! `[cell-done]` notice). Until then every other cell waits for the engine
 //! for its own window and is then refused without having run, except the
-//! four control forms `(cell-status id)`, `(cell-wait id seconds)`,
-//! `(cell-cancel id)` and `(cell-list)`, which the kernel answers itself
+//! control forms `(cell-status [id])`, `(cell-wait id seconds)` and
+//! `(cell-cancel id)`, which the kernel answers itself
 //! when one of them is the whole cell. Without a window, the model's
 //! `timeout` interrupts the cell instead.
 
@@ -100,8 +100,9 @@ const CELL_API: &str = r#"
 ;; A background cell's state: {cell, status, text, output, duration-ms}.
 ;; status is "running", "ok", "error", or "interrupted"; text is the value or
 ;; the error once it ended (#f before); output is what it printed since it
-;; went to the background.
-(define (cell-status id) (%cell "status" id))
+;; went to the background. Without an id, every background cell of this
+;; session, oldest first: {cell, status, duration-ms} each.
+(define (cell-status [id #f]) (if id (%cell "status" id) (%cell "list")))
 
 ;; Wait up to `seconds` for a background cell to end; its state as in
 ;; `cell-status`. Inside a cell this never waits: the engine runs one cell at
@@ -111,9 +112,6 @@ const CELL_API: &str = r#"
 ;; Stop a background cell that is still running; its state.
 (define (cell-cancel id) (%cell "cancel" id))
 
-;; The background cells of this session, oldest first: {cell, status,
-;; duration-ms} each.
-(define (cell-list) (%cell "list"))
 
 ;; Load image files (PNG, JPEG, GIF, WebP) into the model's context so it can
 ;; see them; a line saying what was loaded. Large images are scaled down and
@@ -122,7 +120,7 @@ const CELL_API: &str = r#"
 (define (attach-image . paths)
   (when (null? paths)
     (error "attach-image: pass at least one image path"))
-  (let* ([model (host-request "model.info" (hash 'type "model.info"))]
+  (let* ([model (%host-request "model.info" (hash 'type "model.info"))]
          [input (hash-try-get model 'input)])
     (unless (and (list? input) (member "image" input))
       (error (string-append
@@ -852,7 +850,9 @@ impl Cells {
             .iter()
             .find(|background| background.cell.id() == id)
             .ok_or_else(|| {
-                anyhow!("no background cell has the id {id}; (cell-list) shows the ones there are")
+                anyhow!(
+                    "no background cell has the id {id}; (cell-status) shows the ones there are"
+                )
             })?;
         match control {
             Control::Cancel(_) if background.ended.borrow().is_none() => {
@@ -1031,7 +1031,7 @@ pub(super) async fn execute(
                 .map(str::to_string)
         };
         let control = match words.as_slice() {
-            ["cell-list"] => Some(Control::List),
+            ["cell-status"] => Some(Control::List),
             ["cell-status", id] => named(id).map(Control::Status),
             ["cell-cancel", id] => named(id).map(Control::Cancel),
             ["cell-wait", id, seconds] => named(id)

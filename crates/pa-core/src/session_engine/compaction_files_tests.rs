@@ -92,7 +92,7 @@ async fn after_a_compaction_the_recent_files_are_shown_with_fresh_anchors() {
         "(begin (fs-read \"five.rs\") \"read\")",
         "(begin (fs-read \"old.rs\") \"read\")",
         "(begin (fs-read \"big.rs\") \"read\")",
-        "(let ([v (fs-read \"mid.rs\")]) (fs-edit \"mid.rs\" (hash 'replace (fs-anchor v 1) 'text \"fn mid_1() -> usize { 10 }\")) \"edited\")",
+        "(let ([v (fs-read \"mid.rs\")]) (fs-edit \"mid.rs\" (hash 'replace 1 'text \"fn mid_1() -> usize { 10 }\") (hash 'view v)) \"edited\")",
         "(begin (fs-read \"a.rs\") \"read\")",
         "(make-string 4000 #\\x)",
         "(make-string 4000 #\\y)",

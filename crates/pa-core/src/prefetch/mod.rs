@@ -4,11 +4,11 @@
 //! what it defines, from the symbol index) page into the session's spill
 //! store, and the read's result names one handle per file. Nothing enters
 //! the context: a handle costs one short line, and the model pages a
-//! neighbour in with `(ctx-page handle)` only if it wants it, without
+//! neighbour in with `(output-read handle)` only if it wants it, without
 //! another `fs-read` round.
 //!
 //! The prefetch adapts per project: a decaying average of the share of
-//! prefetched handles the model went on to use (a `ctx-*` read of the handle,
+//! prefetched handles the model went on to use (a `output-*` read of the handle,
 //! or an `fs-read` of the file) sets how many neighbours each read gets, down
 //! to none, with an occasional single-handle probe so a project that starts
 //! using them earns them back. The learned share lives under
@@ -282,7 +282,7 @@ impl Prefetcher {
         }
     }
 
-    /// A `ctx-*` read of handle `id`: counts as a use of a prefetched handle.
+    /// A `output-*` read of handle `id`: counts as a use of a prefetched handle.
     pub(crate) fn note_handle_read(&self, id: &str) {
         let mut waiting = lock(&self.inner.waiting);
         if waiting.outstanding.remove(id).is_some() {
@@ -306,7 +306,7 @@ impl Prefetcher {
             (
                 Value::Array(batch.related),
                 format!(
-                    "[related, paged out (read with (ctx-page handle)): {}]",
+                    "[related, paged out (read with (output-read handle)): {}]",
                     batch.line
                 ),
             )

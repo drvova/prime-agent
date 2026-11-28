@@ -21,7 +21,7 @@
 )]
 
 //! Verifier: the turn-boundary host-request contract (`model.info`, `compact.*`, `refine.*`) over a
-//! REAL kernel: one turn's `eval` cell calls `(host-request ...)` directly; the raw
+//! REAL kernel: one turn's `eval` cell calls `(%host-request ...)` directly; the raw
 //! handler responses are asserted, then the scheduled refinement reaches the boundary seam.
 #![cfg(unix)]
 
@@ -56,14 +56,14 @@ fn whole_numbers(value: Value) -> Value {
 /// carries the same proof into the session transcript).
 fn harness_cell(receipt_path: &Path) -> String {
     format!(
-        "(define model-info (host-request \"model.info\" (hash)))
-         (define compact-status (host-request \"compact.status\" (hash)))
-         (define refine-before (host-request \"refine.status\" (hash)))
-         (define refine-run (host-request \"refine.run\"
+        "(define model-info (%host-request \"model.info\" (hash)))
+         (define compact-status (%host-request \"compact.status\" (hash)))
+         (define refine-before (%host-request \"refine.status\" (hash)))
+         (define refine-run (%host-request \"refine.run\"
                                           (hash 'instructions \"persist the kernel round-trip contract observation\"
                                                 'global #t)))
-         (define refine-after (host-request \"refine.status\" (hash)))
-         (define compact-run (host-request \"compact.run\" (hash 'instructions \"keep the observation\")))
+         (define refine-after (%host-request \"refine.status\" (hash)))
+         (define compact-run (%host-request \"compact.run\" (hash 'instructions \"keep the observation\")))
          (define written
            (fs-write {receipt_path:?}
                      (value->jsexpr-string

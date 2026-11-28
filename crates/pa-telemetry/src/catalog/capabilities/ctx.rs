@@ -1,4 +1,4 @@
-//! The `ctx` capability owns two events: spills into the session's spill store with the `ctx-*`
+//! The `ctx` capability owns two events: spills into the session's spill store with the `output-*`
 //! reads, and the surprise-weighted previews of paged-out output.
 
 use super::super::{count, enum_rule, required, uuid, EventRule};
@@ -35,7 +35,7 @@ pub(in crate::catalog) const AGENT_CONTEXT_PAGING: EventRule = EventRule {
 /// Surprise-weighted previews (v2), emitted at session end beside `agent session ended` (which sits
 /// near the backend's 128-key cap) only when the session built one: previews of spilled cell
 /// output and thinned tool results, the lines they kept, dropped, folded as repeats, and folded as
-/// learned noise, the noise patterns the session learned, and the `ctx-*` reads that followed
+/// learned noise, the noise patterns the session learned, and the `output-*` reads that followed
 /// (fewer means the previews chose well). Counts only: never a line, a pattern, or output.
 pub(in crate::catalog) const AGENT_PREVIEWS: EventRule = EventRule {
     name: "agent previews",

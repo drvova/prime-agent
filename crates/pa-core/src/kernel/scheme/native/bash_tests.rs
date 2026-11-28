@@ -224,8 +224,8 @@ async fn a_background_job_is_tailed_polled_waited_and_listed(shell) {
     read(&started).await;
     let running = value(
         kernel.as_ref(),
-        "(define (shown) (let ([tail (bash-tail job)]) (if (equal? tail \"\") (shown) tail)))
-         (list (shown) (bash-poll job) (bash-running? job)
+        "(define (shown) (let ([tail (hash-ref (bash-output job) 'output)]) (if (equal? tail \"\") (shown) tail)))
+         (list (shown) (hash-ref (bash-output job) 'exit-code) (hash-ref (bash-output job) 'running)
                (map (lambda (row) (hash-ref row 'status)) (bash-jobs)))",
     )
     .await;
@@ -233,10 +233,10 @@ async fn a_background_job_is_tailed_polled_waited_and_listed(shell) {
     let ended = value(
         kernel.as_ref(),
         "(define result (bash-wait job))
-         (define (ended) (if (bash-running? job) (ended) (bash-poll job)))
+         (define (ended) (if (hash-ref (bash-output job) 'running) (ended) (bash-output job)))
          (list (hash-ref result 'exit-code) (hash-ref result 'output) (hash-ref result 'running)
-               (equal? (hash-ref (ended) 'output) (bash-output job))
-               (bash-tail job 1)
+               (hash-ref (ended) 'exit-code)
+               (hash-ref (bash-output job #:tail 1) 'output)
                (map (lambda (row) (list (hash-ref row 'status) (hash-ref row 'exit-code))) (bash-jobs)))",
     )
     .await;
@@ -244,8 +244,8 @@ async fn a_background_job_is_tailed_polled_waited_and_listed(shell) {
         (begun.as_str(), running.as_str(), ended.as_str()),
         (
             "(#true #false #false)",
-            "(\"first\" #false #true (\"running\"))",
-            "(0 \"first\\ngot go\\n\" #false #true \"got go\" ((\"finished\" 0)))",
+            "(\"first\\n\" #false #true (\"running\"))",
+            "(0 \"first\\ngot go\\n\" #false 0 \"got go\" ((\"finished\" 0)))",
         )
     );
 }
@@ -268,7 +268,7 @@ async fn killing_a_job_ends_every_process_of_its_group(shell) {
     let killed = value(
         kernel.as_ref(),
         "(define signalled (bash-kill job))
-         (define (ended) (if (bash-running? job) (ended) (bash-poll job)))
+         (define (ended) (if (hash-ref (bash-output job) 'running) (ended) (bash-output job)))
          (list signalled (hash-ref (ended) 'exit-code) (bash-kill job))",
     )
     .await;
@@ -357,7 +357,7 @@ async fn a_command_returns_at_its_own_end_while_what_it_started_runs_on(shell) {
     let returned = value(
         kernel.as_ref(),
         "(define result (bash \"sh -c 'sleep 300' & echo $! > left.pid; echo x\"))
-         (list (hash-ref result 'output) (hash-ref result 'exit-code) (bash-running? result))",
+         (list (hash-ref result 'output) (hash-ref result 'exit-code) (hash-ref (bash-output result) 'running))",
     )
     .await;
     let returned_within = called.elapsed();
@@ -513,7 +513,7 @@ fn a_program_of_the_built_in_shell_is_journaled_while_it_runs() {
         value(
             kernel.as_ref(),
             "(bash-kill job (hash 'signal 'kill))
-             (define (ended) (if (bash-running? job) (ended) #t))
+             (define (ended) (if (hash-ref (bash-output job) 'running) (ended) #t))
              (ended)",
         )
         .await;
@@ -877,7 +877,7 @@ async fn a_persistent_shell_outlives_its_kernel_and_is_reattached_by_the_next() 
     let (_provisioner, second) = kernel_with(of_session()).await;
     let attached = value(
         second.as_ref(),
-        "(define shells (bash-persistent-shells))
+        "(define shells (bash-jobs #:persistent #t))
          (map (lambda (shell) (list (hash-ref shell 'pid) (hash-ref shell 'running))) shells)",
     )
     .await;
@@ -972,7 +972,7 @@ async fn cancelling_a_background_cell_kills_its_command_and_keeps_its_jobs(shell
     let after = run(
         kernel.as_ref(),
         &format!(
-            "(list (hash-ref (cell-status \"{cell}\") 'status) (bash-running? kept)
+            "(list (hash-ref (cell-status \"{cell}\") 'status) (hash-ref (bash-output kept) 'running)
                    (bash-kill kept (hash 'signal 'kill)))"
         ),
     )
@@ -1115,7 +1115,7 @@ async fn a_command_killed_with_its_kernel_is_announced_as_lost_by_the_next_kerne
         kernel.as_ref(),
         "(define lasting (bash \"echo up > started; sleep 300\" (hash 'background #t)))
          (define brief (bash \"true\" (hash 'background #t)))
-         (define (ended) (if (bash-running? brief) (ended) #t))
+         (define (ended) (if (hash-ref (bash-output brief) 'running) (ended) #t))
          (ended)
          (hash-ref lasting 'pid)",
     )

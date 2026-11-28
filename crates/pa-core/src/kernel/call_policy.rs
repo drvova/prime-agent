@@ -5,7 +5,7 @@
 //! host request reaches its handler and before every side-effecting native
 //! runs. The host requests are asked in one place: the session's handlers
 //! are wrapped as the kernel is built (`HostRequestHandlers::gated`), so a request a
-//! cell sends through `(host-request ...)` and one a native sends itself
+//! cell sends through `(%host-request ...)` and one a native sends itself
 //! (a file tool's `fs.read`, a command's `bash.completed`) are asked alike,
 //! and nothing reaches a handler around the policy. The natives are asked at
 //! the entry of each dispatcher a cell's functions reach them through
@@ -57,13 +57,13 @@ pub enum CallKind<'a> {
 pub enum NativeFamily {
     /// `bash` and its job functions (`bash-wait`, `bash-kill`, ...).
     Bash,
-    /// `fs-read`, `fs-grep`, `fs-glob`, `fs-find`: each sends its `fs.*`
+    /// `fs-read`, `fs-grep`, `fs-find`: each sends its `fs.*`
     /// host request, which the policy is asked about with its paths.
     FileRead,
     /// `fs-symbol`: the project's symbol index.
     SymbolIndex,
-    /// `fs-write`, `fs-edit`, `edit`: they write files (`edit` without a
-    /// host request).
+    /// `fs-write`, `fs-edit`: they write files (an `'old`/`'new` edit
+    /// without a host request).
     FileWrite,
     /// `worktree-*`: git worktrees of the project.
     Worktree,
@@ -83,10 +83,10 @@ impl NativeFamily {
     /// The family of a `%native-call` operation.
     pub(crate) fn of_native_call(operation: &str) -> NativeFamily {
         match operation {
-            "fs-read" | "fs-grep" | "fs-glob" | "fs-find" => NativeFamily::FileRead,
+            "fs-read" | "fs-grep" | "fs-find" => NativeFamily::FileRead,
             "fs-symbol" => NativeFamily::SymbolIndex,
             command if command.starts_with("bash") => NativeFamily::Bash,
-            // `fs-write`, `fs-edit`, `edit`, and an operation no tool has.
+            // `fs-write`, `fs-edit`, and an operation no tool has.
             _ => NativeFamily::FileWrite,
         }
     }

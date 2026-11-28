@@ -59,12 +59,12 @@ async fn each_event_function_sends_its_typed_request() {
     let printed = run(
         handlers,
         &[
-            r#"(event-source-define "deploy.finished" (hash 'type "object") #:description "a deploy ended")"#,
+            r#"(event-define "deploy.finished" (hash 'type "object") #:description "a deploy ended")"#,
             r#"(event-publish "deploy.finished" (hash 'env "prod"))"#,
             r#"(event-subscribe "deploy.finished" "check it" #:filter (hash 'env "prod") #:delivery-mode "steer" #:label "prod")"#,
             r#"(event-subscribe "deploy.finished" "any")"#,
             r#"(event-unsubscribe (hash 'id "sub-1"))"#,
-            r#"(event-source-remove "deploy.finished")"#,
+            r#"(event-remove "deploy.finished")"#,
             r"(event-list)",
         ],
     )

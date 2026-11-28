@@ -12,7 +12,7 @@
 //! polling the children in bounded slices. That task belongs to the
 //! session's kernel: when the kernel is killed its loops are aborted and
 //! the runs are gone, while the children stay with the supervisor
-//! (`rlm-list-subagents` still sees them).
+//! (`agent-roster #:children` still sees them).
 //!
 //! A run is locked only between two waits, never across one, so a stop, a
 //! resume or a status read lands promptly while the loop waits on the

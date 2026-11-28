@@ -413,7 +413,41 @@ async fn message_host_handler_round_trip() {
     let no_role = send_request(&send, json!({ "message": "hi" })).unwrap_err();
     assert_eq!(
         no_role.to_string(),
+        "agent_message.send needs receiver_role \"parent\" or a receiver_name"
+    );
+    let bad_role =
+        send_request(&send, json!({ "message": "hi", "receiver_role": "cousin" })).unwrap_err();
+    assert_eq!(
+        bad_role.to_string(),
         "agent_message.send receiver_role must be \"parent\", \"sibling\", or \"child\""
+    );
+    // A name alone names a sibling or a child, whichever it matches.
+    let unroled = [
+        send_request(&send, json!({ "message": "hi", "receiver_name": "scout" })),
+        send_request(
+            &send,
+            json!({ "message": "hi", "receiver_name": "sub-kid1" }),
+        ),
+    ]
+    .map(|receipt| {
+        let receipt = receipt.unwrap();
+        (
+            receipt["target"]["activeSessionId"].clone(),
+            receipt["receiverRole"].clone(),
+        )
+    });
+    assert_eq!(
+        unroled,
+        [
+            (json!("sib-1"), json!("sibling")),
+            (json!("kid-1"), json!("child"))
+        ]
+    );
+    let unroled_missing =
+        send_request(&send, json!({ "message": "hi", "receiver_name": "ghost" })).unwrap_err();
+    assert_eq!(
+        unroled_missing.to_string(),
+        "No sibling or child matches \"ghost\""
     );
     let missing_name =
         send_request(&send, json!({ "message": "hi", "receiver_role": "child" })).unwrap_err();
@@ -466,7 +500,7 @@ async fn message_host_handler_round_trip() {
     let removed = send_request(&list_agents, json!({})).unwrap_err();
     assert_eq!(
         removed.to_string(),
-        "agent_message.list_agents was removed; the family roster is `(agent-observe-list)`."
+        "agent_message.list_agents was removed; the family roster is `(agent-roster)`."
     );
 }
 

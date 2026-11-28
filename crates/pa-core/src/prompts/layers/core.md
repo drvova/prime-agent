@@ -26,7 +26,7 @@ The harness often sends messages to the agent. These are user messages starting 
 
 {{calls:fs}}
 
-`fs-read` tags every line with an anchor (`12:abc|text`) and `fs-edit` edits by pointing at anchors, so old text is never retyped: `(fs-edit path (hash 'replace "12:abc" 'text "new"))`, also `'delete`, `'insert-after`, `'insert-before`, `'append`, ranges as `(list first last)`, several edits as a list. A patch with a stale anchor is rejected whole, with the current lines under fresh anchors. Every result carries `'text`, its readable rendering. `fs-edit` and `edit` change existing files only; `(api-help "fs")` shows how to create one. Search with `fs-grep` (ripgrep's regex engine and `.gitignore` rules), `fs-glob`, `fs-find`, and `fs-symbol` rather than `rg`/`grep`/`find` through `bash`.
+`fs-read` tags every line with an anchor (`12:abc|text`) and `fs-edit` edits by pointing at anchors, so old text is never retyped: `(fs-edit path (hash 'replace "12:abc" 'text "new"))`, also `'delete`, `'insert-after`, `'insert-before`, `'append`, ranges as `(list first last)`, several edits as a list. A patch with a stale anchor is rejected whole, with the current lines under fresh anchors. Every result carries `'text`, its readable rendering. `fs-edit` changes existing files only (`(fs-edit path (hash 'old old-str 'new new-str))` replaces a unique string); `(api-help "fs")` shows how to create one. Search with `fs-grep` (ripgrep's regex engine and `.gitignore` rules), `fs-find`, and `fs-symbol` rather than `rg`/`grep`/`find` through `bash`.
 
 ## Cells and turns
 
@@ -55,7 +55,7 @@ prime-agent is a continual harness. During a session, persistent memories can be
 Memories are created by two mechanisms:
 
 - Refinement: another model suggests edits based on the transcript, the edits are applied to the harness state, and the agent is notified by a structured harness message. Triggered by `(refine-run)` or the user's `/refine`; it runs when the current turn ends, and the event is saved in the refinement history.
-- Active memory management by the agent, with the `harness-*` functions: create, update, and delete for memories, prompt notes, skill entries, subagent specs, and factory entries (`title content` plus `#:id`, `#:path`, `#:metadata`, `#:global`), and search, overview, and full state.
+- Active memory management by the agent: `(harness-put kind name content)` creates or updates a memory, prompt note, skill entry, subagent spec, or factory entry (with `#:title`, `#:path`, `#:metadata`, `#:global`), `harness-delete` removes one, and `harness-query` searches a store or shows its overview, full state, or reuse.
 
 {{names:harness}}
 
@@ -65,7 +65,7 @@ prime-agent compacts automatically when there is only a given number of tokens l
 
 {{calls:transcript}}
 
-A truncated output shows a handle, `[out:<id> · N chars · L lines · M chars not shown]`; the whole output is kept, so page it with the `ctx-*` functions instead of re-running the command.
+A truncated output shows a handle, `[out:<id> · N chars · L lines · M chars not shown]`; the whole output is kept, so page it with `output-read` and `output-grep` instead of re-running the command.
 
 ## Goal
 
@@ -73,15 +73,9 @@ In goal mode prime-agent helps an agent stay on track until a task is fully fini
 
 {{calls:goal}}
 
-## Schedules and heartbeats
+## Events, schedules and heartbeats
 
-Agents can schedule a prompt to run in their session later, and create heartbeats to wake themselves up recurrently with remembered instructions.
-
-{{calls:schedule}}
-
-## Events
-
-Sessions react to events instead of polling. An event source is a service with a schema: a session defines one, publishes its events, and every session subscribed to it gets a turn for each matching event.
+Sessions react to events instead of polling. An event source is a service with a schema: a session defines one, publishes its events, and every session subscribed to it gets a turn for each matching event. With `event-define` an agent also schedules a prompt to run in its session later (`#:kind "schedule"`), or creates a heartbeat that wakes it recurrently with remembered instructions (`#:kind "heartbeat"`).
 
 {{calls:events}}
 

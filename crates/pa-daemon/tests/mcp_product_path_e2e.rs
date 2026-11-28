@@ -154,8 +154,8 @@ fn mcp_cell(receipt_path: &Path) -> String {
                 (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_path:?} (to-string e)) (error (to-string e)))
-    (let* ([tools (mcp-list-tools "fixture-echo")]
-           [result (mcp-call-tool "fixture-echo" "echo" (hash 'message "hello from the daemon e2e"))]
+    (let* ([tools (mcp-tools "fixture-echo")]
+           [result (mcp-call "fixture-echo" "echo" (hash 'message "hello from the daemon e2e"))]
            [payload (value->jsexpr-string (hash 'tools tools 'result result))])
       (record {receipt_path:?} payload)
       (displayln payload))))
@@ -357,7 +357,7 @@ fn begin_login_host_request_is_live_in_the_worker() {
        [probe (lambda (payload)
                 (with-handler
                   (lambda (e) (hash 'error (trim (error-object-message e))))
-                  (begin (host-request "mcp.begin_login" payload) (hash 'ok #t))))])
+                  (begin (%host-request "mcp.begin_login" payload) (hash 'ok #t))))])
   (with-handler
     (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
     (let ([outcomes (value->jsexpr-string (list (probe (hash 'server "unknown-e2e")) (probe (hash))))])

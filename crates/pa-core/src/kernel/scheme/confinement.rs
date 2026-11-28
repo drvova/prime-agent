@@ -398,7 +398,7 @@ pub(super) fn refusal(_arguments: &[SteelVal]) -> Result<SteelVal, SteelErr> {
     Err(SteelErr::new(
         ErrorKind::Generic,
         "this Steel builtin is closed in a session's kernel: read and write files with \
-         fs-read, fs-write and fs-edit, find them with fs-glob, fs-find and fs-grep, and run \
+         fs-read, fs-write and fs-edit, find them with fs-find and fs-grep, and run \
          commands with bash"
             .to_string(),
     ))

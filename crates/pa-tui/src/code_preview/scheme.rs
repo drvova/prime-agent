@@ -130,12 +130,12 @@ fn string_literal(token: &str) -> String {
 /// (`crates/pa-core/src/prompts/capabilities/`); a name this list misses
 /// only costs its cell the named title.
 pub(crate) fn is_kernel_function(head: &str) -> bool {
-    const FAMILIES: [&str; 20] = [
+    const FAMILIES: [&str; 22] = [
         "bash-",
         "fs-",
         "rlm-",
-        "agent-message-",
-        "agent-observe-",
+        "agent-",
+        "event-",
         "web-",
         "mcp-",
         "worktree-",
@@ -146,6 +146,8 @@ pub(crate) fn is_kernel_function(head: &str) -> bool {
         "refine-",
         "compact-",
         "ctx-",
+        "output-",
+        "history-",
         "cell-",
         "checkpoint-",
         "schedule-",
@@ -154,7 +156,16 @@ pub(crate) fn is_kernel_function(head: &str) -> bool {
     ];
     matches!(
         head,
-        "bash" | "edit" | "ask" | "better" | "notify" | "api-help" | "attach-image"
+        "bash"
+            | "edit"
+            | "ask"
+            | "better"
+            | "notify"
+            | "api-help"
+            | "attach-image"
+            | "compact"
+            | "end-turn"
+            | "session-info"
     ) || FAMILIES.iter().any(|family| head.starts_with(family))
 }
 

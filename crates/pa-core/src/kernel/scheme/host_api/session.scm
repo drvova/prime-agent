@@ -1,14 +1,15 @@
 ;; The session's own state: context, harness refinement, the goal, the
-;; model, settings, usage, paged-out output, checkpoints, and schedules.
-
-;; Context usage: {tokens, context_window, percent, scheduled}.
-(define (compact-status)
-  (%host-call "compact.status" (hash)))
+;; model, paged-out output, and checkpoints.
 
 ;; Schedule context compaction for when the turn ends: {scheduled: #t}, or
-;; {scheduled: #f, reason}. `instructions` focus the summary.
-(define (compact-run [instructions #f])
-  (%host-call "compact.run" (%options (hash) 'instructions instructions)))
+;; {scheduled: #f, reason}. `instructions` focus the summary. With
+;; #:status #t it schedules nothing and returns the context usage:
+;; {tokens, context_window, percent, scheduled}.
+(define (compact [instructions #f] #:status [status #f])
+  (cond
+    [(and status instructions) (error "compact: #:status takes no instructions")]
+    [status (%host-call "compact.status" (hash))]
+    [else (%host-call "compact.run" (%options (hash) 'instructions instructions))]))
 
 ;; Refinement state: {pending, in_flight}.
 (define (refine-status)
@@ -16,8 +17,19 @@
 
 ;; Schedule harness refinement for when the turn ends: {scheduled: #t}, or
 ;; {scheduled: #f, reason}. #:global #t targets the cross-session store.
-(define (refine-run [instructions #f] #:global [global #f])
-  (%host-call "refine.run" (%options (hash) 'instructions instructions 'global global)))
+;; With #:plan-only #t nothing is scheduled: the reply is a suggested
+;; diagnose, update, validate plan for the observation `instructions`, a
+;; list of steps.
+(define (refine-run [instructions #f] #:global [global #f] #:plan-only [plan-only #f])
+  (cond
+    [(and plan-only global) (error "refine-run: #:plan-only stores nothing, so it takes no #:global")]
+    [plan-only
+     (unless (string? instructions)
+       (error "refine-run: #:plan-only needs the observation as its instructions"))
+     (list (string-append "Diagnose the repeated failure or opportunity: " instructions)
+           "Update the smallest useful prompt note, memory item, skill, or subagent spec."
+           "Run the next action with the changed harness state, then record the outcome.")]
+    [else (%host-call "refine.run" (%options (hash) 'instructions instructions 'global global))]))
 
 ;; The thread goal: {goal, remaining_tokens, completion_budget_report}.
 (define (goal-get)
@@ -43,27 +55,11 @@
 (define (goal-complete)
   (%host-call "goal.complete" (hash)))
 
-;; The session model: {id, provider, input, contextWindow, thinkingLevel}.
-(define (model-info)
-  (%host-call "model.info" (hash)))
-
 ;; Change this session's thinking level from the next model call ("off",
 ;; "minimal", "low", "medium", "high", "xhigh", "max"); the effective level.
 ;; Raises unless the user allowed it.
 (define (model-set-effort level)
   (hash-ref (%host-call "model.set_effort" (hash 'level level)) 'thinkingLevel))
-
-;; The session's effective settings: {session, host}, each as the host
-;; reports it.
-(define (settings-get)
-  (hash 'session (%host-call "settings.session" (hash))
-        'host (%host-call "settings.host" (hash))))
-
-;; This session's cost and tokens and the provider quota windows:
-;; {session, quotas}. #:refresh #t re-reads every provider's quota now.
-(define (usage-get #:refresh [refresh #f])
-  (hash 'session (%host-call "usage.session" (hash))
-        'quotas (%host-call "usage.quotas" (hash 'refresh refresh))))
 
 ;; One paged-out output read, or an error saying why the handle has no
 ;; stored text.
@@ -79,31 +75,33 @@
 
 ;; Lines #:start onward (0-based), at most #:lines, of a paged-out output:
 ;; {handle, start, end, storedLines, text, truncated, ...}. Read on from end.
-(define (ctx-page handle #:start [start 0] #:lines [lines 200])
-  (%ctx-read "ctx-page"
-             "ctx.page"
-             (hash 'handle handle
-                   'start (%integer "ctx-page" "#:start" start)
-                   'lines (%integer "ctx-page" "#:lines" lines))))
-
-;; The last `n` lines of a paged-out output.
-(define (ctx-tail handle [n 200])
-  (%ctx-read "ctx-tail" "ctx.tail" (hash 'handle handle 'n (%integer "ctx-tail" "n" n))))
+;; #:tail n reads its last n lines instead; #:info #t its state and counts,
+;; which never raises for a handle without stored text.
+(define (output-read handle #:start [start #f] #:lines [lines #f] #:tail [tail #f] #:info [info #f])
+  (cond
+    [(and info (or start lines tail))
+     (error "output-read: #:info takes no #:start, #:lines or #:tail")]
+    [(and tail (or start lines))
+     (error "output-read: #:tail takes no #:start or #:lines")]
+    [info (%host-call "ctx.info" (hash 'handle handle))]
+    [tail
+     (%ctx-read "output-read" "ctx.tail" (hash 'handle handle 'n (%integer "output-read" "#:tail" tail)))]
+    [else
+     (%ctx-read "output-read"
+                "ctx.page"
+                (hash 'handle handle
+                      'start (%integer "output-read" "#:start" (or start 0))
+                      'lines (%integer "output-read" "#:lines" (or lines 200))))]))
 
 ;; Lines of a paged-out output matching the regex `pattern`, with #:context
 ;; lines around each: {matches, shown, text, truncated, ...}.
-(define (ctx-grep handle pattern #:context [context 2] #:max-matches [max-matches 50])
-  (%ctx-read "ctx-grep"
+(define (output-grep handle pattern #:context [context 2] #:max-matches [max-matches 50])
+  (%ctx-read "output-grep"
              "ctx.grep"
              (hash 'handle handle
                    'pattern pattern
-                   'context (%integer "ctx-grep" "#:context" context)
-                   'max_matches (%integer "ctx-grep" "#:max-matches" max-matches))))
-
-;; A handle's state and counts; never raises for a handle without stored
-;; text.
-(define (ctx-info handle)
-  (%host-call "ctx.info" (hash 'handle handle)))
+                   'context (%integer "output-grep" "#:context" context)
+                   'max_matches (%integer "output-grep" "#:max-matches" max-matches))))
 
 ;; Snapshot the workspace now: {id, label, created_at}.
 (define (checkpoint-create [label ""])
@@ -121,66 +119,3 @@
     (if (equal? (hash-ref reply 'status) "disabled")
         (error (hash-ref reply 'message))
         reply)))
-
-;; Schedule `prompt` to run in this session later; the job. Pass exactly one
-;; of #:at (an ISO-8601 time, "in 30m", or a delay in seconds), #:every
-;; ("30m", "2h", or seconds), or #:cron (five fields, UTC). #:label names it
-;; in the list.
-(define (schedule-add prompt #:at [at #f] #:every [every #f] #:cron [cron #f] #:label [label #f])
-  (hash-ref (%host-call "schedule.add"
-                        (%options (hash 'prompt prompt)
-                                  'at (cond
-                                        [(not (number? at)) at]
-                                        [(> at 0) (%utc-after (exact->inexact at))]
-                                        [else (error "schedule-add: a numeric #:at is a delay in seconds and must be positive")])
-                                  'every (if (number? every)
-                                             (string-append (number->string (exact (round every))) "s")
-                                             every)
-                                  'cron cron
-                                  'label label))
-            'job))
-
-;; This session's scheduled jobs, soonest first; #:include-inactive #t adds
-;; finished and cancelled ones.
-(define (schedule-list #:include-inactive [include-inactive #f])
-  (hash-ref (%host-call "schedule.list" (hash 'include_inactive include-inactive)) 'jobs))
-
-;; Cancel one of this session's jobs by id; the cancelled job.
-(define (schedule-cancel id)
-  (hash-ref (%host-call "schedule.cancel" (hash 'id id)) 'job))
-
-;; This session's internal recurring heartbeats.
-(define (rlm-heartbeat-list #:include-inactive [include-inactive #f])
-  (%host-call "rlm_heartbeat.list" (hash 'include_inactive include-inactive)))
-
-;; Create a recurring heartbeat that prompts this session with
-;; `instruction`. #:delivery-mode is "steer" (interrupt a busy turn, the
-;; default) or "follow_up" (wait for it).
-(define (rlm-heartbeat-create instruction
-                              #:interval [interval #f]
-                              #:label [label #f]
-                              #:delivery-mode [delivery-mode #f])
-  (%host-call "rlm_heartbeat.create"
-              (%options (hash 'instruction instruction)
-                        'interval interval
-                        'label label
-                        'delivery_mode delivery-mode)))
-
-;; Update one heartbeat; #:status is "pause" or "resume".
-(define (rlm-heartbeat-update id
-                              #:instruction [instruction #f]
-                              #:interval [interval #f]
-                              #:label [label #f]
-                              #:status [status #f]
-                              #:delivery-mode [delivery-mode #f])
-  (%host-call "rlm_heartbeat.update"
-              (%options (hash 'id id)
-                        'instruction instruction
-                        'interval interval
-                        'label label
-                        'status status
-                        'delivery_mode delivery-mode)))
-
-;; Cancel one heartbeat.
-(define (rlm-heartbeat-delete id)
-  (%host-call "rlm_heartbeat.delete" (hash 'id id)))

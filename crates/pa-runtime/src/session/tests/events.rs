@@ -10,7 +10,7 @@ use pa_types::event_log::MAX_HOPS;
 use super::*;
 
 /// The source the examples define, with its schema.
-const DEFINE: &str = "(event-source-define \"deploy.finished\" \
+const DEFINE: &str = "(event-define \"deploy.finished\" \
      (hash 'type \"object\" 'properties (hash 'env (hash 'type \"string\")) 'required (list \"env\")))";
 
 /// Opens a second session in the bed's runtime.
@@ -325,7 +325,7 @@ fn delivered(
 async fn a_timer_source_starts_a_turn_in_its_subscriber_for_the_run_only() {
     let mut bed = bed(json!([
         // An `at` time that has passed fires once, as the timer starts.
-        eval_cell("(event-source-define \"tick\" #f #:timer (hash 'at \"2020-01-01T00:00:00Z\"))"),
+        eval_cell("(event-define \"tick\" #f #:timer (hash 'at \"2020-01-01T00:00:00Z\"))"),
         { "text": "defined" },
         eval_cell("(event-subscribe \"tick\" \"Tick.\")"),
         { "text": "subscribed" },
@@ -373,7 +373,7 @@ async fn a_timer_source_starts_a_turn_in_its_subscriber_for_the_run_only() {
 #[tokio::test]
 async fn a_watch_source_starts_one_turn_for_a_burst_of_writes() {
     let mut bed = bed(json!([
-        eval_cell("(event-source-define \"inbox\" #f #:watch (hash 'path \"inbox\" 'debounce-ms 500))"),
+        eval_cell("(event-define \"inbox\" #f #:watch (hash 'path \"inbox\" 'debounce-ms 500))"),
         { "text": "defined" },
         eval_cell("(event-subscribe \"inbox\" \"Read the inbox.\")"),
         { "text": "subscribed" },
@@ -429,14 +429,14 @@ async fn a_watch_source_starts_one_turn_for_a_burst_of_writes() {
 #[tokio::test]
 async fn timer_and_watch_definitions_are_refused_outside_their_rules() {
     let mut bed = bed(json!([
-        eval_cell("(event-source-define \"outside\" #f #:watch (hash 'path \"..\"))"),
+        eval_cell("(event-define \"outside\" #f #:watch (hash 'path \"..\"))"),
         eval_cell(DEFINE),
-        eval_cell("(event-source-define \"deploy.finished\" #f #:timer (hash 'every \"5m\"))"),
-        eval_cell("(event-source-define \"both\" #f #:timer (hash 'every \"5m\") #:watch (hash 'path \".\"))"),
-        eval_cell("(event-source-define \"tick\" (hash 'type \"object\") #:timer (hash 'every \"5m\"))"),
-        eval_cell("(event-source-define \"tick\" #f #:timer (hash 'every \"5m\"))"),
+        eval_cell("(event-define \"deploy.finished\" #f #:timer (hash 'every \"5m\"))"),
+        eval_cell("(event-define \"both\" #f #:timer (hash 'every \"5m\") #:watch (hash 'path \".\"))"),
+        eval_cell("(event-define \"tick\" (hash 'type \"object\") #:timer (hash 'every \"5m\"))"),
+        eval_cell("(event-define \"tick\" #f #:timer (hash 'every \"5m\"))"),
         eval_cell("(event-publish \"tick\" (hash))"),
-        eval_cell("(event-source-define \"fast\" #f #:timer (hash 'every \"0s\"))"),
+        eval_cell("(event-define \"fast\" #f #:timer (hash 'every \"0s\"))"),
         { "text": "refused" },
     ]))
     .await;
@@ -469,10 +469,10 @@ async fn timer_and_watch_definitions_are_refused_outside_their_rules() {
 #[tokio::test]
 async fn removing_a_timer_source_stops_it() {
     let mut bed = bed(json!([
-        eval_cell("(event-source-define \"tick\" #f #:timer (hash 'every \"1h\"))"),
+        eval_cell("(event-define \"tick\" #f #:timer (hash 'every \"1h\"))"),
         eval_cell("(event-subscribe \"tick\" \"Tick.\")"),
         { "text": "subscribed" },
-        eval_cell("(hash-ref (event-source-remove \"tick\") 'subscriptionsRemoved)"),
+        eval_cell("(hash-ref (event-remove \"tick\") 'subscriptionsRemoved)"),
         { "text": "removed" },
     ]))
     .await;

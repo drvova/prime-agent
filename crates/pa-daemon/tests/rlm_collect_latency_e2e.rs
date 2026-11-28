@@ -300,13 +300,13 @@ async fn a_collect_of_many_running_children_ends_at_its_timeout() {
     );
 }
 
-/// A child parked in `agent-message-wait` for its parent's message cannot settle until the
+/// A child parked in `event-wait` for its parent's message cannot settle until the
 /// parent's cell returns, so a collect does not wait for it: the row says the child is
 /// waiting on the caller. Before, both sides ran out their timeouts (25 s for a 20 s collect).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_collect_does_not_wait_for_a_child_that_waits_on_its_parent() {
     let mut family = Family::start();
-    let cell = r#"(agent-message-wait #:timeout-ms 120000 #:sender-role "parent")"#;
+    let cell = r#"(event-wait #:timeout-ms 120000 #:sender-role "parent")"#;
     family
         .spawn(
             "asker",

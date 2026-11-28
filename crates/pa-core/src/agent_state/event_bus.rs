@@ -219,7 +219,7 @@ impl EventBusState {
                     {
                         bail!(
                             "event source {name:?} is defined already as a {} source; remove it \
-                             (event-source-remove) before defining it again another way",
+                             (event-remove) before defining it again another way",
                             existing.kind().as_str()
                         )
                     }

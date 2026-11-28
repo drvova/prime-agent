@@ -60,7 +60,7 @@ async fn a_refused_call_is_the_cells_error_and_never_runs() {
     let mut errors = Vec::new();
     for code in [
         "(bash \"touch made\")".to_string(),
-        "(host-request \"echo\" (hash))".to_string(),
+        "(%host-request \"echo\" (hash))".to_string(),
         "(defmacro (escape stx) (bash \"touch made\") ''1) (escape 1)".to_string(),
     ] {
         let result = kernel

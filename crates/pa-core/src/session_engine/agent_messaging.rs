@@ -538,7 +538,7 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
         host_handler(|_payload| {
             Box::pin(async {
                 Err(anyhow::anyhow!(
-                    "agent_message.list_agents was removed; the family roster is `(agent-observe-list)`."
+                    "agent_message.list_agents was removed; the family roster is `(agent-roster)`."
                 ))
             })
         }),
@@ -613,24 +613,33 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
                     return Ok(json!({ "receipts": receipts }));
                 }
                 // Role-addressed form: resolve the receiver through the
-                // family roster, then send once.
-                let role = match data.get("receiver_role").and_then(Value::as_str) {
-                    Some("parent") => AgentFamilyRelationship::Parent,
-                    Some("sibling") => AgentFamilyRelationship::Sibling,
-                    Some("child") => AgentFamilyRelationship::Child,
-                    _ => {
+                // family roster, then send once. A name without a role is
+                // a sibling or a child, whichever it names.
+                let role = match data.get("receiver_role").filter(|value| !value.is_null()) {
+                    None => None,
+                    Some(Value::String(role)) if role == "parent" => {
+                        Some(AgentFamilyRelationship::Parent)
+                    }
+                    Some(Value::String(role)) if role == "sibling" => {
+                        Some(AgentFamilyRelationship::Sibling)
+                    }
+                    Some(Value::String(role)) if role == "child" => {
+                        Some(AgentFamilyRelationship::Child)
+                    }
+                    Some(_) => {
                         return Err(anyhow::anyhow!(
                             "agent_message.send receiver_role must be \"parent\", \"sibling\", or \"child\""
                         ))
                     }
                 };
                 let receiver_name = data.get("receiver_name").filter(|value| !value.is_null());
-                if role == AgentFamilyRelationship::Parent && receiver_name.is_some() {
+                let parent = role == Some(AgentFamilyRelationship::Parent);
+                if parent && receiver_name.is_some() {
                     return Err(anyhow::anyhow!(
                         "agent_message.send receiver_name must be omitted for parent messages"
                     ));
                 }
-                let selector: Option<&str> = if role == AgentFamilyRelationship::Parent {
+                let selector: Option<&str> = if parent {
                     None
                 } else {
                     match receiver_name
@@ -639,6 +648,11 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
                         .filter(|name| !name.is_empty())
                     {
                         Some(name) => Some(name),
+                        None if role.is_none() => {
+                            return Err(anyhow::anyhow!(
+                                "agent_message.send needs receiver_role \"parent\" or a receiver_name"
+                            ))
+                        }
                         None => {
                             return Err(anyhow::anyhow!(
                                 "agent_message.send receiver_name is required for sibling and child messages"
@@ -655,30 +669,35 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
                 let family = controller.family().await?;
                 let matches: Vec<AgentFamilyMember> = family
                     .into_iter()
-                    .filter(|member| {
-                        member.relationship == role
-                            && (role == AgentFamilyRelationship::Parent
-                                || selector.is_some_and(|selector| {
-                                    member.matches_selector(selector)
-                                }))
+                    .filter(|member| match role {
+                        Some(AgentFamilyRelationship::Parent) => {
+                            member.relationship == AgentFamilyRelationship::Parent
+                        }
+                        Some(role) => {
+                            member.relationship == role
+                                && selector.is_some_and(|selector| member.matches_selector(selector))
+                        }
+                        None => {
+                            member.relationship != AgentFamilyRelationship::Parent
+                                && selector.is_some_and(|selector| member.matches_selector(selector))
+                        }
                     })
                     .collect();
+                let named = role.map_or("sibling or child", |role| role.as_str());
                 // Exactly one match resolves; zero or many keep the TS
                 // error strings.
                 let member = match matches.as_slice() {
                     [only] => only,
                     [] => {
-                        return Err(anyhow::anyhow!(
-                            if role == AgentFamilyRelationship::Parent {
-                                "No parent matches the current agent".to_string()
-                            } else {
-                                format!("No {role} matches {rendered_receiver}")
-                            }
-                        ))
+                        return Err(anyhow::anyhow!(if parent {
+                            "No parent matches the current agent".to_string()
+                        } else {
+                            format!("No {named} matches {rendered_receiver}")
+                        }))
                     }
                     _ => {
                         return Err(anyhow::anyhow!(
-                            format!("{role} selector {rendered_receiver} is ambiguous")
+                            format!("{named} selector {rendered_receiver} is ambiguous")
                         ))
                     }
                 };
@@ -687,7 +706,7 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
                     .send_agent_message(AgentMessageSendInput {
                         target: member.id.clone(),
                         message: message.clone(),
-                        receiver_role: Some(role),
+                        receiver_role: Some(member.relationship),
                         kind: AgentMessageKind::Direct,
                     })
                     .await?;

@@ -163,7 +163,7 @@ async fn todo_and_ask_round_trip_through_a_real_kernel_and_survive_a_reload() {
                                         (hash-ref item 'text) (hash-try-get item 'note))))
                      (hash-ref todos 'items)))
          (define created (todo-set (list \"read the schema\" (hash 'text \"migrate\" 'status \"in_progress\"))))
-         (define todos (todo-update \"1\" #:status \"done\" #:note \"3 tables\"))
+         (define todos (todo-set (hash 'id \"1\" 'status \"done\" 'note \"3 tables\") #:merge #t))
          (define answer (ask \"Which database?\" (list \"sqlite\" \"postgres\") #:default \"sqlite\"))
          (show todos)
          (displayln (list (hash-ref answer 'status) (hash-ref answer 'answer)))",

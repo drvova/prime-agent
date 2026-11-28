@@ -128,7 +128,7 @@ async fn a_skills_scheme_source_is_loaded_at_kernel_start_and_a_markdown_skill_i
     assert_eq!(
         (
             value(kernel, "(list (measure-area 12) measure-unit-area)").await,
-            value(kernel, "(skills-unavailable)").await,
+            value(kernel, r#"(session-info "skills-unavailable")"#).await,
             skills.reports(),
         ),
         (Ok(json!([144, 1])), Ok(json!([])), Vec::new())
@@ -197,7 +197,7 @@ async fn a_skill_whose_source_fails_is_reported_by_name_and_the_other_skills_sti
         .collect();
     let listed = value(
         kernel,
-        "(map (lambda (row) (hash-ref row 'skill)) (skills-unavailable))",
+        "(map (lambda (row) (hash-ref row 'skill)) (session-info \"skills-unavailable\"))",
     )
     .await;
     assert_eq!(
@@ -276,7 +276,7 @@ async fn a_reload_loads_new_and_changed_sources_after_its_cell_and_reports_what_
     let after = value(kernel, "(list (greet-word) (torn-open) (added-here))").await;
     let still_failing = value(
         kernel,
-        "(map (lambda (row) (hash-ref row 'skill)) (skills-unavailable))",
+        "(map (lambda (row) (hash-ref row 'skill)) (session-info \"skills-unavailable\"))",
     )
     .await;
     let reported: Vec<Vec<String>> = skills
@@ -355,7 +355,7 @@ fn the_notice_names_each_unavailable_skill_with_its_error_and_the_way_to_load_it
             message.details,
         ),
         (
-            "[scheme-skills-unavailable]\n\nThese skills' Scheme source failed to load into the Scheme kernel, so the functions they define are missing or incomplete:\n- websearch: skill.scm: FreeIdentifier: web-get\n- lint: scheme/10-rules.scm: Parse: unexpected EOF\n\nFix the source and call `(rlm-reload)` to load it again, or use another approach. `(skills-unavailable)` lists what is still failing; each skill's SKILL.md stays readable.".to_string(),
+            "[scheme-skills-unavailable]\n\nThese skills' Scheme source failed to load into the Scheme kernel, so the functions they define are missing or incomplete:\n- websearch: skill.scm: FreeIdentifier: web-get\n- lint: scheme/10-rules.scm: Parse: unexpected EOF\n\nFix the source and call `(rlm-reload)` to load it again, or use another approach. `(session-info \"skills-unavailable\")` lists what is still failing; each skill's SKILL.md stays readable.".to_string(),
             "scheme_skills_unavailable".to_string(),
             true,
             Some(json!({"skills": ["websearch", "lint"]})),

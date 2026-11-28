@@ -398,7 +398,7 @@ fn cold_reopen_kernel_uses_saved_cwd_and_explicit_override() {
     std::fs::write(&script, serde_json::json!({
         "engine": "faux", "responses": [
             {"content": [{"type": "toolCall", "name": "eval", "id": "kernel-cwd",
-                "arguments": {"code": "(bash \"pwd > kernel-cwd.txt\")\n(displayln (session-cwd))"}}]},
+                "arguments": {"code": "(bash \"pwd > kernel-cwd.txt\")\n(displayln (session-info \"cwd\"))"}}]},
             {"text": "done"}
         ]
     }).to_string()).unwrap();

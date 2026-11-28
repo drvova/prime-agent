@@ -10,7 +10,7 @@ A skill is a directory with a `SKILL.md` file (YAML frontmatter + markdown instr
 | Kind | What it is | When to use |
 |---|---|---|
 | markdown | `SKILL.md` plus optional scripts, references, and assets | Workflows, CLI recipes, domain knowledge, multi-step instructions |
-| scheme | A markdown skill that also carries Scheme source (`skill.scm`, `scheme/*.scm`) the agent's kernel loads | Capabilities that are naturally one call from a cell: wrappers around `bash`, `web-read`, or `mcp-call-tool`, parsers, small computations |
+| scheme | A markdown skill that also carries Scheme source (`skill.scm`, `scheme/*.scm`) the agent's kernel loads | Capabilities that are naturally one call from a cell: wrappers around `bash`, `web-read`, or `mcp-call`, parsers, small computations |
 
 Before writing Scheme source for a skill, read [references/scheme-skills.md](references/scheme-skills.md) for the contract.
 
@@ -77,7 +77,7 @@ Keep `SKILL.md` short: the decision flow, the common commands, the contract. Pus
 After writing the skill:
 
 1. Re-read the frontmatter and check every rule in the table above, especially that `name` matches the directory name and the description is non-empty.
-2. Run `(rlm-reload)` in the kernel: the new skill joins this session's skill list from the next model call, and its Scheme source is loaded after that cell, so its functions are callable from the next cell. The user's `/reload` does the same; other sessions pick skills up on start. Loading problems (bad name, missing description, name collisions) are in the reply's `diagnostics`; `(skills-unavailable)` lists skills whose Scheme source failed to load, with the error.
+2. Run `(rlm-reload)` in the kernel: the new skill joins this session's skill list from the next model call, and its Scheme source is loaded after that cell, so its functions are callable from the next cell. The user's `/reload` does the same; other sessions pick skills up on start. Loading problems (bad name, missing description, name collisions) are in the reply's `diagnostics`; `(session-info "skills-unavailable")` lists skills whose Scheme source failed to load, with the error.
 3. A loaded skill is also invocable as `/skill:<name>`, which the user can try directly.
 
 For skills with Scheme source, also run the checks in [references/scheme-skills.md](references/scheme-skills.md).

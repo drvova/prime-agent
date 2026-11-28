@@ -143,14 +143,14 @@ fn write_faux_script(dir: &Path, name: &str, responses: &Value) -> PathBuf {
 /// the failure) on disk. A replayed turn replaces the earlier record.
 fn send_cell(message: &str, receiver_name: &str, receipt_path: &Path) -> String {
     format!(
-        r#"(let ([record (lambda (path text)
+        r"(let ([record (lambda (path text)
                 (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_path:?} (to-string e)))
     (record {receipt_path:?}
             (value->jsexpr-string
-              (agent-message-send {message:?} #:receiver-role "sibling" #:receiver-name {receiver_name:?})))))
-"#,
+              (agent-send {message:?} #:to {receiver_name:?})))))
+",
         receipt_path = receipt_path.display().to_string(),
         error_path = receipt_path.with_extension("error").display().to_string(),
     )

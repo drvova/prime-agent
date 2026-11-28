@@ -3,7 +3,7 @@
 //! tmux user-level verifier for the scoped agents view's Traffic pane: the real `prime-agent`
 //! binary runs in a private tmux server against its own daemon, an isolated HOME, the real
 //! kernel, and the scripted faux provider. The root spawns two children; each child messages
-//! its sibling through `agent-message-send`. The test opens the scoped agents view from the
+//! its sibling through `agent-send`. The test opens the scoped agents view from the
 //! dock, presses `m`, and polls the pane until both directions list (never a fixed sleep).
 
 mod support;
@@ -117,12 +117,11 @@ fn start(dir: &Path) -> Pane {
       (let ([siblings (filter (lambda (agent)
                                 (and (equal? (hash-try-get agent 'relationship) "sibling")
                                      (string? (hash-try-get agent 'sessionName))))
-                              (hash-ref (agent-observe-list) 'agents))])
+                              (hash-ref (agent-roster) 'agents))])
         (cond
           [(pair? siblings)
-           (agent-message-send "contract ready for review"
-                               #:receiver-role "sibling"
-                               #:receiver-name (hash-ref (car siblings) 'sessionName))]
+           (agent-send "contract ready for review"
+                               #:to (hash-ref (car siblings) 'sessionName))]
           [(> tries 0) (bash "sleep 0.05") (loop (- tries 1))]
           [else (error "no sibling appeared")]))))
 "#,

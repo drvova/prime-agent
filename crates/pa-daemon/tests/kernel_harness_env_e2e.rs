@@ -1,5 +1,5 @@
 //! Kernel harness e2e: a persisted session's kernel writes the session-local
-//! harness store (`harness-create-memory` without `#:global`), and the global
+//! harness store (`harness-put` without `#:global`), and the global
 //! store only when asked, whatever harness dirs the daemon's own env names.
 #![cfg(unix)]
 
@@ -139,9 +139,9 @@ fn harness_cell(receipt: &Path) -> String {
   (with-handler
     (lambda (e) (hash 'ok #f 'error (to-string e)))
     (begin
-      (harness-create-memory "kernel session-local memory" "persisted from the session kernel" #:id "kernel-local-memory")
-      (hash-ref (hash-ref (hash-ref (harness-state) 'entries) 'memory) 'kernel-local-memory)
-      (harness-create-memory "kernel global memory" "persisted from the session kernel" #:id "kernel-global-memory" #:global #t)
+      (harness-put "memory" "kernel-local-memory" "persisted from the session kernel" #:title "kernel session-local memory")
+      (hash-ref (hash-ref (hash-ref (harness-query #:view "state") 'entries) 'memory) 'kernel-local-memory)
+      (harness-put "memory" "kernel-global-memory" "persisted from the session kernel" #:title "kernel global memory" #:global #t)
       (hash 'ok #t 'error ""))))
 (fs-write {receipt_path:?} (value->jsexpr-string receipt))
 "#,

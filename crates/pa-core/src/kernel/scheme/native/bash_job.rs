@@ -63,7 +63,7 @@ const EXIT_PIPE_GRACE: Duration = Duration::from_millis(500);
 /// Finished jobs the kernel still answers for, oldest dropped first.
 const HISTORY_CAP: usize = 64;
 /// Output longer than this is also kept in the session's spill store, so the
-/// result names a handle the `ctx-*` readers page.
+/// result names a handle the `output-*` readers page.
 const SPILL_OVER_CHARS: usize = 8_192;
 
 /// The environment every command gets over the session's own and its

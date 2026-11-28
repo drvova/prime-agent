@@ -100,7 +100,7 @@ pub(in crate::catalog) const AGENT_SYMBOL_INDEX: EventRule = EventRule {
 /// Kernel `fs.read` neighbour prefetch (v2), emitted at session end beside `agent session ended`
 /// (which sits near the backend's 128-key cap) only when a read prefetched: reads that paged their
 /// likely next reads (test file, imports, callers) out to the spill store, the handles issued, those
-/// the model went on to use (a `ctx-*` read or an `fs-read` of the file) and those left unused, and
+/// the model went on to use (an `output-*` read or an `fs-read` of the file) and those left unused, and
 /// reads the learned share left without handles. Counts only: never a path.
 pub(in crate::catalog) const AGENT_PREFETCH: EventRule = EventRule {
     name: "agent prefetch",
@@ -115,7 +115,7 @@ pub(in crate::catalog) const AGENT_PREFETCH: EventRule = EventRule {
     ],
 };
 
-/// How the kernel's `(edit path old-str new-str)` found the text it replaced (v2), emitted at
+/// How the kernel's `(fs-edit path (hash 'old old-str 'new new-str))` found the text it replaced (v2), emitted at
 /// session end beside `agent session ended` (which sits near the backend's 128-key cap) only when
 /// an edit matched or missed: edits applied by each step of its normalization ladder (exact,
 /// trailing whitespace ignored, indentation ignored, Unicode punctuation folded, literal escapes

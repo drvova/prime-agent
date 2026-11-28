@@ -193,8 +193,8 @@ async fn a_childs_family_is_recorded_shown_and_reopened_after_a_restart() {
     drop(daemon);
 
     // The next daemon opens the parent again: its child comes back with it.
-    let observe = record("(agent-observe-list)", "observe", &records);
-    let delete = record(r#"(rlm-delete-subagent "alpha")"#, "delete", &records);
+    let observe = record("(agent-roster)", "observe", &records);
+    let delete = record(r#"(rlm-delete "alpha")"#, "delete", &records);
     let _daemon = bed.runtime_daemon(&json!({
         "responses": [cell("observing", &format!("{observe}\n{delete}")), "deleted"],
         "repeatLastResponse": true,
@@ -296,7 +296,7 @@ async fn a_message_to_an_idle_parent_wakes_it() {
         "{}\n{}",
         await_marker(&release),
         record(
-            r#"(agent-message-send "kid reply" #:receiver-role "parent")"#,
+            r#"(agent-send "kid reply" #:to "parent")"#,
             "send",
             &records,
         )
@@ -442,7 +442,7 @@ async fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
         await_marker(&spawned),
         mark(&parked),
         record(
-            r#"(agent-message-wait #:sender "beta" #:timeout-ms 60000)"#,
+            r#"(event-wait #:sender "beta" #:timeout-ms 60000)"#,
             "alpha-wait",
             &records
         )
@@ -452,19 +452,17 @@ async fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
     let beta = [
         await_marker(&parked),
         record(
-            r#"(agent-message-wait #:sender "alpha" #:timeout-ms 60000)"#,
+            r#"(event-wait #:sender "alpha" #:timeout-ms 60000)"#,
             "beta-cycle",
             &records,
         ),
         record(
-            &format!(
-                r#"(agent-message-send {body:?} #:receiver-role "sibling" #:receiver-name "alpha")"#
-            ),
+            &format!(r#"(agent-send {body:?} #:to "alpha")"#),
             "beta-send",
             &records,
         ),
         record(
-            r#"(agent-message-wait #:sender "alpha" #:timeout-ms 300)"#,
+            r#"(event-wait #:sender "alpha" #:timeout-ms 300)"#,
             "beta-timeout",
             &records,
         ),
@@ -527,7 +525,7 @@ async fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_kernel_timer_keeps_firing_for_its_subscription_after_a_restart() {
     let bed = Bed::new();
-    let arm = r#"(event-source-define "tick" #f #:timer (hash 'every "2s"))
+    let arm = r#"(event-define "tick" #f #:timer (hash 'every "2s"))
 (event-subscribe "tick" "Check the build.")"#;
     let daemon = bed.runtime_daemon(&json!({
         "responses": [cell("arming", arm), "armed", "ticked"],

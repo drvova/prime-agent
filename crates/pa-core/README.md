@@ -248,10 +248,10 @@ resolution and cross-language references.
 
 Neighbour prefetch (`prefetch`): an `fs.read` host request (the kernel's `fs-read`) pages the read
 file's likely next reads out to the spill store and names one handle each in its reply (`related`,
-and a last line of its text pointing at `(ctx-page handle)`), never their text: its test files, the
+and a last line of its text pointing at `(output-read handle)`), never their text: its test files, the
 workspace files it imports (Rust `mod`, Python imports, JS/TS relative imports, C `#include "…"`),
 and the files calling what it defines (from the symbol index, once that is built). A decaying
-per-project share of handles the model went on to use (a `ctx-*` read of the handle, or an
+per-project share of handles the model went on to use (a `output-*` read of the handle, or an
 `fs-read` of the file) sets how many each read gets, down to none with a one-handle probe every
 tenth read; it lives under `<agent dir>/prefetch/` and is shared by every session on the project in
 the process. The read waits at most 150 ms for it. Adoption counts ride the `agent prefetch` event.
@@ -311,7 +311,7 @@ a keyword given twice or without a value, too few or too many arguments, and a s
 optional argument is given (Steel passes over it). The contract is read from each
 `(define (name ...) ...)` when its source is loaded through `contracts::load`, which is how every
 kernel source and every skill's Scheme source reaches an engine; the options-hash tools (`bash`,
-`fs-*`) refuse an unknown key against the table they read from, and `mcp-call-tool` refuses an
+`fs-*`) refuse an unknown key against the table they read from, and `mcp-call` refuses an
 argument outside a tool schema that lists its properties and opens no other door. Each refusal is
 reported through the fire-and-forget `call.refused` host request (`kernel::call_refusals`) by its
 class and rides the `agent kernel call refusals` event. Non-goals: checking or coercing argument
@@ -412,7 +412,7 @@ tool's name. The estimator is per project and shared by that project's sessions 
 under `<agent dir>/preview-noise/`) so its request views stay a pure function of history, and
 saves what it learns fire-and-forget on a scope-propagating thread that writes nothing once its
 session lifetime has ended, and nothing over a store it could not read. Adoption counts, with the
-`ctx-*` reads that followed a preview, ride the `agent previews` event. Non-goals: encoding, any
+`output-*` reads that followed a preview, ride the `agent previews` event. Non-goals: encoding, any
 model or dependency, and previewing `bash`'s own `'output` (it is returned whole beside its
 handle; it is previewed when a cell prints it).
 
@@ -427,7 +427,7 @@ public API.
 Kernel API reference (`prompts::layers`): one doc file per topic under `src/prompts/capabilities/`
 documents every model-facing function of the Scheme kernel. The core prompt layer splices each
 function's call form from them, and the kernel serves a function's full entry on demand through
-`(api-help ...)`, and `(api-search query)` ranks its passages (function entries, bullets,
+`(api-help ...)`, and `(api-help #:search query)` ranks its passages (function entries, bullets,
 paragraphs) against a query with BM25 (`prompts/layers/reference.rs`), so a cell finds a function
 by what it does. `tests/prompt_guards.rs` holds the reference equal to the functions the kernel's
 sources define. Public surface: `API_DOCS`, `documented_calls`, `CORE_LAYER`.
@@ -437,7 +437,7 @@ the `event-*` kernel functions, each parsed into a typed `pa_types::events::Even
 sent through an `EventBusController`; the bus itself lives in the daemon's supervisor or in a
 headless run's runtime (pa-runtime). A run with neither registers `NoEventBus`, which refuses
 every call with the reason; a daemon worker replaces it with its link-backed controller, a
-runtime session with the runtime's. `event-source-define`'s `#:timer` and `#:watch` make a
+runtime session with the runtime's. `event-define`'s `#:timer` and `#:watch` make a
 timer or folder-watch source; `agent_state::EventBusState::apply` takes them only from a bus
 that runs them (`SourceKinds::Accepted`, a headless runtime's) and refuses them on the daemon's
 (`SourceKinds::BusOnly`), and never stores them. Public surface: `EventBusController`,
@@ -533,7 +533,7 @@ level and records the session row. Adoption counts ride `agent repl notify`.
 In-process Scheme kernel (`kernel::scheme`): one Steel engine per session inside this
 process, taken from a spare built ahead of time (never a copy of another engine: copies
 share interpreter state across sessions). Cells run on a blocking thread with their output
-captured, an abort or the per-call timeout interrupts them, and `(host-request type payload)`
+captured, an abort or the per-call timeout interrupts them, and `(%host-request type payload)`
 reaches the same `HostRequestHandlers` the Python kernel's host requests do. It implements the
 tool seam's executor and provisioner traits, and every session exposes it as the `eval` tool
 (`tools::scheme`) beside `python_repl`.

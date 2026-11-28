@@ -15,7 +15,7 @@
 
 //! Verifier: the end-turn contract over a REAL kernel and the full
 //! session-engine tool path. One scripted `eval` turn runs
-//! `(rlm-end-turn)`; the kernel marks the cell, the tool result carries
+//! `(end-turn)`; the kernel marks the cell, the tool result carries
 //! the "turn ended" confirmation, the batch terminates, and no further
 //! assistant response is streamed (the pushed second turn stays
 //! unconsumed). The settled ruling's second half is pinned too: the turn
@@ -94,7 +94,7 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
         vec![(
             "call-1",
             pa_types::ai::KERNEL_TOOL_NAME,
-            json!({ "code": "(define job (bash \"sleep 3 && echo background-marker\" (hash 'background #t)))\n(display (list \"ended\" (hash-ref (rlm-end-turn) 'endedTurn)))" }),
+            json!({ "code": "(define job (bash \"sleep 3 && echo background-marker\" (hash 'background #t)))\n(display (list \"ended\" (hash-ref (end-turn) 'endedTurn)))" }),
         )],
     )));
     provider.push_text_turn("never reached");

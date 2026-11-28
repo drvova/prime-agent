@@ -35,18 +35,31 @@
 ;; Create or replace the session todo list; the whole list, {items}. Each
 ;; item is its text, or a hash with 'text and optional 'id, 'status
 ;; ("pending", "in_progress", "done") and 'note. An empty list clears it.
-(define (todo-set items)
-  (%todo-changed
-   (%host-call "todo.set"
-               (hash 'items (map (lambda (item) (if (string? item) (hash 'text item) item)) items)))))
-
-;; Change one item by id: its #:status, #:text, or #:note ("" clears the
-;; note); the whole list.
-(define (todo-update id #:status [status #f] #:text [text #f] #:note [note #f])
-  (unless (or status text note)
-    (error "todo-update: pass at least one of #:status, #:text, #:note"))
-  (%todo-changed
-   (%host-call "todo.update" (%options (hash 'id id) 'status status 'text text 'note note))))
+;; With #:merge #t the list is kept and each item (one hash or a list of
+;; them) changes the item its 'id names: its 'status, 'text, or 'note (""
+;; clears the note).
+(define (todo-set items #:merge [merge #f])
+  (if merge
+      (let ([changes (if (hash? items) (list items) items)])
+        (when (null? changes)
+          (error "todo-set: #:merge needs at least one item to change"))
+        (foldl (lambda (change latest)
+                 (unless (and (hash? change) (hash-contains? change 'id))
+                   (error "todo-set: with #:merge each item is a hash with the 'id it changes"))
+                 (let ([fields (hash-remove change 'id)])
+                   (when (= (hash-length fields) 0)
+                     (error "todo-set: a #:merge item changes at least one of 'status, 'text, 'note"))
+                   (for-each (lambda (key)
+                               (unless (member key (list 'status 'text 'note))
+                                 (error (string-append "todo-set: a #:merge item takes 'id, 'status, 'text and 'note, not '"
+                                                       (symbol->string key)))))
+                             (hash-keys->list fields))
+                   (%todo-changed (%host-call "todo.update" (hash-insert fields 'id (hash-ref change 'id))))))
+               #f
+               changes))
+      (%todo-changed
+       (%host-call "todo.set"
+                   (hash 'items (map (lambda (item) (if (string? item) (hash 'text item) item)) items))))))
 
 ;; The current session todo list, {items} (empty when none was set).
 (define (todo-get)

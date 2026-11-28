@@ -1,10 +1,10 @@
 //! The model-facing host API of the Scheme kernel: thin Scheme wrappers over
-//! the session's typed host requests (`rlm-spawn`, `agent-message-send`,
+//! the session's typed host requests (`rlm-spawn`, `agent-send`,
 //! `todo-set`, `ask`, ...), loaded into every session engine after the host
 //! bridge.
 //!
 //! Each wrapper builds the payload its Rust handler parses, sends it through
-//! `(host-request type payload)`, and shapes the reply. Optional arguments
+//! `(%host-request type payload)`, and shapes the reply. Optional arguments
 //! are Steel keyword arguments (`(rlm-spawn "task" #:name "worker")`); a
 //! keyword a function does not declare is refused before the function runs
 //! (`contracts.rs`). Whole numbers in a reply come back as exact integers,
@@ -33,12 +33,12 @@ const SOURCES: [(&str, &str); 10] = [
     ("events", include_str!("host_api/events.scm")),
 ];
 
-/// Define the host API in a session's `engine`, whose `host-request` bridge
+/// Define the host API in a session's `engine`, whose `%host-request` bridge
 /// is already loaded.
 pub(super) fn load(engine: &mut Engine) -> anyhow::Result<()> {
     // Names an open question, so an interrupt can withdraw exactly it.
     engine.register_fn("%fresh-id", || uuid::Uuid::new_v4().simple().to_string());
-    // The UTC time `seconds` from now, as `schedule-add` sends a delay.
+    // The UTC time `seconds` from now, as a scheduled job's `'at` sends a delay.
     engine.register_fn("%utc-after", |seconds: f64| {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -176,16 +176,16 @@ mod tests {
             kernel.as_ref(),
             &[
                 r#"(rlm-spawn "fix the parser" #:name "worker" #:model "p/m" #:thinking "high" #:cwd "sub" #:better #t)"#,
-                r#"(rlm-create-session "watch CI" #:name "ci")"#,
+                r#"(rlm-spawn "watch CI" #:name "ci" #:root #t)"#,
                 r#"(rlm-find-models "claude" #:limit 5.0)"#,
-                "(rlm-list-subagents)",
+                "(agent-roster #:children #t)",
                 r#"(rlm-collect (list " reviewer " (hash 'rlm_child_id "c1")) #:timeout-ms 500)"#,
                 "(rlm-collect)",
-                r#"(rlm-delete-subagent " worker ")"#,
+                r#"(rlm-delete " worker ")"#,
                 r#"(rlm-abort (hash 'rlm_child_id "c1"))"#,
                 r#"(rlm-rename "renamed" #:session-id "s1")"#,
                 r#"(rlm-progress-note "half done")"#,
-                "(rlm-end-turn)",
+                "(end-turn)",
                 "(rlm-reload)",
             ],
         )
@@ -310,11 +310,11 @@ mod tests {
         let returned = values(
             kernel.as_ref(),
             &[
-                r#"(rlm-session-messages #:start -2 #:limit 1 #:role "user")"#,
-                r#"(rlm-session-count #:role (list "user" "assistant") #:agent (hash 'rlm_child_id "c1"))"#,
-                r#"(rlm-session-messages #:session (hash 'session_id "s9"))"#,
-                r#"(rlm-session-search "parser bug" #:limit 3)"#,
-                r#"(rlm-session-tool-result "call_1")"#,
+                r#"(history-read #:start -2 #:limit 1 #:role "user")"#,
+                r#"(hash-ref (history-read #:limit 0 #:role (list "user" "assistant") #:agent (hash 'rlm_child_id "c1")) 'total)"#,
+                r#"(hash-ref (history-read #:session (hash 'session_id "s9")) 'rows)"#,
+                r#"(history-search "parser bug" #:limit 3)"#,
+                r#"(history-read #:tool-call "call_1")"#,
             ],
         )
         .await;
@@ -322,7 +322,7 @@ mod tests {
             (returned, received.lock().unwrap().clone()),
             (
                 vec![
-                    Ok(rows.clone()),
+                    Ok(json!({"total": 5, "rows": rows.clone()})),
                     Ok(json!(5)),
                     Ok(rows),
                     Ok(json!([hit])),
@@ -332,7 +332,7 @@ mod tests {
                     json!({"type": "rlm.session.messages", "start": -2, "limit": 1, "roles": ["user"]}),
                     json!({
                         "type": "agent_observe.session_messages",
-                        "start": 0,
+                        "start": -10,
                         "limit": 0,
                         "roles": ["user", "assistant"],
                         "target": "c1",
@@ -378,13 +378,13 @@ mod tests {
         let returned = values(
             kernel.as_ref(),
             &[
-                r#"(agent-message-send "status?" #:receiver-role "child" #:receiver-name "worker")"#,
-                r#"(agent-message-send "done" #:receiver-role "parent")"#,
-                r#"(agent-message-broadcast "stop")"#,
-                r#"(agent-message-wait #:timeout-ms 1000 #:sender-role "child")"#,
-                "(agent-observe-list)",
-                r#"(agent-observe-get "worker")"#,
-                r#"(agent-observe-recent "worker" #:limit 3)"#,
+                r#"(agent-send "status?" #:to (hash 'relationship "child" 'sessionName "worker"))"#,
+                r#"(agent-send "done" #:to "parent")"#,
+                r#"(agent-send "stop" #:all #t)"#,
+                r#"(event-wait #:timeout-ms 1000 #:sender-role "child")"#,
+                "(agent-roster)",
+                r#"(agent-roster "worker")"#,
+                r#"(agent-roster "worker" #:recent #t #:limit 3)"#,
             ],
         )
         .await;
@@ -415,6 +415,32 @@ mod tests {
                     json!({"type": "agent_observe.recent", "target": "worker", "limit": 3, "max_chars": 800}),
                 ]
             )
+        );
+    }
+
+    /// `(session-info)` is one hash of every section, each as its own call would return it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_info_gathers_every_section_into_one_hash() {
+        let (handlers, _received) = answering(&[
+            ("model.info", json!({"id": "m", "provider": "p"})),
+            ("settings.session", json!({"autonomous": false})),
+            ("settings.host", json!({"daemonless": true})),
+            ("usage.session", json!({"costUsd": 0.5})),
+            ("usage.quotas", json!({"providers": []})),
+        ]);
+        let kernel = kernel_over(handlers).await;
+        let returned = values(kernel.as_ref(), &["(session-info)"]).await;
+        assert_eq!(
+            returned,
+            vec![Ok(json!({
+                "id": false,
+                "cwd": "/",
+                "artifact-dir": false,
+                "model": {"id": "m", "provider": "p"},
+                "settings": {"session": {"autonomous": false}, "host": {"daemonless": true}},
+                "usage": {"session": {"costUsd": 0.5}, "quotas": {"providers": []}},
+                "skills-unavailable": [],
+            }))]
         );
     }
 
@@ -449,15 +475,15 @@ mod tests {
         let returned = values(
             kernel.as_ref(),
             &[
-                "(compact-status)",
-                "(compact-run)",
-                r#"(compact-run "keep the failing test")"#,
+                "(compact #:status #t)",
+                "(compact)",
+                r#"(compact "keep the failing test")"#,
                 "(refine-status)",
                 r#"(refine-run "the retry loop" #:global #t)"#,
                 "(goal-get)",
                 r#"(goal-create "ship it" #:token-budget 50000 #:check "make check" #:verify "judge" #:max-cost-usd 2.5)"#,
                 "(goal-complete)",
-                "(model-info)",
+                r#"(session-info "model")"#,
                 r#"(model-set-effort "low")"#,
             ],
         )
@@ -506,6 +532,8 @@ mod tests {
             json!({"id": "cp-1", "label": "before refactor", "created_at": "2026-11-21T10:00:00Z"});
         let job = json!({"id": "job-1", "prompt": "check CI", "label": "ci", "kind": "interval", "status": "active"});
         let heartbeat = json!({"heartbeat": {"id": "hb-1", "status": "active"}});
+        let heartbeats =
+            json!({"heartbeats": [{"id": "hb-1", "label": "queue", "status": "active"}]});
         let checks = json!({"status": "pending", "checks": 2, "rounds": 1, "max_rounds": 3, "running": false, "last": null});
         let evidence =
             json!({"handle": "out:0123456789", "round": 1, "passed": 1, "failed": 1, "checks": []});
@@ -526,7 +554,7 @@ mod tests {
             ("schedule.add", json!({"job": job})),
             ("schedule.list", json!({"jobs": [job]})),
             ("schedule.cancel", json!({"job": job})),
-            ("rlm_heartbeat.list", json!({"heartbeats": []})),
+            ("rlm_heartbeat.list", heartbeats.clone()),
             ("rlm_heartbeat.create", heartbeat.clone()),
             ("rlm_heartbeat.update", heartbeat.clone()),
             ("rlm_heartbeat.delete", heartbeat.clone()),
@@ -541,18 +569,18 @@ mod tests {
         let mut returned = values(
             kernel.as_ref(),
             &[
-                "(settings-get)",
-                "(usage-get #:refresh #t)",
+                r#"(session-info "settings")"#,
+                r#"(session-info "usage" #:refresh #t)"#,
                 r#"(checkpoint-create "before refactor")"#,
                 "(checkpoint-list)",
                 r#"(checkpoint-restore "cp-1")"#,
-                r#"(schedule-add "check CI" #:every 1800 #:label "ci")"#,
-                "(schedule-list #:include-inactive #t)",
-                r#"(schedule-cancel "job-1")"#,
-                "(rlm-heartbeat-list)",
-                r#"(rlm-heartbeat-create "review the queue" #:interval "30m" #:delivery-mode "follow_up")"#,
-                r#"(rlm-heartbeat-update "hb-1" #:status "pause")"#,
-                r#"(rlm-heartbeat-delete "hb-1")"#,
+                r#"(event-define "ci" #f #:kind "schedule" #:prompt "check CI" #:timer (hash 'every 1800))"#,
+                r#"(event-list #:kind "schedule" #:include-inactive #t)"#,
+                r#"(event-remove "job-1" #:kind "schedule")"#,
+                r#"(event-list #:kind "heartbeat")"#,
+                r#"(event-define "fresh" #f #:kind "heartbeat" #:prompt "review the queue" #:timer (hash 'every "30m") #:delivery-mode "follow_up" #:status "pause")"#,
+                r#"(event-define "queue" #f #:kind "heartbeat" #:prompt "review it again")"#,
+                r#"(event-remove "queue" #:kind "heartbeat")"#,
                 r#"(better "fix the parser" #:cwd "sub")"#,
                 "(better-checks)",
                 r#"(better-evidence "out:0123456789")"#,
@@ -583,7 +611,7 @@ mod tests {
                     Ok(job.clone()),
                     Ok(json!([job])),
                     Ok(job),
-                    Ok(json!({"heartbeats": []})),
+                    Ok(heartbeats),
                     Ok(heartbeat.clone()),
                     Ok(heartbeat.clone()),
                     Ok(heartbeat),
@@ -598,17 +626,28 @@ mod tests {
                     json!({"type": "usage.quotas", "refresh": true}),
                     json!({"type": "checkpoint.create", "label": "before refactor"}),
                     json!({"type": "checkpoint.list"}),
+                    // A job of the same name is cancelled before the new one is added.
+                    json!({"type": "schedule.list", "include_inactive": false}),
+                    json!({"type": "schedule.cancel", "id": "job-1"}),
                     json!({"type": "schedule.add", "prompt": "check CI", "every": "1800s", "label": "ci"}),
                     json!({"type": "schedule.list", "include_inactive": true}),
+                    json!({"type": "schedule.list", "include_inactive": false}),
                     json!({"type": "schedule.cancel", "id": "job-1"}),
+                    json!({"type": "rlm_heartbeat.list", "include_inactive": false}),
+                    // A new heartbeat is created, and paused when asked.
                     json!({"type": "rlm_heartbeat.list", "include_inactive": false}),
                     json!({
                         "type": "rlm_heartbeat.create",
                         "instruction": "review the queue",
+                        "label": "fresh",
                         "interval": "30m",
                         "delivery_mode": "follow_up",
                     }),
                     json!({"type": "rlm_heartbeat.update", "id": "hb-1", "status": "pause"}),
+                    // One of that name is updated in place.
+                    json!({"type": "rlm_heartbeat.list", "include_inactive": false}),
+                    json!({"type": "rlm_heartbeat.update", "id": "hb-1", "instruction": "review it again"}),
+                    json!({"type": "rlm_heartbeat.list", "include_inactive": false}),
                     json!({"type": "rlm_heartbeat.delete", "id": "hb-1"}),
                     json!({"type": "better.run", "task": "fix the parser", "mode": "deepen", "cwd": "sub"}),
                     json!({"type": "better.checks"}),
@@ -640,7 +679,7 @@ mod tests {
                 r#"(ask "Which stores?" (list "sqlite" "postgres") #:multi #t #:default (list "sqlite" "postgres"))"#,
                 r#"(ask "What should it be called?")"#,
                 r#"(todo-set (list "write the tests" (hash 'text "ship" 'status "in_progress" 'note "after review")))"#,
-                r#"(todo-update "1" #:status "done" #:note "green")"#,
+                r#"(todo-set (hash 'id "1" 'status "done" 'note "green") #:merge #t)"#,
                 "(todo-get)",
                 r#"(notify "tests pass" #:level "success")"#,
             ],
@@ -680,11 +719,11 @@ mod tests {
         let returned = values(
             kernel.as_ref(),
             &[
-                &format!(r#"(ctx-info "{handle}")"#),
-                &format!(r#"(ctx-page "{handle}" #:start 1 #:lines 2)"#),
-                &format!(r#"(ctx-tail "{handle}" 1)"#),
-                &format!(r#"(ctx-grep "{handle}" "^beta" #:context 0 #:max-matches 1)"#),
-                r#"(ctx-page "out:0000000000")"#,
+                &format!(r#"(output-read "{handle}" #:info #t)"#),
+                &format!(r#"(output-read "{handle}" #:start 1 #:lines 2)"#),
+                &format!(r#"(output-read "{handle}" #:tail 1)"#),
+                &format!(r#"(output-grep "{handle}" "^beta" #:context 0 #:max-matches 1)"#),
+                r#"(output-read "out:0000000000")"#,
             ],
         )
         .await;
@@ -709,7 +748,7 @@ mod tests {
                 stored(json!({"start": 1, "end": 3, "text": "beta one\ngamma\n", "truncated": false})),
                 stored(json!({"start": 4, "end": 5, "text": "omega\n", "truncated": false})),
                 stored(json!({"pattern": "^beta", "matches": 2, "shown": 1, "text": "1:beta one\n", "truncated": true})),
-                Err("Error: Generic:  ctx-page: out:0000000000 is unknown; re-run the command to see its output".to_string()),
+                Err("Error: Generic:  output-read: out:0000000000 is unknown; re-run the command to see its output".to_string()),
             ]
         );
     }
@@ -731,7 +770,7 @@ mod tests {
                 r#"(rlm-spawn "fix the parser")"#,
                 "(rlm-collect #:timeout-ms 1.5)",
                 r#"(ask "Which?" #:multi #t)"#,
-                r#"(todo-update "1")"#,
+                r#"(todo-set (hash 'id "1") #:merge #t)"#,
             ],
         )
         .await;
@@ -742,7 +781,7 @@ mod tests {
                     Err("Error: Generic:  rlm-spawn: #:name is required and must be a string".to_string()),
                     Err("Error: Generic:  rlm-collect: #:timeout-ms must be an integer".to_string()),
                     Err("Error: Generic:  ask: #:multi needs choices".to_string()),
-                    Err("Error: Generic:  todo-update: pass at least one of #:status, #:text, #:note".to_string()),
+                    Err("Error: Generic:  todo-set: a #:merge item changes at least one of 'status, 'text, 'note".to_string()),
                 ],
                 Vec::new()
             )
@@ -807,8 +846,8 @@ mod tests {
         let returned = values(
             kernel.as_ref(),
             &[
-                r#"(rlm-session-tool-result "call_30")"#,
-                r#"(rlm-session-tool-result "call_500")"#,
+                r#"(history-read #:tool-call "call_30")"#,
+                r#"(history-read #:tool-call "call_500")"#,
             ],
         )
         .await;
@@ -817,7 +856,7 @@ mod tests {
             (
                 vec![
                     Ok(json!("output 30\nits last line")),
-                    Err("Error: Generic:  rlm-session-tool-result: no tool result in this session has the id call_500".to_string()),
+                    Err("Error: Generic:  history-read: no tool result in this session has the id call_500".to_string()),
                 ],
                 vec![
                     json!([0, 0]),
@@ -832,26 +871,29 @@ mod tests {
         );
     }
 
-    /// A numeric `#:at` is a delay: the host is sent the UTC time that many
+    /// A numeric `'at` is a delay: the host is sent the UTC time that many
     /// seconds from now.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_numeric_schedule_time_is_sent_as_the_utc_time_that_delay_from_now() {
-        let (handlers, received) = answering(&[("schedule.add", json!({"job": {"id": "job-1"}}))]);
+        let (handlers, received) = answering(&[
+            ("schedule.add", json!({"job": {"id": "job-1"}})),
+            ("schedule.list", json!({"jobs": []})),
+        ]);
         let kernel = kernel_over(handlers).await;
         let now = || crate::session::manager::format_iso_now();
         let before = crate::cron::parse_instant(&now()).unwrap();
         let returned = values(
             kernel.as_ref(),
             &[
-                r#"(schedule-add "check CI" #:at 90)"#,
-                r#"(schedule-add "check CI" #:at "in 30m")"#,
-                r#"(schedule-add "check CI" #:at -5)"#,
+                r#"(event-define "ci" #f #:kind "schedule" #:prompt "check CI" #:timer (hash 'at 90))"#,
+                r#"(event-define "ci" #f #:kind "schedule" #:prompt "check CI" #:timer (hash 'at "in 30m"))"#,
+                r#"(event-define "ci" #f #:kind "schedule" #:prompt "check CI" #:timer (hash 'at -5))"#,
             ],
         )
         .await;
         let after = crate::cron::parse_instant(&now()).unwrap();
         let mut received = received.lock().unwrap().clone();
-        let at = received[0]["at"].take();
+        let at = received[1]["at"].take();
         let fires = crate::cron::parse_instant(at.as_str().unwrap()).unwrap();
         assert_eq!(
             (
@@ -863,11 +905,14 @@ mod tests {
                 vec![
                     Ok(json!({"id": "job-1"})),
                     Ok(json!({"id": "job-1"})),
-                    Err("Error: Generic:  schedule-add: a numeric #:at is a delay in seconds and must be positive".to_string()),
+                    Err("Error: Generic:  event-define: a numeric 'at is a delay in seconds and must be positive".to_string()),
                 ],
                 vec![
-                    json!({"type": "schedule.add", "prompt": "check CI", "at": null}),
-                    json!({"type": "schedule.add", "prompt": "check CI", "at": "in 30m"}),
+                    json!({"type": "schedule.list", "include_inactive": false}),
+                    json!({"type": "schedule.add", "prompt": "check CI", "label": "ci", "at": null}),
+                    json!({"type": "schedule.list", "include_inactive": false}),
+                    json!({"type": "schedule.add", "prompt": "check CI", "label": "ci", "at": "in 30m"}),
+                    json!({"type": "schedule.list", "include_inactive": false}),
                 ],
                 true,
             )

@@ -27,7 +27,7 @@ DEFAULT = {'type': 'http', 'url': 'https://fixture.invalid/default', 'oauth': Tr
 BEFORE = {'type': 'http', 'url': 'https://fixture.invalid/mcp', 'oauth': True,
           'clientId': 'fixture-client-before', 'callbackPort': 3118}
 AFTER = {**BEFORE, 'clientId': 'fixture-client-after', 'callbackPort': 4118}
-CELL = """(define (oauth-config name) (host-request "mcp.config" (hash 'server name)))
+CELL = """(define (oauth-config name) (%host-request "mcp.config" (hash 'server name)))
 (displayln (string-append "MCP_OAUTH_CONFIG_RESULT="
                           (value->jsexpr-string (hash 'fixture-oauth (oauth-config "fixture-oauth")
                                                       'fixture-default (oauth-config "fixture-default")))))"""

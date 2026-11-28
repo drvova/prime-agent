@@ -652,7 +652,7 @@ impl<'a> Collected<'a> {
                 let handle = store.spill(SpillCopy::of_text(&page.text()));
                 let marker = handle.marker(chars);
                 entry["handle"] = json!(format!("{}{}", crate::kernel::spill::HANDLE_PREFIX, handle.id));
-                format!("past the crawl's {TOTAL_CHARS}-char output budget: the page is paged out {marker}; read it with ctx-page")
+                format!("past the crawl's {TOTAL_CHARS}-char output budget: the page is paged out {marker}; read it with output-read")
             }
             None => format!(
                 "past the crawl's {TOTAL_CHARS}-char output budget and this session keeps no paged-out output: read it with web-read"

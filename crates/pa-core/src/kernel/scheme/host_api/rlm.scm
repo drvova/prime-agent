@@ -17,30 +17,23 @@
 ;; Spawn a child on `prompt` and return its handle once the task is admitted:
 ;; {rlm_child_id, name, session_dir, model, queued_ms}. #:name is required
 ;; and unique among siblings; #:model is a "provider/model" selector;
-;; #:better #t first checks the prompt as a brief (see `better`).
+;; #:better #t first checks the prompt as a brief (see `better`). With
+;; #:root #t it creates and prompts a resident top-level daemon session
+;; instead: {active_session_id, session_id, name, session_file, model}.
 (define (rlm-spawn prompt
                    #:name [name #f]
                    #:model [model #f]
                    #:thinking [thinking #f]
                    #:cwd [cwd #f]
-                   #:better [check-brief #f])
-  (unless (string? name)
-    (error "rlm-spawn: #:name is required and must be a string"))
-  ;; The wire type stays "rlm.run": hosts of every version answer it.
-  (%host-call "rlm.run"
-              (hash 'prompt (if check-brief (better prompt #:cwd cwd #:mode "brief") prompt)
-                    'kwargs (%options (hash 'name name) 'model model 'thinking thinking 'cwd cwd))))
-
-;; Create and prompt a resident top-level daemon session:
-;; {active_session_id, session_id, name, session_file, model}.
-(define (rlm-create-session prompt
-                            #:name [name #f]
-                            #:model [model #f]
-                            #:thinking [thinking #f]
-                            #:cwd [cwd #f])
-  (%host-call "rlm.create_session"
-              (hash 'prompt prompt
-                    'kwargs (%options (hash) 'name name 'model model 'thinking thinking 'cwd cwd))))
+                   #:better [check-brief #f]
+                   #:root [root #f])
+  (let ([kwargs (%options (hash) 'name name 'model model 'thinking thinking 'cwd cwd)]
+        [prompt (if check-brief (better prompt #:cwd cwd #:mode "brief") prompt)])
+    (cond
+      [root (%host-call "rlm.create_session" (hash 'prompt prompt 'kwargs kwargs))]
+      [(not (string? name)) (error "rlm-spawn: #:name is required and must be a string")]
+      ;; The wire type stays "rlm.run": hosts of every version answer it.
+      [else (%host-call "rlm.run" (hash 'prompt prompt 'kwargs kwargs))])))
 
 ;; Models backed by the user's credentials that match `query`:
 ;; a list of {provider, id, name, selector, image_input}.
@@ -48,10 +41,6 @@
   (hash-ref (%host-call "rlm.find_models"
                         (hash 'query query 'limit (%integer "rlm-find-models" "#:limit" limit)))
             'models))
-
-;; This session's direct children, one row each.
-(define (rlm-list-subagents)
-  (hash-ref (%host-call "rlm.list_subagents" (hash)) 'subagents))
 
 ;; Results of direct children: one target or a list of them (names, ids,
 ;; spawn handles, subagent rows); none selects every child. #:timeout-ms
@@ -65,9 +54,8 @@
             'results))
 
 ;; Delete one running or retained direct child; its last row.
-(define (rlm-delete-subagent target)
-  (hash-ref (%host-call "rlm.delete_subagent"
-                        (hash 'target (%child-selector "rlm-delete-subagent" target)))
+(define (rlm-delete target)
+  (hash-ref (%host-call "rlm.delete_subagent" (hash 'target (%child-selector "rlm-delete" target)))
             'subagent))
 
 ;; Stop one direct child's current turn without deleting it:
@@ -89,7 +77,7 @@
   (%host-call "rlm.progress.note" (hash 'message message)))
 
 ;; End the turn once this cell's batch settles. Raises where the host cannot.
-(define (rlm-end-turn)
+(define (end-turn)
   (%host-call "rlm.end_turn" (hash)))
 
 ;; Re-read the skills, prompt templates, and `AGENTS.md` context files like
@@ -132,58 +120,68 @@
                    (hash-insert request 'target (%child-selector who agent)))]
       [else (%host-call "rlm.session.messages" request)])))
 
-;; Rows #:start onward (from the end when negative), at most #:limit, of the
-;; transcript messages whose role matches #:role (a glob or a list of globs):
-;; a list of {index, id, message}, oldest first.
-(define (rlm-session-messages #:start [start -10]
-                              #:limit [limit 10]
-                              #:role [role "*"]
-                              #:agent [agent #f]
-                              #:session [session #f])
-  (let* ([reply (%transcript "rlm-session-messages" start limit role agent session)]
-         [messages (hash-ref reply 'messages)])
-    ;; The read shows on the cell's card: how many rows, from where, of how many.
-    (%cell "transcript-read"
-           (%options (hash 'returned (length messages)
-                           'first (if (null? messages) (void) (hash-ref (car messages) 'index))
-                           'total (hash-ref reply 'total)
-                           'roles (if (string? role) (list role) role))
-                     'agent (and (or agent session) (hash-try-get reply 'agent))))
-    messages))
-
-;; How many transcript messages match #:role.
-(define (rlm-session-count #:role [role "*"] #:agent [agent #f] #:session [session #f])
-  (hash-ref (%transcript "rlm-session-count" 0 0 role agent session) 'total))
-
-;; Past sessions of this project whose messages mention every word of
-;; `query`: a list of {session_id, title, created_at, updated_at,
-;; match_count, message_count, snippets}.
-(define (rlm-session-search query #:limit [limit 10])
-  (hash-ref (%host-call "rlm.session.search"
-                        (hash 'query query 'limit (%integer "rlm-session-search" "#:limit" limit)))
-            'hits))
+;; A tool result's text: its content string, or its text blocks joined.
+(define (%tool-result-text message)
+  (let ([content (hash-ref message 'content)])
+    (if (string? content)
+        content
+        (string-join (map (lambda (block) (hash-ref block 'text))
+                          (filter (lambda (block) (equal? (hash-try-get block 'type) "text"))
+                                  content))
+                     "\n"))))
 
 ;; One tool result's full text by its tool call id. A row the host has not
 ;; loaded (compacted away in a windowed session) is found by paging the
 ;; transcript's tool results, newest first, 50 at a time.
-(define (rlm-session-tool-result tool-call-id)
+(define (%history-tool-result tool-call-id)
   (let ([reply (%host-call "rlm.session.tool_result" (hash 'toolCallId tool-call-id))])
     (if (hash-ref reply 'found)
         (hash-ref reply 'text)
-        (let older ([end (rlm-session-count #:role "toolResult")])
+        (let older ([end (hash-ref (%transcript "history-read" 0 0 "toolResult" #f #f) 'total)])
           (when (<= end 0)
-            (error (string-append "rlm-session-tool-result: no tool result in this session has the id "
+            (error (string-append "history-read: no tool result in this session has the id "
                                   tool-call-id)))
           (let* ([start (max 0 (- end 50))]
                  [found (filter (lambda (row)
                                   (equal? (hash-try-get (hash-ref row 'message) 'toolCallId) tool-call-id))
-                                (rlm-session-messages #:start start #:limit (- end start) #:role "toolResult"))])
+                                (hash-ref (%transcript "history-read" start (- end start) "toolResult" #f #f)
+                                          'messages))])
             (if (null? found)
                 (older start)
-                (let ([content (hash-ref (hash-ref (car (reverse found)) 'message) 'content)])
-                  (if (string? content)
-                      content
-                      (string-join (map (lambda (block) (hash-ref block 'text))
-                                        (filter (lambda (block) (equal? (hash-try-get block 'type) "text"))
-                                                content))
-                                   "\n")))))))))
+                (%tool-result-text (hash-ref (car (reverse found)) 'message))))))))
+
+;; Rows #:start onward (from the end when negative), at most #:limit, of the
+;; transcript messages whose role matches #:role (a glob or a list of globs):
+;; {total, rows}, `total` the count of every matching message and `rows` a
+;; list of {index, id, message}, oldest first. #:tool-call reads one tool
+;; result's full text instead.
+(define (history-read #:start [start -10]
+                      #:limit [limit 10]
+                      #:role [role "*"]
+                      #:agent [agent #f]
+                      #:session [session #f]
+                      #:tool-call [tool-call #f])
+  (if tool-call
+      (if (or agent session)
+          (error "history-read: #:tool-call reads this session's own transcript; drop #:agent and #:session")
+          (%history-tool-result tool-call))
+      (let* ([reply (%transcript "history-read" start limit role agent session)]
+             [messages (hash-ref reply 'messages)])
+        ;; A read of rows shows on the cell's card: how many, from where, of how
+        ;; many. A count (#:limit 0) shows nothing.
+        (unless (equal? limit 0)
+          (%cell "transcript-read"
+                 (%options (hash 'returned (length messages)
+                                 'first (if (null? messages) void (hash-ref (car messages) 'index))
+                                 'total (hash-ref reply 'total)
+                                 'roles (if (string? role) (list role) role))
+                           'agent (and (or agent session) (hash-try-get reply 'agent)))))
+        (hash 'total (hash-ref reply 'total) 'rows messages))))
+
+;; Past sessions of this project whose messages mention every word of
+;; `query`: a list of {session_id, title, created_at, updated_at,
+;; match_count, message_count, snippets}.
+(define (history-search query #:limit [limit 10])
+  (hash-ref (%host-call "rlm.session.search"
+                        (hash 'query query 'limit (%integer "history-search" "#:limit" limit)))
+            'hits))

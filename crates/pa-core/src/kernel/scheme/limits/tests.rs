@@ -90,7 +90,7 @@ async fn a_runaway_cell_fails_alone_and_another_session_keeps_working() {
             too_deep_data.clone(),
         ),
         (
-            "(host-request \"echo\" deep)".to_string(),
+            "(%host-request \"echo\" deep)".to_string(),
             too_deep_data.clone(),
         ),
         (
@@ -197,7 +197,7 @@ async fn a_count_or_number_steel_cannot_take_is_its_cells_error() {
         ),
         ("(value->jsexpr-string (/ 0. 0.))", not_finite.clone()),
         (
-            "(host-request \"echo\" (hash 'a (list 1 (/ 1. 0.))))",
+            "(%host-request \"echo\" (hash 'a (list 1 (/ 1. 0.))))",
             not_finite.clone(),
         ),
         ("(%cell \"todo\" (- (/ 1. 0.)))", not_finite.clone()),

@@ -124,7 +124,7 @@ async fn windowed_kernel(
 }
 
 /// Everything a cell's host calls show lands on its result as the Python
-/// kernel's display events did, and `rlm-end-turn` marks the cell.
+/// kernel's display events did, and `end-turn` marks the cell.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cells_host_calls_show_on_its_result_and_end_turn_marks_it() {
@@ -171,12 +171,12 @@ async fn a_cells_host_calls_show_on_its_result_and_end_turn_marks_it() {
         kernel.as_ref(),
         r#"(todo-set (list "write the tests"))
            (ask "Which store?" (list "sqlite" "postgres") #:default "sqlite")
-           (agent-message-send "status?" #:receiver-role "child" #:receiver-name "worker")
-           (agent-message-broadcast "status?")
-           (rlm-session-messages #:limit 1 #:role "user")
-           (edit "notes.txt" "two" "three")
+           (agent-send "status?" #:to (hash 'relationship "child" 'sessionName "worker"))
+           (agent-send "status?" #:all #t)
+           (history-read #:limit 1 #:role "user")
+           (fs-edit "notes.txt" (hash 'old "two" 'new "three"))
            (bash "true")
-           (hash-ref (rlm-end-turn) 'endedTurn)"#,
+           (hash-ref (end-turn) 'endedTurn)"#,
     )
     .await;
     let sent = |id: &str, receiver_role| KernelSentAgentMessage {
@@ -270,7 +270,7 @@ async fn output_reaches_the_stream_while_the_cell_runs() {
     let result = tokio::time::timeout(
         PATIENCE,
         kernel.execute(
-            r#"(display "héllo") (host-request "stream.seen" (hash))
+            r#"(display "héllo") (%host-request "stream.seen" (hash))
                (display "oops" (current-error-port)) (display "done")"#,
             KernelExecuteOptions {
                 signal: None,
@@ -366,7 +366,7 @@ async fn a_cell_that_outlives_its_window_goes_on_in_the_background_and_holds_the
     let (kernel, facts) = windowed_kernel(handlers, dir.path()).await;
     let long = run(
         kernel.as_ref(),
-        r#"(displayln "before") (host-request "gate.wait" (hash)) (displayln "after") (* 6 7)"#,
+        r#"(displayln "before") (%host-request "gate.wait" (hash)) (displayln "after") (* 6 7)"#,
     )
     .await;
     let id = long.backgrounded_cell.clone().unwrap();
@@ -428,7 +428,7 @@ async fn cancelling_a_background_cell_stops_it_and_frees_the_engine() {
         host_handler(|_payload: HostRequestPayload| std::future::pending()),
     );
     let (kernel, facts) = windowed_kernel(handlers, dir.path()).await;
-    let long = run(kernel.as_ref(), r#"(host-request "never.answers" (hash))"#).await;
+    let long = run(kernel.as_ref(), r#"(%host-request "never.answers" (hash))"#).await;
     let id = long.backgrounded_cell.unwrap();
     let cancelled = run_to_its_end(kernel.as_ref(), &format!("(cell-cancel \"{id}\")")).await;
     let after = run_to_its_end(kernel.as_ref(), "(+ 1 2)").await;
@@ -473,7 +473,7 @@ async fn a_stop_wakes_a_cell_whose_thread_is_parked() {
     let signal = AbortSignal::new();
     let stop = signal.clone();
     let cell = kernel.execute(
-        r#"(host-request "thread.park" (hash))"#,
+        r#"(%host-request "thread.park" (hash))"#,
         KernelExecuteOptions {
             signal: Some(signal),
             timeout_ms: None,
@@ -518,7 +518,7 @@ async fn a_background_cells_agent_message_reaches_the_late_handler() {
     let (late, mut arrived) = tokio::sync::mpsc::unbounded_channel();
     let result = kernel
         .execute(
-            r#"(host-request "gate.wait" (hash)) (agent-message-send "done" #:receiver-role "parent")"#,
+            r#"(%host-request "gate.wait" (hash)) (agent-send "done" #:to "parent")"#,
             KernelExecuteOptions {
                 signal: None,
                 timeout_ms: None,
@@ -592,8 +592,8 @@ async fn commands_run_under_the_sessions_shell_prefix_and_environment() {
     let result = run(
         kernel.as_ref(),
         r#"(list (hash-ref (bash "echo $0 $greeting $EXTRA_SETTING $RLM_SESSION_ID $RLM_SESSION_DIR $PRIME_AGENT_CODING_AGENT_DIR") 'output)
-                 (session-id)
-                 (session-artifact-dir))"#,
+                 (session-info "id")
+                 (session-info "artifact-dir"))"#,
     )
     .await;
     let artifacts = artifacts.display();
@@ -624,7 +624,7 @@ async fn a_background_cells_later_edits_are_named_by_its_completion_notice() {
     let (kernel, _facts) = windowed_kernel(handlers, dir.path()).await;
     let long = run(
         kernel.as_ref(),
-        r#"(host-request "gate.wait" (hash)) (edit "words.txt" "beta" "BETA") (displayln "edited")"#,
+        r#"(%host-request "gate.wait" (hash)) (fs-edit "words.txt" (hash 'old "beta" 'new "BETA")) (displayln "edited")"#,
     )
     .await;
     release.notify_one();
@@ -816,7 +816,7 @@ async fn a_lifetime_that_ends_under_a_running_cell_stops_it_and_its_writes() {
         PATIENCE,
         kernel.execute(
             "(displayln \"spinning\")
-             (with-handler (lambda (stopped) (harness-create-memory \"left\" \"behind\"))
+             (with-handler (lambda (stopped) (harness-put \"memory\" \"left\" \"behind\"))
                (let spin () (spin)))",
             KernelExecuteOptions {
                 signal: None,
@@ -894,7 +894,7 @@ fn a_thread_left_over_from_an_ended_lifetime_cannot_change_the_workspace() {
                (when (with-handler (lambda (refused) #f) (fs-read \"kept.txt\") #t)
                  (wait)))
              (list (refusal (lambda () (fs-write \"kept.txt\" \"overwritten\")))
-                   (refusal (lambda () (edit \"kept.txt\" \"original\" \"edited\")))
+                   (refusal (lambda () (fs-edit \"kept.txt\" (hash 'old \"original\" 'new \"edited\"))))
                    (refusal (lambda () (bash \"echo ran > ran.txt\"))))",
                     KernelExecuteOptions {
                         signal: None,
@@ -922,7 +922,7 @@ fn a_thread_left_over_from_an_ended_lifetime_cannot_change_the_workspace() {
             Some(format!(
                 "({:?} {:?} {:?})",
                 refused("fs-write"),
-                refused("edit"),
+                refused("fs-edit"),
                 refused("bash")
             )),
             "original".to_string(),
@@ -932,7 +932,7 @@ fn a_thread_left_over_from_an_ended_lifetime_cannot_change_the_workspace() {
 }
 
 /// A kernel of a saved session: its cut output pages out to the store under
-/// `dir`, which the `ctx-*` functions read.
+/// `dir`, which the `output-*` functions read.
 async fn paging_kernel(
     dir: &std::path::Path,
 ) -> (Box<dyn KernelExecutor>, crate::kernel::spill::SpillStore) {
@@ -990,7 +990,7 @@ async fn a_cut_cells_output_is_previewed_by_information_and_pages_back_whole() {
     .await;
     let paged = run(
         kernel.as_ref(),
-        &format!("(display (hash-ref (ctx-page \"out:{id}\" #:start 1500 #:lines 3) 'text))"),
+        &format!("(display (hash-ref (output-read \"out:{id}\" #:start 1500 #:lines 3) 'text))"),
     )
     .await;
     let preview =

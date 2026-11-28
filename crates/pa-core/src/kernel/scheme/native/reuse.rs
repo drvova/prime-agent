@@ -1,5 +1,5 @@
 //! The kernel's side of the reuse ledger ([`crate::reuse`]): the skill
-//! files a cell reads and writes, and `(reuse-report)`.
+//! files a cell reads and writes, and `(harness-query #:view "reuse")`.
 
 use std::path::{Path, PathBuf};
 
@@ -135,8 +135,8 @@ mod tests {
             ),
             format!("(fs-read {:?})", skill_file("deploy-notes")),
             format!("(fs-read {:?})", skill_file("scratch-only")),
-            r#"(harness-create-memory "Dev port" "the dev server listens on 8080" #:id "dev_port" #:global #t)"#.to_string(),
-            r#"(harness-search "port" #:global #t)"#.to_string(),
+            r#"(harness-put "memory" "dev_port" "the dev server listens on 8080" #:title "Dev port" #:global #t)"#.to_string(),
+            r#"(harness-query "port" #:global #t)"#.to_string(),
         ] {
             evaluate(a.as_ref(), &cell).await.unwrap();
         }
@@ -154,7 +154,7 @@ mod tests {
             a.as_ref(),
             "(map (lambda (row) (map (lambda (field) (hash-ref row field))
                                   '(key standing used-sessions uses own-uses created-here creator-known)))
-                  (reuse-report))",
+                  (harness-query #:view \"reuse\"))",
         )
         .await
         .unwrap();

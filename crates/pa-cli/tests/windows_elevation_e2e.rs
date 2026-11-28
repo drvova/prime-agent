@@ -99,7 +99,7 @@ fn the_elevated_helper_runs_captures_reuses_and_cancels() {
 (define probe-2 {RUN_PROBE})
 (define job (bash "ping -n 600 127.0.0.1 > /dev/null & echo pid=$!; wait" (hash 'elevated #t 'background #t)))
 (define (started tries)
-  (let ([out (bash-output job)])
+  (let ([out (hash-ref (bash-output job) 'output)])
     (if (or (string-contains? out "\n") (= tries 0))
         out
         (begin (bash-wait job 1) (started (- tries 1))))))

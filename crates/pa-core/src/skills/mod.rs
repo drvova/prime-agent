@@ -307,7 +307,7 @@ mod tests {
     }
 
     /// Skills load in name order whatever order the filesystem lists their
-    /// directories in, so the skills list and `reuse-report` are the same
+    /// directories in, so the skills list and `(harness-query #:view "reuse")` are the same
     /// on every machine.
     #[test]
     fn skills_load_in_name_order_not_listing_order() {

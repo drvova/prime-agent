@@ -1,4 +1,4 @@
-//! `(edit path old-str new-str)`: replace one unique occurrence of a string
+//! `(fs-edit path (hash 'old old-str 'new new-str))`: replace one unique occurrence of a string
 //! in an existing file, the `edit` skill of the Python kernel.
 //!
 //! The file is read and written as UTF-8, byte for byte. An exact match is

@@ -115,7 +115,7 @@ async fn calls_reach_the_session_handlers_which_shape_rereads_and_count_each_cal
     .await;
     let applied = value(
         kernel.as_ref(),
-        "(hash-ref (fs-edit \"notes.txt\" (hash 'replace (fs-anchor (fs-read \"notes.txt\" (hash 'end 2)) 2) 'text \"line 2\")) 'applied)",
+        "(hash-ref (fs-edit \"notes.txt\" (hash 'replace 2 'text \"line 2\") (hash 'view (fs-read \"notes.txt\" (hash 'end 2)))) 'applied)",
     )
     .await;
     let after_own_edit = value(kernel.as_ref(), read).await;
@@ -240,7 +240,7 @@ async fn a_call_ends_with_its_cell_and_the_kernel_stays_usable() {
     let stopped_within = started.elapsed();
     let after = value(
         kernel.as_ref(),
-        "(map (lambda (entry) (hash-ref entry 'path)) (hash-ref (fs-glob \"*\") 'entries))",
+        "(map (lambda (entry) (hash-ref entry 'path)) (hash-ref (fs-find (hash 'glob \"*\")) 'entries))",
     )
     .await;
     assert_eq!(
@@ -260,7 +260,8 @@ async fn a_call_ends_with_its_cell_and_the_kernel_stays_usable() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_edit_takes_rows_as_anchors_and_can_return_a_stale_patch_instead_of_raising() {
+async fn an_edit_takes_rows_and_view_lines_as_anchors_and_can_return_a_stale_patch_instead_of_raising(
+) {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("list.txt");
     std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
@@ -269,15 +270,19 @@ async fn an_edit_takes_rows_as_anchors_and_can_return_a_stale_patch_instead_of_r
         kernel.as_ref(),
         "(let* ([view (fs-read \"list.txt\")]
                 [done (fs-edit \"list.txt\"
-                               (hash 'replace (list (car (hash-ref view 'lines)) (fs-anchor view 2))
-                                     'text \"uno\"))]
-                [stale (fs-edit \"list.txt\" (hash 'delete (fs-anchor view 3)) (hash 'on-stale 'return))])
+                               (hash 'replace (list (car (hash-ref view 'lines)) 2) 'text \"uno\")
+                               (hash 'view view))]
+                [stale (fs-edit \"list.txt\" (hash 'delete 3) (hash 'on-stale 'return 'view view))])
            (list (hash-ref done 'applied) (hash-ref done 'check)
                  (hash-ref stale 'applied)
                  (map (lambda (entry) (hash-ref entry 'edit)) (hash-ref stale 'stale))))",
     )
     .await;
-    let no_such_line = value(kernel.as_ref(), "(fs-anchor (fs-read \"list.txt\") 9)").await;
+    let no_such_line = value(
+        kernel.as_ref(),
+        "(fs-edit \"list.txt\" (hash 'delete 9) (hash 'view (fs-read \"list.txt\")))",
+    )
+    .await;
     assert_eq!(
         (
             outcome,
@@ -298,9 +303,21 @@ async fn a_unique_string_is_replaced_and_a_miss_says_where_it_diverges() {
     let file = dir.path().join("words.txt");
     std::fs::write(&file, "alpha\r\nbeta\r\ngamma\r\n").unwrap();
     let kernel = kernel_over(HostRequestHandlers::new(), dir.path()).await;
-    let replaced = value(kernel.as_ref(), "(edit \"words.txt\" \"beta\" \"BETA\")").await;
-    let missed = value(kernel.as_ref(), "(edit \"words.txt\" \"BETx\" \"q\")").await;
-    let repeated = value(kernel.as_ref(), "(edit \"words.txt\" \"a\" \"b\")").await;
+    let replaced = value(
+        kernel.as_ref(),
+        "(fs-edit \"words.txt\" (hash 'old \"beta\" 'new \"BETA\"))",
+    )
+    .await;
+    let missed = value(
+        kernel.as_ref(),
+        "(fs-edit \"words.txt\" (hash 'old \"BETx\" 'new \"q\"))",
+    )
+    .await;
+    let repeated = value(
+        kernel.as_ref(),
+        "(fs-edit \"words.txt\" (hash 'old \"a\" 'new \"b\"))",
+    )
+    .await;
     let shown = pa_types::platform::canonicalize(&file).unwrap();
     assert_eq!(
         (replaced, missed, repeated, std::fs::read_to_string(&file).unwrap()),
@@ -312,11 +329,11 @@ async fn a_unique_string_is_replaced_and_a_miss_says_where_it_diverges() {
                 "check": false,
                 "text": format!("Edited {}", shown.display()),
             })),
-            Err("Error: Generic: edit: string not found in words.txt: old-str matches its first 3 of 4 characters \
+            Err("Error: Generic: fs-edit: string not found in words.txt: old-str matches its first 3 of 4 characters \
                  and diverges at line 2, column 4:\n  file continues    \"A\\r\\ngamma\\r\\n\"\n  \
                  old-str continues \"x\""
                 .to_string()),
-            Err("Error: Generic: edit: found 4 occurrences in words.txt, need exactly 1 — widen the snippet to make it unique".to_string()),
+            Err("Error: Generic: fs-edit: found 4 occurrences in words.txt, need exactly 1 — widen the snippet to make it unique".to_string()),
             "alpha\r\nBETA\r\ngamma\r\n".to_string(),
         )
     );
@@ -335,7 +352,7 @@ async fn an_edit_replaces_its_file_whole_and_never_rewrites_it_in_place() {
     let kernel = kernel_over(HostRequestHandlers::new(), dir.path()).await;
     let edited = value(
         kernel.as_ref(),
-        r#"(hash-ref (edit "notes.txt" "two" "TWO") 'start-line)"#,
+        r#"(hash-ref (fs-edit "notes.txt" (hash 'old "two" 'new "TWO")) 'start-line)"#,
     )
     .await;
     let mut names: Vec<String> = std::fs::read_dir(dir.path())
@@ -372,37 +389,37 @@ async fn a_near_miss_edit_matches_by_the_first_normalization_that_finds_one_plac
         (
             "trailing.txt",
             "def f():\n    return 1\n",
-            r#"(edit "trailing.txt" "def f():  \n    return 1  " "def f():\n    return 2")"#,
+            r#"(fs-edit "trailing.txt" (hash 'old "def f():  \n    return 1  " 'new "def f():\n    return 2"))"#,
         ),
         (
             "crlf.txt",
             "alpha\r\nbeta\r\ngamma\r\n",
-            r#"(edit "crlf.txt" "alpha\nbeta" "ALPHA\nBETA")"#,
+            r#"(fs-edit "crlf.txt" (hash 'old "alpha\nbeta" 'new "ALPHA\nBETA"))"#,
         ),
         (
             "indented.txt",
             "class A:\n    def f(self):\n        return 1\n\nx = 1\n",
-            r#"(edit "indented.txt" "def f(self):\n    return 1" "def f(self):\n    return 2")"#,
+            r#"(fs-edit "indented.txt" (hash 'old "def f(self):\n    return 1" 'new "def f(self):\n    return 2"))"#,
         ),
         (
             "quotes.txt",
             "msg = \u{201C}it\u{2019}s done\u{201D} \u{2014} ok\n",
-            r#"(edit "quotes.txt" "msg = \"it's done\" - ok" "msg = \"it is done\"")"#,
+            r#"(fs-edit "quotes.txt" (hash 'old "msg = \"it's done\" - ok" 'new "msg = \"it is done\""))"#,
         ),
         (
             "escaped.txt",
             "a = 1\nb = \"x\"\n",
-            r#"(edit "escaped.txt" "a = 1\\nb = \\\"x\\\"" "a = 2\\nb = \\\"y\\\"")"#,
+            r#"(fs-edit "escaped.txt" (hash 'old "a = 1\\nb = \\\"x\\\"" 'new "a = 2\\nb = \\\"y\\\""))"#,
         ),
         (
             "twice.txt",
             "if a:\n    go()\nif b:\n    go()\n",
-            r#"(edit "twice.txt" "go()  " "stop()")"#,
+            r#"(fs-edit "twice.txt" (hash 'old "go()  " 'new "stop()"))"#,
         ),
         (
             "anchored.txt",
             "one\ntwo\n",
-            r#"(edit "anchored.txt" "1:abc|one\n2:xyz|two" "uno\ndos")"#,
+            r#"(fs-edit "anchored.txt" (hash 'old "1:abc|one\n2:xyz|two" 'new "uno\ndos"))"#,
         ),
     ];
     let mut outcomes = Vec::new();
@@ -462,13 +479,13 @@ async fn a_near_miss_edit_matches_by_the_first_normalization_that_finds_one_plac
                 "a = 2\nb = \"y\"\n".to_string(),
             ),
             (
-                Err("Error: Generic: edit: found 2 occurrences in twice.txt ignoring indentation \
+                Err("Error: Generic: fs-edit: found 2 occurrences in twice.txt ignoring indentation \
                      (new-str re-indented to match), need exactly 1 — widen the snippet to make it unique"
                     .to_string()),
                 "if a:\n    go()\nif b:\n    go()\n".to_string(),
             ),
             (
-                Err("Error: Generic: edit: old-str carries fs-read anchor prefixes (`LINE:abc|`), which are \
+                Err("Error: Generic: fs-edit: old-str carries fs-read anchor prefixes (`LINE:abc|`), which are \
                      not in anchored.txt: drop them and pass the file's text alone, or edit those lines with \
                      fs-edit and their anchors"
                     .to_string()),
@@ -493,12 +510,12 @@ async fn a_miss_shows_the_closest_lines_or_that_the_edit_looks_applied() {
     std::fs::write(dir.path().join("f.rs"), applied).unwrap();
     let near = value(
         kernel.as_ref(),
-        r#"(edit "total.rs" "    let subtotal = price * quantity;\n    let tax = subtotal / 10;\n    subtotal + tax" "    price * quantity")"#,
+        r#"(fs-edit "total.rs" (hash 'old "    let subtotal = price * quantity;\n    let tax = subtotal / 10;\n    subtotal + tax" 'new "    price * quantity"))"#,
     )
     .await;
     let again = value(
         kernel.as_ref(),
-        r#"(edit "f.rs" "    let answer = compute(41);" "    let answer = compute(41) + 1;")"#,
+        r#"(fs-edit "f.rs" (hash 'old "    let answer = compute(41);" 'new "    let answer = compute(41) + 1;"))"#,
     )
     .await;
     assert_eq!(
@@ -509,7 +526,7 @@ async fn a_miss_shows_the_closest_lines_or_that_the_edit_looks_applied() {
             std::fs::read_to_string(dir.path().join("f.rs")).unwrap(),
         ),
         (
-            Err("Error: Generic: edit: string not found in total.rs: old-str matches its first 27 of 84 characters \
+            Err("Error: Generic: fs-edit: string not found in total.rs: old-str matches its first 27 of 84 characters \
                  and diverges at line 4, column 28:\n  file continues    \"count;\\n    let tax = subtotal / 10;\\n    subtotal + tax\\n}\\n\"\n  \
                  old-str continues \"quantity;\\n    let tax = subtotal / 10;\\n    subtotal + tax\"\n\
                  closest lines in the file (lines 3-7; the numbers are not part of the file):\n  \
@@ -522,7 +539,7 @@ async fn a_miss_shows_the_closest_lines_or_that_the_edit_looks_applied() {
                  file    \"    let subtotal = price * count;\"\n  \
                  old-str \"    let subtotal = price * quantity;\""
                 .to_string()),
-            Err("Error: Generic: edit: string not found in f.rs, but new-str is, once, at line 2: this edit looks \
+            Err("Error: Generic: fs-edit: string not found in f.rs, but new-str is, once, at line 2: this edit looks \
                  already applied; read the file before editing it again"
                 .to_string()),
             total.to_string(),
@@ -550,7 +567,7 @@ async fn the_closest_lines_of_a_100k_line_file_come_back_in_bounded_time() {
     let started = Instant::now();
     let missed = value(
         kernel.as_ref(),
-        &format!(r#"(edit "big.rs" "{old}" "gone")"#),
+        &format!(r#"(fs-edit "big.rs" (hash 'old "{old}" 'new "gone"))"#),
     )
     .await;
     let elapsed = started.elapsed();
@@ -605,18 +622,18 @@ async fn each_edit_is_counted_by_how_it_matched() {
     }
     let mut outcomes = Vec::new();
     for cell in [
-        r#"(edit "a.txt" "alpha" "ALPHA")"#,
-        r#"(edit "a.txt" "beta   " "BETA")"#,
-        r#"(edit "b.py" "\treturn 1" "\treturn 2")"#,
-        "(edit \"c.txt\" \"say \u{201C}hi\u{201D}\" \"say bye\")",
-        r#"(edit "d.txt" "one\\ntwo" "1\\n2")"#,
-        r#"(edit "d.txt" "1:abc|1" "x")"#,
-        r#"(edit "e.txt" "same" "other")"#,
-        r#"(edit "e.txt" "absent" "other")"#,
-        r#"(edit "f.txt" "the slow brown fox" "the quick brown fox jumps")"#,
+        r#"(fs-edit "a.txt" (hash 'old "alpha" 'new "ALPHA"))"#,
+        r#"(fs-edit "a.txt" (hash 'old "beta   " 'new "BETA"))"#,
+        r#"(fs-edit "b.py" (hash 'old "\treturn 1" 'new "\treturn 2"))"#,
+        "(fs-edit \"c.txt\" (hash 'old \"say \u{201C}hi\u{201D}\" 'new \"say bye\"))",
+        r#"(fs-edit "d.txt" (hash 'old "one\\ntwo" 'new "1\\n2"))"#,
+        r#"(fs-edit "d.txt" (hash 'old "1:abc|1" 'new "x"))"#,
+        r#"(fs-edit "e.txt" (hash 'old "same" 'new "other"))"#,
+        r#"(fs-edit "e.txt" (hash 'old "absent" 'new "other"))"#,
+        r#"(fs-edit "f.txt" (hash 'old "the slow brown fox" 'new "the quick brown fox jumps"))"#,
         // Not counted: the next outcome heard is the exact match after it.
-        r#"(edit "missing.txt" "x" "y")"#,
-        r#"(edit "a.txt" "ALPHA" "alpha")"#,
+        r#"(fs-edit "missing.txt" (hash 'old "x" 'new "y"))"#,
+        r#"(fs-edit "a.txt" (hash 'old "ALPHA" 'new "alpha"))"#,
     ] {
         let missing = cell.contains("missing.txt");
         // Whether the edit applied or failed is the ladder's tests' concern.
@@ -864,7 +881,7 @@ async fn fs_write_creates_and_replaces_files_through_the_session_handler() {
     );
 }
 
-/// A read's reply names the file's neighbours as handles, `(ctx-page ...)`
+/// A read's reply names the file's neighbours as handles, `(output-read ...)`
 /// reads one, and both that read and an `fs-read` of the other neighbour
 /// count as uses when the next read settles them.
 #[tokio::test(flavor = "multi_thread")]
@@ -910,7 +927,7 @@ async fn a_read_carries_related_handles_that_ctx_page_reads() {
         "(let* ([view (fs-read \"src/store.rs\")]
                 [related (hash-ref view 'related)])
            (list related
-                 (hash-ref (ctx-page (hash-ref (car related) 'handle)) 'text)
+                 (hash-ref (output-read (hash-ref (car related) 'handle)) 'text)
                  (hash-ref view 'text)))",
     )
     .await
@@ -937,7 +954,7 @@ async fn a_read_carries_related_handles_that_ctx_page_reads() {
             ]),
             json!("use super::Store;\n"),
             Some(format!(
-                "[related, paged out (read with (ctx-page handle)): test src/store/tests.rs {tests} · import src/store/cache.rs {cache}]"
+                "[related, paged out (read with (output-read handle)): test src/store/tests.rs {tests} · import src/store/cache.rs {cache}]"
             )),
             Ok(json!(false)),
             vec![
@@ -984,14 +1001,14 @@ async fn fs_write_and_fs_edit_show_their_change_on_the_card_as_edit_does() {
         r#"(hash-ref (fs-write "new.txt" "a\nc\n") 'created)"#,
         r#"(let ([view (fs-read "new.txt")])
              (hash-contains?
-               (fs-edit "new.txt" (list (hash 'replace (fs-anchor view 1) 'text "A")
-                                        (hash 'append "d")))
+               (fs-edit "new.txt" (list (hash 'replace 1 'text "A") (hash 'append "d"))
+                        (hash 'view view))
                'rewrite))"#,
         r#"(fs-edit "new.txt" (hash 'replace "1:aaa" 'text "x"))"#,
         r#"(hash-ref (fs-edit "new.txt" (hash 'replace "1:aaa" 'text "x") (hash 'on-stale 'return))
                      'applied)"#,
         r#"(fs-write "." "x")"#,
-        r#"(hash-ref (edit "new.txt" "c" "C") 'start-line)"#,
+        r#"(hash-ref (fs-edit "new.txt" (hash 'old "c" 'new "C")) 'start-line)"#,
     ] {
         let result = kernel
             .execute(

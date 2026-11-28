@@ -14,12 +14,12 @@ login), never a new package, and there are no per-service skills to read.
 
 ```scheme
 ;; Supported catalog, one bounded page. More pages exist while nextCursor is a string.
-(define page (mcp-list-plugins #:connection-status "not_connected" #:limit 50))
-(define results (mcp-search-plugins "notion"))     ; bounded search
-(define first-page (mcp-list-plugins))             ; default: first 50 entries
+(define page (mcp-plugins #:connection-status "not_connected" #:limit 50))
+(define results (mcp-plugins #:search "notion"))     ; bounded search
+(define first-page (mcp-plugins))             ; default: first 50 entries
 
 ;; The user's actual connections. connectionId is the server name everywhere below.
-(define connections (mcp-list-connections))
+(define connections (mcp-status))
 ```
 
 Catalog entries carry `connectionStatus` (`connected`, `pending`,
@@ -46,18 +46,18 @@ connects mid-task, the connection works on the next call without a reload.
 
 ```scheme
 ;; Schemas come from the server.
-(define found (mcp-search-tools "search workspace documents" #:connection-id "notion"))
-(define tool (mcp-describe-tool "notion" "notion-search"))   ; {name, description, inputSchema}
-(define tools (mcp-list-tools "notion"))                     ; full tool list with schemas
+(define found (mcp-tools "notion" #:search "search workspace documents"))
+(define tool (mcp-tools "notion" #:tool "notion-search"))   ; {name, description, inputSchema}
+(define tools (mcp-tools "notion"))                     ; full tool list with schemas
 
-(define result (mcp-call-tool "notion" "notion-search" (hash 'query "roadmap")))
+(define result (mcp-call "notion" "notion-search" (hash 'query "roadmap")))
 ```
 
 - Discover before calling: don't assume tool names or arguments; read the
-  `inputSchema` with `mcp-describe-tool` and construct matching arguments.
-- `mcp-list-tools` returns the complete inventory or raises — never a silent
+  `inputSchema` with `(mcp-tools server #:tool name)` and construct matching arguments.
+- `mcp-tools` returns the complete inventory or raises — never a silent
   partial list.
-- `mcp-search-tools` without `#:connection-id` searches at most 8 connections
+- `(mcp-tools #:search query)` without a server searches at most 8 connections
   the host reports as connected and reports its scope: `searched`,
   `unavailable` (per-connection failures as fixed, redaction-safe summaries),
   and `truncated` (narrow the query or pick a connection when it is set — the
@@ -69,7 +69,7 @@ connects mid-task, the connection works on the next call without a reload.
 
 ## Large or integrity-critical payloads
 
-`mcp-call-tool` runs the MCP client inside the agent. Arguments go from the
+`mcp-call` runs the MCP client inside the agent. Arguments go from the
 kernel straight to the server and never pass through model output; results
 enter context only if you print them. For bulk writes or data that must stay
 exact (financial figures, generated rows), keep the payload in code:
@@ -77,7 +77,7 @@ exact (financial figures, generated rows), keep the payload in code:
 ```scheme
 ;; /tmp/updates.json was written by code, never typed by the model.
 (define args (string->jsexpr (hash-ref (bash "cat /tmp/updates.json") 'output)))
-(define result (mcp-call-tool "sheets" "update_spreadsheet" args))
+(define result (mcp-call "sheets" "update_spreadsheet" args))
 (fs-write "/tmp/updates.result.json" (value->jsexpr-string result))
 (displayln (length (hash-ref args 'requests)))
 ```
@@ -96,8 +96,8 @@ with `(with-handler (lambda (e) (to-string e)) ...)` to read it.
 
 - The tool is excluded by the user's `enabledTools` / `disabledTools` policy:
   don't retry; tell the user.
-- The tool or connection doesn't exist: re-check with `mcp-list-tools` /
-  `mcp-list-connections`; tools can change across sessions.
+- The tool or connection doesn't exist: re-check with `mcp-tools` /
+  `mcp-status`; tools can change across sessions.
 - The server's tool listing couldn't complete honestly (broken pagination): no
   partial inventory is published; re-run, and ask the user to reconnect if it
   persists.

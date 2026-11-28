@@ -1,4 +1,4 @@
-//! The reuse listing the kernel's `(reuse-report)` and `prime-agent reuse`
+//! The reuse listing the kernel's `(harness-query #:view "reuse")` and `prime-agent reuse`
 //! show, the inventory's marks, and the user's prune.
 
 use std::collections::BTreeMap;
