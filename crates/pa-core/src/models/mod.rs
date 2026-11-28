@@ -28,6 +28,7 @@ pub(crate) mod prime_inference;
 pub(crate) mod registry;
 pub(crate) mod resolver;
 pub(crate) mod session_restore;
+pub(crate) mod startup_fallback;
 
 pub use custom::{
     apply_model_override, load_custom_models, merge_compat, parse_models_config,
@@ -50,4 +51,7 @@ pub use resolver::{
 pub use session_restore::{
     find_session_model_with_readiness_wait, resolve_model_scope_from_models_with_readiness,
     SESSION_MODEL_RESTORE_READINESS_TIMEOUT_MS,
+};
+pub use startup_fallback::{
+    default_model_fallback_message, restore_fallback_message, startup_chain_model,
 };

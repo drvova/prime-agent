@@ -1,0 +1,1 @@
+- On the runtime daemon a session that cannot start on its configured default model, or cannot restore the model it was saved with, now shows the "Default model … is not available" or "Could not restore model …" notice naming the model it runs on instead, as on the old daemon. Its sessions also no longer see an `RLM_DEPTH` the daemon was started with.

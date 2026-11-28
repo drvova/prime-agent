@@ -86,7 +86,9 @@ SQLite implementations over `pa-log`.
 - **Runtime** (`Runtime::open(agent_dir, RuntimeOptions)`): the bus over the agent dir's
   database (the transcript store's `agent.db`, `pa_core::session::store::database_path`; opened
   on the blocking pool, no network), the task queue over it, `RuntimeOptions::spare_kernels`
-  Scheme kernels kept built by pa-core's spare pool, `RuntimeOptions::sessions` opened while the
+  Scheme kernels kept built by pa-core's spare pool, `RuntimeOptions::hidden_env` the process
+  variables no session's scope sees (the runtime daemon's: `RLM_DEPTH`, as the old supervisor hid
+  it from its workers), `RuntimeOptions::sessions` opened while the
   database opens (their engines build meanwhile, so the open costs a first turn nothing), and one
   subscription installed at open: `agent/+/input` (an `AgentInput`) queues a `Prompt` task in
   that session (`AgentTarget::Origin`; the input's own `priority`, such as `steer`, when it names
@@ -434,7 +436,12 @@ SQLite implementations over `pa-log`.
   fails rather than run on another key. `models` (else the settings' `enabledModels`) is the
   session's scope, resolved at every open as the old worker resolves it (`daemon/model_scope.rs`):
   the list `session.cycle_model` steps through, and a new session that chose no model starts on
-  its pick. `sessionDir` is where a new session's transcript is made, and `launchEnv` (the
+  the old worker's startup chain (`pa_core::models::startup_chain_model`: the scope's pick, else
+  the saved default, the featured default, the first available model). A session that does not
+  run on the model it was meant to says so in its summary's `modelFallbackMessage`, as the old
+  worker's did: a new one off the saved default (`pa_core::models::default_model_fallback_message`,
+  kept for the open until the session goes on from another transcript), a reopened one whose
+  saved model did not restore (`BuiltSession::model_fallback_message`, its build's). `sessionDir` is where a new session's transcript is made, and `launchEnv` (the
   client's environment, the old create's `launchEnv`) is the session scope's environment over the
   daemon's, re-filtered and without `RLM_DEPTH`, held for its lifetimes in this process only. `session.create {"ephemeral": true}`
   (`daemon/handlers/owned.rs`, `--no-session`) opens a new session kept in memory only (the
@@ -886,6 +893,7 @@ limit, or how many events an `Intake` or the sessions' outbox buffers.
   `session.set_heartbeat`, `session.update_heartbeat` and `session.manage_heartbeat`.
 - `BuiltSession::provider_target` (pa-core's `ProviderTargetSlot`): the slot the embedder's
   engine streams from, which the runtime daemon's model and tier switches write.
+- `BuiltSession::model_fallback_message` and `RuntimeOptions::hidden_env` (see above).
 
 Dependencies: `pa-types`, `pa-log` (the SQLite stores), `pa-sources` (the timer, watch and
 webhook sources it starts and stops), `pa-core` (the session engine, the

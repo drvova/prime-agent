@@ -135,6 +135,7 @@ impl SessionBuilder for FauxBuilder {
             events: DriverEvents::Stream,
             autonomous: None,
             queue_modes: crate::session::QueueModes::Built,
+            model_fallback_message: None,
         })
     }
 }
@@ -167,6 +168,7 @@ async fn open_runtime<B: SessionBuilder>(
             listener_capacity: NonZeroUsize::new(4096).unwrap(),
             cwd: cwd.to_path_buf(),
             sessions: Vec::new(),
+            hidden_env: std::collections::BTreeSet::new(),
         },
     )
     .await

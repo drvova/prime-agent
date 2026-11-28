@@ -118,6 +118,7 @@ impl SessionBuilder for DaemonSessions {
         let session_dir = transcript
             .parent()
             .map_or_else(|| super::replacement_session_dir(&options), PathBuf::from);
+        let reopened = !spec.ephemeral && pa_core::session::store::store().exists(&transcript);
         // An ephemeral session (`--no-session`) keeps its transcript in
         // memory only.
         let manager = if spec.ephemeral {
@@ -127,7 +128,7 @@ impl SessionBuilder for DaemonSessions {
                 ..Default::default()
             });
             manager
-        } else if pa_core::session::store::store().exists(&transcript) {
+        } else if reopened {
             pa_core::session::manager::SessionManager::open(&spec.cwd, &session_dir, &transcript)
         } else {
             // The new session's pin (the handler's create refused one that does not resolve).
@@ -156,6 +157,47 @@ impl SessionBuilder for DaemonSessions {
             });
             manager
         };
+        // A reopened session that chose no model resumes on its saved one, as the old worker's
+        // restore does: when that cannot be restored (within the catalog's readiness window),
+        // it runs on the startup chain's pick instead, and its clients are told so.
+        let saved = manager.active_context().model.filter(|_| {
+            reopened && options.config.model.is_none() && options.config.provider.is_none()
+        });
+        let mut model_fallback_message = None;
+        if let Some((provider, model_id)) = saved {
+            let agent_dir = options.config.agent_dir.clone();
+            let mut registry = pa_core::models::ModelRegistry::create(
+                pa_core::auth::AuthStorage::create(&agent_dir),
+                agent_dir.join("models.json"),
+            );
+            let restored = pa_core::models::find_session_model_with_readiness_wait(
+                &mut registry,
+                &provider,
+                &model_id,
+                pa_core::models::SESSION_MODEL_RESTORE_READINESS_TIMEOUT_MS,
+            )
+            .await;
+            if restored.is_none() {
+                let settings = pa_core::settings::SettingsManager::create(&spec.cwd, &agent_dir);
+                let fallback = pa_core::models::startup_chain_model(
+                    &registry,
+                    settings
+                        .get_default_provider()
+                        .zip(settings.get_default_model()),
+                    &[],
+                    /*is_continuing*/ true,
+                );
+                model_fallback_message = Some(pa_core::models::restore_fallback_message(
+                    &provider,
+                    &model_id,
+                    fallback.as_ref(),
+                ));
+                if let Some(fallback) = fallback {
+                    options.config.provider = Some(fallback.provider);
+                    options.config.model = Some(fallback.id);
+                }
+            }
+        }
         let headless = super::build_engine(
             &options,
             self.faux.as_ref(),
@@ -211,6 +253,7 @@ impl SessionBuilder for DaemonSessions {
             autonomous: chosen.autonomous.clone(),
             // A daemon session's modes follow the settings as they change.
             queue_modes: pa_runtime::QueueModes::Settings,
+            model_fallback_message,
         })
     }
 }

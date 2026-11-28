@@ -9,7 +9,7 @@
 //! autonomous run it starts with. A spawned subagent is a session too: its
 //! spec says where it sits under its parent ([`SubagentSpec`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -380,6 +380,11 @@ pub struct BuiltSession {
     pub autonomous: Option<AgentAutonomousConfig>,
     /// Where its turns take their steering and follow-up modes from.
     pub queue_modes: QueueModes,
+    /// Why the session does not run on the model it was meant to (a
+    /// reopened session whose saved model could not be restored:
+    /// `pa_core::models::restore_fallback_message`); a daemon's clients show
+    /// it as the session opens (`modelFallbackMessage`).
+    pub model_fallback_message: Option<String>,
 }
 
 /// Where a session's turns take their steering and follow-up modes from
@@ -685,6 +690,8 @@ pub(crate) struct Sessions<B> {
     faults: SessionFaults,
     /// The sessions' scheduled jobs, in the runtime daemon.
     jobs: JobsSlot,
+    /// The process variables no session sees ([`crate::RuntimeOptions::hidden_env`]).
+    hidden_env: Arc<BTreeSet<String>>,
     /// The sessions the runtime's stores keep nothing of: an ephemeral
     /// session joins as it opens, and so does a subagent of one.
     unstored: crate::log_stores::Unstored,
@@ -712,6 +719,7 @@ impl<B: SessionBuilder> Sessions<B> {
         subagents: Arc<Subagents>,
         faults: SessionFaults,
         jobs: JobsSlot,
+        hidden_env: Arc<BTreeSet<String>>,
     ) -> Self {
         Sessions {
             builder: Arc::new(builder),
@@ -720,6 +728,7 @@ impl<B: SessionBuilder> Sessions<B> {
             subagents,
             faults,
             jobs,
+            hidden_env,
             unstored: crate::log_stores::Unstored::default(),
             hosts: Mutex::new(HashMap::new()),
             queued: Mutex::new(HashMap::new()),
@@ -814,6 +823,7 @@ impl<B: SessionBuilder> Sessions<B> {
             Arc::clone(&self.events),
             self.faults.clone(),
             Arc::clone(&self.jobs),
+            Arc::clone(&self.hidden_env),
             opening,
         )
         .context("start the session's host thread")?;

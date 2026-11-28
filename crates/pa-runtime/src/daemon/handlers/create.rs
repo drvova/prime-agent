@@ -219,6 +219,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                     lease,
                     owner,
                     scoped_models: scope.entries,
+                    model_fallback_message: scope.fallback_message,
                 },
             )
             .await;

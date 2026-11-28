@@ -747,6 +747,7 @@ impl<B: SessionBuilder> Schedules<B> {
                     lease: Some(lease),
                     owner: None,
                     scoped_models: scope.entries,
+                    model_fallback_message: scope.fallback_message,
                 },
             )
             .await;

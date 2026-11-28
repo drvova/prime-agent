@@ -285,6 +285,9 @@ pub async fn run<B: SessionBuilder>(
                 listener_capacity: LISTENER_CAPACITY,
                 cwd: options.cwd.clone(),
                 sessions: Vec::new(),
+                // A daemon started from an agent's command carries its depth;
+                // a session the daemon hosts never takes it.
+                hidden_env: std::collections::BTreeSet::from(["RLM_DEPTH".to_string()]),
             },
             SessionFaults::Supervised(Arc::new(Supervision {
                 crash_log,

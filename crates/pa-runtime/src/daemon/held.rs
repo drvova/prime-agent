@@ -116,6 +116,9 @@ pub(super) struct OpenSession {
     /// `session.set_scoped_models` for the open's life, as the old worker
     /// kept it.
     pub(super) scoped_models: Vec<Value>,
+    /// Why the new session does not run on the saved default
+    /// (`daemon::model_scope`), until it goes on from another transcript.
+    pub(super) model_fallback_message: Option<String>,
 }
 
 impl OpenSessions {
@@ -180,6 +183,16 @@ impl OpenSessions {
             .open
             .get(id)
             .map_or_else(Vec::new, |session| session.scoped_models.clone())
+    }
+
+    /// Why open session `id`, created here, does not run on the saved
+    /// default; `None` when it does, or once it went on from another
+    /// transcript.
+    pub(super) fn model_fallback_message(&self, id: &str) -> Option<String> {
+        lock(&self.open)
+            .open
+            .get(id)
+            .and_then(|session| session.model_fallback_message.clone())
     }
 
     /// Sets open session `id`'s scoped model list; `false` when it is not
@@ -259,6 +272,8 @@ impl OpenSessions {
             };
             session.path = path;
             session.cwd = cwd;
+            // The notice was about the transcript it leaves.
+            session.model_fallback_message = None;
             let replaced = lease.map(|lease| session.lease.replace(lease));
             (replaced, self.keep(&open))
         };
@@ -458,6 +473,7 @@ async fn revive_one<B: SessionBuilder>(
             lease: Some(lease),
             owner: None,
             scoped_models: scope.entries,
+            model_fallback_message: scope.fallback_message,
         },
     )
     .await;

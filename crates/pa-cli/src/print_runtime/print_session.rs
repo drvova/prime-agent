@@ -122,6 +122,7 @@ impl SessionBuilder for PrintSession {
                         .as_ref()
                         .map(autonomous_runtime_config),
                     queue_modes: pa_runtime::QueueModes::Built,
+                    model_fallback_message: None,
                 };
                 Ok::<_, String>((built, header))
             }
@@ -320,6 +321,7 @@ pub(super) async fn build_subagent(
         events: DriverEvents::Quiet,
         autonomous: None,
         queue_modes: pa_runtime::QueueModes::Built,
+        model_fallback_message: None,
     })
 }
 
@@ -443,6 +445,9 @@ pub(super) async fn print_mode_main(
                     options: pa_runtime::SessionOptions::default(),
                     ephemeral: false,
                 }],
+                // A print run inside an agent's command keeps the depth it
+                // inherits (its sessions are that agent's descendants).
+                hidden_env: std::collections::BTreeSet::new(),
             },
         )
         .await
