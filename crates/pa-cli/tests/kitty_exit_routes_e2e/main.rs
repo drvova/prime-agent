@@ -19,7 +19,10 @@
 //! stack is empty and a synthetic up arrow echoes back clean.
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
+#[path = "../support/mock_runtime.rs"]
+mod mock_runtime;
+
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -523,8 +526,8 @@ impl RouteHarness {
         } else {
             4
         };
-        let supervisor = MockSupervisor::bind(&socket, seed_messages);
-        let server = std::thread::spawn(move || supervisor.serve());
+        let mock = mock_runtime::MockRuntime::bind(&socket);
+        let server = std::thread::spawn(move || mock.serve_all(answers(seed_messages)));
 
         let pty = openpty(
             Some(&Winsize {
@@ -809,4 +812,4 @@ fn slave_as_stdio(slave: &OwnedFd) -> Stdio {
     slave.try_clone().expect("clone pty slave").into()
 }
 mod child;
-use child::{child_run, MockSupervisor};
+use child::{answers, child_run};

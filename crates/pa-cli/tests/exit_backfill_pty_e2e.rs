@@ -20,7 +20,10 @@
 
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
+#[path = "support/mock_runtime.rs"]
+mod mock_runtime;
+
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -33,6 +36,7 @@ use nix::fcntl::{fcntl, FcntlArg::F_SETFL, OFlag};
 use nix::pty::{openpty, Winsize};
 use serde_json::{json, Value};
 
+use mock_runtime::{Answer, MockRuntime};
 use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
 };
@@ -57,12 +61,13 @@ const FIRST_ROW: &[u8] = b"tail row 0";
 const LAST_ROW: &[u8] = b"tail row 8";
 
 /// The child half: runs the real interactive loop against the parent's
-/// mock supervisor; a plain `cargo test` run passes trivially.
+/// mock runtime; a plain `cargo test` run passes trivially.
 #[test]
 fn exit_backfill_child_mode() {
     let Ok(socket) = std::env::var(CHILD_SOCKET_ENV) else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = child_options(PathBuf::from(socket));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -256,7 +261,7 @@ fn leave_with_pending_backfill(gesture: &[u8]) {
     );
 }
 
-/// One attached session behind a mock supervisor socket: the attach is
+/// One attached session behind a mock runtime socket: the attach is
 /// windowed (it carries a page cursor), and the older-history page request
 /// is held forever; everything else answers promptly.
 struct ExitBackfillHarness {
@@ -272,8 +277,8 @@ impl ExitBackfillHarness {
     fn start(held: Arc<AtomicUsize>, history: Option<Arc<AtomicUsize>>) -> ExitBackfillHarness {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let socket = dir.path().join("tui.sock");
-        let supervisor = MockSupervisor::bind(&socket, held, history);
-        let server = std::thread::spawn(move || supervisor.serve());
+        let mock = MockRuntime::bind(&socket);
+        let server = std::thread::spawn(move || serve(mock, held, history));
 
         let pty = openpty(
             Some(&Winsize {
@@ -505,116 +510,39 @@ fn child_options(socket: PathBuf) -> InteractiveOptions {
     }
 }
 
-/// One attached session behind a mock supervisor socket: the attach carries
-/// a windowed snapshot. Without `history`, every page request is held forever;
-/// with it, older pages are served and only newer pages are held. Every other
-/// request answers promptly.
-struct MockSupervisor {
-    listener: std::os::unix::net::UnixListener,
-    held: Arc<AtomicUsize>,
-    history: Option<Arc<AtomicUsize>>,
-}
-
-impl MockSupervisor {
-    fn bind(socket: &Path, held: Arc<AtomicUsize>, history: Option<Arc<AtomicUsize>>) -> Self {
-        MockSupervisor {
-            listener: std::os::unix::net::UnixListener::bind(socket).expect("bind mock socket"),
-            held,
-            history,
-        }
-    }
-
-    fn serve(self) {
-        for stream in self.listener.incoming() {
-            match stream {
-                Ok(stream) => Self::serve_connection(stream, &self.held, self.history.as_ref()),
-                Err(_) => return,
+/// One attached session behind the mock runtime: the attach carries a windowed snapshot. Without
+/// `history`, every page request is held forever; with it, older pages are served and only newer
+/// pages are held. Every other request answers promptly.
+fn serve(mock: MockRuntime, held: Arc<AtomicUsize>, history: Option<Arc<AtomicUsize>>) {
+    mock.serve_all(move |request| {
+        let page = &request.args["page"];
+        match request.name {
+            "session.attach" => Answer::Result(attach_data()),
+            // With history served: an older page or the head page of `old row`s.
+            "transcript.page"
+                if history.is_some() && (page["from"] == "end" || page.get("after").is_none()) =>
+            {
+                history
+                    .as_ref()
+                    .expect("history mode")
+                    .fetch_add(1, Ordering::SeqCst);
+                Answer::Result(history_page(page))
             }
-        }
-    }
-
-    fn serve_connection(
-        stream: std::os::unix::net::UnixStream,
-        held: &Arc<AtomicUsize>,
-        history: Option<&Arc<AtomicUsize>>,
-    ) {
-        let write_stream = stream.try_clone().expect("clone mock socket");
-        let mut writer = write_stream;
-        let mut reader = std::io::BufReader::new(stream);
-        write_json(
-            &mut writer,
-            &json!({
-                "type": "daemon_hello",
-                "protocol": { "name": "prime-agent.daemon", "version": 7 },
-                "serverCapabilities": [],
-                "clientId": "mock",
-            }),
-        );
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
+            // A page request: counted and held — the run loop starts it
+            // from the windowed attach's cursor, and the exit must not
+            // wait for it.
+            "transcript.page" if request.args.get("page").is_some() => {
+                held.fetch_add(1, Ordering::SeqCst);
+                Answer::Silence
             }
-            let Ok(envelope) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            let id = envelope.get("id").and_then(Value::as_str).unwrap_or("");
-            let command = envelope.get("command").cloned().unwrap_or(Value::Null);
-            let command_type = command
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            match command_type.as_str() {
-                "attach" => {
-                    write_json(&mut writer, &attach_data(id));
-                }
-                // With history served: an older page or the head page of `old row`s.
-                "get_messages"
-                    if history.is_some()
-                        && (command["page"]["from"] == "end"
-                            || command["page"].get("after").is_none()) =>
-                {
-                    history
-                        .expect("history mode")
-                        .fetch_add(1, Ordering::SeqCst);
-                    write_json(&mut writer, &history_page(id, &command["page"]));
-                }
-                // A page request: counted and held — the run loop starts it
-                // from the windowed attach's cursor, and the exit must not
-                // wait for it.
-                "get_messages" if command.get("page").is_some() => {
-                    held.fetch_add(1, Ordering::SeqCst);
-                }
-                _ => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": command_type,
-                            "success": true,
-                            "data": {},
-                        }),
-                    );
-                }
-            }
+            _ => Answer::Default,
         }
-    }
-}
-
-fn write_json(writer: &mut std::os::unix::net::UnixStream, value: &Value) {
-    let mut line = serde_json::to_string(value).expect("serialize mock frame");
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("write mock frame");
-    writer.flush().expect("flush mock frame");
+    });
 }
 
 /// One page over `HISTORY_BEFORE` messages `old row 0..`, ids `e<index>`: an
 /// older page, or the head page.
-fn history_page(id: &str, page: &Value) -> Value {
+fn history_page(page: &Value) -> Value {
     let cursor = |key: &str| {
         page[key]
             .as_str()
@@ -636,20 +564,17 @@ fn history_page(id: &str, page: &Value) -> Value {
         })
         .collect();
     json!({
-        "type": "response", "id": id, "command": "get_messages", "success": true,
-        "data": {
-            "messages": messages,
-            "firstEntryId": format!("e{start}"),
-            "lastEntryId": format!("e{}", end - 1),
-            "more": if page["from"] == "end" { start > 0 } else { end < HISTORY_BEFORE },
-            "historyLeafId": "attach-leaf",
-        },
+        "messages": messages,
+        "firstEntryId": format!("e{start}"),
+        "lastEntryId": format!("e{}", end - 1),
+        "more": if page["from"] == "end" { start > 0 } else { end < HISTORY_BEFORE },
+        "historyLeafId": "attach-leaf",
     })
 }
 
 /// The attach snapshot: a small windowed tail over an unfinished older
 /// history (its page cursor).
-fn attach_data(id: &str) -> Value {
+fn attach_data() -> Value {
     let messages: Vec<Value> = (0..TAIL_MESSAGES)
         .map(|index| {
             json!({
@@ -663,33 +588,8 @@ fn attach_data(id: &str) -> Value {
             })
         })
         .collect();
-    json!({
-        "type": "response",
-        "id": id,
-        "command": "attach",
-        "success": true,
-        "data": {
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "activeSessionId": "s1",
-            "snapshot": {
-                "activeSessionId": "s1",
-                "summary": { "id": "s1", "cwd": "/tmp" },
-                "state": {
-                    "activeSessionId": "s1",
-                    "cwd": "/tmp",
-                    "sessionId": "sess-1",
-                    "leafId": "attach-leaf",
-                    "sessionName": "exit backfill e2e",
-                    "model": null,
-                    "isStreaming": false,
-                    "isCompacting": false,
-                    "sessionActions": { "queuedCount": 0, "steering": [], "followUps": [] },
-                },
-                "messages": messages,
-                "historyBeforeEntryId": format!("e{HISTORY_BEFORE}"),
-                "lastEventSequence": 0,
-            },
-            "replay": null,
-        },
-    })
+    let mut attach = mock_runtime::attached("exit backfill e2e", None, &messages);
+    attach["snapshot"]["state"]["leafId"] = json!("attach-leaf");
+    attach["snapshot"]["historyBeforeEntryId"] = json!(format!("e{HISTORY_BEFORE}"));
+    attach
 }

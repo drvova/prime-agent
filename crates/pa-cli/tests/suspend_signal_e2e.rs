@@ -13,7 +13,10 @@
 
 #![cfg(unix)]
 
-use std::io::{BufRead, Read, Write};
+#[path = "support/mock_runtime.rs"]
+mod mock_runtime;
+
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -27,6 +30,7 @@ use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use serde_json::{json, Value};
 
+use mock_runtime::MockRuntime;
 use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
 };
@@ -59,12 +63,13 @@ fn wire_log_dump() -> String {
         .join("\n")
 }
 
-/// The child half: the real interactive loop against the parent's mock supervisor.
+/// The child half: the real interactive loop against the parent's mock runtime.
 #[test]
 fn suspend_child_mode() {
     let Ok(socket) = std::env::var(CHILD_SOCKET_ENV) else {
         return;
     };
+    mock_runtime::use_wire2(std::path::Path::new(&socket));
     let options = child_options(PathBuf::from(socket));
     // A current-thread runtime keeps the child at two threads: parked workers of a
     // multithreaded runtime can lose their futex wakeups across a group stop.
@@ -230,10 +235,10 @@ fn ctrl_g_hands_the_terminal_to_the_external_editor() {
     harness.finish();
 }
 
-/// One pty-backed product child plus the mock supervisor it attaches to.
+/// One pty-backed product child plus the mock runtime it attaches to.
 struct SuspendHarness {
     child: Child,
-    /// The mock-supervisor server thread's join handle (it exits with the child's connection).
+    /// The mock-runtime server thread's join handle (it exits with the child's connection).
     _server: std::thread::JoinHandle<()>,
     master: PtyReader,
     /// The socket's temp dir, removed whenever the harness drops (after
@@ -245,8 +250,9 @@ impl SuspendHarness {
     fn start(editor: Option<&std::path::Path>) -> SuspendHarness {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let socket = dir.path().join("tui.sock");
-        let supervisor = MockSupervisor::bind(&socket);
-        let server = std::thread::spawn(move || supervisor.serve());
+        let mock = MockRuntime::bind(&socket).with_wire_log(log_wire);
+        let server =
+            std::thread::spawn(move || mock.serve_first(mock_runtime::session(attach_data())));
 
         let pty = openpty(
             Some(&Winsize {
@@ -548,100 +554,7 @@ fn wait_for_stopped(pid: u32, what: &str) {
     }
 }
 
-/// One attached session behind a mock supervisor socket (the family's frame contract).
-struct MockSupervisor {
-    listener: std::os::unix::net::UnixListener,
-}
-
-impl MockSupervisor {
-    fn bind(socket: &std::path::Path) -> Self {
-        MockSupervisor {
-            listener: std::os::unix::net::UnixListener::bind(socket).expect("bind mock socket"),
-        }
-    }
-
-    fn serve(self) {
-        let Ok((stream, _)) = self.listener.accept() else {
-            return;
-        };
-        log_wire("[accept] the child connected");
-        let write_stream = stream.try_clone().expect("clone mock socket");
-        let mut writer = write_stream;
-        let mut reader = std::io::BufReader::new(stream);
-        write_json(
-            &mut writer,
-            &json!({
-                "type": "daemon_hello",
-                "protocol": { "name": "prime-agent.daemon", "version": 7 },
-                "serverCapabilities": [],
-                "clientId": "mock",
-            }),
-        );
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            log_wire(&format!("[req] {line}"));
-            let Ok(envelope) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            let id = envelope.get("id").and_then(Value::as_str).unwrap_or("");
-            let command = envelope.get("command").cloned().unwrap_or(Value::Null);
-            let command_type = command
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            match command_type.as_str() {
-                "create" => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": "create",
-                            "success": true,
-                            "data": {
-                                "activeSessionId": "s1",
-                                "id": "s1",
-                                "sessionId": "sess-1",
-                                "sessionFile": "/tmp/sess-1.jsonl",
-                            },
-                        }),
-                    );
-                }
-                "attach" => {
-                    write_json(&mut writer, &attach_data(id));
-                }
-                _ => {
-                    write_json(
-                        &mut writer,
-                        &json!({
-                            "type": "response",
-                            "id": id,
-                            "command": command_type,
-                            "success": true,
-                            "data": {},
-                        }),
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn write_json(writer: &mut std::os::unix::net::UnixStream, value: &Value) {
-    let mut line = serde_json::to_string(value).expect("serialize mock frame");
-    log_wire(&format!("[res] {line}"));
-    line.push('\n');
-    writer.write_all(line.as_bytes()).expect("write mock frame");
-    writer.flush().expect("flush mock frame");
-}
-
-fn attach_data(id: &str) -> Value {
+fn attach_data() -> Value {
     let messages: Vec<Value> = (0..4)
         .map(|index| {
             json!({
@@ -650,34 +563,5 @@ fn attach_data(id: &str) -> Value {
             })
         })
         .collect();
-    json!({
-        "type": "response",
-        "id": id,
-        "command": "attach",
-        "success": true,
-        "data": {
-            "protocol": { "name": "prime-agent.daemon", "version": 7 },
-            "activeSessionId": "s1",
-            "snapshot": {
-                "activeSessionId": "s1",
-                "summary": { "id": "s1", "cwd": "/tmp" },
-                "state": {
-                    "activeSessionId": "s1",
-                    "cwd": "/tmp",
-                    "sessionId": "sess-1",
-                    "sessionName": "suspend session",
-                    "model": null,
-                    "isStreaming": false,
-                    "isCompacting": false,
-                    "sessionActions": { "queuedCount": 0, "steering": [], "followUps": [] },
-                },
-                "messages": messages,
-                "lastEventSequence": 0,
-                "lastEventCursor": null,
-            },
-            "client": { "id": "mock", "capabilities": [] },
-            "lastEventSequence": 0,
-            "lastEventCursor": null,
-        },
-    })
+    mock_runtime::attached("suspend session", None, &messages)
 }
