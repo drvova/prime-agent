@@ -101,6 +101,11 @@ impl<B: SessionBuilder> TaskRunner for SessionRunner<B> {
     #[tracing::instrument(level = "debug", skip_all, fields(task = %task.id, session = %task.session))]
     async fn run(&self, task: Task) -> TaskOutcome {
         let Queued { images, cause } = self.sessions.take_queued(&task);
+        // A passive subagent (opened again from the ledger, not built) is
+        // opened for its task, which waits on its host for the build.
+        if self.sessions.host(&task.session).is_none() {
+            self.sessions.subagents().open_passive(&task.session);
+        }
         let ran = match self.sessions.host(&task.session) {
             Some(host) => host.run(task.clone(), images, cause.clone()).await,
             None => Ran::Unreported(TaskEnd::failed(

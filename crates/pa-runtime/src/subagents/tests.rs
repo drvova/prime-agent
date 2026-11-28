@@ -24,7 +24,8 @@ use pa_core::session_engine::messages::{
 };
 
 use super::{
-    kernel_notice_sink, Delivery, FamilyMessages, MessageSender, Node, SessionSubagents, Subagents,
+    kernel_notice_sink, DaemonFamily, Delivery, FamilyMessages, MessageSender, Node,
+    SessionSubagents, Subagents,
 };
 use crate::bus::{Heard, Listener};
 use crate::runtime::{Runtime, RuntimeOptions};
@@ -51,6 +52,9 @@ struct TreeBuilder {
     agent_dir: PathBuf,
     script: Value,
     hold: Arc<Hold>,
+    /// The sessions it built an engine for, in order: a subagent by its
+    /// name, the parent as `parent`.
+    builds: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl SessionBuilder for TreeBuilder {
@@ -60,6 +64,10 @@ impl SessionBuilder for TreeBuilder {
         spec: &SessionSpec,
         seams: SessionSeams,
     ) -> anyhow::Result<BuiltSession> {
+        self.builds
+            .lock()
+            .unwrap()
+            .push(spec.name.clone().unwrap_or_else(|| "parent".to_string()));
         let responses = match (&spec.subagent, &spec.name) {
             (Some(_), Some(name)) => self.script["children"][name].clone(),
             (Some(_), None) => anyhow::bail!("a subagent is spawned with its name"),
@@ -160,6 +168,7 @@ struct Bed {
     parent: String,
     cwd: PathBuf,
     hold: Arc<Hold>,
+    builds: Arc<std::sync::Mutex<Vec<String>>>,
     _dir: tempfile::TempDir,
 }
 
@@ -174,6 +183,19 @@ async fn bed(script: Value) -> Bed {
     .unwrap();
     let cwd = dir.path().join("work");
     std::fs::create_dir_all(&cwd).unwrap();
+    let parent = SessionSpec {
+        cwd,
+        ..SessionSpec::default()
+    };
+    bed_in(dir, script, parent).await
+}
+
+/// A runtime over the agent dir and work dir in `dir` (see [`bed`]) with
+/// the session `parent` open as the parent.
+async fn bed_in(dir: tempfile::TempDir, script: Value, parent: SessionSpec) -> Bed {
+    let agent_dir = dir.path().join("agent");
+    let cwd = parent.cwd.clone();
+    let builds = Arc::default();
     let hold = Arc::new(Hold {
         entered: tokio::sync::Notify::new(),
         release: tokio::sync::Semaphore::new(0),
@@ -185,6 +207,7 @@ async fn bed(script: Value) -> Bed {
                 agent_dir: agent_dir.clone(),
                 script,
                 hold: Arc::clone(&hold),
+                builds: Arc::clone(&builds),
             },
             spare_kernels: 1,
             max_concurrent_runs: NonZeroUsize::new(4).unwrap(),
@@ -196,19 +219,14 @@ async fn bed(script: Value) -> Bed {
     .await
     .unwrap();
     let listener = runtime.listen();
-    let parent = runtime
-        .create_session(SessionSpec {
-            cwd: cwd.clone(),
-            ..SessionSpec::default()
-        })
-        .await
-        .unwrap();
+    let parent = runtime.create_session(parent).await.unwrap();
     Bed {
         runtime,
         listener,
         parent,
         cwd,
         hold,
+        builds,
         _dir: dir,
     }
 }
@@ -890,4 +908,97 @@ async fn a_roots_family_lists_the_other_roots_as_siblings() {
     );
     bed.runtime.finish(&other).await.unwrap();
     bed.close().await;
+}
+
+/// A parent opened again lists its family from the ledger without building
+/// a child: the children are passive until used, and a message to one
+/// builds that one alone and delivers to it, as the old daemon's passive
+/// ledger children were opened only when needed.
+#[tokio::test]
+async fn a_reopened_family_builds_a_child_only_once_one_is_used() {
+    let first = bed(json!({
+        "responses": [
+            eval_cell("(rlm-spawn \"go\" #:name \"a\") (rlm-spawn \"go\" #:name \"b\") (rlm-collect #:timeout-ms 60000)"),
+            { "text": "SPAWNED" },
+            { "text": "PARENT" },
+            { "text": "PARENT" },
+        ],
+        "children": { "a": [{ "text": "a done" }], "b": [{ "text": "b done" }] },
+    }))
+    .await;
+    let family = |bed: &Bed| {
+        // The bed's agent dir sits beside its work dir.
+        let agent_dir = bed.cwd.parent().expect("a work dir").join("agent");
+        bed.runtime.subagents().attach_daemon(DaemonFamily::new(
+            &agent_dir,
+            &bed.cwd.join("sessions"),
+            Arc::new(|_: &str| {}),
+        ));
+    };
+    // The spawns are recorded in the ledger.
+    family(&first);
+    let input = first.input("delegate").await;
+    first
+        .runtime
+        .settle(&first.parent, SettleAfter::Task(input))
+        .await
+        .unwrap();
+    let Bed {
+        runtime,
+        parent,
+        cwd,
+        _dir: dir,
+        ..
+    } = first;
+    runtime.finish(&parent).await.unwrap();
+    runtime.shutdown().await;
+
+    // The next runtime opens the parent again, then its family.
+    let again = SessionSpec {
+        id: Some(parent.clone()),
+        cwd,
+        ..SessionSpec::default()
+    };
+    let second = bed_in(
+        dir,
+        json!({
+            "responses": [{ "text": "PARENT" }, { "text": "PARENT" }],
+            "children": { "a": [{ "text": "a heard" }], "b": [] },
+        }),
+        again,
+    )
+    .await;
+    family(&second);
+    let reopened = second
+        .runtime
+        .subagents()
+        .reopen_children(&parent)
+        .await
+        .unwrap();
+    let opened_builds = second.builds.lock().unwrap().clone();
+    let kids = second.kids().await;
+    let mut listener = second.runtime.listen();
+    let receipt = second
+        .send(&second.node(&parent), &kids["a"].session_id, "ping")
+        .await;
+    let (_, done) = until_done_of(&mut listener, &kids["a"].session_id).await;
+    assert_eq!(
+        (
+            reopened,
+            kids.keys().cloned().collect::<Vec<_>>(),
+            opened_builds,
+            receipt.delivery_status,
+            done.outcome,
+            second.builds.lock().unwrap().clone(),
+        ),
+        (
+            2,
+            vec!["a".to_string(), "b".to_string()],
+            vec!["parent".to_string()],
+            AgentMessageDeliveryStatus::Delivered,
+            TaskState::Done,
+            vec!["parent".to_string(), "a".to_string()],
+        )
+    );
+    second.close().await;
 }

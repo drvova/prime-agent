@@ -5,6 +5,13 @@
 #[cfg(unix)]
 pub mod runtime_daemon;
 
+#[cfg(unix)]
+#[allow(
+    dead_code,
+    reason = "each test target compiles this module itself; only the launch's tmux verifier stops a legacy supervisor"
+)]
+pub mod legacy_supervisor;
+
 /// The fixture transcript `text` (JSONL) as a session store holds one: each row after the header
 /// that names no parent is linked to the row before it, and each assistant message is completed
 /// with the members the agent's message type requires (`api`, `provider`, `model`, `usage`,

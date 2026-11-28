@@ -51,20 +51,38 @@ pub(crate) struct SpawnRecord {
     pub(crate) created_at: u64,
 }
 
-/// The runtime daemon's family records: its sessions dir's spawn ledger.
+/// Hears that a session's wait edge (its `waitingOn`) changed, by the
+/// session's id; it must return at once (it runs on the waiting cell's path).
+pub(crate) type WaitEdgeChanged = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// The runtime daemon's family records: its sessions dir's spawn ledger,
+/// and who hears its sessions' wait edges change (the roster feed, which
+/// reports each session's `waitingOn` as the old supervisor's roster did).
 pub(crate) struct DaemonFamily {
     ledger: Arc<RlmSpawnLedger>,
+    wait_edge_changed: WaitEdgeChanged,
 }
 
 impl DaemonFamily {
     /// The records of the sessions under `sessions_dir`, the ledger kept
-    /// under `agent_dir`'s `rlm-ledger/`.
-    pub(crate) fn new(agent_dir: &Path, sessions_dir: &Path) -> Self {
+    /// under `agent_dir`'s `rlm-ledger/`; `wait_edge_changed` hears every
+    /// session's `waitingOn` change.
+    pub(crate) fn new(
+        agent_dir: &Path,
+        sessions_dir: &Path,
+        wait_edge_changed: WaitEdgeChanged,
+    ) -> Self {
         DaemonFamily {
             ledger: Arc::new(RlmSpawnLedger::new(agent_dir, sessions_dir, |message| {
                 tracing::warn!("{message}");
             })),
+            wait_edge_changed,
         }
+    }
+
+    /// Session `id`'s wait edge changed.
+    pub(crate) fn wait_edge_changed(&self, id: &str) {
+        (self.wait_edge_changed)(id);
     }
 
     /// Runs `write` on the ledger on the blocking pool.

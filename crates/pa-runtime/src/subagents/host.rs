@@ -3,6 +3,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context as _;
+
 use pa_core::session_engine::agent_messaging::{
     create_agent_session_message_row, AgentFamilyRelationship, AgentSessionMessageRowPayload,
 };
@@ -420,7 +422,14 @@ async fn rename_session(node: &Arc<Node>, name: &str) -> anyhow::Result<()> {
             }
         }
     }
-    let engine = node
+    // A passive child is built to take its name row.
+    let tree = node
+        .tree
+        .upgrade()
+        .ok_or_else(|| anyhow::anyhow!("the runtime is not running"))?;
+    let engine = tree
+        .built_node(&node.session_id)
+        .await?
         .engine()
         .ok_or_else(|| anyhow::anyhow!("the target session is not running"))?;
     let persistence = engine.session.shared_persistence();
@@ -431,8 +440,7 @@ async fn rename_session(node: &Arc<Node>, name: &str) -> anyhow::Result<()> {
     drop(session);
     *lock(&node.session_name) = Some(name.to_string());
     // A child's rename is its ledger edge's.
-    let tree = node.tree.upgrade();
-    if let (Some(parent), Some(family)) = (&parent, tree.as_ref().and_then(|tree| tree.daemon())) {
+    if let (Some(parent), Some(family)) = (&parent, tree.daemon()) {
         let child_id = parent
             .children
             .lock()
@@ -475,11 +483,16 @@ fn subscribe_done(tree: &Subagents, child: &str, parent: &str) -> anyhow::Result
 impl Subagents {
     /// Opens again, as settled children of open session `id`, the children
     /// the runtime daemon's ledger records under its transcript and the
-    /// runtime does not run: each a runtime session on the transcript its
-    /// spawn wrote, so the parent's roster, collect, messages and observe
-    /// reach a family that outlived the daemon that spawned it. Waits for
-    /// the parent's engine; a child that cannot be opened is left out and
-    /// logged. Answers how many were opened.
+    /// runtime does not run, so the parent's roster, collect, messages and
+    /// observe reach a family that outlived the daemon that spawned it. Each
+    /// is passive, as the old daemon's ledger child: a node in the family
+    /// with its ledger edge, transcript and recorded model, and no engine.
+    /// Its session is opened on its own transcript, and its engine and
+    /// kernel built, on its first use ([`Subagents::open_passive`]): a
+    /// message to it, a read of its live state, a task for it (a wake, a
+    /// scheduled job), a rename. Its scheduled jobs are armed now, so one
+    /// that comes due builds it. Waits for the parent's engine; nothing
+    /// here waits for a child's build. Answers how many were opened.
     ///
     /// # Errors
     ///
@@ -537,12 +550,30 @@ impl Subagents {
             if self.node(&session_id).is_some() {
                 continue;
             }
-            let cwd = pa_core::session::manager::read_session_header(&child_file)
-                .map_or_else(|| node.cwd(), |header| header.cwd.into());
+            // Its cwd from its transcript's header and its label and model
+            // from the display entry its spawn wrote beside it, read off the
+            // runtime's threads.
+            let child_dir = child_file
+                .parent()
+                .map_or_else(String::new, |dir| dir.display().to_string());
+            let (header_cwd, display) = {
+                let (file, dir) = (child_file.clone(), child_dir.clone());
+                tokio::task::spawn_blocking(move || {
+                    (
+                        pa_core::session::manager::read_session_header(&file)
+                            .map(|header| std::path::PathBuf::from(header.cwd)),
+                        pa_core::session_engine::rlm_ledger::read_rlm_subagent_display(
+                            std::path::Path::new(&dir),
+                        ),
+                    )
+                })
+                .await
+                .context("the child's records' thread panicked")?
+            };
             let spec = SessionSpec {
                 id: Some(session_id.clone()),
                 name: Some(edge.name.clone()),
-                cwd,
+                cwd: header_cwd.unwrap_or_else(|| node.cwd()),
                 env: node.env.clone(),
                 subagent: Some(SubagentSpec {
                     parent: node.session_id.clone(),
@@ -568,23 +599,34 @@ impl Subagents {
                 DepthBound::Fixed(max_depth),
                 Some(Arc::downgrade(&node)),
             ));
+            {
+                // What its build would tell the family, from its records.
+                let mut adopted = lock(&child_node.adopted);
+                adopted.session_file = spec
+                    .transcript
+                    .as_ref()
+                    .map(|file| file.display().to_string());
+                adopted.session_dir = child_dir;
+                adopted.model_selector = display
+                    .as_ref()
+                    .and_then(|display| display.model.as_ref())
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|model| !model.is_empty())
+                    .map(str::to_string);
+            }
+            {
+                let (control, id, spec) = (Arc::clone(&control), session_id.clone(), spec.clone());
+                tokio::task::spawn_blocking(move || control.arm_passive(&id, &spec))
+                    .await
+                    .context("the child's jobs' thread panicked")?;
+            }
+            *lock(&child_node.passive) = Some(spec);
             lock(&self.nodes).insert(session_id.clone(), Arc::clone(&child_node));
-            let mut built = child_node.built.subscribe();
-            let outcome = match control.open(spec) {
-                Ok(_) => match built.wait_for(Option::is_some).await {
-                    Ok(outcome) => outcome.clone().unwrap_or(Ok(())),
-                    Err(_) => Err("the subagent's session ended before it was built".to_string()),
-                },
-                Err(error) => Err(format!("{error:#}")),
-            };
-            // Its label from the prompt its spawn recorded beside it.
             let label = rlm_child_label(
-                pa_core::session_engine::rlm_ledger::read_rlm_subagent_display(
-                    std::path::Path::new(&child_node.session_dir()),
-                )
-                .and_then(|display| display.prompt)
-                .as_deref()
-                .unwrap_or_default(),
+                display
+                    .and_then(|display| display.prompt)
+                    .as_deref()
+                    .unwrap_or_default(),
             );
             let child = Arc::new(Child {
                 rlm_child_id: edge.child_id.clone(),
@@ -603,14 +645,6 @@ impl Subagents {
                 published: std::sync::Mutex::new(None),
                 reopened: std::sync::atomic::AtomicBool::new(true),
             });
-            if let Err(error) = outcome {
-                tracing::warn!(
-                    "subagent {} of session {id} was not opened again: {error}",
-                    edge.child_id
-                );
-                dispose_child(&child).await;
-                continue;
-            }
             {
                 // Pushed under the parent's children, which its disposal walks
                 // once it reads disposed: a child opened as the parent stopped

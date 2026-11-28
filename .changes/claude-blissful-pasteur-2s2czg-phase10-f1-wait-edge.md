@@ -1,0 +1,1 @@
+- On the default daemon the agents view shows again which agent a waiting agent waits on: its roster row reports `waitingOn`, as the old daemon's did.

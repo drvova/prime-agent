@@ -5,13 +5,6 @@
         reason = "the headless `run_interactive` futures stay on the stack; each test awaits one at a time"
     )
 )]
-#![cfg_attr(
-    unix,
-    expect(
-        clippy::cast_possible_wrap,
-        reason = "the pids passed to `kill` and `Pid::from_raw` are kernel-bounded below i32::MAX"
-    )
-)]
 
 //! End-to-end verifier for the `/mcp` service catalog view: a
 //! settings-declared stdio MCP server (the committed echo fixture) must
@@ -21,19 +14,19 @@
 
 mod support;
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+#[cfg(not(target_os = "linux"))]
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use pa_types::daemon::DaemonCommand;
 use serde_json::{json, Value};
+use support::runtime_daemon::RuntimeDaemon;
 
 /// The committed stdio echo fixture (pure stdlib; any Python 3 runs it).
 fn echo_fixture() -> PathBuf {
     pa_types::platform::canonicalize(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../pa-daemon/tests/fixtures/mcp_echo_server.py"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp_echo_server.py"),
     )
     .expect("echo fixture")
 }
@@ -65,45 +58,6 @@ fn held_engine(dir: &Path) -> PathBuf {
     script
 }
 
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        graceful_shutdown(&self.socket);
-        // Freeze the whole tree before any kill: a worker's grandchildren (the
-        // commands its session started) outlive a worker-only kill and keep
-        // writing into the test's temp dir after its removal. A stopped process
-        // cannot fork, so the walk settles once every member is stopped.
-        let root = self.child.id();
-        unsafe {
-            libc::kill(root as i32, libc::SIGSTOP);
-        }
-        let mut tree = Vec::new();
-        loop {
-            let mut walked = descendants_of(root);
-            walked.sort_unstable();
-            if walked == tree {
-                break;
-            }
-            for &pid in &walked {
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGSTOP);
-                }
-            }
-            tree = walked;
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        for pid in tree {
-            kill_worker(pid);
-        }
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
 /// Every process below `root`, following parent links.
 fn descendants_of(root: u32) -> Vec<u32> {
     let mut tree = Vec::new();
@@ -115,20 +69,6 @@ fn descendants_of(root: u32) -> Vec<u32> {
         }
     }
     tree
-}
-
-fn kill_worker(pid: u32) {
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
-    }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while process_alive(pid) {
-        assert!(
-            Instant::now() < deadline,
-            "worker {pid} survived the teardown kill"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -193,45 +133,10 @@ fn process_alive(pid: u32) -> bool {
     pa_types::platform::process::is_process_alive(pid).unwrap_or(false)
 }
 
-fn graceful_shutdown(socket: &Path) {
-    use std::io::{BufRead, BufReader};
-    use std::os::unix::net::UnixStream;
-
-    let Ok(stream) = UnixStream::connect(socket) else {
-        return;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    let _ = reader.read_line(&mut hello);
-    let command = json!({
-        "type": "command",
-        "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let mut line = serde_json::to_string(&command).expect("serialize");
-    line.push('\n');
-    if writer.write_all(line.as_bytes()).is_err() {
-        return;
-    }
-    let _ = writer.flush();
-    let _ = reader
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_secs(5)));
-    let mut response = String::new();
-    let _ = reader.read_line(&mut response);
-}
-
-/// Spawn the real supervisor over a hermetic agent dir declaring the echo
-/// fixture, with no ambient credentials.
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    // The in-process client forwards this process's env to the worker.
-    support::scrub_ambient_provider_credentials();
-    let socket = dir.join("daemon.sock");
+/// Start the real runtime daemon over a hermetic agent dir declaring the echo
+/// fixture, its sessions' turns answered by `script`, with no ambient
+/// credentials.
+fn spawn_daemon(dir: &Path, script: &Path) -> RuntimeDaemon {
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     std::fs::write(
@@ -248,49 +153,20 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         .to_string(),
     )
     .expect("write settings");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in the
-        // test's temp dir, which a SIGKILLed worker never cleans up after.
-        .env("TMPDIR", dir)
-        .env("PI_OFFLINE", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    for provider in pa_ai::models_generated::get_providers() {
-        if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
-            for var in vars {
-                command.env_remove(var);
+    RuntimeDaemon::spawn_with(dir, |command| {
+        command
+            .env("PRIME_AGENT_FAUX_SCRIPT", script)
+            .env("PI_OFFLINE", "1");
+        for provider in pa_ai::models_generated::get_providers() {
+            if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
+                for var in vars {
+                    command.env_remove(var);
+                }
             }
         }
-    }
-    command.env_remove("PRIME_TEAM_ID");
-    command.env_remove("PRIME_API_KEY");
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(&socket, &mut child);
-    Supervisor { child, socket }
+        command.env_remove("PRIME_TEAM_ID");
+        command.env_remove("PRIME_API_KEY");
+    })
 }
 
 /// The headless run's interactive options (`client_auth` stays `None` so
@@ -333,24 +209,6 @@ fn headless_options(socket: &Path, dir: &Path) -> pa_tui::interactive::Interacti
     }
 }
 
-/// The empty `PromptInput` (the struct carries no `Default`).
-fn empty_prompt_input() -> pa_types::daemon::PromptInput {
-    pa_types::daemon::PromptInput {
-        content: None,
-        images: None,
-        streaming_behavior: None,
-        queue_if_busy: None,
-        expand_prompt_templates: None,
-        source: None,
-        agent_message_id: None,
-        custom_message: None,
-        queue_key: None,
-        prefix_messages: None,
-        admission_id: None,
-        rlm_notice_nonce: None,
-    }
-}
-
 /// Create a live session through the daemon protocol, returning its id.
 async fn create_session(socket: &Path, dir: &Path) -> String {
     create_session_with(socket, dir, &scripted_engine(dir)).await
@@ -360,7 +218,7 @@ async fn create_session(socket: &Path, dir: &Path) -> String {
 async fn create_session_with(socket: &Path, dir: &Path, script: &Path) -> String {
     let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let data = client
         .request_ok(DaemonCommand::Create {
             id: None,
@@ -397,8 +255,8 @@ async fn assert_roster_answers_fast(socket: &Path, dir: &Path) {
     let session = create_session(socket, dir).await;
     let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(socket)
         .await
-        .expect("connect supervisor");
-    // A fresh supervisor can still be settling: retry within the
+        .expect("connect the daemon");
+    // A fresh daemon can still be settling: retry within the
     // deadline, and every request must answer fast.
     let deadline = Instant::now() + Duration::from_mins(2);
     let mut last_error = String::new();
@@ -481,10 +339,10 @@ async fn assert_roster_answers_fast(socket: &Path, dir: &Path) {
 async fn mcp_view_lists_the_configured_mock_connection() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     std::fs::create_dir_all(dir.path().join("agent").join("sessions")).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = spawn_daemon(dir.path(), &scripted_engine(dir.path()));
 
     // Part A: the daemon seam answers from local state, instantly.
-    assert_roster_answers_fast(&supervisor.socket, dir.path()).await;
+    assert_roster_answers_fast(&daemon.socket, dir.path()).await;
 
     // Part B: the rendered surface. Esc closes; a second open plus Enter
     // resolves to the login command (no auth hook wired, so it lands in the not-available note).
@@ -505,7 +363,7 @@ async fn mcp_view_lists_the_configured_mock_connection() {
         width: 110,
         height: 30,
     };
-    let options = headless_options(&supervisor.socket, dir.path());
+    let options = headless_options(&daemon.socket, dir.path());
     let outcome =
         pa_tui::interactive::run_interactive(options, pa_tui::interactive::UiMode::Headless(plan))
             .await
@@ -552,8 +410,8 @@ async fn mcp_view_lists_the_configured_mock_connection() {
     );
     // The teardown reaps the whole tree
     // before the temp dir drops, so nothing writes into it afterwards.
-    let tree = descendants_of(supervisor.child.id());
-    drop(supervisor);
+    let tree = descendants_of(daemon.pid());
+    drop(daemon);
     let survivors: Vec<u32> = tree.into_iter().filter(|&pid| process_alive(pid)).collect();
     assert!(
         survivors.is_empty(),
@@ -568,25 +426,24 @@ async fn mcp_view_lists_the_configured_mock_connection() {
 async fn get_mcp_connections_answers_instantly_mid_turn() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     std::fs::create_dir_all(dir.path().join("agent").join("sessions")).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
     let script = held_engine(dir.path());
-    let session = create_session_with(&supervisor.socket, dir.path(), &script).await;
-    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&supervisor.socket)
-        .await
-        .expect("connect supervisor");
-    client
-        .request_ok(DaemonCommand::Prompt {
-            id: None,
-            active_session_id: session.clone(),
-            message: "hold this turn open".to_string(),
-            input: empty_prompt_input(),
-            rest: serde_json::Map::default(),
-        })
-        .await
+    let daemon = spawn_daemon(dir.path(), &script);
+    let session = create_session_with(&daemon.socket, dir.path(), &script).await;
+    // The held turn is running before the probe: its run opened (the
+    // script holds the reply past the assertion window).
+    let mut probe = daemon.client();
+    let stream = format!("agent/{session}/stream");
+    probe.subscribe(&stream);
+    probe
+        .publish(
+            &format!("agent/{session}/input"),
+            &json!({ "text": "hold this turn open" }),
+        )
         .expect("start the held turn");
-    // The held turn's admission settles before the probe: the stream stays
-    // closed for the whole assertion window.
-    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    probe.event_until(&stream, |payload| payload["type"] == "agent_start");
+    let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(&daemon.socket)
+        .await
+        .expect("connect the daemon");
     let started = Instant::now();
     let data = client
         .request_ok(DaemonCommand::GetMcpConnections {

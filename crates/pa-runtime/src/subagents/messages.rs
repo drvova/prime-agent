@@ -108,6 +108,13 @@ impl AgentMessageController for FamilyMessages {
         let Some((target_node, relationship)) = target else {
             anyhow::bail!("No family member matches \"{}\"", input.target);
         };
+        let tree = node
+            .tree
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("the runtime is not running"))?;
+        // A passive target (a child opened again from the ledger) is built
+        // before anything is delivered to it.
+        tree.built_node(&target_node.session_id).await?;
         // Marked before the delivery, so a fast child's reply cannot race the
         // marking: a reply to the parent withholds the no-reply notice; a
         // fresh task from the parent means silence this round earns it.
@@ -146,10 +153,6 @@ impl AgentMessageController for FamilyMessages {
             timestamp: now_ms(),
         });
         // One delivery path: the receiver's inbox ([`Subagents::post`]).
-        let tree = node
-            .tree
-            .upgrade()
-            .ok_or_else(|| anyhow::anyhow!("the runtime is not running"))?;
         let status = tree
             .post(
                 &id,
@@ -543,12 +546,16 @@ impl AgentObserveController for FamilyObserve {
             .find(target)
             .await?
             .ok_or_else(|| anyhow::anyhow!("agent {target} is not reachable"))?;
-        let member = self
+        // A passive member is built to read its messages.
+        let tree = self
             .0
             .tree
             .upgrade()
-            .and_then(|tree| tree.node(&agent.session_id))
-            .and_then(|member| member.engine())
+            .ok_or_else(|| anyhow::anyhow!("agent {target} is not running"))?;
+        let member = tree
+            .built_node(&agent.session_id)
+            .await?
+            .engine()
             .ok_or_else(|| anyhow::anyhow!("agent {target} is not running"))?;
         let messages = member
             .session

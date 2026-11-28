@@ -47,7 +47,9 @@
 //! - **Subagents.** A subagent's jobs (its RLM heartbeats) are armed on the
 //!   transcript its spawn writes; a due one runs in the child while the
 //!   runtime runs it, and is skipped once it does not (a child is never
-//!   woken as a session of its own).
+//!   woken as a session of its own). A child its parent's family opened
+//!   again is passive until its first use, its jobs armed as a dormant
+//!   session's: a due one builds it first.
 //! - **One daemon.** A job runs only while this daemon is the selected one
 //!   ([`super::DaemonOptions::selected`]); otherwise its fire is a skip, so
 //!   jobs never fire in both daemons.
@@ -626,13 +628,18 @@ impl<B: SessionBuilder> Schedules<B> {
             return Ok(Some(SKIPPED));
         }
         // A session the runtime runs (a subagent among them) takes its job
-        // where it runs; a subagent it no longer runs is not woken.
+        // where it runs; a passive subagent (opened again from the ledger)
+        // is built for it, and one it no longer runs is not woken.
         if runtime.session_engine(session).is_none() {
             if lock(&self.subagents).contains(session) {
-                return Ok(Some(SKIPPED));
+                if !runtime.subagents().open_passive(session) {
+                    return Ok(Some(SKIPPED));
+                }
+                runtime.built_engine(session).await?;
+            } else {
+                self.wake(&runtime, session, &path, Path::new(&binding.cwd))
+                    .await?;
             }
-            self.wake(&runtime, session, &path, Path::new(&binding.cwd))
-                .await?;
         }
         let lane = runtime.lane(session);
         let activity = HeartbeatSessionActivity {
@@ -748,16 +755,17 @@ impl<B: SessionBuilder> Schedules<B> {
     }
 }
 
-impl<B: SessionBuilder> SessionJobs for Schedules<B> {
-    fn wiring(&self, id: &str, spec: &SessionSpec) -> Option<KernelCronWiring> {
-        // A subagent's transcript is the one its spawn writes under its
-        // parent's artifacts (a parent kept in memory gives it none, and it
-        // keeps no jobs).
-        let path = match &spec.subagent {
+impl<B: SessionBuilder> Schedules<B> {
+    /// The transcript the jobs of the session `spec` opens as `id` are
+    /// armed on: a subagent's is the one its spawn writes under its
+    /// parent's artifacts (a parent kept in memory gives it none, and it
+    /// keeps no jobs), recorded as a subagent's.
+    fn jobs_transcript(&self, id: &str, spec: &SessionSpec) -> Option<PathBuf> {
+        match &spec.subagent {
             Some(subagent) => {
                 subagent.parent_session_file.as_ref()?;
                 lock(&self.subagents).insert(id.to_string());
-                spec.transcript.clone().unwrap_or_else(|| {
+                Some(spec.transcript.clone().unwrap_or_else(|| {
                     pa_core::session::manager::get_session_file_path(
                         &self
                             .agent_dir
@@ -766,10 +774,16 @@ impl<B: SessionBuilder> SessionJobs for Schedules<B> {
                             .join(&subagent.child_id),
                         id,
                     )
-                })
+                }))
             }
-            None => spec.transcript.clone()?,
-        };
+            None => spec.transcript.clone(),
+        }
+    }
+}
+
+impl<B: SessionBuilder> SessionJobs for Schedules<B> {
+    fn wiring(&self, id: &str, spec: &SessionSpec) -> Option<KernelCronWiring> {
+        let path = self.jobs_transcript(id, spec)?;
         let armed = match self.arm(id, &path, &spec.cwd) {
             Ok(armed) => armed,
             Err(error) => {
@@ -808,6 +822,14 @@ impl<B: SessionBuilder> SessionJobs for Schedules<B> {
     fn fired(&self, session: &str) {
         if let Some(armed) = lock(&self.armed).get(session) {
             armed.pass.notify_one();
+        }
+    }
+    /// Armed as the boot arms a dormant session's: kept only while it
+    /// holds an active job, whose fire builds the subagent
+    /// ([`Schedules::run_job`]).
+    fn arm_passive(&self, id: &str, spec: &SessionSpec) {
+        if let Some(path) = self.jobs_transcript(id, spec) {
+            self.arm_dormant(id, &path, &spec.cwd);
         }
     }
 }
