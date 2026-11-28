@@ -564,6 +564,12 @@ impl SessionHost {
         )
     }
 
+    /// Whether its supervision gave the session up (set before its
+    /// `agent/<id>/failed` is published).
+    pub(crate) fn given_up(&self) -> bool {
+        lock(&self.control.turn).given_up.is_some()
+    }
+
     /// The engine of the session's current lifetime, once it is built.
     pub(crate) fn engine(&self) -> Option<LiveEngine> {
         lock(&self.control.turn).engine.clone()
@@ -727,6 +733,14 @@ fn serve<B: SessionBuilder>(
         lifetime.node.stream.crashed(&crashed.crash);
         if failures > MAX_CONSECUTIVE_FAILURES {
             let given_up = SessionFaultEvent::SessionFailed { failures };
+            let reason = format!(
+                "the session was given up after {failures} crashes in a row: {}",
+                crashed.crash.reason()
+            );
+            // Given up before anyone hears it: a client that heard
+            // `agent/<id>/failed` and opens the session again finds it given
+            // up, never the session it can reuse.
+            lock(&lifetime.control.turn).given_up = Some(reason.clone());
             {
                 // The transcript keeps the give-up, written in a lifetime of
                 // its own (the crashed one's scope has ended).
@@ -742,11 +756,6 @@ fn serve<B: SessionBuilder>(
                 &given_up,
             );
             lifetime.node.stream.fault(&given_up);
-            let reason = format!(
-                "the session was given up after {failures} crashes in a row: {}",
-                crashed.crash.reason()
-            );
-            lock(&lifetime.control.turn).given_up = Some(reason.clone());
             while let Ok(work) = queued.try_recv() {
                 work.fail(&reason);
             }

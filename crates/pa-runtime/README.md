@@ -417,7 +417,9 @@ SQLite implementations over `pa-log`.
   closed, the old worker's `session_closed` (`shutdown` or `replaced` when the stop's
   `rlmCloseReason` names one, as the old `kill`'s child-close marker did); a session it
   holds open already (revived at boot, opened by another client) is answered as it runs
-  (`"reused": true`), the old daemon's create-open reuse;
+  (`"reused": true`), the old daemon's create-open reuse, unless the daemon is letting it go
+  (given up, which a client hears as `agent/<id>/failed` before the daemon has released it, or
+  a stop under way): that create waits for the release and opens it afresh;
   `session.rename`, `session.label` and `session.set_effort` change an open session through its
   engine (on the session's runtime, once its first build is done: `Runtime::built_engine`, which
   the state queries wait on too) and a saved one under its lease; `session.delete` changes saved

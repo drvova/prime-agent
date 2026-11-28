@@ -21,6 +21,12 @@
 //!   new session that chose no model starts on the scope's pick.
 //! - the options' `credential`, `profile`, `parent` and `telemetryDisabled`,
 //!   which the session's build reads (the embedder's `SessionBuilder`).
+//!
+//! A create of an open session answers it as it runs (`"reused": true`),
+//! except one the daemon is letting go of (its supervision gave it up, and
+//! the daemon releases it as it hears its `agent/<id>/failed`, which the
+//! client may hear first; or its close is under way): the create waits for
+//! the release and opens it afresh (`"reused": false`).
 
 use std::path::PathBuf;
 
@@ -36,6 +42,10 @@ use super::super::held::OpenSession;
 use super::RuntimeHandlers;
 use crate::session::{SessionBuilder, SessionSpec};
 use crate::wire::{ConnectionId, ErrorWithInfo};
+
+/// How long a create of a session being let go of waits for the daemon to
+/// release it before it is refused.
+const GIVEN_UP_RELEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl<B: SessionBuilder> RuntimeHandlers<B> {
     #[expect(
@@ -91,6 +101,16 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
                 (id, path)
             }
         };
+        // Held but no longer run (given up on, which the daemon releases as
+        // it hears its `agent/<id>/failed` and a client may have heard
+        // first, or a close under way): the create waits for the release
+        // and opens it as a session of its own, never answering the one
+        // being let go of as reused.
+        if self.open.contains(&id) && !self.runtime.runs(&id) {
+            tokio::time::timeout(GIVEN_UP_RELEASE_WAIT, self.open.until_released(&id))
+                .await
+                .with_context(|| format!("session {id}, being let go of, was not released"))?;
+        }
         // Open already (the boot revived it, or another client opened it):
         // answered as it runs, the old daemon's create-open reuse.
         if let Some(path) = self.open.path(&id) {

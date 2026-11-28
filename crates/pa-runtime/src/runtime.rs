@@ -719,6 +719,16 @@ impl<B: SessionBuilder> Runtime<B> {
     }
 
     /// The engine of `session`'s current lifetime, once it is built.
+    /// Whether session `session` runs here and can take work: its host is
+    /// open and its supervision has not given it up. A session that cannot
+    /// is being let go of (its close has begun, or its `agent/<id>/failed`
+    /// is out or about to be).
+    pub(crate) fn runs(&self, session: &str) -> bool {
+        self.sessions
+            .host(session)
+            .is_some_and(|host| !host.given_up())
+    }
+
     pub(crate) fn session_engine(&self, session: &str) -> Option<crate::session::LiveEngine> {
         self.sessions.host(session)?.engine()
     }
