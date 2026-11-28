@@ -124,6 +124,21 @@ pub async fn ensure_runtime_daemon_running(
     daemon_socket: &Path,
     spawn_cwd: &Path,
 ) -> Result<std::path::PathBuf> {
+    let exe = std::env::current_exe().context("resolve the prime-agent executable")?;
+    ensure_runtime_daemon_running_with(&exe, daemon_socket, spawn_cwd).await
+}
+
+/// [`ensure_runtime_daemon_running`] with an explicit daemon executable (the
+/// product path uses this process's own binary).
+///
+/// # Errors
+/// Returns an error when the daemon cannot be spawned, or its socket does not
+/// answer before the startup timeout.
+pub async fn ensure_runtime_daemon_running_with(
+    exe: &Path,
+    daemon_socket: &Path,
+    spawn_cwd: &Path,
+) -> Result<std::path::PathBuf> {
     let socket = pa_runtime::daemon::socket_path(daemon_socket);
     // Off the launch path: nothing here waits for it.
     tokio::spawn(retire_idle_supervisor(daemon_socket.to_path_buf()));
@@ -131,8 +146,7 @@ pub async fn ensure_runtime_daemon_running(
     if pa_core::platform::daemon_socket::can_connect(&socket, probe).await {
         return Ok(socket);
     }
-    let exe = std::env::current_exe().context("resolve the prime-agent executable")?;
-    spawn_daemon_detached(daemon_socket, spawn_cwd, &exe, DaemonKind::Runtime)?;
+    spawn_daemon_detached(daemon_socket, spawn_cwd, exe, DaemonKind::Runtime)?;
     let deadline = Instant::now() + Duration::from_millis(DAEMON_STARTUP_TIMEOUT_MS);
     loop {
         if pa_core::platform::daemon_socket::can_connect(&socket, probe).await {
