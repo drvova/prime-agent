@@ -608,7 +608,7 @@ fn a_restart_after_a_failed_identity_persist_serves_the_moved_session() {
 
     // Save the pre-fork record (the stale identity the restart must NOT serve),
     // then break the record path so the fork's identity persist fails.
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket);
     let descriptor_path = descriptor_dir.join(format!("{address}.json"));
     let stale_record = std::fs::read_to_string(&descriptor_path)
         .expect("the worker's persisted record before the fork");

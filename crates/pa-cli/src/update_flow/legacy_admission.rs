@@ -25,7 +25,7 @@ impl Admission {
                 pa_types::platform::home_dir().context("resolve supervisor registry home")?;
             vec![
                 home.join(".prime/supervisor-owners"),
-                pa_daemon::socket::default_daemon_socket_path()
+                pa_core::platform::daemon_endpoint::default_daemon_socket_path()
                     .parent()
                     .context("resolve legacy supervisor registry")?
                     .join("supervisor-owners"),

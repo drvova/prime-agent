@@ -177,7 +177,7 @@ impl Client {
 /// (the durable busy-at-crash evidence): the kill that follows provably
 /// lands mid-turn, whatever the runner's pacing does to the stream.
 fn wait_for_busy_journal_evidence(agent_dir: &Path, socket: &Path, session_id: &str) {
-    let journal_path = pa_daemon::descriptor::descriptor_dir(agent_dir, socket)
+    let journal_path = pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket)
         .join(format!("{session_id}.recovery.jsonl"));
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
@@ -203,7 +203,7 @@ fn wait_for_busy_journal_evidence(agent_dir: &Path, socket: &Path, session_id: &
 
 /// The socket a hosted session serves on, from its descriptor.
 fn session_socket(agent_dir: &Path, socket: &Path, worker_id: &str) -> PathBuf {
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket);
     let content = std::fs::read_to_string(descriptor_dir.join(format!("{worker_id}.json")))
         .expect("descriptor file");
     let value: Value = serde_json::from_str(&content).expect("descriptor json");

@@ -159,7 +159,7 @@ impl Drop for DetachedDaemon {
         // races out can leave its socket behind. Only this daemon's sockets go
         // (they share its key prefix), then the dir while empty: `remove_dir`
         // never takes it from a live daemon.
-        let own = pa_daemon::platform::worker_socket_path(&self.socket, "");
+        let own = pa_core::platform::daemon_endpoint::worker_socket_path(&self.socket, "");
         let prefix = own
             .file_name()
             .map(|name| name.to_string_lossy().trim_end_matches(".sock").to_string());

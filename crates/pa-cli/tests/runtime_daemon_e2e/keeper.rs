@@ -57,7 +57,7 @@ impl Bed {
     /// owner (the launch an interactive client makes).
     fn kept_runtime_daemon(&self, daemon_socket: &Path) -> Kept {
         let mut command = self.runtime_daemon_command(&json!({ "responses": [] }), daemon_socket);
-        command.env(pa_daemon::keeper::KEEPER_ENV, "1");
+        command.env(pa_runtime::daemon::keeper::KEEPER_ENV, "1");
         Kept {
             keeper: command.spawn().expect("spawn the restart owner"),
             agent_dir: self.agent_dir(),
@@ -67,8 +67,8 @@ impl Bed {
     /// The deaths the keeper of the daemon on `socket` recorded.
     fn deaths(&self, socket: &Path) -> Vec<Value> {
         std::fs::read_to_string(
-            pa_daemon::descriptor::descriptor_dir(&self.agent_dir(), socket)
-                .join(pa_daemon::keeper::DAEMON_DEATH_LOG),
+            pa_core::platform::daemon_endpoint::daemon_state_dir(&self.agent_dir(), socket)
+                .join(pa_runtime::daemon::keeper::DAEMON_DEATH_LOG),
         )
         .unwrap_or_default()
         .lines()
@@ -199,7 +199,7 @@ async fn a_deliberate_stop_of_a_kept_runtime_daemon_is_not_restarted() {
     let killed = Bed::new();
     let mut killed_kept = killed.kept_runtime_daemon(&killed.old_socket());
     let holder = serving_holder(&killed, None);
-    pa_daemon::keeper::record_stop_intent(&killed.agent_dir(), &killed.runtime_socket())
+    pa_runtime::daemon::keeper::record_stop_intent(&killed.agent_dir(), &killed.runtime_socket())
         .expect("record the stop intent");
     signal(holder.pid, Signal::SIGKILL);
     let killed_exit = exit_code(&mut killed_kept.keeper);

@@ -202,12 +202,12 @@ The table summarizes each crate's current direct workspace dependencies:
 | `pa-agent` | Provider-independent agent loop | none |
 | `pa-shell` | Built-in bash-compatible shell and its utilities | `pa-types` |
 | `pa-log` | SQLite store: the event log, session transcripts and the agent's other state (the transcript store's database) | `pa-types` |
-| `pa-runtime` | Event-driven runtime: bus, subscriptions, task lanes and their SQLite stores, the sessions that run tasks as turns, the event sources its subscriptions start and stop, the headless turn driver, the RPC and ACP modes, and the runtime daemon (wire2 on its own socket; the default daemon) | `pa-types`, `pa-log`, `pa-core`, `pa-agent`, `pa-ai`, `pa-sources` |
+| `pa-runtime` | Event-driven runtime: bus, subscriptions, task lanes and their SQLite stores, the sessions that run tasks as turns, the event sources its subscriptions start and stop, the headless turn driver, the RPC and ACP modes, the runtime daemon (wire2 on its own socket; the default daemon) and the restart owner both daemons share | `pa-types`, `pa-log`, `pa-core`, `pa-agent`, `pa-ai`, `pa-sources` |
 | `pa-sources` | Event sources: timers, folder watches, webhooks; the schedule grammar and evaluator timers and scheduled jobs share | `pa-types` |
 | `pa-ai` | Providers, model registry, streaming | `pa-types` |
 | `pa-models` | Live model catalog and transport | `pa-ai`, `pa-types` |
 | `pa-core` | Session engine, tools, skills, Scheme kernel, settings, transcript store, session leases | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-shell`, `pa-telemetry`, `pa-log`, `pa-sources` |
-| `pa-daemon` | Supervisor, hosted sessions, restart owner, wire protocol | `pa-types`, `pa-core`, `pa-agent`, `pa-ai`, `pa-telemetry`, `pa-models` |
+| `pa-daemon` | Supervisor, hosted sessions, wire protocol | `pa-types`, `pa-core`, `pa-agent`, `pa-ai`, `pa-telemetry`, `pa-models`, `pa-runtime` (the restart owner, until pa-daemon goes) |
 | `pa-tui` | Terminal UI, daemon-wire client | `pa-types` |
 | `pa-cli` | `prime-agent` binary, composition root | `pa-types`, `pa-core`, `pa-ai`, `pa-agent`, `pa-daemon`, `pa-runtime`, `pa-tui`, `pa-telemetry` |
 | `pa-perf` | Performance corpora + pty bench harness (dev/CI tooling, never shipped) | `pa-types`, `pa-core`, `pa-daemon` |
@@ -263,7 +263,7 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   on their own large-stack thread. Not bounded: a cell's total memory, and CPU between
   sessions.
 - Daemon death: an abort-class fault (stack overflow, out of memory, a fault in native code)
-  ends the daemon and every session in it. A restart owner (`crates/pa-daemon/src/keeper.rs`,
+  ends the daemon and every session in it. A restart owner (`crates/pa-runtime/src/daemon/keeper.rs`,
   unix, for interactive, ACP and post-update launches) restarts the daemon with the same
   backoff and give-up limit and records every death; a deliberate stop is not restarted. It
   keeps whichever daemon the launch selects: the runtime daemon's keeper keeps its records

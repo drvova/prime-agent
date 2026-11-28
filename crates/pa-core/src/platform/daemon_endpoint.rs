@@ -1,4 +1,5 @@
-//! Per-OS daemon endpoint naming: Unix socket files under
+//! Per-OS daemon endpoint naming, shared by the runtime daemon and the
+//! supervisor: Unix socket files under
 //! `<tmpdir>/prime-agent-<uid>/`; Windows named pipes in the `\\.\\pipe\\`
 //! namespace (fixed daemon pipe, hashed worker pipes) - the TS product's
 //! exact split. A distribution build names its own endpoints
@@ -7,12 +8,12 @@
 //! the official products' daemon.
 use std::path::{Path, PathBuf};
 
-use crate::paths::hash_key;
+use sha2::{Digest, Sha256};
 
 /// Default directory holding daemon socket files (Unix).
 #[cfg(unix)]
 pub fn socket_dir() -> PathBuf {
-    let uid = pa_core::platform::process::current_user_id();
+    let uid = crate::platform::process::current_user_id();
     let tmp = pa_types::session_scope::var_os("TMPDIR")
         .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
     socket_dir_for(&tmp, uid)
@@ -88,12 +89,87 @@ pub fn worker_socket_path(supervisor_socket_path: &Path, worker_id: &str) -> Pat
     ))
 }
 
-// Socket-filesystem identity is the shared platform contract
-// `pa_types::platform::socket_identity`: the same helper serves stale-file
-// cleanup here and direct-transport ticket validation in the clients.
+/// sha256 hex, first `chars` characters: the key that names worker
+/// endpoints, daemon logs and update-restart state after a socket path.
+#[must_use]
+pub fn hash_key(input: &str, chars: usize) -> String {
+    let digest = Sha256::digest(input.as_bytes());
+    digest.iter().fold(String::new(), |mut key, b| {
+        use std::fmt::Write;
+        write!(key, "{b:02x}").expect("write to String");
+        key
+    })[..chars]
+        .to_string()
+}
 
-pub use pa_types::daemon::SocketIdentity;
-pub use pa_types::platform::socket_identity;
+/// Log path for a daemon socket: readable basename plus an 8-char hash of
+/// the normalized socket path, under `<agent-dir>/logs` (TS `getDaemonLogPath`).
+#[must_use]
+pub fn daemon_log_path(socket_path: &Path, agent_dir: &Path) -> PathBuf {
+    let normalized = socket_path.to_string_lossy().to_string();
+    let base = socket_path.file_name().map_or_else(
+        || "daemon.sock".to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
+    agent_dir
+        .join("logs")
+        .join(format!("{base}.{}.log", hash_key(&normalized, 8)))
+}
+
+/// The per-socket state directory, `<agent-dir>/daemon-workers/<socket key>`:
+/// the supervisor's worker descriptors and journals, and the restart owner's
+/// records (owner, stop intent, death log) for either daemon's socket.
+#[must_use]
+pub fn daemon_state_dir(agent_dir: &Path, socket_path: &Path) -> PathBuf {
+    agent_dir
+        .join("daemon-workers")
+        .join(hash_key(&socket_path.to_string_lossy(), 12))
+}
+
+/// The daemon log's appender (a daemon's own log is at [`daemon_log_path`]):
+/// keeps the file bounded with one generation of rotation (TS `appendRotatingLog`).
+pub struct RotatingLog {
+    path: PathBuf,
+    max_bytes: u64,
+}
+
+impl RotatingLog {
+    #[must_use]
+    pub fn new(path: PathBuf) -> Self {
+        RotatingLog {
+            path,
+            max_bytes: 5 * 1024 * 1024,
+        }
+    }
+
+    pub fn append(&self, line: &str) {
+        // The log lives in `<agent-dir>/logs`; create it if this is the first
+        // write (a fresh agent dir has no logs directory yet).
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        crate::platform::perms::set_private_mode(&mut options);
+        let Ok(mut file) = options.open(&self.path) else {
+            return;
+        };
+        let payload = format!("{line}\n");
+        if let Ok(metadata) = file.metadata() {
+            if metadata.len() + payload.len() as u64 > self.max_bytes {
+                drop(file);
+                let rotated = self.path.with_extension("log.1");
+                let _ = std::fs::rename(&self.path, &rotated);
+                match options.open(&self.path) {
+                    Ok(reopened) => file = reopened,
+                    Err(_) => return,
+                }
+            }
+        }
+        let _ = std::io::Write::write_all(&mut file, payload.as_bytes());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +250,24 @@ mod tests {
             rendered.ends_with("-0123456789ab"),
             "the 12-char id suffix: {rendered}"
         );
+    }
+
+    #[test]
+    fn log_path_hashes_socket() {
+        let path = daemon_log_path(
+            Path::new("/tmp/prime-agent-1/daemon.sock"),
+            Path::new("/ad"),
+        );
+        assert!(path.starts_with("/ad/logs"));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("daemon.sock."));
+        let other = daemon_log_path(
+            Path::new("/tmp/prime-agent-2/daemon.sock"),
+            Path::new("/ad"),
+        );
+        assert_ne!(path, other);
     }
 }

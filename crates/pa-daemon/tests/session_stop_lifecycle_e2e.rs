@@ -305,7 +305,8 @@ fn kill_cancels_goal_and_heartbeat_and_no_wake_revives_the_session() {
     // session, so the match filters the descriptor file itself. The stop
     // deletes it at the kill; the crash-window probe replants it tombstoned.
     let (planted_path, planted_content) = {
-        let descriptor_dir = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket);
+        let descriptor_dir =
+            pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket);
         let found = std::fs::read_dir(&descriptor_dir)
             .expect("descriptor dir readable")
             .flatten()
@@ -319,7 +320,7 @@ fn kill_cancels_goal_and_heartbeat_and_no_wake_revives_the_session() {
         let content = std::fs::read_to_string(&found).expect("descriptor readable");
         (found, content)
     };
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket);
 
     let started = client.request(
         "a-goal",

@@ -23,7 +23,7 @@ fn main() {
     // Still single-threaded: a kept daemon launch splits into the daemon and its restart
     // owner here (a launch written any other way is kept all the same, one program start
     // later); any other process sheds the owner's hand-off.
-    pa_daemon::keeper::enter(
+    pa_runtime::daemon::keeper::enter(
         args.windows(2)
             .any(|pair| pair[0] == "--mode" && pair[1] == "daemon"),
     );

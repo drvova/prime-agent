@@ -357,7 +357,7 @@ fn a_heartbeat_that_came_due_while_the_daemon_was_down_fires_once_at_the_next_bo
         let rows = session_rows_containing(&session_file, "heartbeat_prompt");
         (rows > 0).then_some(rows)
     });
-    let journal = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+    let journal = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket)
         .join(format!("{active_id}.recovery.jsonl"));
     let due = wait_until(Duration::from_secs(30), || {
         (!pa_daemon::journal::WorkerRecoveryJournal::read_interrupted(&journal))
@@ -496,7 +496,7 @@ fn a_boot_fires_the_revived_session_due_job_and_never_resurrects_the_killed_sibl
         &json!({ "type": "prompt", "activeSessionId": wake_active, "message": "in flight" }),
     );
     assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
-    let journal = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+    let journal = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket)
         .join(format!("{wake_active}.recovery.jsonl"));
     wait_until(Duration::from_secs(20), || {
         pa_daemon::journal::WorkerRecoveryJournal::read_interrupted(&journal).then_some(())

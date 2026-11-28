@@ -50,7 +50,7 @@ fn write_revival_fixture(
     )
     .expect("write script");
 
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
+    let descriptor_dir = pa_core::platform::daemon_endpoint::daemon_state_dir(agent_dir, socket);
     std::fs::create_dir_all(&descriptor_dir).expect("descriptor dir");
     let journal_path = descriptor_dir.join(format!("{worker_id}.recovery.jsonl"));
     std::fs::write(
@@ -108,7 +108,7 @@ fn write_revival_fixture(
 fn boot_and_observe(agent_dir: &Path, socket: &Path) -> (Daemon, PathBuf, String) {
     let daemon = spawn_supervisor(socket, agent_dir);
     wait_socket_ready(socket);
-    let log_path = pa_daemon::paths::daemon_log_path(socket, agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(socket, agent_dir);
     let boot_before = pa_daemon::util::now_iso();
     // The adoption pass runs concurrently with the accept loop; give it a
     // bounded window to reach every descriptor before the assertions read
@@ -277,7 +277,7 @@ fn plain_boot_still_revives_fresh_busy_evidence() {
 
     let mut daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
     let boot_before = pa_daemon::util::now_iso();
 
     let deadline = Instant::now() + Duration::from_secs(15);

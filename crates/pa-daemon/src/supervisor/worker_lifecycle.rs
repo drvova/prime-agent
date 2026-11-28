@@ -236,7 +236,10 @@ impl Supervisor {
             ));
         }
         let worker_id = util::new_display_id();
-        let worker_socket = socket::worker_socket_path(&self.options.socket_path, &worker_id);
+        let worker_socket = pa_core::platform::daemon_endpoint::worker_socket_path(
+            &self.options.socket_path,
+            &worker_id,
+        );
         let now = util::now_iso();
         let mut durable_rest = serde_json::Map::new();
         durable_rest.insert("cwd".to_string(), json!(cwd_value));

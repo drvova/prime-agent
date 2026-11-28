@@ -127,7 +127,7 @@ async fn restart(
 ) -> Result<()> {
     let budget = UpdateTimeoutBudget::from_env();
     let recovery_dir = agent_dir.join("legacy-update-recovery");
-    let socket_key = pa_daemon::paths::hash_key(&socket.to_string_lossy(), 64);
+    let socket_key = pa_core::platform::daemon_endpoint::hash_key(&socket.to_string_lossy(), 64);
     let roster_path = recovery_dir.join(format!("{socket_key}.json"));
     let attempt_path = recovery_dir.join(format!("{socket_key}.attempt.json"));
     let source_path = agent_dir
@@ -138,7 +138,7 @@ async fn restart(
         Ok(connection) => connection,
         Err(error) => {
             // A reachable but incompatible daemon is not an absent daemon.
-            if pa_daemon::socket::can_connect(socket, Duration::from_secs(1)).await {
+            if pa_core::platform::daemon_socket::can_connect(socket, Duration::from_secs(1)).await {
                 return Err(error).context("connect to the previous daemon");
             }
             match recover_prepared(&roster_path, &attempt_path, &source_path, socket, None)? {
@@ -202,7 +202,7 @@ async fn restart(
         // Write the owner binding before the RPC: TS commits and stops its
         // workers before replying, so a disconnected caller must recover disk.
         let previous = match std::fs::read_to_string(&source_path) {
-            Ok(text) => Some(pa_daemon::paths::hash_key(&text, 64)),
+            Ok(text) => Some(pa_core::platform::daemon_endpoint::hash_key(&text, 64)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
@@ -367,7 +367,7 @@ fn recover_prepared(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if attempt["previousDigest"] == pa_daemon::paths::hash_key(&text, 64) {
+    if attempt["previousDigest"] == pa_core::platform::daemon_endpoint::hash_key(&text, 64) {
         return Ok(None);
     }
     let modified = std::fs::metadata(source_path)?
@@ -499,7 +499,7 @@ mod tests {
         let socket = directory.path().join("old.sock");
         let source = directory.path().join("daemon-update-restarts");
         std::fs::create_dir(&source).unwrap();
-        let key = pa_daemon::paths::hash_key(&socket.to_string_lossy(), 64);
+        let key = pa_core::platform::daemon_endpoint::hash_key(&socket.to_string_lossy(), 64);
         let source = source.join(format!("{key}.json"));
         let checkpoint = directory
             .path()
@@ -606,7 +606,10 @@ mod tests {
         let checkpoint = directory.path().join("roster.json");
         let manifest = json!({"formatVersion":1,"createdAt":"now","sessions":[]});
         persist(&source, &manifest).unwrap();
-        let digest = pa_daemon::paths::hash_key(&std::fs::read_to_string(&source).unwrap(), 64);
+        let digest = pa_core::platform::daemon_endpoint::hash_key(
+            &std::fs::read_to_string(&source).unwrap(),
+            64,
+        );
         persist(&attempt, &json!({"socket":socket,"version":crate::config::version(),
             "hello":{"supervisorPid":42,"supervisorProcessStartId":"start","supervisorGeneration":"generation"},
             "startedAt":0,"previousDigest":digest,"updateId":"old-attempt"})).unwrap();
@@ -645,7 +648,7 @@ mod tests {
         .unwrap();
         assert!(validate_recovery(&roster, &socket, crate::config::version()).is_ok());
         roster.binary.to_version = "a-different-release".to_string();
-        let key = pa_daemon::paths::hash_key(&socket.to_string_lossy(), 64);
+        let key = pa_core::platform::daemon_endpoint::hash_key(&socket.to_string_lossy(), 64);
         let checkpoint = recovery.join(format!("{key}.json"));
         persist(&checkpoint, &serde_json::to_value(&roster).unwrap()).unwrap();
         let status_path = directory.path().join("status.json");
@@ -679,7 +682,7 @@ mod tests {
         let status_path = directory.path().join("status.json");
         let source_dir = directory.path().join("daemon-update-restarts");
         std::fs::create_dir(&source_dir).unwrap();
-        let key = pa_daemon::paths::hash_key(&socket.to_string_lossy(), 64);
+        let key = pa_core::platform::daemon_endpoint::hash_key(&socket.to_string_lossy(), 64);
         persist(
             &source_dir.join(format!("{key}.json")),
             &json!({"formatVersion":1,"createdAt":"old","sessions":[]}),
@@ -730,7 +733,7 @@ mod tests {
             .unwrap();
         let status: Value = serde_json::from_slice(&std::fs::read(status_path).unwrap()).unwrap();
         assert_eq!(status["phase"], "failed");
-        let key = pa_daemon::paths::hash_key(&socket.to_string_lossy(), 64);
+        let key = pa_core::platform::daemon_endpoint::hash_key(&socket.to_string_lossy(), 64);
         assert!(
             !directory
                 .path()

@@ -314,7 +314,7 @@ fn a_refused_registration_retires_the_worker() {
 
     // The refusal lands in the daemon's rotating log (the operator-facing trace the incident
     // lacked) — and the worker exits instead of retrying forever.
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    let log_path = pa_core::platform::daemon_endpoint::daemon_log_path(&socket, &agent_dir);
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let log = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -373,7 +373,7 @@ fn a_descriptorless_session_of_a_dead_daemon_resumes() {
     drop(daemon);
     let stranded_leases = held_leases(&agent_dir).len();
     std::fs::remove_file(
-        pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+        pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket)
             .join(format!("{worker_id}.json")),
     )
     .expect("destroy the descriptor");
@@ -487,7 +487,7 @@ fn an_owned_stop_ends_a_wedged_session_and_its_file_resumes() {
     // descriptor carries its stop tombstone while the stop is still ending the session — a
     // daemon that died mid-stop would finish the stop at its next boot, never re-adopt a
     // stopped session as healthy.
-    let descriptor_path = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+    let descriptor_path = pa_core::platform::daemon_endpoint::daemon_state_dir(&agent_dir, &socket)
         .join(format!("{worker_id}.json"));
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
