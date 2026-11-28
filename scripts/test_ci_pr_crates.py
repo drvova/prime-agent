@@ -100,8 +100,8 @@ class TheMappingTestCase(unittest.TestCase):
             "crates/pa-tui/src/view/runs.rs",
         ])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(outputs["crates"], "pa-cli,pa-daemon,pa-perf,pa-tui")
-        self.assertIn("crates (4: pa-cli, pa-daemon, pa-perf, pa-tui)", outputs["scope"])
+        self.assertEqual(outputs["crates"], "pa-cli,pa-daemon,pa-tui")
+        self.assertIn("crates (3: pa-cli, pa-daemon, pa-tui)", outputs["scope"])
 
     def test_any_non_crate_path_fails_safe_to_the_full_selection(self):
         rc, out, outputs = run_mapper([
@@ -124,7 +124,7 @@ class TheMappingTestCase(unittest.TestCase):
             ".changes/daemon-fix.md",
         ])
         self.assertEqual(rc, 0, out)
-        self.assertEqual(outputs["crates"], "pa-cli,pa-daemon,pa-perf")
+        self.assertEqual(outputs["crates"], "pa-cli,pa-daemon")
         self.assertIn("guaranteed-metadata path .changes/daemon-fix.md", out)
 
     def test_a_fragment_only_pr_keeps_the_full_selection(self):
