@@ -1,5 +1,5 @@
 //! One session file's rows: the entry builders over the product's own
-//! serializers (pa-types payloads inside pa-daemon's `SessionEntry`), the
+//! serializers (pa-types payloads in the `FileEntry` rows pa-core's session manager writes), the
 //! conversation turn generator, and the marker discipline the bench
 //! needles read from the corpus manifest.
 
@@ -7,14 +7,14 @@ use std::fmt::Write as _;
 use std::io::Write;
 use std::path::Path;
 
-use pa_daemon::session_store::{session_header_line, SessionEntry};
 use pa_types::ai::{
     AssistantContentBlock, AssistantMessage, StopReason, TextContent, ThinkingContent, ToolCall,
     ToolResultMessage, Usage, UsageCost, UserContent, UserContentBlock, UserMessage,
 };
 use pa_types::session::{
-    CompactionEntry, CustomMessageEntry, ModelChangeEntry, ServiceTierChangeEntry, SessionHeader,
-    SessionState, SessionStateEntry, SessionStateStatus, ThinkingLevelChangeEntry,
+    AgentMessage, CompactionEntry, CustomMessageEntry, EntryBase, FileEntry, ModelChangeEntry,
+    ServiceTierChangeEntry, SessionHeader, SessionInfoEntry, SessionState, SessionStateEntry,
+    SessionStateStatus, ThinkingLevelChangeEntry,
 };
 
 use crate::rng::{iso_from_millis, Rng};
@@ -226,8 +226,8 @@ fn usage(rng: &mut Rng) -> Usage {
     }
 }
 
-/// The row writer: one `SessionEntry` line, exactly as the product's store
-/// serializes it (`type`, `id`, `parentId`, `timestamp`, then the payload).
+/// The row writer: one `FileEntry` line, exactly as pa-core's session manager
+/// serializes it (the `type` tag, the payload, then `id`, `parentId`, `timestamp`).
 struct Rows {
     writer: std::io::BufWriter<std::fs::File>,
     counter: u64,
@@ -242,24 +242,24 @@ impl Rows {
         id
     }
 
+    /// Append the entry `entry` builds over the next row's id, parent and time.
     fn push(
         &mut self,
-        type_: &str,
-        fields: serde_json::Value,
+        entry: impl FnOnce(EntryBase) -> FileEntry,
         rng: &mut Rng,
     ) -> anyhow::Result<()> {
         self.millis += 20 + rng.below(400);
-        let entry = SessionEntry {
-            type_: type_.to_string(),
-            id: self.next_id(),
+        let id = self.next_id();
+        let entry = entry(EntryBase {
+            id: Some(id.clone()),
             parent_id: self.parent.clone(),
-            timestamp: iso_from_millis(self.millis),
-            fields,
-        };
+            timestamp: Some(iso_from_millis(self.millis)),
+            rest: serde_json::Map::new(),
+        });
         let mut line = serde_json::to_string(&entry).expect("the entry serializes");
         line.push('\n');
         self.writer.write_all(line.as_bytes())?;
-        self.parent = Some(entry.id);
+        self.parent = Some(id);
         Ok(())
     }
 
@@ -298,43 +298,34 @@ pub(crate) fn write_session_file(
         parent: None,
     };
     let mut header_line =
-        serde_json::to_string(&session_header_line(&header)).expect("the header serializes");
+        serde_json::to_string(&FileEntry::Header { header }).expect("the header serializes");
     header_line.push('\n');
     rows.writer.write_all(header_line.as_bytes())?;
 
-    rows.push(
-        "model_change",
-        serde_json::to_value(ModelChangeEntry {
-            provider: provider.to_string(),
-            model_id: model.to_string(),
-        })?,
-        rng,
-    )?;
-    rows.push(
-        "thinking_level_change",
-        serde_json::to_value(ThinkingLevelChangeEntry {
-            thinking_level: if rng.chance(70) { "high" } else { "medium" }.to_string(),
-        })?,
-        rng,
-    )?;
-    rows.push(
-        "service_tier_change",
-        serde_json::to_value(ServiceTierChangeEntry {
-            service_tier: Some(pa_types::ai::ServiceTier::Default),
-        })?,
-        rng,
-    )?;
-    rows.push(
-        "session_state",
-        serde_json::to_value(SessionStateEntry {
-            state: SessionState {
-                status: SessionStateStatus::Active,
-            },
-        })?,
-        rng,
-    )?;
+    let payload = ModelChangeEntry {
+        provider: provider.to_string(),
+        model_id: model.to_string(),
+    };
+    rows.push(|base| FileEntry::ModelChange { payload, base }, rng)?;
+    let payload = ThinkingLevelChangeEntry {
+        thinking_level: if rng.chance(70) { "high" } else { "medium" }.to_string(),
+    };
+    rows.push(|base| FileEntry::ThinkingLevelChange { payload, base }, rng)?;
+    let payload = ServiceTierChangeEntry {
+        service_tier: Some(pa_types::ai::ServiceTier::Default),
+    };
+    rows.push(|base| FileEntry::ServiceTierChange { payload, base }, rng)?;
+    let payload = SessionStateEntry {
+        state: SessionState {
+            status: SessionStateStatus::Active,
+        },
+    };
+    rows.push(|base| FileEntry::SessionState { payload, base }, rng)?;
     if let Some(name) = &spec.name {
-        rows.push("session_info", serde_json::json!({ "name": name }), rng)?;
+        let payload = SessionInfoEntry {
+            name: Some(name.clone()),
+        };
+        rows.push(|base| FileEntry::SessionInfo { payload, base }, rng)?;
     }
 
     // The conversation: fill to `rows`, keeping a compaction boundary near
@@ -351,21 +342,18 @@ pub(crate) fn write_session_file(
         if compaction_at.is_some_and(|threshold| rows.rows_written() >= threshold) {
             compaction_at = None;
             let summary = format!("Compacted earlier entries: {}.", sentence(rng, 6));
-            rows.push(
-                "compaction",
-                serde_json::to_value(CompactionEntry {
-                    summary,
-                    first_kept_entry_id: format!("{:08x}", rows.counter),
-                    tokens_before: 40_000 + rng.below(60_000),
-                    details: None,
-                    from_hook: Some(false),
-                    custom_instructions: None,
-                    usage: Some(usage(rng)),
-                    harness_digest: None,
-                    harness_state_fingerprint: None,
-                })?,
-                rng,
-            )?;
+            let payload = CompactionEntry {
+                summary,
+                first_kept_entry_id: format!("{:08x}", rows.counter),
+                tokens_before: 40_000 + rng.below(60_000),
+                details: None,
+                from_hook: Some(false),
+                custom_instructions: None,
+                usage: Some(usage(rng)),
+                harness_digest: None,
+                harness_state_fingerprint: None,
+            };
+            rows.push(|base| FileEntry::Compaction { payload, base }, rng)?;
             continue;
         }
 
@@ -383,17 +371,12 @@ pub(crate) fn write_session_file(
         } else {
             UserContent::Text(text.clone())
         };
-        rows.push(
-            "message",
-            serde_json::json!({
-                "message": pa_types::session::AgentMessage::User(UserMessage {
-                    content,
-                    timestamp: rows.millis,
-                    rest: serde_json::Map::new(),
-                })
-            }),
-            rng,
-        )?;
+        let message = AgentMessage::User(UserMessage {
+            content,
+            timestamp: rows.millis,
+            rest: serde_json::Map::new(),
+        });
+        rows.push(|base| FileEntry::Message { message, base }, rng)?;
         last_user_text = text;
 
         // The assistant turn: thinking + text + a tool call, then the result.
@@ -450,63 +433,50 @@ pub(crate) fn write_session_file(
         } else {
             StopReason::Stop
         };
-        rows.push(
-            "message",
-            serde_json::json!({
-                "message": pa_types::session::AgentMessage::Assistant(AssistantMessage {
-                    content: blocks,
-                    api: "openai".to_string(),
-                    provider: provider.to_string(),
-                    model: model.to_string(),
-                    response_model: None,
-                    response_id: None,
-                    diagnostics: None,
-                    usage: usage(rng),
-                    stop_reason,
-                    stop_reason_raw: None,
-                    error_message: None,
-                    timestamp: rows.millis,
-                    rest: serde_json::Map::new(),
-                })
-            }),
-            rng,
-        )?;
+        let message = AgentMessage::Assistant(AssistantMessage {
+            content: blocks,
+            api: "openai".to_string(),
+            provider: provider.to_string(),
+            model: model.to_string(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: usage(rng),
+            stop_reason,
+            stop_reason_raw: None,
+            error_message: None,
+            timestamp: rows.millis,
+            rest: serde_json::Map::new(),
+        });
+        rows.push(|base| FileEntry::Message { message, base }, rng)?;
 
         if let Some((call_id, name)) = tool {
-            rows.push(
-                "message",
-                serde_json::json!({
-                    "message": pa_types::session::AgentMessage::ToolResult(ToolResultMessage {
-                        tool_call_id: call_id,
-                        tool_name: name.to_string(),
-                        content: vec![UserContentBlock::Text(TextContent {
-                            text: tag(tool_output(rng)),
-                            text_signature: None,
-                            rest: serde_json::Map::new(),
-                        })],
-                        details: None,
-                        is_error: rng.chance(10),
-                        timestamp: rows.millis,
-                        rest: serde_json::Map::new(),
-                    })
-                }),
-                rng,
-            )?;
+            let message = AgentMessage::ToolResult(ToolResultMessage {
+                tool_call_id: call_id,
+                tool_name: name.to_string(),
+                content: vec![UserContentBlock::Text(TextContent {
+                    text: tag(tool_output(rng)),
+                    text_signature: None,
+                    rest: serde_json::Map::new(),
+                })],
+                details: None,
+                is_error: rng.chance(10),
+                timestamp: rows.millis,
+                rest: serde_json::Map::new(),
+            });
+            rows.push(|base| FileEntry::Message { message, base }, rng)?;
         }
 
         if !marker_turn && rng.chance(7) {
             let custom = CUSTOM_TYPES[rng.below(CUSTOM_TYPES.len() as u64) as usize];
-            rows.push(
-                "custom_message",
-                serde_json::to_value(CustomMessageEntry {
-                    custom_type: custom.to_string(),
-                    content: UserContent::Text(format!("[{custom}] {}", sentence(rng, 8))),
-                    details: None,
-                    display: false,
-                    rest: serde_json::Map::new(),
-                })?,
-                rng,
-            )?;
+            let payload = CustomMessageEntry {
+                custom_type: custom.to_string(),
+                content: UserContent::Text(format!("[{custom}] {}", sentence(rng, 8))),
+                details: None,
+                display: false,
+                rest: serde_json::Map::new(),
+            };
+            rows.push(|base| FileEntry::CustomMessage { payload, base }, rng)?;
         }
     }
 

@@ -3507,7 +3507,6 @@ dependencies = [
  "clap",
  "nix 0.29.0",
  "pa-core",
- "pa-daemon",
  "pa-types",
  "serde",
  "serde_json",
