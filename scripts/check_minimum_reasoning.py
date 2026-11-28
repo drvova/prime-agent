@@ -78,8 +78,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return
                 self.server.tool_name = name
                 scenario = self.server.scenario
+                function = {'compact': 'compact', 'refine': 'refine-run'}[scenario]
                 code = (f'(displayln (string-append "{MARKER}" (value->jsexpr-string '
-                        f'({scenario}-run "Verify mandatory thinking"))))')
+                        f'({function} "Verify mandatory thinking"))))')
                 delta = {'tool_calls': [{'index': 0, 'id': 'call_schedule', 'type': 'function',
                          'function': {'name': name, 'arguments': json.dumps({'code': code})}}]}
                 finish = 'tool_calls'
