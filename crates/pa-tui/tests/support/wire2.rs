@@ -593,7 +593,7 @@ fn wire2_result(command: &str, data: Value) -> Value {
 
 /// The queries and calls that carry their old command's own members (plus `session`): each wire2
 /// name and the old command it stands for.
-const PLAIN_REQUESTS: [(&str, &str); 71] = [
+const PLAIN_REQUESTS: [(&str, &str); 70] = [
     ("session.stop", "kill"),
     ("session.rename", "rename"),
     ("session.set_model", "set_model"),
@@ -602,7 +602,6 @@ const PLAIN_REQUESTS: [(&str, &str); 71] = [
     ("session.abort_bash", "abort_bash"),
     ("session.abort", "abort"),
     ("session.abort_and_send_queued", "abort_and_send_queued"),
-    ("session.model", "get_connection_state"),
     ("session.children", "get_rlm_children"),
     ("session.usage", "get_session_stats"),
     ("session.context_tree", "get_context_tree"),
@@ -685,6 +684,10 @@ fn old_request(name: &str, args: &Value) -> Result<Value, String> {
     };
     let old = match name {
         "session.create" => return old_create(args),
+        "session.snapshot" if fields.get("shape") == Some(&json!("connection")) => {
+            fields.remove("shape");
+            "get_connection_state"
+        }
         "session.snapshot" => {
             fields.remove("shape");
             "get_state"
