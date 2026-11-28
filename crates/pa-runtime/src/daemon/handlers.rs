@@ -90,6 +90,9 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     branch_summaries: tree::BranchSummaries,
     /// The side runs (`/btw`, `/better`) of the open sessions.
     side_runs: side_runs::SessionSideRuns,
+    /// The transcript the last attach or page read built, which the next
+    /// page of the same transcript reads again.
+    transcripts: Arc<attach::TranscriptCache>,
     /// The daemon's own end (`daemon.shutdown`, `daemon.restart`,
     /// `daemon.commit_update_restart`, or the embedder's stop signal): once
     /// it is begun, every query and call is refused.
@@ -139,6 +142,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             catalog: Arc::default(),
             branch_summaries: tree::BranchSummaries::default(),
             side_runs: side_runs::SessionSideRuns::default(),
+            transcripts: Arc::default(),
             stop,
             update,
             restore,

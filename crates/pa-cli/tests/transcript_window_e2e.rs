@@ -12,10 +12,10 @@
 
 mod support;
 
+use support::runtime_daemon::RuntimeDaemon;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
 
 use pa_tui::interactive::{
     run_interactive, HeadlessPlan, HeadlessStep, InteractiveOptions, ModelSelection,
@@ -34,73 +34,6 @@ const SUMMARY_TEXT: &str = "fixture compaction summary";
 /// Turns the window keeps resident above the tail (eight 256-message chunks of
 /// four-message turns), with slack.
 const RESIDENT_TURNS: usize = 520;
-
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        use std::io::{BufRead, BufReader, Write};
-        if let Ok(stream) = std::os::unix::net::UnixStream::connect(&self.socket) {
-            if let Ok(mut writer) = stream.try_clone() {
-                let mut reader = BufReader::new(stream);
-                let mut hello = String::new();
-                let _ = reader.read_line(&mut hello);
-                let command = json!({
-                    "type": "command", "id": "test-shutdown",
-                    "protocol": { "name": "prime-agent.daemon", "version": 7 },
-                    "command": { "type": "shutdown" },
-                });
-                let _ = writeln!(writer, "{command}");
-                let _ = reader
-                    .get_ref()
-                    .set_read_timeout(Some(Duration::from_secs(5)));
-                let mut response = String::new();
-                let _ = reader.read_line(&mut response);
-            }
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    // The in-process client forwards this process's env to the worker.
-    support::scrub_ambient_provider_credentials();
-    let socket = dir.join("daemon.sock");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", dir.join("agent"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(&socket, &mut child);
-    Supervisor { child, socket }
-}
 
 fn marker(turn: usize) -> String {
     format!("turn-{turn:05}")
@@ -185,7 +118,7 @@ fn write_long_session(path: &Path, id: &str) {
             ));
         }
     }
-    std::fs::write(path, out).expect("write long session");
+    std::fs::write(path, support::valid_transcript(&out)).expect("write long session");
 }
 
 async fn create_session_from_file(socket: &Path, dir: &Path, session_path: &Path) -> String {
@@ -193,7 +126,7 @@ async fn create_session_from_file(socket: &Path, dir: &Path, session_path: &Path
     std::fs::write(&script_path, json!({ "responses": ["ok"] }).to_string()).expect("write script");
     let (client, _events) = pa_tui::daemon_client::DaemonClient::connect(socket)
         .await
-        .expect("connect supervisor");
+        .expect("connect the daemon");
     let data = client
         .request_ok(DaemonCommand::Create {
             id: None,
@@ -263,7 +196,7 @@ fn chat_options(socket: &Path, dir: &Path, active: String) -> InteractiveOptions
 
 struct LongSession {
     _dir: tempfile::TempDir,
-    supervisor: Supervisor,
+    daemon: RuntimeDaemon,
     dir: PathBuf,
     active: String,
 }
@@ -272,15 +205,15 @@ async fn open_long_session() -> LongSession {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let session_dir = dir.path().join("agent").join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
     let durable = "01a0tw-000000000001";
     let path = session_dir.join(format!("{durable}.jsonl"));
     write_long_session(&path, durable);
-    let active = create_session_from_file(&supervisor.socket, dir.path(), &path).await;
+    let active = create_session_from_file(&daemon.socket, dir.path(), &path).await;
     LongSession {
         dir: dir.path().to_path_buf(),
         _dir: dir,
-        supervisor,
+        daemon,
         active,
     }
 }
@@ -292,11 +225,7 @@ async fn run_plan(session: &LongSession, steps: Vec<HeadlessStep>, height: u16) 
         height,
     };
     run_interactive(
-        chat_options(
-            &session.supervisor.socket,
-            &session.dir,
-            session.active.clone(),
-        ),
+        chat_options(&session.daemon.socket, &session.dir, session.active.clone()),
         UiMode::Headless(plan),
     )
     .await

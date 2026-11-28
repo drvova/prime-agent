@@ -34,7 +34,8 @@
 //! have no counterpart (`rosterDeltaSequence` is 0, the others are absent).
 
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
 use anyhow::Context as _;
@@ -42,7 +43,7 @@ use pa_core::session::display_transcript::{
     compaction_summary_message, continues_run, custom_message_row, elide_image_payloads,
     prompt_timestamp_ms, settle_cut, DisplayRow,
 };
-use pa_core::session::store::store;
+use pa_core::session::store::{store, TranscriptGeneration};
 use pa_core::settings::QueueModeSetting;
 use pa_types::daemon::{DaemonResumeCursor, TranscriptPage};
 use serde_json::{json, Map, Value};
@@ -102,6 +103,55 @@ fn iso_ms(iso: &str) -> u64 {
     pa_types::incident::timestamp_to_ms(iso)
         .and_then(|ms| u64::try_from(ms).ok())
         .unwrap_or(0)
+}
+
+/// The last transcript a read built, kept while the store's generation of it
+/// and the leaf it was read through stand. A window's pages read the same
+/// transcript one after another, and each would otherwise read and parse it
+/// whole (the old worker served them from the transcript it kept in memory).
+#[derive(Default)]
+pub(super) struct TranscriptCache(Mutex<Option<CachedTranscript>>);
+
+struct CachedTranscript {
+    path: PathBuf,
+    generation: TranscriptGeneration,
+    leaf: Option<String>,
+    transcript: Arc<Transcript>,
+}
+
+impl TranscriptCache {
+    /// [`Transcript::read`] of `path` through `leaf`, the kept one while the
+    /// transcript is the generation it was read at. The generation is taken
+    /// before the read: a row appended meanwhile is read again next time.
+    pub(super) fn read(
+        &self,
+        path: &Path,
+        open: bool,
+        leaf: Option<String>,
+    ) -> anyhow::Result<Arc<Transcript>> {
+        let generation = if store().exists(path) {
+            Some(store().stat(path)?.generation)
+        } else {
+            None
+        };
+        if let Some(generation) = generation {
+            if let Some(kept) = crate::lock(&self.0).as_ref().filter(|kept| {
+                kept.path == path && kept.generation == generation && kept.leaf == leaf
+            }) {
+                return Ok(Arc::clone(&kept.transcript));
+            }
+        }
+        let transcript = Arc::new(Transcript::read(path, open, leaf.clone())?);
+        if let Some(generation) = generation {
+            *crate::lock(&self.0) = Some(CachedTranscript {
+                path: path.to_path_buf(),
+                generation,
+                leaf,
+                transcript: Arc::clone(&transcript),
+            });
+        }
+        Ok(transcript)
+    }
 }
 
 /// What the attach reads of the session's transcript: its rows as stored
@@ -366,7 +416,7 @@ struct EngineState {
 pub(super) struct Composed {
     pub(super) summary: Value,
     state: Value,
-    transcript: Transcript,
+    transcript: Arc<Transcript>,
 }
 
 impl<B: SessionBuilder> RuntimeHandlers<B> {
@@ -511,10 +561,13 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         // old worker's summary read the same fold), with its billing split.
         let (transcript, usage) = {
             let (path, leaf) = (path.clone(), read.leaf.clone());
+            let transcripts = Arc::clone(&self.transcripts);
             tokio::task::spawn_blocking(move || {
                 let usage =
                     pa_core::session::catalog::read_session_info(&path).and_then(|info| info.usage);
-                Transcript::read(&path, true, leaf).map(|transcript| (transcript, usage))
+                transcripts
+                    .read(&path, true, leaf)
+                    .map(|transcript| (transcript, usage))
             })
             .await
             .context("the transcript's thread panicked")??
@@ -849,7 +902,8 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         } else {
             None
         };
-        let transcript = tokio::task::spawn_blocking(move || Transcript::read(&path, open, leaf))
+        let transcripts = Arc::clone(&self.transcripts);
+        let transcript = tokio::task::spawn_blocking(move || transcripts.read(&path, open, leaf))
             .await
             .context("the transcript's thread panicked")??;
         let elide = string_list(args, "capabilities")
