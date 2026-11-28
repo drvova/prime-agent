@@ -1,0 +1,87 @@
+{
+  "depth": {
+    "answers": [
+      {
+        "type": "response",
+        "data": {
+          "maxDepth": 2,
+          "source": "default"
+        },
+        "command": "get_rlm_max_depth_status",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "maxDepth": 3,
+          "source": "chat",
+          "globalSaved": false
+        },
+        "command": "set_rlm_max_depth",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "maxDepth": 3,
+          "source": "chat"
+        },
+        "command": "get_rlm_max_depth_status",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "maxDepth": 4,
+          "source": "chat",
+          "globalSaved": true
+        },
+        "command": "set_rlm_max_depth",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "maxDepth": 4,
+          "source": "chat"
+        },
+        "command": "get_rlm_max_depth_status",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "deleted": false,
+          "reason": "running"
+        },
+        "command": "delete_rlm_subagent",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "deleted": true
+        },
+        "command": "delete_rlm_subagent",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "deleted": true
+        },
+        "command": "delete_rlm_subagent",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "deleted": false
+        },
+        "command": "delete_rlm_subagent",
+        "success": true
+      }
+    ],
+    "global": 4
+  }
+}

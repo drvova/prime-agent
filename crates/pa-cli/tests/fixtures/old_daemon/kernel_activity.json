@@ -1,0 +1,99 @@
+{
+  "answers": [
+    {
+      "type": "response",
+      "data": {
+        "activities": [
+          {
+            "id": "<activity>",
+            "command": "echo started; /bin/sleep 600",
+            "pid": "<n>",
+            "startedAt": "<time>",
+            "durationMs": "<n>",
+            "status": "running",
+            "exitCode": null,
+            "persistent": false
+          }
+        ]
+      },
+      "command": "list_kernel_bash",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "tail": "started",
+        "id": "<activity>"
+      },
+      "command": "tail_kernel_bash",
+      "success": true
+    },
+    {
+      "type": "response",
+      "error": "activityId is required",
+      "command": "tail_kernel_bash",
+      "success": false
+    },
+    {
+      "type": "response",
+      "error": "lines must be between 1 and 200",
+      "command": "tail_kernel_bash",
+      "success": false
+    },
+    {
+      "type": "response",
+      "error": "Unknown kernel bash activity",
+      "command": "kill_kernel_bash",
+      "success": false
+    },
+    {
+      "type": "response",
+      "data": {
+        "killed": true,
+        "id": "<activity>"
+      },
+      "command": "kill_kernel_bash",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "activities": [
+          {
+            "id": "<activity>",
+            "command": "echo started; /bin/sleep 600",
+            "pid": "<n>",
+            "startedAt": "<time>",
+            "durationMs": "<n>",
+            "status": "finished",
+            "exitCode": 143,
+            "persistent": false
+          }
+        ]
+      },
+      "command": "list_kernel_bash",
+      "success": true
+    },
+    {
+      "type": "response",
+      "error": "action is required",
+      "command": "factory_activity",
+      "success": false
+    },
+    {
+      "type": "response",
+      "error": "factory activity status requires runId",
+      "command": "factory_activity",
+      "success": false
+    },
+    {
+      "type": "response",
+      "data": {
+        "runs": [],
+        "factorySpecs": 0
+      },
+      "command": "factory_activity",
+      "success": true
+    }
+  ]
+}

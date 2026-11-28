@@ -357,28 +357,40 @@ fn a_wedged_runtime_daemon_holding_the_lock_is_reaped_and_the_next_one_starts() 
 fn a_process_the_lock_names_that_is_not_its_holder_is_never_signalled() {
     let bed = Bed::new();
     // Another product process on the agent dir that does not hold the lock:
-    // an old daemon on a socket of its own, whose boot reap never takes the
-    // runtime daemon below (its command line names another socket) for a
-    // predecessor.
-    let other_socket = bed.dir.path().join("other").join("daemon.sock");
-    let mut command = Command::new(
-        Path::new(env!("CARGO_BIN_EXE_prime-agent"))
-            .parent()
-            .expect("the profile dir")
-            .join("pa-daemon"),
-    );
-    bed.env(&mut command, "old-daemon.log");
+    // `prime-agent` in RPC mode (no daemon, so no lock), ready once it
+    // answered a command on its standard input.
+    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
+    bed.env(&mut command, "rpc.log");
     let mut unrelated = super::Daemon(
         command
-            .arg("supervisor")
-            .arg("--socket")
-            .arg(&other_socket)
-            .arg("--agent-dir")
-            .arg(bed.agent_dir())
+            .args(["--mode", "rpc", "--no-session"])
+            .env(
+                "PRIME_AGENT_FAUX_SCRIPT",
+                json!({ "responses": [] }).to_string(),
+            )
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
             .spawn()
-            .expect("spawn the old daemon"),
+            .expect("spawn prime-agent in RPC mode"),
     );
-    super::support::await_listening(&other_socket, &mut unrelated.0);
+    let mut rpc_stdin = unrelated.0.stdin.take().expect("its standard input");
+    let mut rpc_stdout =
+        std::io::BufReader::new(unrelated.0.stdout.take().expect("its standard output"));
+    writeln!(
+        rpc_stdin,
+        "{}",
+        json!({ "type": "get_state", "id": "ready" })
+    )
+    .unwrap();
+    let mut line = String::new();
+    while !line.contains("\"ready\"") {
+        line.clear();
+        assert_ne!(
+            std::io::BufRead::read_line(&mut rpc_stdout, &mut line).unwrap(),
+            0,
+            "prime-agent in RPC mode ended before it answered"
+        );
+    }
     // This test holds the lock and names that process as its holder on the
     // runtime daemon's socket, which nothing serves.
     let _lock = pa_core::platform::RuntimeDaemonLock::try_acquire(
@@ -406,7 +418,7 @@ fn a_process_the_lock_names_that_is_not_its_holder_is_never_signalled() {
                 bed.agent_dir().display(),
                 unrelated.0.id()
             )),
-            unrelated.0.try_wait().expect("poll the old daemon"),
+            unrelated.0.try_wait().expect("poll the RPC process"),
         ),
         (Some(1), true, None),
         "stderr: {stderr}"

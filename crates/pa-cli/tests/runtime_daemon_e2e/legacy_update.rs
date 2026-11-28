@@ -12,6 +12,9 @@
 //! same way: the update-complete notice for the session the update was
 //! started from, the queued follow-up, the continuation of the cut-off turn
 //! first, then the follow-up.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,6 +23,7 @@ use std::time::{Duration, Instant};
 use pa_core::session::revival::UPDATE_RESTART_CONTINUATION_PROMPT;
 use serde_json::{json, Value};
 
+use super::old_reference::OldReference;
 use super::side_questions::OldClient;
 use super::turns::Attached;
 use super::update::{compat_request, message_texts};
@@ -105,7 +109,7 @@ fn status_view(status: &Value) -> Value {
 }
 
 /// What one daemon restored: the status record and the session's texts.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Restored {
     status: Value,
     texts: Vec<String>,
@@ -224,7 +228,11 @@ async fn stop_successor(bed: &Bed, runtime: bool) {
 /// same restored turns.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_ts_checkpoint_restores_on_the_selected_daemon_as_on_the_old_daemon() {
-    let old = legacy_restore(&Bed::new(), false).await;
+    let old_bed = Bed::new();
+    let mut reference = OldReference::open("ts_checkpoint_restore", &old_bed);
+    let old: Restored = reference
+        .take_async("restore", Box::pin(legacy_restore(&old_bed, false)))
+        .await;
     let runtime = legacy_restore(&Bed::new(), true).await;
     assert_eq!(
         old,

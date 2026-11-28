@@ -1,0 +1,1 @@
+- Fixed the run summary on the runtime daemon: a steer typed mid-run ends the run's summary row and gets its own, as before, instead of folding its work into the running one.

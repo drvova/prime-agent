@@ -5,14 +5,16 @@
 //! answer as the old daemon (the `pa-daemon` supervisor) answers the same
 //! commands on a session over the same agent dir; a reload reads a prompt
 //! template written after the session opened on both, and the warning's
-//! marker row is written once on both.
+//! marker row is written once on both. The old daemon's answers, its
+//! transcript and its rows are frozen ([`super::old_reference`]).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pa_types::daemon::DaemonCommand;
 use pa_types::wire2::{ClientFrame, Since};
 use serde_json::{json, Value};
 
+use super::old_reference::OldReference;
 use super::saved_list::old_list;
 use super::switches::{models, read_as_the_tui_does};
 use super::{ok, Bed, Client};
@@ -99,8 +101,8 @@ fn late_template(agent_dir: &Path) -> std::path::PathBuf {
 }
 
 /// The old daemon's responses on a session it creates on `battery/mock-1`,
-/// and the session's id.
-fn old_answers(bed: &Bed) -> (Vec<Value>, String) {
+/// the session's id and its transcript.
+fn old_answers(bed: &Bed) -> (Vec<Value>, String, PathBuf) {
     let _daemon = bed.old_daemon_with(OFFLINE);
     let socket = bed.old_socket();
     let created = old_list(
@@ -115,6 +117,7 @@ fn old_answers(bed: &Bed) -> (Vec<Value>, String) {
     assert_eq!(created["success"], true, "{created}");
     let active = created["data"]["id"].as_str().unwrap().to_string();
     let saved = created["data"]["sessionId"].as_str().unwrap().to_string();
+    let transcript = PathBuf::from(created["data"]["sessionFile"].as_str().unwrap());
     let mut answers = Vec::new();
     let send = |commands: Vec<Value>, answers: &mut Vec<Value>| {
         for (index, mut command) in commands.into_iter().enumerate() {
@@ -127,7 +130,7 @@ fn old_answers(bed: &Bed) -> (Vec<Value>, String) {
     let late = late_template(&bed.agent_dir());
     send(after_reload(), &mut answers);
     std::fs::remove_file(late).unwrap();
-    (answers, saved)
+    (answers, saved, transcript)
 }
 
 /// The runtime daemon's responses to `commands` on session `id`, through
@@ -184,7 +187,11 @@ async fn the_session_info_reads_answer_as_the_old_daemons_do() {
     let bed = Bed::new();
     models(&bed.agent_dir());
     resources(&bed.agent_dir(), bed.dir.path());
-    let (old, old_id) = old_answers(&bed);
+    let mut reference = OldReference::open("session_info", &bed);
+    let (old, old_id, old_transcript): (Vec<Value>, String, PathBuf) =
+        reference.take("answers", || old_answers(&bed));
+    // The spend history counts the saved sessions: the old daemon's is one.
+    reference.restore_transcript("transcript", &bed.agent_dir(), &old_transcript);
 
     let _daemon = bed.runtime_daemon_with(&json!({ "responses": ["hi"] }), OFFLINE);
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
@@ -217,7 +224,9 @@ async fn the_session_info_reads_answer_as_the_old_daemons_do() {
     assert_eq!(
         (
             marker_rows(&mut client, &id).await,
-            marker_rows(&mut client, &old_id).await
+            reference
+                .take_async("marker_rows", Box::pin(marker_rows(&mut client, &old_id)))
+                .await
         ),
         (vec![marker.clone()], vec![marker])
     );

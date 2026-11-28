@@ -21,6 +21,7 @@ use pa_core::session::lease::acquire_runtime_session_lease;
 use pa_core::session::manager::{get_session_file_path, load_entries_from_file, SessionManager};
 use pa_core::session::store::store;
 use pa_core::session_engine::kernel_activity::KernelBashAction;
+use pa_types::event_log::{NewEvent, Topic, Trust};
 use pa_types::session::FileEntry;
 use serde_json::{json, Value};
 
@@ -90,6 +91,9 @@ pub(super) struct RuntimeHandlers<B: SessionBuilder> {
     branch_summaries: tree::BranchSummaries,
     /// The side runs (`/btw`, `/better`) of the open sessions.
     side_runs: side_runs::SessionSideRuns,
+    /// The transcript the last attach or page read built, which the next
+    /// page of the same transcript reads again.
+    transcripts: Arc<attach::TranscriptCache>,
     /// The daemon's own end (`daemon.shutdown`, `daemon.restart`,
     /// `daemon.commit_update_restart`, or the embedder's stop signal): once
     /// it is begun, every query and call is refused.
@@ -139,6 +143,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             catalog: Arc::default(),
             branch_summaries: tree::BranchSummaries::default(),
             side_runs: side_runs::SessionSideRuns::default(),
+            transcripts: Arc::default(),
             stop,
             update,
             restore,
@@ -235,6 +240,19 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
         // Closed: its lease goes, and it leaves the roster.
         self.open.remove(&id).await;
         self.feeds.due(&id);
+        // Its attached clients learn it was stopped, as the old worker's
+        // `session_closed {reason: "killed"}` told them.
+        self.runtime
+            .publish(NewEvent {
+                topic: Topic::new(format!("agent/{id}/closed"))?,
+                source: "runtime".to_string(),
+                session: Some(id.clone()),
+                payload: json!({ "reason": "killed" }),
+                trust: Trust::Owner,
+                cause: None,
+                reply: None,
+            })
+            .await?;
         Ok(json!({ "session": id, "stopped": true }))
     }
 

@@ -19,6 +19,9 @@
 //! (`PA_DAEMON_HISTORY_IMPORT_VARIANT`, debug builds only) and held before
 //! its first file while a file exists (`PA_DAEMON_HISTORY_IMPORT_HOLD`), so
 //! the mid-import client connects while the import provably runs.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::path::Path;
 
@@ -26,6 +29,7 @@ use pa_core::session::boot_import::{HISTORY_IMPORT_HOLD_ENV, HISTORY_IMPORT_VARI
 use pa_types::wire2::ServerFrame;
 use serde_json::{json, Value};
 
+use super::old_reference::OldReference;
 use super::saved_list::{old_list, read_as_the_tui_does, runtime_list, transcript};
 use super::side_questions::OldClient;
 use super::{Bed, Client};
@@ -86,7 +90,7 @@ fn env(bed: &Bed) -> Vec<(&'static str, String)> {
 }
 
 /// What the clients of one daemon saw of its boot import.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Imported {
     /// The client connected as the daemon booted: its `history_import`
     /// frames.
@@ -252,7 +256,9 @@ async fn runtime_import(bed: &Bed, streamed: usize) -> Imported {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_boot_imports_the_official_chats_as_on_the_old_daemon() {
-    let (old, streamed) = old_import(&seeded());
+    let old_bed = seeded();
+    let mut reference = OldReference::open("history_import", &old_bed);
+    let (old, streamed): (Imported, usize) = reference.take("import", || old_import(&old_bed));
     let runtime = runtime_import(&seeded(), streamed).await;
     let started = json!({ "type": "history_import", "phase": "started", "sessions": 2 });
     let finished =

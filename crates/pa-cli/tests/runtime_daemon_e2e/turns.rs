@@ -254,9 +254,10 @@ impl Attached {
 /// `steer_boundary_batch_e2e` and `queue_delivery_e2e`'s lane order: steers
 /// parked mid-cell co-deliver as one batch with one reply, then the
 /// follow-ups each run as a turn of their own, in order. The runtime's
-/// running turn reads the steers at its tool boundary (the old daemon ended
-/// the turn there and ran them as the next one), so the turns after the
-/// first are the follow-ups'. Every publish is answered with its task and
+/// running turn reads the steers at its tool boundary, and its stream frames
+/// them as a run of their own, as the old daemon ended the turn there and
+/// ran them as the next one: the turns after the first are the steers' and
+/// the follow-ups'. Every publish is answered with its task and
 /// admission, as `agent/<id>/accepted` announces them, and waiting for a
 /// prompt is waiting for its task's `done`.
 #[tokio::test(flavor = "multi_thread")]
@@ -328,7 +329,7 @@ async fn steers_parked_mid_cell_co_deliver_and_follow_ups_run_after_one_turn_eac
             ]
             .map(str::to_string)
             .to_vec(),
-            3
+            4
         )
     );
 }

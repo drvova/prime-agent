@@ -1,0 +1,236 @@
+{
+  "flow": {
+    "answers": [
+      {
+        "type": "response",
+        "data": {
+          "heartbeat": null
+        },
+        "command": "heartbeat_get",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "heartbeat": {
+            "id": "<own>",
+            "status": "active",
+            "source": "heartbeat",
+            "runtimeKind": "top-level",
+            "deliveryMode": "follow_up",
+            "activeSessionId": "<own>",
+            "sessionId": "<own>",
+            "sessionFile": "<own>",
+            "cwd": "<own>",
+            "prompt": "check in",
+            "schedule": {
+              "kind": "interval",
+              "expression": "every 1h",
+              "intervalMs": 3600000
+            },
+            "createdAt": "<own>",
+            "updatedAt": "<own>",
+            "nextRunAt": "<own>",
+            "runCount": 0
+          }
+        },
+        "command": "heartbeat_set",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "heartbeat": {
+            "id": "<own>",
+            "status": "active",
+            "source": "heartbeat",
+            "runtimeKind": "top-level",
+            "deliveryMode": "follow_up",
+            "activeSessionId": "<own>",
+            "sessionId": "<own>",
+            "sessionFile": "<own>",
+            "cwd": "<own>",
+            "prompt": "check in",
+            "schedule": {
+              "kind": "interval",
+              "expression": "every 1h",
+              "intervalMs": 3600000
+            },
+            "createdAt": "<own>",
+            "updatedAt": "<own>",
+            "nextRunAt": "<own>",
+            "runCount": 0
+          }
+        },
+        "command": "heartbeat_get",
+        "success": true
+      },
+      {
+        "type": "response",
+        "error": "Heartbeat delivery mode must be \"steer\" or \"follow_up\"",
+        "command": "heartbeat_set",
+        "success": false
+      },
+      {
+        "type": "response",
+        "data": {
+          "heartbeat": {
+            "id": "<own>",
+            "status": "active",
+            "source": "heartbeat",
+            "runtimeKind": "top-level",
+            "deliveryMode": "follow_up",
+            "activeSessionId": "<own>",
+            "sessionId": "<own>",
+            "sessionFile": "<own>",
+            "cwd": "<own>",
+            "prompt": "check again",
+            "schedule": {
+              "kind": "interval",
+              "expression": "every 2h",
+              "intervalMs": 7200000
+            },
+            "createdAt": "<own>",
+            "updatedAt": "<own>",
+            "nextRunAt": "<own>",
+            "runCount": 0
+          }
+        },
+        "command": "heartbeat_set",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "heartbeat": {
+            "id": "<own>",
+            "status": "paused",
+            "source": "heartbeat",
+            "runtimeKind": "top-level",
+            "deliveryMode": "follow_up",
+            "activeSessionId": "<own>",
+            "sessionId": "<own>",
+            "sessionFile": "<own>",
+            "cwd": "<own>",
+            "prompt": "check again",
+            "schedule": {
+              "kind": "interval",
+              "expression": "every 2h",
+              "intervalMs": 7200000
+            },
+            "createdAt": "<own>",
+            "updatedAt": "<own>",
+            "runCount": 0
+          }
+        },
+        "command": "heartbeat_update",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "heartbeat": {
+            "id": "<own>",
+            "status": "active",
+            "source": "heartbeat",
+            "runtimeKind": "top-level",
+            "deliveryMode": "follow_up",
+            "activeSessionId": "<own>",
+            "sessionId": "<own>",
+            "sessionFile": "<own>",
+            "cwd": "<own>",
+            "prompt": "check again",
+            "schedule": {
+              "kind": "interval",
+              "expression": "every 2h",
+              "intervalMs": 7200000
+            },
+            "createdAt": "<own>",
+            "updatedAt": "<own>",
+            "nextRunAt": "<own>",
+            "runCount": 0
+          }
+        },
+        "command": "heartbeat_manage",
+        "success": true
+      },
+      {
+        "type": "response",
+        "error": "No active heartbeat found: nope",
+        "command": "heartbeat_manage",
+        "success": false
+      },
+      {
+        "type": "response",
+        "data": {
+          "heartbeat": {
+            "id": "<own>",
+            "status": "cancelled",
+            "source": "heartbeat",
+            "runtimeKind": "top-level",
+            "deliveryMode": "follow_up",
+            "activeSessionId": "<own>",
+            "sessionId": "<own>",
+            "sessionFile": "<own>",
+            "cwd": "<own>",
+            "prompt": "check again",
+            "schedule": {
+              "kind": "interval",
+              "expression": "every 2h",
+              "intervalMs": 7200000
+            },
+            "createdAt": "<own>",
+            "updatedAt": "<own>",
+            "runCount": 0
+          }
+        },
+        "command": "heartbeat_update",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "heartbeat": null
+        },
+        "command": "heartbeat_get",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "heartbeat": null
+        },
+        "command": "heartbeat_update",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "heartbeat": {
+            "id": "<own>",
+            "status": "paused",
+            "source": "heartbeat",
+            "runtimeKind": "top-level",
+            "deliveryMode": "steer",
+            "activeSessionId": "<own>",
+            "sessionId": "<own>",
+            "sessionFile": "<own>",
+            "cwd": "<own>",
+            "prompt": "tick",
+            "schedule": {
+              "kind": "interval",
+              "expression": "every 10s",
+              "intervalMs": 10000
+            },
+            "createdAt": "<own>",
+            "updatedAt": "<own>",
+            "runCount": 0
+          }
+        },
+        "command": "heartbeat_update",
+        "success": true
+      }
+    ],
+    "heartbeat_rows": 0
+  }
+}

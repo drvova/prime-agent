@@ -11,7 +11,8 @@
 //! Both sides' frames are read through `pa_types::daemon::DaemonOutbound`,
 //! the shape the TUI's client takes them in; the request ids are the test's
 //! own on both, and a `nextCursor` (the walk's snapshot id, a fresh UUID per
-//! daemon) compares by its form.
+//! daemon) compares by its form. The old daemon's frames are frozen
+//! ([`super::old_reference`]).
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -22,6 +23,7 @@ use pa_types::daemon::{DaemonCommand, DaemonOutbound};
 use pa_types::wire2::{ClientFrame, ServerFrame};
 use serde_json::{json, Value};
 
+use super::old_reference::OldReference;
 use super::{Bed, Client};
 
 /// One assistant usage block that costs `cost`, billed as `billing`.
@@ -279,7 +281,8 @@ async fn the_saved_session_list_streams_the_old_daemons_rows() {
     };
     let scoped = json!({ "type": "list_saved_sessions", "cwd": "/work/a", "scope": "current" });
     let no_cwd = json!({ "type": "list_saved_sessions" });
-    let old = {
+    let mut reference = OldReference::open("saved_session_list", &bed);
+    let old: [Vec<Value>; 4] = reference.take("lists", || {
         let _daemon = bed.old_daemon();
         let socket = bed.old_socket();
         let first = old_list(&socket, "l1", &page(None));
@@ -290,7 +293,7 @@ async fn the_saved_session_list_streams_the_old_daemons_rows() {
             old_list(&socket, "l3", &scoped),
             old_list(&socket, "l4", &no_cwd),
         ]
-    };
+    });
     let _daemon = bed.runtime_daemon(&json!([]));
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
     let streamed = |frames: &[Value]| frames.len() - 1;
@@ -389,14 +392,15 @@ async fn passive_subagents_join_the_saved_catalog_as_on_the_old_daemon() {
     passive_family(&bed.agent_dir());
     let all = json!({ "type": "list_saved_sessions", "cwd": "/work/a" });
     let scoped = json!({ "type": "list_saved_sessions", "cwd": "/work/a", "scope": "current" });
-    let old = {
+    let mut reference = OldReference::open("passive_subagents", &bed);
+    let old: [Vec<Value>; 2] = reference.take("lists", || {
         let _daemon = bed.old_daemon();
         let socket = bed.old_socket();
         [
             old_list(&socket, "l1", &all),
             old_list(&socket, "l2", &scoped),
         ]
-    };
+    });
     let _daemon = bed.runtime_daemon(&json!([]));
     let (mut client, _) = Client::connect(&bed.runtime_socket()).await;
     let streamed = |frames: &[Value]| frames.len() - 1;

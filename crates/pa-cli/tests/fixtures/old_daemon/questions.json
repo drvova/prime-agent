@@ -1,0 +1,65 @@
+{
+  "flow": {
+    "first_no_user": true,
+    "events": [
+      {
+        "type": "todo_update",
+        "todos": {
+          "items": [
+            {
+              "id": "1",
+              "text": "ship",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      {
+        "type": "kernel_notification",
+        "notification": {
+          "message": "ready",
+          "level": "info"
+        }
+      },
+      {
+        "type": "question_open",
+        "question": {
+          "id": "<question>",
+          "text": "Proceed?",
+          "kind": "single",
+          "choices": [
+            "yes",
+            "no"
+          ],
+          "allowOther": true
+        }
+      },
+      {
+        "type": "question_closed",
+        "questionId": "<question>",
+        "status": "answered"
+      }
+    ],
+    "pending": {
+      "id": "<question>",
+      "text": "Proceed?",
+      "kind": "single",
+      "choices": [
+        "yes",
+        "no"
+      ],
+      "allowOther": true
+    },
+    "answered": {
+      "type": "response",
+      "success": true,
+      "command": "answer_question"
+    },
+    "stale": {
+      "type": "response",
+      "error": "question \"<question>\" is not open",
+      "command": "answer_question",
+      "success": false
+    }
+  }
+}

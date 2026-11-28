@@ -1,0 +1,124 @@
+{
+  "update": {
+    "responses": [
+      {
+        "type": "response",
+        "data": {
+          "updateId": "u-e2e-update",
+          "state": "prepared",
+          "acceptedAt": "<time>",
+          "expiresAt": "<time>"
+        },
+        "command": "prepare_update_restart",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "updateId": "u-e2e-update",
+          "state": "prepared",
+          "acceptedAt": "<time>"
+        },
+        "command": "prepare_update_restart",
+        "success": true
+      },
+      {
+        "type": "response",
+        "errorInfo": {
+          "code": "update_prepare_refused",
+          "activeUpdateId": "u-e2e-update"
+        },
+        "command": "prepare_update_restart",
+        "success": false,
+        "error": "Daemon is already preparing an update restart"
+      },
+      {
+        "type": "response",
+        "errorInfo": {
+          "code": "update_restarting"
+        },
+        "command": "prompt",
+        "success": false,
+        "error": "Daemon is preparing an update restart"
+      },
+      {
+        "type": "response",
+        "data": {
+          "updateId": "u-e2e-update",
+          "state": "stopping",
+          "stopped": 1
+        },
+        "command": "commit_update_restart",
+        "success": true
+      }
+    ],
+    "watcher": [
+      {
+        "type": "daemon_closing",
+        "reason": "update",
+        "payload": {
+          "updateId": "u-e2e-update",
+          "resume": true,
+          "estSeconds": 345,
+          "sessions": [
+            {
+              "sessionId": "<session>",
+              "name": ""
+            }
+          ]
+        }
+      }
+    ],
+    "exit": 0,
+    "roster": {
+      "format_version": 1,
+      "update_id": "u-e2e-update",
+      "to_version": "99.0.0",
+      "sessions": [
+        {
+          "kind": "top-level",
+          "name": null,
+          "cwd": "<bed>",
+          "rlm_depth": 0,
+          "parent_session_id": null,
+          "next_turn": [],
+          "steering": [],
+          "followUps": [],
+          "in_flight": {
+            "streaming": true,
+            "compacting": false,
+            "bash_running": false,
+            "rlm_children": false,
+            "retrying": false,
+            "prompt_in_flight": false
+          },
+          "should_resume": true
+        }
+      ],
+      "subagents": [],
+      "heartbeats": []
+    },
+    "restore_status": {
+      "type": "response",
+      "data": {
+        "updateId": "u-e2e-update",
+        "inFlight": false,
+        "complete": true,
+        "counts": {
+          "total": 1,
+          "restored": 1,
+          "resumed": 1,
+          "failed": 0
+        },
+        "failures": []
+      },
+      "command": "update_restore_status",
+      "success": true
+    },
+    "texts": [
+      "go",
+      "Running the long command.",
+      "Prime Agent restarted after an update. Continue the interrupted task from the saved transcript and restored tool/kernel state. Inspect current state before retrying commands when needed."
+    ]
+  }
+}

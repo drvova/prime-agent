@@ -1,0 +1,113 @@
+{
+  "answers": [
+    {
+      "type": "response",
+      "data": {
+        "cancelled": false,
+        "selectedText": "second question"
+      },
+      "command": "fork",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "text": "first answer"
+      },
+      "command": "get_last_assistant_text",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "cancelled": false
+      },
+      "command": "fork",
+      "success": true
+    },
+    {
+      "type": "response",
+      "error": "Invalid entry ID for forking",
+      "command": "fork",
+      "success": false
+    },
+    {
+      "type": "response",
+      "error": "Invalid entry ID for forking",
+      "command": "fork",
+      "success": false
+    },
+    {
+      "type": "response",
+      "data": {
+        "messages": [
+          {
+            "entryId": "u1",
+            "text": "first question"
+          }
+        ]
+      },
+      "command": "get_user_messages_for_forking",
+      "success": true
+    },
+    {
+      "type": "response",
+      "errorInfo": {
+        "code": "session_import_file_not_found",
+        "filePath": "{old-daemon-bed}/imports/none.jsonl"
+      },
+      "command": "import_jsonl",
+      "success": false,
+      "error": "File not found: {old-daemon-bed}/imports/none.jsonl"
+    },
+    {
+      "type": "response",
+      "errorInfo": {
+        "code": "missing_session_cwd",
+        "issue": {
+          "sessionFile": "{old-daemon-bed}/agent/sessions/import.jsonl",
+          "sessionCwd": "{old-daemon-bed}/gone",
+          "fallbackCwd": "{old-daemon-bed}"
+        }
+      },
+      "command": "import_jsonl",
+      "success": false,
+      "error": "Stored session working directory does not exist: {old-daemon-bed}/gone\nSession file: {old-daemon-bed}/agent/sessions/import.jsonl\nCurrent working directory: {old-daemon-bed}"
+    },
+    {
+      "type": "response",
+      "data": {
+        "cancelled": false
+      },
+      "command": "import_jsonl",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "text": "imported answer"
+      },
+      "command": "get_last_assistant_text",
+      "success": true
+    },
+    {
+      "type": "response",
+      "data": {
+        "messages": [
+          {
+            "entryId": "i1",
+            "text": "imported question"
+          }
+        ]
+      },
+      "command": "get_user_messages_for_forking",
+      "success": true
+    }
+  ],
+  "message_ids": [
+    "u1",
+    "a1",
+    "u2",
+    "a2"
+  ]
+}

@@ -125,7 +125,9 @@ SQLite implementations over `pa-log`.
   `message_end`, `compaction_summary_delta` while a summary is written; a tool's update and end
   name no tool, as the old frames do not), each frame, driver events, `!` commands and child
   updates included, numbered with the session's `meta.sequence`, a parked update consuming its
-  number as it parks. In those shapes the stream carries the old worker's queue view,
+  number as it parks. A steer the running turn takes after it settled a reply is framed as a
+  run of its own (`agent_end`, then `agent_start` before the steer's row), as the old worker
+  delivered a steer at the next boundary. In those shapes the stream carries the old worker's queue view,
   `session_action_update` (`session/stream/actions.rs`), built from the lane's reports and the
   rows waiting on the agent: a task queued behind work (its lane running, holding a task or
   stopped) is listed in its lane (`Steer` under `steering`, the rest under `followUps`), a
@@ -406,7 +408,9 @@ SQLite implementations over `pa-log`.
   `session.create` (`{session?}` to open or create by id, or `{path}` to
   open a transcript by its file, and `cwd`) takes the session's `SessionLease` and holds it until
   `session.stop` or the daemon's end, so a session the old daemon or a print run holds is refused
-  (`session_already_active`) and the old daemon is refused one this daemon holds; a session it
+  (`session_already_active`) and the old daemon is refused one this daemon holds; a
+  `session.stop` publishes `agent/<id>/closed {reason: "killed"}` (stored) once the session is
+  closed, the old worker's `session_closed`; a session it
   holds open already (revived at boot, opened by another client) is answered as it runs
   (`"reused": true`), the old daemon's create-open reuse;
   `session.rename`, `session.label` and `session.set_effort` change an open session through its

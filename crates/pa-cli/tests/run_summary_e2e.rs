@@ -29,8 +29,9 @@
 
 mod support;
 
+use support::runtime_daemon::RuntimeDaemon;
+
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 
 use pa_tui::interactive::{
@@ -42,17 +43,6 @@ const WIDTH: u16 = 160;
 
 /// The slow cell's own floor: a run that waits on it takes at least this long.
 const SLOW_CELL_SECS: u64 = 2;
-
-struct Daemon {
-    child: Child,
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 /// A faux script: one `eval` tool call per cell, each its own model response, then the reply.
 fn script(cells: &[&str]) -> Value {
@@ -86,36 +76,12 @@ async fn summary_rows(
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let socket = dir.path().join("daemon.sock");
     let script_path = dir.path().join("faux.json");
     std::fs::write(&script_path, script(cells).to_string()).expect("write the faux script");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    let mut daemon = Daemon {
-        child: command.spawn().expect("spawn prime-agent --mode daemon"),
-    };
-    support::await_listening(&socket, &mut daemon.child);
+    // The runtime daemon answers its sessions' turns from the script in its environment.
+    let daemon = RuntimeDaemon::spawn_with(dir.path(), |command| {
+        command.env("PRIME_AGENT_FAUX_SCRIPT", &script_path);
+    });
 
     let (timestamps, marks) = mpsc::channel();
     let mut steps = vec![
@@ -137,7 +103,7 @@ async fn summary_rows(
     ]);
     let outcome = pa_tui::interactive::run_interactive(
         chat_options(
-            socket,
+            daemon.socket.clone(),
             dir.path().to_path_buf(),
             session_dir.clone(),
             script_path,

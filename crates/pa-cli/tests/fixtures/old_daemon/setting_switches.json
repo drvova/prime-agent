@@ -1,0 +1,184 @@
+{
+  "answers": [
+    [
+      {
+        "type": "response",
+        "error": "set_scoped_models requires scopedModels entries with a model",
+        "command": "set_scoped_models",
+        "success": false
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "set_scoped_models"
+      },
+      {
+        "type": "response",
+        "error": "set_service_tier requires a serviceTier",
+        "command": "set_service_tier",
+        "success": false
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "set_service_tier"
+      },
+      {
+        "type": "response",
+        "data": {
+          "model": {
+            "id": "gpt-5.5",
+            "name": "gpt-5.5",
+            "api": "openai-responses",
+            "provider": "openai",
+            "baseUrl": "http://127.0.0.1:9",
+            "reasoning": true,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 4096,
+            "maxTokensExplicit": true
+          },
+          "thinkingLevel": "high",
+          "serviceTier": "priority",
+          "isScoped": true
+        },
+        "command": "cycle_model",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "level": "off"
+        },
+        "command": "cycle_thinking_level",
+        "success": true
+      },
+      {
+        "type": "response",
+        "data": {
+          "model": {
+            "id": "mock-1",
+            "name": "mock-1",
+            "api": "openai-completions",
+            "provider": "battery",
+            "baseUrl": "http://127.0.0.1:9",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 128000,
+            "maxTokens": 4096,
+            "maxTokensExplicit": true
+          },
+          "thinkingLevel": "off",
+          "serviceTier": "default",
+          "isScoped": true
+        },
+        "command": "cycle_model",
+        "success": true
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "cycle_thinking_level"
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "set_transport"
+      },
+      {
+        "type": "response",
+        "error": "set_steering_mode requires mode \"all\" or \"one-at-a-time\"",
+        "command": "set_steering_mode",
+        "success": false
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "set_steering_mode"
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "set_follow_up_mode"
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "set_auto_compaction"
+      },
+      {
+        "type": "response",
+        "success": true,
+        "command": "set_auto_retry"
+      }
+    ],
+    "01a220ea-f010-71ce-a2ef-cbb634f83e4b"
+  ],
+  "settings": {
+    "defaultModel": "mock-1",
+    "defaultProvider": "battery",
+    "recentModels": [
+      "battery/mock-1",
+      "openai/gpt-5.5"
+    ],
+    "defaultThinkingLevel": "off",
+    "transport": "sse",
+    "steeringMode": "one-at-a-time",
+    "followUpMode": "all",
+    "compaction": {
+      "enabled": false
+    },
+    "retry": {
+      "enabled": false
+    }
+  },
+  "rows": [
+    {
+      "type": "model_change",
+      "provider": "battery",
+      "modelId": "mock-1"
+    },
+    {
+      "type": "thinking_level_change",
+      "thinkingLevel": "off"
+    },
+    {
+      "type": "service_tier_change",
+      "serviceTier": "default"
+    },
+    {
+      "type": "service_tier_change",
+      "serviceTier": "priority"
+    },
+    {
+      "type": "model_change",
+      "provider": "openai",
+      "modelId": "gpt-5.5"
+    },
+    {
+      "type": "thinking_level_change",
+      "thinkingLevel": "off"
+    },
+    {
+      "type": "model_change",
+      "provider": "battery",
+      "modelId": "mock-1"
+    }
+  ]
+}

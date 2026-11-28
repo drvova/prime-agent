@@ -20,11 +20,10 @@
 
 mod support;
 
+use support::runtime_daemon::RuntimeDaemon;
+
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pa_tui::agents_view::{AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewUiMode};
@@ -37,85 +36,6 @@ use pa_tui::interactive::{
 /// the other's (the slot lives inside pa-tui and cannot be reset from
 /// this crate).
 static HANDOFF_E2E_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-struct Supervisor {
-    child: Child,
-    socket: PathBuf,
-}
-
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        graceful_shutdown(&self.socket);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.socket);
-    }
-}
-
-/// Stop the daemon on `socket` by protocol; kill the child when it fails.
-fn graceful_shutdown(socket: &Path) {
-    let Ok(stream) = UnixStream::connect(socket) else {
-        return;
-    };
-    let Ok(write_half) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(stream);
-    let mut writer = write_half;
-    let mut hello = String::new();
-    let _ = reader.read_line(&mut hello); // daemon_hello
-    let command = serde_json::json!({
-        "type": "command",
-        "id": "test-shutdown",
-        "protocol": { "name": "prime-agent.daemon", "version": 7 },
-        "command": { "type": "shutdown" },
-    });
-    let Ok(mut line) = serde_json::to_string(&command) else {
-        return;
-    };
-    line.push('\n');
-    let _ = writer.write_all(line.as_bytes());
-    let _ = writer.flush();
-    let _ = reader.read_line(&mut String::new());
-}
-
-fn spawn_supervisor(dir: &Path) -> Supervisor {
-    // The in-process client forwards this process's env to the worker.
-    support::scrub_ambient_provider_credentials();
-    let socket = dir.join("daemon.sock");
-    let agent_dir = dir.join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
-    command
-        .args(["--mode", "daemon", "--daemon-socket"])
-        // The supervisor (selected by name: the runtime daemon is the default), which this
-        // suite drives on the old wire.
-        .env("PRIME_AGENT_RUNTIME_DAEMON", "0")
-        .arg(&socket)
-        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for var in [
-        pa_daemon::worker::WORKER_ROLE_ENV,
-        pa_daemon::worker::WORKER_TOKEN_ENV,
-        pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV,
-        pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
-        pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
-        pa_daemon::worker::WORKER_SOCKET_ENV,
-        pa_daemon::worker::WORKER_INSTANCE_ID_ENV,
-        pa_daemon::worker::WORKER_SCRIPT_ENV,
-    ] {
-        command.env_remove(var);
-    }
-    command.env(
-        pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-        "15000",
-    );
-    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
-    support::await_listening(&socket, &mut child);
-    Supervisor { child, socket }
-}
 
 /// One saved-session fixture: header, display name, and a user/assistant exchange.
 fn write_fixture(dir: &Path, id: &str, name: &str, turns: &[(&str, &str)]) -> PathBuf {
@@ -136,7 +56,7 @@ fn write_fixture(dir: &Path, id: &str, name: &str, turns: &[(&str, &str)]) -> Pa
             index * 1000 + 1
         );
     }
-    std::fs::write(&path, content).expect("write fixture");
+    std::fs::write(&path, support::valid_transcript(&content)).expect("write fixture");
     path
 }
 
@@ -201,7 +121,7 @@ async fn the_roundtrip_reentry_renders_the_same_transcript() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let session_dir = dir.path().join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
+    let daemon = RuntimeDaemon::spawn(dir.path());
 
     let fixture = write_fixture(
         &session_dir,
@@ -214,7 +134,7 @@ async fn the_roundtrip_reentry_renders_the_same_transcript() {
     );
 
     // The first chat run exits through the agents-back LEFT handoff.
-    let mut first = chat_options(supervisor.socket.clone(), dir.path().to_path_buf());
+    let mut first = chat_options(daemon.socket.clone(), dir.path().to_path_buf());
     first.session = SessionSelection::Resume(fixture.clone());
     let first_outcome = pa_tui::interactive::run_interactive(
         first,
@@ -251,7 +171,7 @@ async fn the_roundtrip_reentry_renders_the_same_transcript() {
 
     // The agents view anchored on the session just left: Enter opens it.
     let view_options = AgentsViewOptions {
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         theme: "prime".to_string(),
@@ -297,7 +217,7 @@ async fn the_roundtrip_reentry_renders_the_same_transcript() {
     // worker, the generation, the event sequence, and the entry count all
     // unchanged), and the re-entry renders the same transcript rows over
     // the adopted packs.
-    let mut reentry = chat_options(supervisor.socket.clone(), dir.path().to_path_buf());
+    let mut reentry = chat_options(daemon.socket.clone(), dir.path().to_path_buf());
     reentry.session = selection;
     let reentry_outcome = pa_tui::interactive::run_interactive(
         reentry,
@@ -349,7 +269,6 @@ async fn a_post_turn_sojourn_reentry_still_serves_the_held_packs() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let session_dir = dir.path().join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let supervisor = spawn_supervisor(dir.path());
 
     let fixture = write_fixture(
         &session_dir,
@@ -361,10 +280,14 @@ async fn a_post_turn_sojourn_reentry_still_serves_the_held_packs() {
         ],
     );
     let script_path = write_faux_script(dir.path(), &["the live turn reply"]);
+    // The runtime daemon answers its sessions' turns from the script in its environment.
+    let daemon = RuntimeDaemon::spawn_with(dir.path(), |command| {
+        command.env("PRIME_AGENT_FAUX_SCRIPT", &script_path);
+    });
 
     // The first chat run runs a REAL scripted turn (the event sequence advances
     // past this run's attach value), then exits through the agents-back handoff.
-    let mut first = chat_options(supervisor.socket.clone(), dir.path().to_path_buf());
+    let mut first = chat_options(daemon.socket.clone(), dir.path().to_path_buf());
     first.session = SessionSelection::Resume(fixture.clone());
     first.script_path = Some(script_path.clone());
     let first_outcome = pa_tui::interactive::run_interactive(
@@ -410,7 +333,7 @@ async fn a_post_turn_sojourn_reentry_still_serves_the_held_packs() {
 
     // The agents view anchored on the session just left: Enter opens it.
     let view_options = AgentsViewOptions {
-        socket_path: supervisor.socket.clone(),
+        socket_path: daemon.socket.clone(),
         cwd: dir.path().to_path_buf(),
         session_dir: Some(session_dir.clone()),
         theme: "prime".to_string(),
@@ -457,7 +380,7 @@ async fn a_post_turn_sojourn_reentry_still_serves_the_held_packs() {
     // the same post-turn value — adopts, and the re-entry's first draw
     // serves the held packs (the post-turn class the stale
     // attach-sequence key always missed).
-    let mut reentry = chat_options(supervisor.socket.clone(), dir.path().to_path_buf());
+    let mut reentry = chat_options(daemon.socket.clone(), dir.path().to_path_buf());
     reentry.session = selection;
     reentry.script_path = Some(script_path);
     let reentry_outcome = pa_tui::interactive::run_interactive(

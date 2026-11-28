@@ -15,6 +15,9 @@
 //!   (`resume`, `estSeconds`, the session), and the daemon exits 0.
 //!
 //! Each daemon runs on a bed of its own.
+//!
+//! The old daemon's side is frozen: its answers are read from a golden
+//! ([`super::old_reference`]).
 
 use std::path::Path;
 
@@ -26,6 +29,7 @@ use serde_json::{json, Value};
 use pa_core::session::revival::UPDATE_RESTART_CONTINUATION_PROMPT;
 
 use super::lifecycle::{await_started, closing_follower, cut_off_turn, exit_code, old_session};
+use super::old_reference::OldReference;
 use super::side_questions::OldClient;
 use super::switches::read_as_the_tui_does;
 use super::turns::Attached;
@@ -66,7 +70,7 @@ fn coordinator_commands(session: &str) -> Vec<(&'static str, Value)> {
 }
 
 /// What one daemon answered and left.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Updated {
     /// The coordinator's responses, in order.
     responses: Vec<Value>,
@@ -429,7 +433,11 @@ async fn runtime_update(bed: &Bed) -> Updated {
 /// status and continued turn.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_prepare_commit_and_restore_answer_and_continue_as_on_the_old_daemon() {
-    let old = old_update(&Bed::new()).await;
+    let old_bed = Bed::new();
+    let mut reference = OldReference::open("update_restart", &old_bed);
+    let old: Updated = reference
+        .take_async("update", Box::pin(old_update(&old_bed)))
+        .await;
     let runtime = runtime_update(&Bed::new()).await;
     let response = |command: &str, data: Value| json!({ "type": "response", "command": command, "success": true, "data": data });
     let prepared = json!({ "updateId": UPDATE, "state": "prepared", "acceptedAt": "<time>",
