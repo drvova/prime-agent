@@ -1,0 +1,1 @@
+- An interactive window that lives through a crash of the runtime daemon now reports how the daemon died (for example, "was killed by signal 9 (SIGKILL)"), as it did on the old daemon: the restarted runtime daemon now hands the death its restart owner recorded to every client that connects.

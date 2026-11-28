@@ -191,6 +191,7 @@ impl<B: SessionBuilder> RuntimeHandlers<B> {
             "supervisorProcessStartId": pa_core::session::hosted::process_start_id(pid),
             "supervisorGeneration": format!("runtime:{pid}"),
             "keeperPid": self.boot.keeper_pid,
+            "daemonDeath": self.boot.daemon_death,
             "appVersion": self.boot.app_version,
             "schemaId": pa_types::daemon::DAEMON_SCHEMA_ID,
             "supervisorSocketPath": self.update.socket_path(),
